@@ -1,12 +1,16 @@
 from pathlib import Path
 from typing import Union, Literal
+
 from tclogger import logger, shell_cmd
+from tqdm import tqdm
+
 from configs.envs import VIDEOS_ROOT
 
 
 class VideoToAudioConverter:
     def __init__(self):
-        self.cmd = 'ffmpeg -y -i "{}" -vn "{}"'
+        self.ffmpeg = "ffmpeg"
+        self.cmd_args = '-y -i "{}" -vn "{}"'
 
     def generate_audio_path(
         self,
@@ -29,10 +33,17 @@ class VideoToAudioConverter:
         video_path: Union[str, Path],
         audio_path: Union[str, Path] = None,
         overwrite: bool = False,
+        verbose: bool = False,
     ):
+        logger.enter_quiet(not verbose)
+
         self.video_path = Path(video_path)
         self.generate_audio_path(audio_path)
-        cmd_ffmpeg = self.cmd.format(self.video_path, self.audio_path)
+
+        cmd_args = self.cmd_args.format(self.video_path, self.audio_path)
+        if not verbose:
+            cmd_args = f"-loglevel error {cmd_args}"
+        cmd_str = f"{self.ffmpeg} {cmd_args}"
 
         logger.note(f"> Convert video to audio:")
         logger.file(f"  - video: [{self.video_path}]")
@@ -41,7 +52,9 @@ class VideoToAudioConverter:
         if not overwrite and self.is_audio_exists():
             logger.success(f"  + audio existed: [{self.audio_path}]")
         else:
-            shell_cmd(cmd_ffmpeg)
+            shell_cmd(cmd_str)
+
+        logger.exit_quiet(not verbose)
 
 
 if __name__ == "__main__":
@@ -49,7 +62,7 @@ if __name__ == "__main__":
     videos_dir = Path(VIDEOS_ROOT) / str(mid)
     videos_paths = sorted(list(videos_dir.glob("*.mp4")), key=lambda x: x.name)
     converter = VideoToAudioConverter()
-    for video_path in videos_paths[:1]:
+    for video_path in tqdm(videos_paths):
         converter.convert(video_path)
 
     # python -m converters.video_to_audio
