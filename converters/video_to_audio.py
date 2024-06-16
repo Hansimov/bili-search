@@ -4,7 +4,7 @@ from typing import Union, Literal
 from tclogger import logger, shell_cmd
 from tqdm import tqdm
 
-from configs.envs import VIDEOS_ROOT
+from configs.envs import BILI_DATA_ROOT
 
 
 class VideoToAudioConverter:
@@ -59,7 +59,7 @@ class VideoToAudioConverter:
 
 if __name__ == "__main__":
     mid = 946974
-    videos_dir = Path(VIDEOS_ROOT) / str(mid)
+    videos_dir = Path(BILI_DATA_ROOT) / str(mid) / "videos"
     videos_paths = sorted(list(videos_dir.glob("*.mp4")), key=lambda x: x.name)
     converter = VideoToAudioConverter()
     for video_path in tqdm(videos_paths):

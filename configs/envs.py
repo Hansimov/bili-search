@@ -17,4 +17,4 @@ else:
         f"WARN: secrets.json not found. Using secrets_template.json though. Please create {secrets_path}."
     )
 
-VIDEOS_ROOT = SECRETS["videos_root"]
+BILI_DATA_ROOT = SECRETS["bili_data_root"]
