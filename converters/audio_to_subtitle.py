@@ -132,3 +132,59 @@ class WhisperX:
         self.align()
         self.save_to_file(subtitle_path)
 
+
+class AudioToSubtitleConverter:
+    def __init__(self):
+        self.whisperx = WhisperX()
+
+    def generate_subtitle_path(
+        self,
+        subtitle_path: Union[str, Path] = None,
+        suffix: Literal[".srt", ".txt", "json"] = ".srt",
+    ):
+        if subtitle_path is None:
+            self.subtitle_path = Path(self.audio_path).with_suffix(suffix)
+        else:
+            self.subtitle_path = Path(subtitle_path)
+        return self.subtitle_path
+
+    def is_subtitle_exists(self):
+        if self.subtitle_path.exists():
+            return True
+        return False
+
+    def convert(
+        self,
+        audio_path: Union[str, Path],
+        subtitle_path: Union[str, Path] = None,
+        overwrite: bool = False,
+        suffix: Literal[".srt", ".txt", "json"] = ".srt",
+        verbose: bool = False,
+    ):
+        logger.enter_quiet(not verbose)
+
+        self.audio_path = Path(audio_path)
+        self.generate_subtitle_path(subtitle_path, suffix=suffix)
+
+        logger.note(f"> Convert audio to subtitle:")
+        logger.file(f"  - audio: [{self.audio_path}]")
+        logger.file(f"  - subtitle: [{self.subtitle_path}]")
+
+        if not overwrite and self.is_subtitle_exists():
+            logger.success(f"  + subtitle existed: [{self.subtitle_path}]")
+        else:
+            self.whisperx.convert(self.audio_path, self.subtitle_path)
+
+        logger.exit_quiet(not verbose)
+
+
+if __name__ == "__main__":
+    mid = 946974
+    videos_dir = Path(BILI_DATA_ROOT) / str(mid) / "videos"
+    audio_paths = sorted(list(videos_dir.glob("*.mp3")), key=lambda x: x.name)
+    converter = AudioToSubtitleConverter()
+    # for audio_path in tqdm(audio_paths):
+    for audio_path in tqdm(audio_paths[:2]):
+        converter.convert(audio_path, overwrite=True, verbose=True)
+
+    # python -m converters.audio_to_subtitle
