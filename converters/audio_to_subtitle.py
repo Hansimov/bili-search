@@ -1,4 +1,5 @@
 import json
+import re
 import whisperx
 import zhconv
 
@@ -35,8 +36,11 @@ class WhisperX:
         self.chunk_size = chunk_size
 
     def load_model(self):
-        # if self.language in ["zh"]:
-        #     self.initial_prompt = "以下是中文普通话句子。"
+        # Simplified Chinese rather than traditional? · openai/whisper · Discussion #277
+        #   * https://github.com/openai/whisper/discussions/277
+        if self.language in ["zh"]:
+            self.initial_prompt = "以下是中文普通话句子。"
+            self.zh_texts_to_filter = ["中文普通话", "中文字幕", "中文句子"]
 
         self.asr_options = {
             "initial_prompt": self.initial_prompt,
@@ -84,6 +88,15 @@ class WhisperX:
             print_progress=False,
         )
 
+    def filter_text(self, text: str) -> str:
+        if self.language in ["zh"]:
+            text = zhconv.convert(text, "zh-cn")
+            if self.initial_prompt:
+                for zh_text_to_filter in self.zh_texts_to_filter:
+                    if re.match(f"^{zh_text_to_filter}.*", text):
+                        return ""
+        return text
+
     def save_to_file(self, subtitle_path: Union[str, Path]):
         logger.note(f"> Subtitle saved to:")
         logger.file(f"  - [{subtitle_path}]")
@@ -94,32 +107,34 @@ class WhisperX:
         subtitle_json_path = subtitle_path.with_suffix(".json")
 
         res_str = ""
+        line_idx = 0
         for idx, seg in enumerate(self.align_result["segments"]):
             start_ts = decimal_seconds_to_srt_timestamp(seg["start"])
             end_ts = decimal_seconds_to_srt_timestamp(seg["end"])
-            text = seg["text"]
+            text = self.filter_text(seg["text"])
+            if not text:
+                continue
 
-            if self.language in ["zh"]:
-                text = zhconv.convert(text, "zh-cn")
-
+            line_idx += 1
             subtitle_line = {
                 "start_seconds": seg["start"],
                 "end_seconds": seg["end"],
                 "start_ts": start_ts,
                 "end_ts": end_ts,
                 "text": text,
+                "idx": line_idx,
             }
             subtitle_lines.append(subtitle_line)
 
             if output_suffix == ".srt":
-                segment_str = f"{idx+1}\n" f"{start_ts} --> {end_ts}\n" f"{text}\n\n"
+                segment_str = f"{line_idx}\n" f"{start_ts} --> {end_ts}\n" f"{text}\n\n"
             else:
                 segment_str = f"{seg['text']}\n"
 
             res_str += segment_str
 
         with open(subtitle_json_path, "w") as wf:
-            json.dump(subtitle_lines, wf, ensure_ascii=False, indent=False)
+            json.dump(subtitle_lines, wf, ensure_ascii=False, indent=4)
 
         with open(subtitle_path, "w") as wf:
             wf.write(res_str)
@@ -184,7 +199,7 @@ if __name__ == "__main__":
     audio_paths = sorted(list(videos_dir.glob("*.mp3")), key=lambda x: x.name)
     converter = AudioToSubtitleConverter()
     # for audio_path in tqdm(audio_paths):
-    for audio_path in tqdm(audio_paths[:2]):
+    for audio_path in tqdm(audio_paths[1:3]):
         converter.convert(audio_path, overwrite=True, verbose=True)
 
     # python -m converters.audio_to_subtitle
