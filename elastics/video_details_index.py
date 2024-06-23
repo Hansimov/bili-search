@@ -6,11 +6,17 @@ from tqdm import tqdm
 from configs.envs import BILI_DATA_ROOT
 from elastics.client import ElasticSearchClient
 
+# https://github.com/infinilabs/analysis-pinyin
 VIDEO_DETAILS_INDEX_SETTINGS = {
     "analysis": {
         "analyzer": {
-            "word_analyzer": {"type": "ik_max_word"},
-            "pinyin_analyzer": {"type": "custom", "tokenizer": "pinyin_tokenizer"},
+            "word_analyzer": {
+                "type": "ik_max_word",
+            },
+            "pinyin_analyzer": {
+                "type": "custom",
+                "tokenizer": "pinyin_tokenizer",
+            },
         },
         "tokenizer": {
             "pinyin_tokenizer": {
@@ -35,20 +41,34 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
             "pinyin_template": {
                 "match": "^(title|owner.name|desc|tname|dynamic|pages.part)$",
                 "match_pattern": "regex",
-                "mapping": {"type": "text", "analyzer": "pinyin_analyzer"},
+                "mapping": {
+                    "type": "text",
+                    "analyzer": "word_analyzer",
+                    "fields": {
+                        "pinyin": {
+                            "type": "text",
+                            "analyzer": "pinyin_analyzer",
+                        }
+                    },
+                },
             }
         },
         {
             "datetime_template": {
                 "match": "^(pubdate|ctime)$",
                 "match_pattern": "regex",
-                "mapping": {"type": "date", "format": "epoch_second"},
+                "mapping": {
+                    "type": "date",
+                    "format": "epoch_second",
+                },
             }
         },
         {
             "rights_template": {
                 "path_match": "rights.*",
-                "mapping": {"type": "byte"},
+                "mapping": {
+                    "type": "byte",
+                },
             }
         },
         {
@@ -56,7 +76,12 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "match_mapping_type": "string",
                 "mapping": {
                     "type": "text",
-                    "fields": {"keyword": {"type": "keyword"}},
+                    "analyzer": "word_analyzer",
+                    "fields": {
+                        "keyword": {
+                            "type": "keyword",
+                        },
+                    },
                 },
             }
         },
