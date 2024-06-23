@@ -199,7 +199,7 @@ if __name__ == "__main__":
     audio_paths = sorted(list(videos_dir.glob("*.mp3")), key=lambda x: x.name)
     converter = AudioToSubtitleConverter()
     # for audio_path in tqdm(audio_paths):
-    for audio_path in tqdm(audio_paths[1:3]):
-        converter.convert(audio_path, overwrite=True, verbose=True)
+    for audio_path in tqdm(audio_paths):
+        converter.convert(audio_path, overwrite=True, verbose=False)
 
     # python -m converters.audio_to_subtitle
