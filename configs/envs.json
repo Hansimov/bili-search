@@ -1,1 +1,8 @@
-{}
+{
+    "search_app": {
+        "app_name": "Bili Search App",
+        "host": "0.0.0.0",
+        "port": 21001,
+        "version": "0.0.1"
+    }
+}

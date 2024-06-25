@@ -5,6 +5,7 @@ from tclogger import OSEnver, logger
 configs_root = Path(__file__).parents[1] / "configs"
 envs_path = configs_root / "envs.json"
 ENVS_ENVER = OSEnver(envs_path)
+SEARCH_APP_ENVS = ENVS_ENVER["search_app"]
 
 secrets_path = configs_root / "secrets.json"
 secrets_template_path = configs_root / "secrets_template.json"
