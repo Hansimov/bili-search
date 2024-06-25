@@ -38,8 +38,32 @@ VIDEO_DETAILS_INDEX_SETTINGS = {
 VIDEO_DETAILS_INDEX_MAPPINGS = {
     "dynamic_templates": [
         {
+            "suggest_template": {
+                "path_match": "^(title|owner.name|pages.part|honor_reply.honor.desc)$",
+                "match_pattern": "regex",
+                "mapping": {
+                    "type": "text",
+                    "analyzer": "word_analyzer",
+                    "fields": {
+                        "pinyin": {
+                            "type": "text",
+                            "analyzer": "pinyin_analyzer",
+                        },
+                        "pinyin_suggest": {
+                            "type": "completion",
+                            "analyzer": "pinyin_analyzer",
+                        },
+                        "text_suggest": {
+                            "type": "completion",
+                            "analyzer": "word_analyzer",
+                        },
+                    },
+                },
+            }
+        },
+        {
             "pinyin_template": {
-                "match": "^(title|owner.name|desc|tname|dynamic|pages.part)$",
+                "path_match": "^(title|owner.name|desc|tname|dynamic|pages.part|honor_reply.honor.desc)$",
                 "match_pattern": "regex",
                 "mapping": {
                     "type": "text",
@@ -55,7 +79,7 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
         },
         {
             "datetime_template": {
-                "match": "^(pubdate|ctime)$",
+                "path_match": "^(pubdate|ctime)$",
                 "match_pattern": "regex",
                 "mapping": {
                     "type": "date",
