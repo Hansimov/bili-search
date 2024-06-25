@@ -26,6 +26,7 @@ class VideoDetailsSuggester:
             "bool_prefix",
         ] = "phrase_prefix",
         is_explain: bool = False,
+        limit: int = None,
     ) -> Union[dict, list[dict]]:
         """
         Multi-match query:
@@ -55,6 +56,9 @@ class VideoDetailsSuggester:
             },
             "explain": is_explain,
         }
+        if limit and limit > 0:
+            search_body["size"] = limit
+
         logger.note(f"> Suggest for query:", end=" ")
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
