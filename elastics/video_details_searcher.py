@@ -23,7 +23,6 @@ class VideoDetailsSearcher:
     def suggest(
         self,
         query: str,
-        parse_hits: bool = True,
         match_fields: list[str] = ["title", "title.pinyin"],
         source_fields: list[str] = ["title", "bvid"],
         match_type: Literal[
@@ -34,6 +33,7 @@ class VideoDetailsSearcher:
             "phrase_prefix",
             "bool_prefix",
         ] = "phrase_prefix",
+        parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = 10,
     ) -> Union[dict, list[dict]]:
@@ -62,7 +62,7 @@ class VideoDetailsSearcher:
         if limit and limit > 0:
             search_body["size"] = limit
 
-        logger.note(f"> Suggest for query:", end=" ")
+        logger.note(f"> Get suggestions by query:", end=" ")
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
@@ -82,8 +82,8 @@ class VideoDetailsSearcher:
         self,
         seed: Union[int, str] = None,
         seed_update_seconds: int = None,
-        parse_hits: bool = True,
         source_fields: list[str] = ["title", "bvid"],
+        parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = 1,
     ):
@@ -121,7 +121,7 @@ class VideoDetailsSearcher:
         if limit and limit > 0:
             search_body["size"] = limit
 
-        logger.note(f"> Random docs with seed:", end=" ")
+        logger.note(f"> Get random docs with seed:", end=" ")
         logger.mesg(f"[{seed}] ({now_str})")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
@@ -135,6 +135,39 @@ class VideoDetailsSearcher:
             return_res = res_dict
 
         logger.mesg(f"  * Random count: {len(hits_info)}")
+        return return_res
+
+    def latest(
+        self,
+        source_fields: list[str] = ["title", "bvid"],
+        parse_hits: bool = True,
+        is_explain: bool = False,
+        limit: int = 10,
+    ) -> Union[dict, list[dict]]:
+        search_body = {
+            "query": {"match_all": {}},
+            "sort": [{"pubdate": {"order": "desc"}}],
+            "_source": source_fields,
+            "script_fields": self.script_fields,
+            "explain": is_explain,
+        }
+
+        if limit and limit > 0:
+            search_body["size"] = limit
+
+        logger.note(f"> Get latest {limit} docs:")
+        res = self.es.client.search(index=self.index_name, body=search_body)
+        res_dict = res.body
+        hits_info = self.parse_hits(res_dict)
+
+        if parse_hits:
+            logger.success(pformat(hits_info, indent=4, sort_dicts=False))
+            return_res = hits_info
+        else:
+            logger.success(pformat(res.body, indent=4, sort_dicts=False))
+            return_res = res_dict
+
+        logger.mesg(f"  * Latest count: {len(hits_info)}")
         return return_res
 
     def parse_hits(self, res_dict: dict) -> list[dict]:
@@ -159,6 +192,7 @@ class VideoDetailsSearcher:
 if __name__ == "__main__":
     searcher = VideoDetailsSearcher()
     # searcher.suggest("teji")
-    searcher.random(seed_update_seconds=10, limit=3)
+    # searcher.random(seed_update_seconds=10, limit=3)
+    searcher.latest(limit=10)
 
     # python -m elastics.video_details_searcher
