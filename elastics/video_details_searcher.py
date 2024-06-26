@@ -170,6 +170,35 @@ class VideoDetailsSearcher:
         logger.mesg(f"  * Latest count: {len(hits_info)}")
         return return_res
 
+    def doc(
+        self,
+        bvid: str,
+        included_source_fields: list[str] = [],
+        excluded_source_fields: list[str] = ["rights", "argue_info"],
+    ) -> dict:
+        logger.note(f"> Get video details:", end=" ")
+        logger.mesg(f"[{bvid}]")
+        res = self.es.client.get(
+            index=self.index_name,
+            id=bvid,
+            source_excludes=excluded_source_fields or None,
+            source_includes=included_source_fields or None,
+        )
+        res_dict = res.body["_source"]
+
+        pudate_str = datetime.fromtimestamp(res_dict.get("pubdate", 0)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        res_dict["pubdate_str"] = pudate_str
+
+        reduced_dict = {
+            k: v
+            for k, v in res_dict.items()
+            if k in ["title", "bvid", "pubdate_str", "desc"]
+        }
+        logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
+        return res_dict
+
     def parse_hits(self, res_dict: dict) -> list[dict]:
         hits_info = []
         for hit in res_dict["hits"]["hits"]:
@@ -193,6 +222,7 @@ if __name__ == "__main__":
     searcher = VideoDetailsSearcher()
     # searcher.suggest("teji")
     # searcher.random(seed_update_seconds=10, limit=3)
-    searcher.latest(limit=10)
+    # searcher.latest(limit=10)
+    searcher.doc("BV1Qz421B7W9")
 
     # python -m elastics.video_details_searcher
