@@ -6,7 +6,7 @@ from typing import Literal, Union
 from elastics.client import ElasticSearchClient
 
 
-class VideoDetailsSuggester:
+class VideoDetailsSearcher:
     script_fields = {
         "pubdate.datetime": {
             "script": {
@@ -157,8 +157,8 @@ class VideoDetailsSuggester:
 
 
 if __name__ == "__main__":
-    suggester = VideoDetailsSuggester()
-    # suggester.suggest("teji")
-    suggester.random(seed_update_seconds=10, limit=3)
+    searcher = VideoDetailsSearcher()
+    # searcher.suggest("teji")
+    searcher.random(seed_update_seconds=10, limit=3)
 
-    # python -m elastics.video_details_suggest
+    # python -m elastics.video_details_searcher

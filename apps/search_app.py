@@ -8,7 +8,7 @@ from typing import Optional, List
 
 from apps.arg_parser import ArgParser
 from configs.envs import SEARCH_APP_ENVS
-from elastics.video_details_suggest import VideoDetailsSuggester
+from elastics.video_details_searcher import VideoDetailsSearcher
 
 
 class SearchApp:
@@ -22,7 +22,7 @@ class SearchApp:
             swagger_ui_parameters={"defaultModelsExpandDepth": -1},
         )
         # self.allow_cors()
-        self.suggester = VideoDetailsSuggester()
+        self.video_details_searcher = VideoDetailsSearcher()
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
 
@@ -41,7 +41,7 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(["title", "title.pinyin"]),
         limit: Optional[int] = Body(10),
     ):
-        suggestions = self.suggester.suggest(
+        suggestions = self.video_details_searcher.suggest(
             query, match_fields=match_fields, limit=limit
         )
         return suggestions
@@ -51,7 +51,7 @@ class SearchApp:
         seed_update_seconds: Optional[int] = Body(10),
         limit: Optional[int] = Body(10),
     ):
-        suggestions = self.suggester.random(
+        suggestions = self.video_details_searcher.random(
             seed_update_seconds=seed_update_seconds, limit=limit
         )
         return suggestions
