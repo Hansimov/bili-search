@@ -39,18 +39,33 @@ class SearchApp:
         self,
         query: str = Body(...),
         match_fields: Optional[list[str]] = Body(["title", "title.pinyin"]),
-        limit: Optional[int] = Body(-1),
+        limit: Optional[int] = Body(10),
     ):
         suggestions = self.suggester.suggest(
             query, match_fields=match_fields, limit=limit
         )
         return suggestions
 
+    def random(
+        self,
+        seed_update_seconds: Optional[int] = Body(10),
+        limit: Optional[int] = Body(10),
+    ):
+        suggestions = self.suggester.random(
+            seed_update_seconds=seed_update_seconds, limit=limit
+        )
+        return suggestions
+
     def setup_routes(self):
         self.app.post(
             "/suggest",
-            summary="Get suggestions",
+            summary="Get suggestions by query",
         )(self.suggest)
+
+        self.app.post(
+            "/random",
+            summary="Get random suggestions",
+        )(self.random)
 
 
 if __name__ == "__main__":
