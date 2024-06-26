@@ -56,6 +56,13 @@ class SearchApp:
         )
         return suggestions
 
+    def latest(
+        self,
+        limit: int = Body(10),
+    ):
+        suggestions = self.video_details_searcher.latest(limit=limit)
+        return suggestions
+
     def setup_routes(self):
         self.app.post(
             "/suggest",
@@ -66,6 +73,11 @@ class SearchApp:
             "/random",
             summary="Get random suggestions",
         )(self.random)
+
+        self.app.post(
+            "/latest",
+            summary="Get latest suggestions",
+        )(self.latest)
 
 
 if __name__ == "__main__":
