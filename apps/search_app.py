@@ -63,6 +63,19 @@ class SearchApp:
         suggestions = self.video_details_searcher.latest(limit=limit)
         return suggestions
 
+    def doc(
+        self,
+        bvid: str = Body(...),
+        included_source_fields: Optional[List[str]] = Body([]),
+        excluded_source_fields: Optional[List[str]] = Body(["rights", "argue_info"]),
+    ):
+        doc = self.video_details_searcher.doc(
+            bvid,
+            included_source_fields=included_source_fields,
+            excluded_source_fields=excluded_source_fields,
+        )
+        return doc
+
     def setup_routes(self):
         self.app.post(
             "/suggest",
@@ -78,6 +91,11 @@ class SearchApp:
             "/latest",
             summary="Get latest suggestions",
         )(self.latest)
+
+        self.app.post(
+            "/doc",
+            summary="Get video details by bvid",
+        )(self.doc)
 
 
 if __name__ == "__main__":
