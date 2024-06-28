@@ -1,3 +1,4 @@
+pypinyin
 tclogger
 tqdm
 zhconv
