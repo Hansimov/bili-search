@@ -7,13 +7,15 @@ from elastics.client import ElasticSearchClient
 
 
 class VideoDetailsSearcher:
-    script_fields = {
+    SCRIPT_FIELDS = {
         "pubdate.datetime": {
             "script": {
                 "source": "doc['pubdate'].value.format(DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss').withZone(ZoneId.of('UTC+8')))"
             }
         }
     }
+
+    SOURCE_FIELDS = ["bvid", "title", "pubdate", "owner", "pic"]
 
     def __init__(self, index_name: str = "bili_video_details"):
         self.index_name = index_name
@@ -24,7 +26,7 @@ class VideoDetailsSearcher:
         self,
         query: str,
         match_fields: list[str] = ["title", "title.pinyin"],
-        source_fields: list[str] = ["title", "bvid"],
+        source_fields: list[str] = SOURCE_FIELDS,
         match_type: Literal[
             "best_fields",
             "most_fields",
@@ -56,7 +58,7 @@ class VideoDetailsSearcher:
                 }
             },
             "_source": source_fields,
-            "script_fields": self.script_fields,
+            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
         if limit and limit > 0:
@@ -82,7 +84,7 @@ class VideoDetailsSearcher:
         self,
         seed: Union[int, str] = None,
         seed_update_seconds: int = None,
-        source_fields: list[str] = ["title", "bvid"],
+        source_fields: list[str] = SOURCE_FIELDS,
         parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = 1,
@@ -114,7 +116,7 @@ class VideoDetailsSearcher:
                 }
             },
             "_source": source_fields,
-            "script_fields": self.script_fields,
+            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
 
@@ -139,7 +141,7 @@ class VideoDetailsSearcher:
 
     def latest(
         self,
-        source_fields: list[str] = ["title", "bvid"],
+        source_fields: list[str] = SOURCE_FIELDS,
         parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = 10,
@@ -148,7 +150,7 @@ class VideoDetailsSearcher:
             "query": {"match_all": {}},
             "sort": [{"pubdate": {"order": "desc"}}],
             "_source": source_fields,
-            "script_fields": self.script_fields,
+            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
 
@@ -203,16 +205,13 @@ class VideoDetailsSearcher:
         hits_info = []
         for hit in res_dict["hits"]["hits"]:
             hit_source = hit["_source"]
-            bvid = hit_source["bvid"]
-            title = hit_source["title"]
             score = hit["_score"]
-            pubdate = hit["fields"]["pubdate.datetime"][0]
+            pubdate_str = hit["fields"]["pubdate.datetime"][0]
 
             hit_info = {
-                "bvid": bvid,
-                "title": title,
+                **hit_source,
                 "score": score,
-                "pubdate": pubdate,
+                "pubdate_str": pubdate_str,
             }
             hits_info.append(hit_info)
         return hits_info
