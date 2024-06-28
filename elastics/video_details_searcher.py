@@ -4,6 +4,7 @@ from tclogger import logger
 from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
+from elastics.highlighter import PinyinHighlighter
 
 
 class VideoDetailsSearcher:
@@ -21,6 +22,19 @@ class VideoDetailsSearcher:
         self.index_name = index_name
         self.es = ElasticSearchClient()
         self.es.connect()
+
+    def get_highlight_settings(self, match_fields: list[str], tag: str = "hit"):
+        highlight_fields = [
+            field for field in match_fields if not field.endswith(".pinyin")
+        ]
+        highlight_fields_dict = {field: {} for field in highlight_fields}
+
+        highlight_settings = {
+            "pre_tags": [f"<{tag}>"],
+            "post_tags": [f"</{tag}>"],
+            "fields": highlight_fields_dict,
+        }
+        return highlight_settings
 
     def suggest(
         self,
@@ -60,6 +74,7 @@ class VideoDetailsSearcher:
             "_source": source_fields,
             "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
+            "highlight": self.get_highlight_settings(match_fields),
         }
         if limit and limit > 0:
             search_body["size"] = limit
@@ -68,7 +83,7 @@ class VideoDetailsSearcher:
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits(res_dict)
+        hits_info = self.parse_hits(query, match_fields, res_dict)
 
         if parse_hits:
             logger.success(pformat(hits_info, indent=4, sort_dicts=False))
@@ -127,7 +142,7 @@ class VideoDetailsSearcher:
         logger.mesg(f"[{seed}] ({now_str})")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits(res_dict)
+        hits_info = self.parse_hits("", [], res_dict)
 
         if parse_hits:
             logger.success(pformat(hits_info, indent=4, sort_dicts=False))
@@ -160,7 +175,7 @@ class VideoDetailsSearcher:
         logger.note(f"> Get latest {limit} docs:")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits(res_dict)
+        hits_info = self.parse_hits("", [], res_dict)
 
         if parse_hits:
             logger.success(pformat(hits_info, indent=4, sort_dicts=False))
@@ -201,17 +216,39 @@ class VideoDetailsSearcher:
         logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
         return res_dict
 
-    def parse_hits(self, res_dict: dict) -> list[dict]:
+    def get_pinyin_highlights(
+        self, query: str, match_fields: list[str], hit_source: dict
+    ) -> dict:
+        pinyin_highlights = {}
+        if query:
+            pinyin_highlighter = PinyinHighlighter()
+            for field in match_fields:
+                if field.endswith(".pinyin"):
+                    highlighted_text = pinyin_highlighter.highlight(
+                        query, hit_source[field[: -len(".pinyin")]], tag="hit"
+                    )
+                    pinyin_highlights[field] = [highlighted_text]
+        return pinyin_highlights
+
+    def parse_hits(
+        self, query: str, match_fields: list[str], res_dict: dict
+    ) -> list[dict]:
+
         hits_info = []
         for hit in res_dict["hits"]["hits"]:
             hit_source = hit["_source"]
             score = hit["_score"]
             pubdate_str = hit["fields"]["pubdate.datetime"][0]
-
+            common_highlights = hit.get("highlight", {})
+            pinyin_highlights = self.get_pinyin_highlights(
+                query, match_fields, hit_source
+            )
             hit_info = {
                 **hit_source,
                 "score": score,
                 "pubdate_str": pubdate_str,
+                "common_highlights": common_highlights,
+                "pinyin_highlights": pinyin_highlights,
             }
             hits_info.append(hit_info)
         return hits_info
