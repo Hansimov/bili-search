@@ -227,7 +227,8 @@ class VideoDetailsSearcher:
                     highlighted_text = pinyin_highlighter.highlight(
                         query, hit_source[field[: -len(".pinyin")]], tag="hit"
                     )
-                    pinyin_highlights[field] = [highlighted_text]
+                    if highlighted_text:
+                        pinyin_highlights[field] = [highlighted_text]
         return pinyin_highlights
 
     def parse_hits(

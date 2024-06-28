@@ -50,6 +50,7 @@ class PinyinHighlighter:
                 if (
                     start_offset >= matched_start_index
                     and start_offset <= matched_end_index - 1
+                    and text_pinyins[i]
                 ):
                     matched_indices.append(i)
 
@@ -102,7 +103,7 @@ class PinyinHighlighter:
 
 if __name__ == "__main__":
     highlighter = PinyinHighlighter()
-    query = ""
+    query = "vlog"
     text = "【Vlog】在阿里巴巴达摩院工作是什么样的体验？"
     text_highlighted = highlighter.highlight(query, text, verbose=True)
     logger.mesg(f"Highlighted text:", end=" ")
