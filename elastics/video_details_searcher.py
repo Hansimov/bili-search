@@ -5,6 +5,7 @@ from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
 from elastics.highlighter import PinyinHighlighter
+from elastics.structure import get_es_source_val
 
 
 class VideoDetailsSearcher:
@@ -153,7 +154,7 @@ class VideoDetailsSearcher:
         logger.mesg(f"[{seed}] ({now_str})")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits("", [], res_dict)
+        hits_info = self.parse_hits("", [], res_dict, request_type="random")
 
         if parse_hits:
             logger.success(pformat(hits_info, indent=4, sort_dicts=False))
@@ -186,7 +187,7 @@ class VideoDetailsSearcher:
         logger.note(f"> Get latest {limit} docs:")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits("", [], res_dict)
+        hits_info = self.parse_hits("", [], res_dict, request_type="latest")
 
         if parse_hits:
             logger.success(pformat(hits_info, indent=4, sort_dicts=False))
@@ -228,7 +229,7 @@ class VideoDetailsSearcher:
         return res_dict
 
     def get_pinyin_highlights(
-        self, query: str, match_fields: list[str], hit_source: dict
+        self, query: str, match_fields: list[str], _source: dict
     ) -> dict:
         pinyin_highlights = {}
         if query:
@@ -236,33 +237,43 @@ class VideoDetailsSearcher:
             for field in match_fields:
                 if field.endswith(".pinyin"):
                     highlighted_text = pinyin_highlighter.highlight(
-                        query, hit_source[field[: -len(".pinyin")]], tag="hit"
+                        query,
+                        get_es_source_val(_source, field[: -len(".pinyin")]),
+                        tag="hit",
                     )
                     if highlighted_text:
                         pinyin_highlights[field] = [highlighted_text]
         return pinyin_highlights
 
     def parse_hits(
-        self, query: str, match_fields: list[str], res_dict: dict
+        self,
+        query: str,
+        match_fields: list[str],
+        res_dict: dict,
+        request_type: Literal[
+            "suggest", "search", "random", "latest", "doc"
+        ] = "search",
     ) -> list[dict]:
 
-        hits_info = []
+        hits_info = {
+            "count": res_dict["hits"]["total"]["value"],
+            "hits": [],
+            "request_type": request_type,
+        }
         for hit in res_dict["hits"]["hits"]:
-            hit_source = hit["_source"]
+            _source = hit["_source"]
             score = hit["_score"]
             pubdate_str = hit["fields"]["pubdate.datetime"][0]
             common_highlights = hit.get("highlight", {})
-            pinyin_highlights = self.get_pinyin_highlights(
-                query, match_fields, hit_source
-            )
+            pinyin_highlights = self.get_pinyin_highlights(query, match_fields, _source)
             hit_info = {
-                **hit_source,
+                **_source,
                 "score": score,
                 "pubdate_str": pubdate_str,
                 "common_highlights": common_highlights,
                 "pinyin_highlights": pinyin_highlights,
             }
-            hits_info.append(hit_info)
+            hits_info["hits"].append(hit_info)
         return hits_info
 
 
