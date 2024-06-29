@@ -38,8 +38,23 @@ class SearchApp:
     def suggest(
         self,
         query: str = Body(...),
-        match_fields: Optional[list[str]] = Body(["title", "title.pinyin"]),
-        limit: Optional[int] = Body(10),
+        match_fields: Optional[list[str]] = Body(
+            VideoDetailsSearcher.SUGGEST_MATCH_FIELDS
+        ),
+        limit: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+    ):
+        suggestions = self.video_details_searcher.suggest(
+            query, match_fields=match_fields, limit=limit
+        )
+        return suggestions
+
+    def search(
+        self,
+        query: str = Body(...),
+        match_fields: Optional[list[str]] = Body(
+            VideoDetailsSearcher.SEARCH_MATCH_FIELDS
+        ),
+        limit: Optional[int] = Body(VideoDetailsSearcher.SEARCH_LIMIT),
     ):
         suggestions = self.video_details_searcher.suggest(
             query, match_fields=match_fields, limit=limit
@@ -48,8 +63,8 @@ class SearchApp:
 
     def random(
         self,
-        seed_update_seconds: Optional[int] = Body(10),
-        limit: Optional[int] = Body(10),
+        seed_update_seconds: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        limit: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
     ):
         suggestions = self.video_details_searcher.random(
             seed_update_seconds=seed_update_seconds, limit=limit
@@ -58,7 +73,7 @@ class SearchApp:
 
     def latest(
         self,
-        limit: int = Body(10),
+        limit: int = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
     ):
         suggestions = self.video_details_searcher.latest(limit=limit)
         return suggestions
@@ -67,7 +82,9 @@ class SearchApp:
         self,
         bvid: str = Body(...),
         included_source_fields: Optional[List[str]] = Body([]),
-        excluded_source_fields: Optional[List[str]] = Body(["rights", "argue_info"]),
+        excluded_source_fields: Optional[List[str]] = Body(
+            VideoDetailsSearcher.DOC_EXCLUDED_SOURCE_FIELDS
+        ),
     ):
         doc = self.video_details_searcher.doc(
             bvid,
@@ -81,6 +98,11 @@ class SearchApp:
             "/suggest",
             summary="Get suggestions by query",
         )(self.suggest)
+
+        self.app.post(
+            "/search",
+            summary="Get search results by query",
+        )(self.search)
 
         self.app.post(
             "/random",

@@ -16,6 +16,7 @@ class VideoDetailsSearcher:
             }
         }
     }
+
     SOURCE_FIELDS = ["title", "bvid", "owner", "pic", "duration", "desc", "stat"]
     SUGGEST_MATCH_FIELDS = ["title", "title.pinyin"]
     SEARCH_MATCH_FIELDS = [
@@ -26,6 +27,8 @@ class VideoDetailsSearcher:
         "desc",
         "desc.pinyin",
     ]
+    DOC_EXCLUDED_SOURCE_FIELDS = ["rights", "argue_info"]
+
     MATCH_TYPE = Literal[
         "best_fields",
         "most_fields",
@@ -34,6 +37,7 @@ class VideoDetailsSearcher:
         "phrase_prefix",
         "bool_prefix",
     ]
+
     SUGGEST_LIMIT = 10
     SEARCH_LIMIT = 50
 
@@ -253,7 +257,7 @@ class VideoDetailsSearcher:
         self,
         bvid: str,
         included_source_fields: list[str] = [],
-        excluded_source_fields: list[str] = ["rights", "argue_info"],
+        excluded_source_fields: list[str] = DOC_EXCLUDED_SOURCE_FIELDS,
     ) -> dict:
         logger.note(f"> Get video details:", end=" ")
         logger.mesg(f"[{bvid}]")
