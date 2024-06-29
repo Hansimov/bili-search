@@ -95,7 +95,57 @@ class VideoDetailsSearcher:
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits(query, match_fields, res_dict)
+        hits_info = self.parse_hits(
+            query, match_fields, res_dict, request_type="suggest"
+        )
+
+        if parse_hits:
+            logger.success(pformat(hits_info, indent=4, sort_dicts=False))
+            return_res = hits_info
+        else:
+            logger.success(pformat(res.body, indent=4, sort_dicts=False))
+            return_res = res_dict
+
+        logger.mesg(f"  * Hits count: {len(hits_info)}")
+        return return_res
+
+    def search(
+        self,
+        query: str,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        source_fields: list[str] = SOURCE_FIELDS,
+        match_type: MATCH_TYPE = "cross_fields",
+        parse_hits: bool = True,
+        is_explain: bool = False,
+        limit: int = 50,
+    ) -> Union[dict, list[dict]]:
+        """The main difference between `search` and `suggest` is that,
+        `search` has are more fuzzy (loose) and compositive match rules than `suggest`,
+        and has more match fields.
+        """
+        search_body = {
+            "query": {
+                "multi_match": {
+                    "query": query,
+                    "type": match_type,
+                    "fields": match_fields,
+                }
+            },
+            "_source": source_fields,
+            "script_fields": self.SCRIPT_FIELDS,
+            "explain": is_explain,
+            "highlight": self.get_highlight_settings(match_fields),
+        }
+        if limit and limit > 0:
+            search_body["size"] = limit
+
+        logger.note(f"> Get search results by query:", end=" ")
+        logger.mesg(f"[{query}]")
+        res = self.es.client.search(index=self.index_name, body=search_body)
+        res_dict = res.body
+        hits_info = self.parse_hits(
+            query, match_fields, res_dict, request_type="search"
+        )
 
         if parse_hits:
             logger.success(pformat(hits_info, indent=4, sort_dicts=False))
