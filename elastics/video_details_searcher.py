@@ -15,8 +15,26 @@ class VideoDetailsSearcher:
             }
         }
     }
-
-    SOURCE_FIELDS = ["bvid", "title", "pubdate", "owner", "pic"]
+    SOURCE_FIELDS = ["title", "bvid", "owner", "pic", "duration", "desc", "stat"]
+    SUGGEST_MATCH_FIELDS = ["title", "title.pinyin"]
+    SEARCH_MATCH_FIELDS = [
+        "title",
+        "title.pinyin",
+        "owner.name",
+        "owner.name.pinyin",
+        "desc",
+        "desc.pinyin",
+    ]
+    MATCH_TYPE = Literal[
+        "best_fields",
+        "most_fields",
+        "cross_fields",
+        "phrase",
+        "phrase_prefix",
+        "bool_prefix",
+    ]
+    SUGGEST_LIMIT = 10
+    SEARCH_LIMIT = 50
 
     def __init__(self, index_name: str = "bili_video_details"):
         self.index_name = index_name
@@ -39,16 +57,9 @@ class VideoDetailsSearcher:
     def suggest(
         self,
         query: str,
-        match_fields: list[str] = ["title", "title.pinyin"],
+        match_fields: list[str] = SUGGEST_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
-        match_type: Literal[
-            "best_fields",
-            "most_fields",
-            "cross_fields",
-            "phrase",
-            "phrase_prefix",
-            "bool_prefix",
-        ] = "phrase_prefix",
+        match_type: MATCH_TYPE = "phrase_prefix",
         parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = 10,
