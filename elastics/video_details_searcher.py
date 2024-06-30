@@ -69,7 +69,7 @@ class VideoDetailsSearcher:
         query: str,
         match_fields: list[str] = SUGGEST_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
-        match_type: MATCH_TYPE = "phrase_prefix",
+        match_type: MATCH_TYPE = SUGGEST_MATCH_TYPE,
         parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = SUGGEST_LIMIT,
@@ -113,7 +113,7 @@ class VideoDetailsSearcher:
             request_type="suggest",
             is_parse_hits=parse_hits,
             drop_no_highlights=True,
-            limit=limit
+            limit=limit,
         )
         logger.exit_quiet(not verbose)
         return return_res
@@ -132,6 +132,10 @@ class VideoDetailsSearcher:
         """The main difference between `search` and `suggest` is that,
         `search` has are more fuzzy (loose) and compositive match rules than `suggest`,
         and has more match fields.
+
+        I have compared the results of different match types, and conclude that:
+        - `phrase_prefix`: for precise and complete match
+        - `most_fields`: for loose and composite match
         """
         logger.enter_quiet(not verbose)
         search_body = {
@@ -307,11 +311,7 @@ class VideoDetailsSearcher:
     ) -> list[dict]:
         if not is_parse_hits:
             return res_dict
-        hits_info = {
-            "total_hits": res_dict["hits"]["total"]["value"],
-            "hits": [],
-            "request_type": request_type,
-        }
+        hits = []
         for hit in res_dict["hits"]["hits"]:
             _source = hit["_source"]
             score = hit["_score"]
@@ -331,10 +331,15 @@ class VideoDetailsSearcher:
                 "common_highlights": common_highlights,
                 "pinyin_highlights": pinyin_highlights,
             }
-            hits_info["hits"].append(hit_info)
+            hits.append(hit_info)
         if limit > 0:
-            hits_info["hits"] = hits_info["hits"][:limit]
-        hits_info["return_hits"] = len(hits_info["hits"])
+            hits = hits[:limit]
+        hits_info = {
+            "request_type": request_type,
+            "total_hits": res_dict["hits"]["total"]["value"],
+            "return_hits": len(hits),
+            "hits": hits,
+        }
         logger.success(pformat(hits_info, indent=4, sort_dicts=False))
         logger.mesg(f"  * {request_type} hits count: {len(hits_info['hits'])}")
         return hits_info
