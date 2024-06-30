@@ -41,10 +41,16 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(
             VideoDetailsSearcher.SUGGEST_MATCH_FIELDS
         ),
+        match_type: Optional[str] = Body(VideoDetailsSearcher.SUGGEST_MATCH_TYPE),
         limit: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        verbose: Optional[bool] = Body(False),
     ):
         suggestions = self.video_details_searcher.suggest(
-            query, match_fields=match_fields, limit=limit
+            query,
+            match_fields=match_fields,
+            match_type=match_type,
+            limit=limit,
+            verbose=verbose,
         )
         return suggestions
 
@@ -54,10 +60,16 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(
             VideoDetailsSearcher.SEARCH_MATCH_FIELDS
         ),
+        match_type: Optional[str] = Body(VideoDetailsSearcher.SEARCH_MATCH_TYPE),
         limit: Optional[int] = Body(VideoDetailsSearcher.SEARCH_LIMIT),
+        verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.suggest(
-            query, match_fields=match_fields, limit=limit
+        suggestions = self.video_details_searcher.search(
+            query,
+            match_fields=match_fields,
+            match_type=match_type,
+            limit=limit,
+            verbose=verbose,
         )
         return suggestions
 
@@ -65,17 +77,19 @@ class SearchApp:
         self,
         seed_update_seconds: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
         limit: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        verbose: Optional[bool] = Body(False),
     ):
         suggestions = self.video_details_searcher.random(
-            seed_update_seconds=seed_update_seconds, limit=limit
+            seed_update_seconds=seed_update_seconds, limit=limit, verbose=verbose
         )
         return suggestions
 
     def latest(
         self,
         limit: int = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.latest(limit=limit)
+        suggestions = self.video_details_searcher.latest(limit=limit, verbose=verbose)
         return suggestions
 
     def doc(
@@ -85,11 +99,13 @@ class SearchApp:
         excluded_source_fields: Optional[List[str]] = Body(
             VideoDetailsSearcher.DOC_EXCLUDED_SOURCE_FIELDS
         ),
+        verbose: Optional[bool] = Body(False),
     ):
         doc = self.video_details_searcher.doc(
             bvid,
             included_source_fields=included_source_fields,
             excluded_source_fields=excluded_source_fields,
+            verbose=verbose,
         )
         return doc
 
