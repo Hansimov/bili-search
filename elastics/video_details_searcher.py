@@ -37,6 +37,8 @@ class VideoDetailsSearcher:
         "phrase_prefix",
         "bool_prefix",
     ]
+    SUGGEST_MATCH_TYPE = "phrase_prefix"
+    SEARCH_MATCH_TYPE = "most_fields"
 
     SUGGEST_LIMIT = 10
     SEARCH_LIMIT = 50
@@ -67,7 +69,8 @@ class VideoDetailsSearcher:
         match_type: MATCH_TYPE = "phrase_prefix",
         parse_hits: bool = True,
         is_explain: bool = False,
-        limit: int = 10,
+        limit: int = SUGGEST_LIMIT,
+        verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         """
         Multi-match query:
@@ -79,6 +82,7 @@ class VideoDetailsSearcher:
 
         And the conclusion is that `multi_search` is better and more flexible.
         """
+        logger.enter_quiet(not verbose)
         search_body = {
             "query": {
                 "multi_match": {
@@ -99,18 +103,15 @@ class VideoDetailsSearcher:
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits(
-            query, match_fields, res_dict, request_type="suggest"
+        return_res = self.parse_hits(
+            query,
+            match_fields,
+            res_dict,
+            request_type="suggest",
+            is_parse_hits=parse_hits,
+            drop_no_highlights=True,
         )
-
-        if parse_hits:
-            logger.success(pformat(hits_info, indent=4, sort_dicts=False))
-            return_res = hits_info
-        else:
-            logger.success(pformat(res.body, indent=4, sort_dicts=False))
-            return_res = res_dict
-
-        logger.mesg(f"  * Hits count: {len(hits_info)}")
+        logger.exit_quiet(not verbose)
         return return_res
 
     def search(
@@ -118,15 +119,17 @@ class VideoDetailsSearcher:
         query: str,
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
-        match_type: MATCH_TYPE = "cross_fields",
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         parse_hits: bool = True,
         is_explain: bool = False,
-        limit: int = 50,
+        limit: int = SEARCH_LIMIT,
+        verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         """The main difference between `search` and `suggest` is that,
         `search` has are more fuzzy (loose) and compositive match rules than `suggest`,
         and has more match fields.
         """
+        logger.enter_quiet(not verbose)
         search_body = {
             "query": {
                 "multi_match": {
@@ -142,23 +145,19 @@ class VideoDetailsSearcher:
         }
         if limit and limit > 0:
             search_body["size"] = limit
-
         logger.note(f"> Get search results by query:", end=" ")
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits(
-            query, match_fields, res_dict, request_type="search"
+        return_res = self.parse_hits(
+            query,
+            match_fields,
+            res_dict,
+            request_type="search",
+            is_parse_hits=parse_hits,
+            drop_no_highlights=True,
         )
-
-        if parse_hits:
-            logger.success(pformat(hits_info, indent=4, sort_dicts=False))
-            return_res = hits_info
-        else:
-            logger.success(pformat(res.body, indent=4, sort_dicts=False))
-            return_res = res_dict
-
-        logger.mesg(f"  * Hits count: {len(hits_info)}")
+        logger.exit_quiet(not verbose)
         return return_res
 
     def random(
@@ -169,7 +168,9 @@ class VideoDetailsSearcher:
         parse_hits: bool = True,
         is_explain: bool = False,
         limit: int = 1,
+        verbose: bool = False,
     ):
+        logger.enter_quiet(not verbose)
         now = datetime.now()
         ts = round(now.timestamp())
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -181,7 +182,6 @@ class VideoDetailsSearcher:
                 seed = ts // seed_update_seconds
         else:
             seed = int(seed)
-
         search_body = {
             "query": {
                 "function_score": {
@@ -200,24 +200,16 @@ class VideoDetailsSearcher:
             "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
-
         if limit and limit > 0:
             search_body["size"] = limit
-
         logger.note(f"> Get random docs with seed:", end=" ")
         logger.mesg(f"[{seed}] ({now_str})")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits("", [], res_dict, request_type="random")
-
-        if parse_hits:
-            logger.success(pformat(hits_info, indent=4, sort_dicts=False))
-            return_res = hits_info
-        else:
-            logger.success(pformat(res.body, indent=4, sort_dicts=False))
-            return_res = res_dict
-
-        logger.mesg(f"  * Random count: {len(hits_info)}")
+        return_res = self.parse_hits(
+            "", [], res_dict, request_type="random", is_parse_hits=parse_hits
+        )
+        logger.enter_quiet(not verbose)
         return return_res
 
     def latest(
@@ -225,8 +217,10 @@ class VideoDetailsSearcher:
         source_fields: list[str] = SOURCE_FIELDS,
         parse_hits: bool = True,
         is_explain: bool = False,
-        limit: int = 10,
+        limit: int = SUGGEST_LIMIT,
+        verbose: bool = False,
     ) -> Union[dict, list[dict]]:
+        logger.enter_quiet(not verbose)
         search_body = {
             "query": {"match_all": {}},
             "sort": [{"pubdate": {"order": "desc"}}],
@@ -234,23 +228,15 @@ class VideoDetailsSearcher:
             "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
-
         if limit and limit > 0:
             search_body["size"] = limit
-
         logger.note(f"> Get latest {limit} docs:")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        hits_info = self.parse_hits("", [], res_dict, request_type="latest")
-
-        if parse_hits:
-            logger.success(pformat(hits_info, indent=4, sort_dicts=False))
-            return_res = hits_info
-        else:
-            logger.success(pformat(res.body, indent=4, sort_dicts=False))
-            return_res = res_dict
-
-        logger.mesg(f"  * Latest count: {len(hits_info)}")
+        return_res = self.parse_hits(
+            "", [], res_dict, request_type="latest", is_parse_hits=parse_hits
+        )
+        logger.exit_quiet(not verbose)
         return return_res
 
     def doc(
@@ -258,7 +244,9 @@ class VideoDetailsSearcher:
         bvid: str,
         included_source_fields: list[str] = [],
         excluded_source_fields: list[str] = DOC_EXCLUDED_SOURCE_FIELDS,
+        verbose: bool = False,
     ) -> dict:
+        logger.enter_quiet(not verbose)
         logger.note(f"> Get video details:", end=" ")
         logger.mesg(f"[{bvid}]")
         res = self.es.client.get(
@@ -280,6 +268,7 @@ class VideoDetailsSearcher:
             if k in ["title", "bvid", "pubdate_str", "desc"]
         }
         logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
+        logger.exit_quiet(not verbose)
         return res_dict
 
     def get_pinyin_highlights(
@@ -307,8 +296,10 @@ class VideoDetailsSearcher:
         request_type: Literal[
             "suggest", "search", "random", "latest", "doc"
         ] = "search",
+        is_parse_hits: bool = True,
     ) -> list[dict]:
-
+        if not is_parse_hits:
+            return res_dict
         hits_info = {
             "count": res_dict["hits"]["total"]["value"],
             "hits": [],
@@ -328,6 +319,8 @@ class VideoDetailsSearcher:
                 "pinyin_highlights": pinyin_highlights,
             }
             hits_info["hits"].append(hit_info)
+        logger.success(pformat(hits_info, indent=4, sort_dicts=False))
+        logger.mesg(f"  * {request_type} hits count: {len(hits_info['hits'])}")
         return hits_info
 
 
