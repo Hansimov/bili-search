@@ -20,6 +20,10 @@ class PinyinHighlighter:
         return "".join(self.text_to_pinyins(text))
 
     def calc_pinyin_offsets(self, pinyins: list[str]):
+        # Example:
+        #   pinyins = ["zai", "a", "li", "ba", "ba"]
+        # then pinyin_offsets are:
+        #   [(0,3), (3,4), (4,6), (6,8), (8,10)]
         pinyin_offsets = []
         start_offset = 0
         end_offset = 0
@@ -35,15 +39,21 @@ class PinyinHighlighter:
         # Example:
         #   query_pinyin = "ali"
         #   text_pinyins = ["zai", "a", "li", "ba", "ba"]
-        # then the matched indices are [1, 2]
+        # then matched indices are: [1, 2]
         matched_indices = []
         text_pinyin_offsets = self.calc_pinyin_offsets(text_pinyins)
+        text_pinyin_start_offsets = [
+            start_offset for (start_offset, end_offset) in text_pinyin_offsets
+        ]
 
         text_pinyin_str = "".join(text_pinyins)
         matched_start_index = text_pinyin_str.find(query_pinyin)
         matched_end_index = matched_start_index + len(query_pinyin)
 
-        if matched_start_index >= 0:
+        if (
+            matched_start_index >= 0
+            and matched_start_index in text_pinyin_start_offsets
+        ):
             logger.mesg(f"Matched index: {matched_start_index}, {matched_end_index}")
 
             for i, (start_offset, end_offset) in enumerate(text_pinyin_offsets):
@@ -105,6 +115,8 @@ if __name__ == "__main__":
     highlighter = PinyinHighlighter()
     query = "vlog"
     text = "【Vlog】在阿里巴巴达摩院工作是什么样的体验？"
+    # query = "ali"
+    # text = "给百大UP主加上特效，这可太炸裂了！【百大UP主颁奖】"
     text_highlighted = highlighter.highlight(query, text, verbose=True)
     logger.mesg(f"Highlighted text:", end=" ")
     logger.success(text_highlighted)
