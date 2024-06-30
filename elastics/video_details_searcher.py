@@ -42,6 +42,9 @@ class VideoDetailsSearcher:
 
     SUGGEST_LIMIT = 10
     SEARCH_LIMIT = 50
+    # This constant is to contain more hits for redundance,
+    # as drop_no_highlights would drop some hits
+    NO_HIGHLIGHT_REDUNDANCE_RATIO = 2
 
     def __init__(self, index_name: str = "bili_video_details"):
         self.index_name = index_name
@@ -97,7 +100,7 @@ class VideoDetailsSearcher:
             "highlight": self.get_highlight_settings(match_fields),
         }
         if limit and limit > 0:
-            search_body["size"] = limit
+            search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
 
         logger.note(f"> Get suggestions by query:", end=" ")
         logger.mesg(f"[{query}]")
@@ -110,6 +113,7 @@ class VideoDetailsSearcher:
             request_type="suggest",
             is_parse_hits=parse_hits,
             drop_no_highlights=True,
+            limit=limit
         )
         logger.exit_quiet(not verbose)
         return return_res
@@ -144,7 +148,7 @@ class VideoDetailsSearcher:
             "highlight": self.get_highlight_settings(match_fields),
         }
         if limit and limit > 0:
-            search_body["size"] = limit
+            search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
         logger.mesg(f"[{query}]")
         res = self.es.client.search(index=self.index_name, body=search_body)
@@ -156,6 +160,7 @@ class VideoDetailsSearcher:
             request_type="search",
             is_parse_hits=parse_hits,
             drop_no_highlights=True,
+            limit=limit,
         )
         logger.exit_quiet(not verbose)
         return return_res
@@ -297,11 +302,13 @@ class VideoDetailsSearcher:
             "suggest", "search", "random", "latest", "doc"
         ] = "search",
         is_parse_hits: bool = True,
+        drop_no_highlights: bool = False,
+        limit: int = -1,
     ) -> list[dict]:
         if not is_parse_hits:
             return res_dict
         hits_info = {
-            "count": res_dict["hits"]["total"]["value"],
+            "total_hits": res_dict["hits"]["total"]["value"],
             "hits": [],
             "request_type": request_type,
         }
@@ -311,6 +318,12 @@ class VideoDetailsSearcher:
             pubdate_str = hit["fields"]["pubdate.datetime"][0]
             common_highlights = hit.get("highlight", {})
             pinyin_highlights = self.get_pinyin_highlights(query, match_fields, _source)
+            if (
+                drop_no_highlights
+                and (not common_highlights)
+                and (not pinyin_highlights)
+            ):
+                continue
             hit_info = {
                 **_source,
                 "score": score,
@@ -319,6 +332,9 @@ class VideoDetailsSearcher:
                 "pinyin_highlights": pinyin_highlights,
             }
             hits_info["hits"].append(hit_info)
+        if limit > 0:
+            hits_info["hits"] = hits_info["hits"][:limit]
+        hits_info["return_hits"] = len(hits_info["hits"])
         logger.success(pformat(hits_info, indent=4, sort_dicts=False))
         logger.mesg(f"  * {request_type} hits count: {len(hits_info['hits'])}")
         return hits_info
