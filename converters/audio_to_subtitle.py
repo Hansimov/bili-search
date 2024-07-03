@@ -18,13 +18,13 @@ class WhisperX:
         self,
         model_name: Literal[
             "tiny", "base", "small", "medium", "large", "large-v2", "large-v3"
-        ] = "large-v3",
+        ] = "medium",
         language: Literal["en", "zh"] = "zh",
         device: Literal["cpu", "cuda"] = "cuda",
         device_index: int = 1,
         compute_type: Literal["float16", "int8"] = "float16",
         initial_prompt: str = None,
-        chunk_size: float = 10,
+        chunk_size: float = 8,
     ):
         self.transcribe_model = None
         self.model_name = model_name
@@ -38,12 +38,15 @@ class WhisperX:
     def load_model(self):
         # Simplified Chinese rather than traditional? · openai/whisper · Discussion #277
         #   * https://github.com/openai/whisper/discussions/277
-        if self.language in ["zh"]:
-            self.initial_prompt = "以下是中文普通话句子。"
-            self.zh_texts_to_filter = ["中文普通话", "中文字幕", "中文句子"]
 
+        # DecodingOptions
+        # - https://github.com/openai/whisper/blob/main/whisper/decoding.py#L81
+        # prompt vs prefix in DecodingOptions #117
+        # - https://github.com/openai/whisper/discussions/117#discussioncomment-3727051
         self.asr_options = {
             "initial_prompt": self.initial_prompt,
+            "length_penalty": 1,
+            "repetition_penalty": 1,
         }
 
         logger.note(f"> Load model:", end=" ")
@@ -51,7 +54,8 @@ class WhisperX:
             f"model=[{colored(self.model_name,'light_green')}], "
             f"device=[{colored(self.device,'light_green')}], "
             f"lang=[{colored(self.language,'light_green')}], "
-            f"chunk_size=[{colored(self.chunk_size,'light_green')}s]"
+            f"chunk_size=[{colored(self.chunk_size,'light_green')}s], "
+            f"quantize=[{colored(self.compute_type,'light_green')}],"
         )
         self.transcribe_model = whisperx.load_model(
             self.model_name,
@@ -91,10 +95,6 @@ class WhisperX:
     def filter_text(self, text: str) -> str:
         if self.language in ["zh"]:
             text = zhconv.convert(text, "zh-cn")
-            if self.initial_prompt:
-                for zh_text_to_filter in self.zh_texts_to_filter:
-                    if re.match(f"^{zh_text_to_filter}.*", text):
-                        return ""
         return text
 
     def save_to_file(self, subtitle_path: Union[str, Path]):
@@ -133,6 +133,10 @@ class WhisperX:
 
             res_str += segment_str
 
+        for p in [subtitle_json_path, subtitle_path]:
+            if not p.parent.exists():
+                p.parent.mkdir(parents=True, exist_ok=True)
+
         with open(subtitle_json_path, "w") as wf:
             json.dump(subtitle_lines, wf, ensure_ascii=False, indent=4)
 
@@ -158,7 +162,11 @@ class AudioToSubtitleConverter:
         suffix: Literal[".srt", ".txt", "json"] = ".srt",
     ):
         if subtitle_path is None:
-            self.subtitle_path = Path(self.audio_path).with_suffix(suffix)
+            self.subtitle_path = (
+                Path(self.audio_path).parents[1]
+                / "video_subtitles"
+                / (self.audio_path.stem + suffix)
+            )
         else:
             self.subtitle_path = Path(subtitle_path)
         return self.subtitle_path
@@ -198,8 +206,7 @@ if __name__ == "__main__":
     videos_dir = Path(BILI_DATA_ROOT) / str(mid) / "videos"
     audio_paths = sorted(list(videos_dir.glob("*.mp3")), key=lambda x: x.name)
     converter = AudioToSubtitleConverter()
-    # for audio_path in tqdm(audio_paths):
     for audio_path in tqdm(audio_paths):
-        converter.convert(audio_path, overwrite=True, verbose=False)
+        converter.convert(audio_path, overwrite=True, verbose=True)
 
     # python -m converters.audio_to_subtitle
