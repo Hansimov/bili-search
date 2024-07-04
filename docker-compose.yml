@@ -6,10 +6,9 @@ services:
       args:
         UBUNTU_MIRROR: http://mirrors.tuna.tsinghua.edu.cn/ubuntu/
         PIP_MIRROR: https://pypi.tuna.tsinghua.edu.cn/simple
-        COMMIT_HASH: 04f510f
-    image: bili-search:0.1
-    ports:
-      - "21001:21001"
+        COMMIT_HASH: ae11c23
+    image: bili-search
+    network_mode: host
     volumes:
       - ./configs:/app/configs
-# docker compose up
+# docker compose up --build
