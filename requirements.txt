@@ -1,4 +1,10 @@
+elasticsearch
+fastapi
+pydantic
 pypinyin
 tclogger
+termcolor
 tqdm
+uvicorn
+whisperx.egg
 zhconv
