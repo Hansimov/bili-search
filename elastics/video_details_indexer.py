@@ -1,4 +1,6 @@
+import argparse
 import json
+import sys
 
 from tclogger import logger
 from tqdm import tqdm
@@ -119,7 +121,7 @@ class VideoDetailsIndexer:
         self.es = ElasticSearchClient()
         self.es.connect()
 
-    def create_index(self, delete_old: bool = True):
+    def create_index(self, delete_old: bool = False):
         logger.note(f"> Creating index:", end=" ")
         logger.mesg(f"[{self.index_name}]")
         if delete_old:
@@ -150,10 +152,43 @@ class VideoDetailsIndexer:
                 logger.file(f"  - [{video_details_path}]")
 
 
+class ArgParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super(ArgParser, self).__init__(*args, **kwargs)
+        self.add_argument(
+            "-m",
+            "--mid",
+            type=int,
+            help="User mid",
+        )
+        self.add_argument(
+            "-i",
+            "--index",
+            type=str,
+            default="bili_video_details",
+            help="Index name",
+        )
+        self.add_argument(
+            "-r",
+            "--recreate",
+            action="store_true",
+            help="Delete and recreate existed index of elasticsearch",
+        )
+
+        self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    indexer = VideoDetailsIndexer()
-    indexer.create_index()
-    mid = 946974
+    args = ArgParser().args
+    indexer = VideoDetailsIndexer(index_name=args.index)
+
+    if args.recreate:
+        indexer.create_index(args.recreate)
+
+    mid = args.mid or 946974
     indexer.udpate_docs(mid)
 
-    # python -m elastics.video_details_index
+    # python -m elastics.video_details_indexer
+
+    # Index video deatails for mid
+    # python -m elastics.video_details_indexer -m 14871346
