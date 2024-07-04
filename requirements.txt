@@ -6,5 +6,4 @@ tclogger
 termcolor
 tqdm
 uvicorn
-whisperx.egg
 zhconv
