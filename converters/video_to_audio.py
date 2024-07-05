@@ -1,10 +1,11 @@
 import argparse
+import concurrent.futures
 import sys
 
 from pathlib import Path
 from tclogger import logger, shell_cmd
 from tqdm import tqdm
-from typing import Union, Literal
+from typing import Union, Literal, List
 
 from configs.envs import BILI_DATA_ROOT
 
@@ -58,6 +59,28 @@ class VideoToAudioConverter:
 
         logger.exit_quiet(not verbose)
 
+    def bactch_convert(
+        self,
+        video_paths: List[Union[str, Path]],
+        audio_paths: List[Union[str, Path]] = None,
+        overwrite: bool = False,
+        verbose: bool = False,
+    ):
+        if audio_paths is None:
+            audio_paths = [None] * len(video_paths)
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    self.convert, video_path, audio_path, overwrite, verbose
+                )
+                for video_path, audio_path in zip(video_paths, audio_paths)
+            ]
+            for future in tqdm(
+                concurrent.futures.as_completed(futures), total=len(futures)
+            ):
+                future.result()
+
 
 class ArgParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -90,8 +113,9 @@ if __name__ == "__main__":
     videos_dir = Path(BILI_DATA_ROOT) / str(mid) / "videos"
     videos_paths = sorted(list(videos_dir.glob("*.mp4")), key=lambda x: x.name)
     converter = VideoToAudioConverter()
-    for video_path in tqdm(videos_paths):
-        converter.convert(video_path, overwrite=args.overwrite, verbose=args.verbose)
+    converter.bactch_convert(
+        videos_paths, overwrite=args.overwrite, verbose=args.verbose
+    )
 
     # python -m converters.video_to_audio -m 14871346
     # python -m converters.video_to_audio -m 14871346 -o
