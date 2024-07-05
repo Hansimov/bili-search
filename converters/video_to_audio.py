@@ -1,8 +1,10 @@
-from pathlib import Path
-from typing import Union, Literal
+import argparse
+import sys
 
+from pathlib import Path
 from tclogger import logger, shell_cmd
 from tqdm import tqdm
+from typing import Union, Literal
 
 from configs.envs import BILI_DATA_ROOT
 
@@ -57,12 +59,40 @@ class VideoToAudioConverter:
         logger.exit_quiet(not verbose)
 
 
+class ArgParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super(ArgParser, self).__init__(*args, **kwargs)
+        self.add_argument(
+            "-m",
+            "--mid",
+            type=int,
+            help="User mid",
+        )
+        self.add_argument(
+            "-o",
+            "--overwrite",
+            action="store_true",
+            help="Overwrite existed subtitles",
+        )
+        self.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="Verbose",
+        )
+
+        self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    mid = 946974
+    args = ArgParser().args
+    mid = args.mid or 946974
     videos_dir = Path(BILI_DATA_ROOT) / str(mid) / "videos"
     videos_paths = sorted(list(videos_dir.glob("*.mp4")), key=lambda x: x.name)
     converter = VideoToAudioConverter()
     for video_path in tqdm(videos_paths):
-        converter.convert(video_path)
+        converter.convert(video_path, overwrite=args.overwrite, verbose=args.verbose)
 
-    # python -m converters.video_to_audio
+    # python -m converters.video_to_audio -m 14871346
+    # python -m converters.video_to_audio -m 14871346 -o
+    # python -m converters.video_to_audio -m 14871346 -o -v
