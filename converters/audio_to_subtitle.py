@@ -1,5 +1,6 @@
+import argparse
 import json
-import re
+import sys
 import whisperx
 import zhconv
 
@@ -21,7 +22,7 @@ class WhisperX:
         ] = "medium",
         language: Literal["en", "zh"] = "zh",
         device: Literal["cpu", "cuda"] = "cuda",
-        device_index: int = 1,
+        device_index: int = 0,
         compute_type: Literal["float16", "int8"] = "float16",
         initial_prompt: str = None,
         chunk_size: float = 8,
@@ -201,12 +202,40 @@ class AudioToSubtitleConverter:
         logger.exit_quiet(not verbose)
 
 
+class ArgParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super(ArgParser, self).__init__(*args, **kwargs)
+        self.add_argument(
+            "-m",
+            "--mid",
+            type=int,
+            help="User mid",
+        )
+        self.add_argument(
+            "-o",
+            "--overwrite",
+            action="store_true",
+            help="Overwrite existed subtitles",
+        )
+        self.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="Verbose",
+        )
+
+        self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    mid = 946974
+    args = ArgParser().args
+    mid = args.mid or 946974
     videos_dir = Path(BILI_DATA_ROOT) / str(mid) / "videos"
     audio_paths = sorted(list(videos_dir.glob("*.mp3")), key=lambda x: x.name)
     converter = AudioToSubtitleConverter()
     for audio_path in tqdm(audio_paths):
-        converter.convert(audio_path, overwrite=True, verbose=True)
+        converter.convert(audio_path, overwrite=args.overwrite, verbose=args.verbose)
 
-    # python -m converters.audio_to_subtitle
+    # python -m converters.audio_to_subtitle -m 14871346
+    # python -m converters.audio_to_subtitle -m 14871346 -o
+    # python -m converters.audio_to_subtitle -m 14871346 -o -b
