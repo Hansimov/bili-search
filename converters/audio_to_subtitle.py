@@ -238,4 +238,4 @@ if __name__ == "__main__":
 
     # python -m converters.audio_to_subtitle -m 14871346
     # python -m converters.audio_to_subtitle -m 14871346 -o
-    # python -m converters.audio_to_subtitle -m 14871346 -o -b
+    # python -m converters.audio_to_subtitle -m 14871346 -o -v
