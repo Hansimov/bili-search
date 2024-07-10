@@ -95,7 +95,7 @@ class ArgParser(argparse.ArgumentParser):
             "-o",
             "--overwrite",
             action="store_true",
-            help="Overwrite existed subtitles",
+            help="Overwrite existed audios",
         )
         self.add_argument(
             "-v",
