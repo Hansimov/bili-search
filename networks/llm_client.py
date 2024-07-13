@@ -7,9 +7,10 @@ from tclogger import logger, Runtimer
 
 
 class LLMClient:
-    def __init__(self, endpoint: str, api_key: str):
+    def __init__(self, endpoint: str, api_key: str, response_format="openai"):
         self.endpoint = endpoint
         self.api_key = api_key
+        self.response_format = response_format
 
     def create_response(self, messages, model, stream=True):
         headers = {
@@ -44,8 +45,16 @@ class LLMClient:
                     except:
                         logger.warn(f"× Error: {line}")
                         raise e
-                delta_data = line_data["choices"][0]["delta"]
-                finish_reason = line_data["choices"][0]["finish_reason"]
+
+                if self.response_format == "ollama":
+                    # https://github.com/ollama/ollama/blob/main/docs/api.md#response-9
+                    delta_data = line_data["message"]
+                    finish_reason = "stop" if line_data["done"] else None
+                else:
+                    # https://platform.openai.com/docs/api-reference/chat/streaming
+                    delta_data = line_data["choices"][0]["delta"]
+                    finish_reason = line_data["choices"][0]["finish_reason"]
+
                 if "role" in delta_data:
                     role = delta_data["role"]
                 if "content" in delta_data:
@@ -54,13 +63,17 @@ class LLMClient:
                     logger.mesg(delta_content, end="")
                 if finish_reason == "stop":
                     logger.success("\n[Finished]", end="")
+
         return response_content
 
     def parse_json_response(self, response: requests.Response):
         response_content = ""
         try:
             response_data = response.json()
-            response_content = response_data["choices"][0]["message"]["content"]
+            if self.response_format == "ollama":
+                response_content = response_data["message"]["content"]
+            else:
+                response_content = response_data["choices"][0]["message"]["content"]
             logger.mesg(response_content)
             logger.success("[Finished]", end="")
         except Exception as e:
@@ -88,13 +101,14 @@ if __name__ == "__main__":
     endpoint = llm["endpoint"]
     api_key = llm["api_key"]
     model = llm["model"]
+    response_format = llm["format"]
     messages = [
         {
             "role": "user",
             "content": "你是谁？",
         }
     ]
-    client = LLMClient(endpoint, api_key)
+    client = LLMClient(endpoint, api_key, response_format)
     client.chat(messages, model, stream=True)
 
     # python -m networks.llm_client
