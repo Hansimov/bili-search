@@ -27,6 +27,14 @@ class VideoDetailsSearcher:
         "desc",
         "desc.pinyin",
     ]
+    BOOSTED_SEARCH_MATCH_FIELDS = [
+        "title^2.5",
+        "title.pinyin",
+        "owner.name^2",
+        "owner.name.pinyin",
+        "desc^1.5",
+        "desc.pinyin",
+    ]
     DOC_EXCLUDED_SOURCE_FIELDS = ["rights", "argue_info"]
 
     MATCH_TYPE = Literal[
@@ -53,7 +61,9 @@ class VideoDetailsSearcher:
 
     def get_highlight_settings(self, match_fields: list[str], tag: str = "hit"):
         highlight_fields = [
-            field for field in match_fields if not field.endswith(".pinyin")
+            field.split("^", 1)[0]
+            for field in match_fields
+            if not field.endswith(".pinyin")
         ]
         highlight_fields_dict = {field: {} for field in highlight_fields}
 
@@ -121,7 +131,7 @@ class VideoDetailsSearcher:
     def search(
         self,
         query: str,
-        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        match_fields: list[str] = BOOSTED_SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         parse_hits: bool = True,
@@ -151,6 +161,7 @@ class VideoDetailsSearcher:
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
         }
+        # logger.note(search_body)
         if limit and limit > 0:
             search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
@@ -166,6 +177,7 @@ class VideoDetailsSearcher:
             drop_no_highlights=True,
             limit=limit,
         )
+        # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
         return return_res
 
@@ -350,6 +362,7 @@ if __name__ == "__main__":
     # searcher.suggest("teji")
     # searcher.random(seed_update_seconds=10, limit=3)
     # searcher.latest(limit=10)
-    searcher.doc("BV1Qz421B7W9")
+    # searcher.doc("BV1Qz421B7W9")
+    searcher.search("小红书推荐系统的讲解", limit=3, verbose=True)
 
     # python -m elastics.video_details_searcher

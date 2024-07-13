@@ -58,7 +58,7 @@ class SearchApp:
         self,
         query: str = Body(...),
         match_fields: Optional[list[str]] = Body(
-            VideoDetailsSearcher.SEARCH_MATCH_FIELDS
+            VideoDetailsSearcher.BOOSTED_SEARCH_MATCH_FIELDS
         ),
         match_type: Optional[str] = Body(VideoDetailsSearcher.SEARCH_MATCH_TYPE),
         limit: Optional[int] = Body(VideoDetailsSearcher.SEARCH_LIMIT),
