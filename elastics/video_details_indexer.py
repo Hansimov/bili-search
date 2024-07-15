@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 
+from datetime import datetime
 from tclogger import logger
 from tqdm import tqdm
 
@@ -134,6 +135,9 @@ class VideoDetailsIndexer:
             mappings=VIDEO_DETAILS_INDEX_MAPPINGS,
         )
 
+    def convert_timestamp_to_datetime_str(self, timestamp: int):
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
     def udpate_docs(self, mid: int = None):
         video_details_dir = BILI_DATA_ROOT / f"{mid}" / "video_details"
         logger.note("> Updating video details docs ...")
@@ -142,6 +146,13 @@ class VideoDetailsIndexer:
                 video_details = json.load(rf)
             bvid = video_details.get("bvid", None)
             if bvid:
+                for key in ["pubdate", "ctime"]:
+                    if video_details.get(key, None):
+                        video_details[f"{key}_str"] = (
+                            self.convert_timestamp_to_datetime_str(
+                                video_details.get(key)
+                            )
+                        )
                 self.es.client.index(
                     index=self.index_name,
                     id=bvid,
@@ -150,6 +161,28 @@ class VideoDetailsIndexer:
             else:
                 logger.warn(f"× No details for file:")
                 logger.file(f"  - [{video_details_path}]")
+
+    def update_datetime_str_index(self, keys: list[str] = ["pubdate", "ctime"]):
+        for key in keys:
+            logger.note(
+                f"> Add new field in existing docs: datetime timestamp '{key}' to string '{key}_str'"
+            )
+            script_source = f"""
+            if (ctx._source.containsKey('{key}')) {{
+                Instant instant = Instant.ofEpochSecond(ctx._source.{key});
+                ZonedDateTime zdt = ZonedDateTime.ofInstant(instant, ZoneId.of('UTC+8'));
+                DateTimeFormatter formatter = DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss');
+                ctx._source.{key}_str = formatter.format(zdt);
+            }}
+            """
+            query = {"script": {"source": script_source, "lang": "painless"}}
+            logger.mesg(script_source)
+            self.es.client.update_by_query(
+                index=self.index_name,
+                body=query,
+                wait_for_completion=True,
+                conflicts="proceed",
+            )
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -185,8 +218,10 @@ if __name__ == "__main__":
     if args.recreate:
         indexer.create_index(args.recreate)
 
-    mid = args.mid or 946974
-    indexer.udpate_docs(mid)
+    # mid = args.mid or 946974
+    # indexer.udpate_docs(mid)
+
+    indexer.update_datetime_str_index(["pubdate", "ctime"])
 
     # python -m elastics.video_details_indexer
 
