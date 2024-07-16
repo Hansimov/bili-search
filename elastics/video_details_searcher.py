@@ -10,15 +10,16 @@ from elastics.structure import get_es_source_val
 
 
 class VideoDetailsSearcher:
-    SCRIPT_FIELDS = {
-        "pubdate.datetime": {
-            "script": {
-                "source": "doc['pubdate'].value.format(DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss').withZone(ZoneId.of('UTC+8')))"
-            }
-        }
-    }
-
-    SOURCE_FIELDS = ["title", "bvid", "owner", "pic", "duration", "desc", "stat"]
+    SOURCE_FIELDS = [
+        "title",
+        "bvid",
+        "owner",
+        "pic",
+        "duration",
+        "desc",
+        "stat",
+        "pubdate_str",
+    ]
     SUGGEST_MATCH_FIELDS = ["title", "title.pinyin"]
     SEARCH_MATCH_FIELDS = [
         "title",
@@ -27,11 +28,13 @@ class VideoDetailsSearcher:
         "owner.name.pinyin",
         "desc",
         "desc.pinyin",
+        "pubdate_str",
     ]
     BOOSTED_FIELDS = {
         "title": 2.5,
         "owner.name": 2,
         "desc": 1.5,
+        "pubdate_str": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = ["rights", "argue_info"]
 
@@ -111,7 +114,6 @@ class VideoDetailsSearcher:
                 }
             },
             "_source": source_fields,
-            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
         }
@@ -170,7 +172,6 @@ class VideoDetailsSearcher:
                 }
             },
             "_source": source_fields,
-            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
         }
@@ -231,7 +232,6 @@ class VideoDetailsSearcher:
                 }
             },
             "_source": source_fields,
-            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
         if limit and limit > 0:
@@ -259,7 +259,6 @@ class VideoDetailsSearcher:
             "query": {"match_all": {}},
             "sort": [{"pubdate": {"order": "desc"}}],
             "_source": source_fields,
-            "script_fields": self.SCRIPT_FIELDS,
             "explain": is_explain,
         }
         if limit and limit > 0:
@@ -340,7 +339,6 @@ class VideoDetailsSearcher:
         for hit in res_dict["hits"]["hits"]:
             _source = hit["_source"]
             score = hit["_score"]
-            pubdate_str = hit["fields"]["pubdate.datetime"][0]
             common_highlights = hit.get("highlight", {})
             pinyin_highlights = self.get_pinyin_highlights(query, match_fields, _source)
             if (
@@ -352,7 +350,6 @@ class VideoDetailsSearcher:
             hit_info = {
                 **_source,
                 "score": score,
-                "pubdate_str": pubdate_str,
                 "common_highlights": common_highlights,
                 "pinyin_highlights": pinyin_highlights,
             }
@@ -376,6 +373,6 @@ if __name__ == "__main__":
     # searcher.random(seed_update_seconds=10, limit=3)
     # searcher.latest(limit=10)
     # searcher.doc("BV1Qz421B7W9")
-    searcher.search("小红书推荐系统的讲解", limit=3, verbose=True)
+    searcher.search("稚晖君 2019", limit=3, boost=True, verbose=True)
 
     # python -m elastics.video_details_searcher
