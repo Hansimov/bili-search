@@ -63,15 +63,19 @@ class SearchApp:
         match_type: Optional[str] = Body(VideoDetailsSearcher.SEARCH_MATCH_TYPE),
         boost: bool = Body(True),
         boosted_fields: dict = Body(VideoDetailsSearcher.BOOSTED_FIELDS),
+        detail_level: int = Body(-1),
+        max_detail_level: int = Body(VideoDetailsSearcher.MAX_SEARCH_DETAIL_LEVEL),
         limit: Optional[int] = Body(VideoDetailsSearcher.SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.search(
+        suggestions = self.video_details_searcher.detailed_search(
             query,
             match_fields=match_fields,
             match_type=match_type,
             boost=boost,
             boosted_fields=boosted_fields,
+            detail_level=detail_level,
+            max_detail_level=max_detail_level,
             limit=limit,
             verbose=verbose,
         )

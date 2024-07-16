@@ -29,12 +29,14 @@ class VideoDetailsSearcher:
         "desc",
         "desc.pinyin",
         "pubdate_str",
+        "pubdate_str.string",
     ]
     BOOSTED_FIELDS = {
         "title": 2.5,
         "owner.name": 2,
         "desc": 1.5,
         "pubdate_str": 2.5,
+        "pubdate_str.string": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = ["rights", "argue_info"]
 
@@ -46,8 +48,19 @@ class VideoDetailsSearcher:
         "phrase_prefix",
         "bool_prefix",
     ]
+    MATCH_BOOL = Literal["must", "should", "must_not", "filter"]
+
     SUGGEST_MATCH_TYPE = "phrase_prefix"
-    SEARCH_MATCH_TYPE = "most_fields"
+    SEARCH_MATCH_TYPE = "phrase_prefix"
+    SEARCH_MATCH_BOOL = "must"
+
+    SEARCH_DETAIL_LEVELS = {
+        1: {"match_type": "phrase_prefix", "bool": "must"},
+        2: {"match_type": "most_fields", "bool": "must"},
+        3: {"match_type": "phrase_prefix", "bool": "should"},
+        4: {"match_type": "most_fields", "bool": "should"},
+    }
+    MAX_SEARCH_DETAIL_LEVEL = 3
 
     SUGGEST_LIMIT = 10
     SEARCH_LIMIT = 50
@@ -142,40 +155,65 @@ class VideoDetailsSearcher:
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
         boosted_fields: dict = BOOSTED_FIELDS,
+        detail_level: int = -1,
         limit: int = SEARCH_LIMIT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
-        """The main difference between `search` and `suggest` is that,
-        `search` has are more fuzzy (loose) and compositive match rules than `suggest`,
+        """
+        The main difference between `search` and `suggest` is that:
+        - `search` has are more fuzzy (loose) and compositive match rules than `suggest`,
         and has more match fields.
 
         I have compared the results of different match types, and conclude that:
         - `phrase_prefix`: for precise and complete match
         - `most_fields`: for loose and composite match
+
+        The main difference between "multi_match" and "multi matches in must" of `search` is that:
+        - `multi matches in must` requires all keywords to be matched
+        - `multi_match` only requires any keyword to be matched in any field.
         """
         logger.enter_quiet(not verbose)
+
+        if detail_level in self.SEARCH_DETAIL_LEVELS:
+            match_detail = self.SEARCH_DETAIL_LEVELS[detail_level]
+            match_type = match_detail["match_type"]
+            match_bool = match_detail["bool"]
+
+        query_keywords = query.split()
+        if boost:
+            boosted_fields = self.boost_fields(match_fields, boosted_fields)
+        else:
+            boosted_fields = match_fields
+        multi_match_clauses = [
+            {
+                "multi_match": {
+                    "query": keyword,
+                    "type": match_type,
+                    "fields": boosted_fields,
+                }
+            }
+            for keyword in query_keywords
+        ]
         search_body = {
             "query": {
-                "multi_match": {
-                    "query": query,
-                    "type": match_type,
-                    "fields": (
-                        match_fields
-                        if not boost
-                        else self.boost_fields(match_fields, boosted_fields)
-                    ),
-                    "operator": "or",
-                }
+                "bool": {match_bool: multi_match_clauses},
             },
             "_source": source_fields,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
         }
-        # logger.note(search_body)
+
+        if detail_level > 2 and match_bool == "should":
+            search_body["query"]["bool"]["minimum_should_match"] = (
+                len(query_keywords) - 1
+            )
+
+        logger.note(pformat(search_body, sort_dicts=False))
         if limit and limit > 0:
             search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
@@ -191,8 +229,62 @@ class VideoDetailsSearcher:
             drop_no_highlights=True,
             limit=limit,
         )
+        return_res["detail_level"] = detail_level
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
+        return return_res
+
+    def detailed_search(
+        self,
+        query: str,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        source_fields: list[str] = SOURCE_FIELDS,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        parse_hits: bool = True,
+        is_explain: bool = False,
+        boost: bool = True,
+        boosted_fields: dict = BOOSTED_FIELDS,
+        detail_level: int = -1,
+        max_detail_level: int = MAX_SEARCH_DETAIL_LEVEL,
+        limit: int = SEARCH_LIMIT,
+        verbose: bool = False,
+    ) -> Union[dict, list[dict]]:
+        detail_level_upper_bound = int(
+            min(max_detail_level, max(self.SEARCH_DETAIL_LEVELS.keys()))
+        )
+
+        if detail_level < 1:
+            detail_level = 1
+        elif detail_level > detail_level_upper_bound:
+            detail_level = detail_level_upper_bound
+        else:
+            detail_level = int(detail_level)
+
+        return_res = {
+            "total_hits": 0,
+            "return_hits": 0,
+            "hits": [],
+        }
+
+        while (
+            return_res["total_hits"] == 0 and detail_level <= detail_level_upper_bound
+        ):
+            return_res = self.search(
+                query=query,
+                match_fields=match_fields,
+                source_fields=source_fields,
+                match_type=match_type,
+                match_bool=match_bool,
+                parse_hits=parse_hits,
+                is_explain=is_explain,
+                boost=boost,
+                boosted_fields=boosted_fields,
+                detail_level=detail_level,
+                limit=limit,
+                verbose=verbose,
+            )
+            detail_level += 1
         return return_res
 
     def random(
@@ -363,7 +455,9 @@ class VideoDetailsSearcher:
             "hits": hits,
         }
         logger.success(pformat(hits_info, indent=4, sort_dicts=False))
-        logger.mesg(f"  * {request_type} hits count: {len(hits_info['hits'])}")
+        logger.note(f"Request type: [{request_type}]")
+        logger.mesg(f"  * return hits count: {hits_info['return_hits']}")
+        logger.mesg(f"  * total hits count: {hits_info['total_hits']}")
         return hits_info
 
 
@@ -373,6 +467,8 @@ if __name__ == "__main__":
     # searcher.random(seed_update_seconds=10, limit=3)
     # searcher.latest(limit=10)
     # searcher.doc("BV1Qz421B7W9")
-    searcher.search("稚晖君 2019", limit=3, boost=True, verbose=True)
+    searcher.search(
+        "稚晖君 2019-07", boost=True, detail_level=1, limit=10, verbose=True
+    )
 
     # python -m elastics.video_details_searcher
