@@ -49,18 +49,27 @@ class VideoDetailsSearcher:
         "bool_prefix",
     ]
     MATCH_BOOL = Literal["must", "should", "must_not", "filter"]
+    MATCH_OPERATOR = Literal["or", "and"]
 
     SUGGEST_MATCH_TYPE = "phrase_prefix"
     SEARCH_MATCH_TYPE = "phrase_prefix"
     SEARCH_MATCH_BOOL = "must"
+    SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must"},
-        2: {"match_type": "most_fields", "bool": "must"},
-        3: {"match_type": "phrase_prefix", "bool": "should"},
-        4: {"match_type": "most_fields", "bool": "should"},
+        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
+        2: {
+            "match_type": "cross_fields",
+            "bool": "must",
+            "operator": "and",
+            "pinyin": False,
+        },
+        3: {"match_type": "phrase_prefix", "bool": "must"},
+        4: {"match_type": "cross_fields", "bool": "must"},
+        5: {"match_type": "most_fields", "bool": "must"},
+        6: {"match_type": "most_fields", "bool": "should"},
     }
-    MAX_SEARCH_DETAIL_LEVEL = 3
+    MAX_SEARCH_DETAIL_LEVEL = 4
 
     SUGGEST_LIMIT = 10
     SEARCH_LIMIT = 50
@@ -156,6 +165,7 @@ class VideoDetailsSearcher:
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -183,18 +193,28 @@ class VideoDetailsSearcher:
             match_detail = self.SEARCH_DETAIL_LEVELS[detail_level]
             match_type = match_detail["match_type"]
             match_bool = match_detail["bool"]
+            match_operator = match_detail.get("operator", "or")
+            use_pinyin_fields = match_detail.get("pinyin", True)
 
-        query_keywords = query.split()
+        if not use_pinyin_fields:
+            match_fields = [
+                field for field in match_fields if not field.endswith(".pinyin")
+            ]
+
         if boost:
             boosted_fields = self.boost_fields(match_fields, boosted_fields)
         else:
             boosted_fields = match_fields
+
+        query_keywords = query.split()
+
         multi_match_clauses = [
             {
                 "multi_match": {
                     "query": keyword,
                     "type": match_type,
                     "fields": boosted_fields,
+                    "operator": match_operator,
                 }
             }
             for keyword in query_keywords
@@ -227,6 +247,9 @@ class VideoDetailsSearcher:
             request_type="search",
             is_parse_hits=parse_hits,
             drop_no_highlights=True,
+            match_type=match_type,
+            match_operator=match_operator,
+            detail_level=detail_level,
             limit=limit,
         )
         return_res["detail_level"] = detail_level
@@ -423,6 +446,9 @@ class VideoDetailsSearcher:
         ] = "search",
         is_parse_hits: bool = True,
         drop_no_highlights: bool = False,
+        match_type: MATCH_TYPE = "most_fields",
+        match_operator: MATCH_OPERATOR = "or",
+        detail_level: int = -1,
         limit: int = -1,
     ) -> list[dict]:
         if not is_parse_hits:
@@ -437,6 +463,8 @@ class VideoDetailsSearcher:
                 drop_no_highlights
                 and (not common_highlights)
                 and (not pinyin_highlights)
+                and match_type == "most_fields"
+                and match_operator == "or"
             ):
                 continue
             hit_info = {
@@ -456,6 +484,7 @@ class VideoDetailsSearcher:
         }
         logger.success(pformat(hits_info, indent=4, sort_dicts=False))
         logger.note(f"Request type: [{request_type}]")
+        logger.mesg(f"  * detail level: {detail_level}")
         logger.mesg(f"  * return hits count: {hits_info['return_hits']}")
         logger.mesg(f"  * total hits count: {hits_info['total_hits']}")
         return hits_info
@@ -468,7 +497,7 @@ if __name__ == "__main__":
     # searcher.latest(limit=10)
     # searcher.doc("BV1Qz421B7W9")
     searcher.search(
-        "稚晖君 2019-07", boost=True, detail_level=1, limit=10, verbose=True
+        "影视飓风 2024-01", boost=True, detail_level=5, limit=10, verbose=True
     )
 
     # python -m elastics.video_details_searcher
