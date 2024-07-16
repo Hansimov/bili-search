@@ -20,6 +20,11 @@ VIDEO_DETAILS_INDEX_SETTINGS = {
                 "type": "custom",
                 "tokenizer": "pinyin_tokenizer",
             },
+            "whitespace_analyzer": {
+                "type": "custom",
+                "tokenizer": "whitespace",
+                "filter": ["lowercase"],
+            },
         },
         "tokenizer": {
             "pinyin_tokenizer": {
@@ -87,6 +92,22 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "mapping": {
                     "type": "date",
                     "format": "epoch_second",
+                },
+            }
+        },
+        {
+            "datetime_str_template": {
+                "path_match": "^(pubdate_str|ctime_str)$",
+                "match_pattern": "regex",
+                "mapping": {
+                    "type": "text",
+                    "analyzer": "word_analyzer",
+                    "fields": {
+                        "string": {
+                            "type": "text",
+                            "analyzer": "whitespace_analyzer",
+                        },
+                    },
                 },
             }
         },
@@ -162,7 +183,7 @@ class VideoDetailsIndexer:
                 logger.warn(f"× No details for file:")
                 logger.file(f"  - [{video_details_path}]")
 
-    def update_datetime_str_index(self, keys: list[str] = ["pubdate", "ctime"]):
+    def update_datetime_str_field(self, keys: list[str] = ["pubdate", "ctime"]):
         for key in keys:
             logger.note(
                 f"> Add new field in existing docs: datetime timestamp '{key}' to string '{key}_str'"
@@ -183,6 +204,28 @@ class VideoDetailsIndexer:
                 wait_for_completion=True,
                 conflicts="proceed",
             )
+
+    def delete_field_from_doc(self, field: str):
+        logger.note(f"> Delete field: {field}")
+        script_source = f"ctx._source.remove('{field}')"
+        query = {
+            "script": {
+                "source": script_source,
+                "lang": "painless",
+            }
+        }
+        logger.mesg(script_source)
+        self.es.client.update_by_query(
+            index=self.index_name,
+            body=query,
+            wait_for_completion=True,
+            conflicts="proceed",
+        )
+
+    def put_mapping(self, field: str, mapping: dict):
+        logger.note(f"> Add new mapping for field: {field}")
+        query = {"properties": {field: mapping}}
+        self.es.client.indices.put_mapping(index=self.index_name, body=query)
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -221,7 +264,23 @@ if __name__ == "__main__":
     # mid = args.mid or 946974
     # indexer.udpate_docs(mid)
 
-    indexer.update_datetime_str_index(["pubdate", "ctime"])
+    # for field in ["pubdate_str", "ctime_str"]:
+    #     indexer.delete_field_from_doc(field)
+
+    # indexer.put_mapping(
+    #     "pubdate_str",
+    #     {
+    #         "type": "text",
+    #         "analyzer": "word_analyzer",
+    #         "fields": {
+    #             "string": {
+    #                 "type": "text",
+    #                 "analyzer": "whitespace",
+    #             },
+    #         },
+    #     },
+    # )
+    indexer.update_datetime_str_field(["pubdate", "ctime"])
 
     # python -m elastics.video_details_indexer
 
