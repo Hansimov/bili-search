@@ -58,9 +58,11 @@ class SearchApp:
         self,
         query: str = Body(...),
         match_fields: Optional[list[str]] = Body(
-            VideoDetailsSearcher.BOOSTED_SEARCH_MATCH_FIELDS
+            VideoDetailsSearcher.SEARCH_MATCH_FIELDS
         ),
         match_type: Optional[str] = Body(VideoDetailsSearcher.SEARCH_MATCH_TYPE),
+        boost: bool = Body(True),
+        boosted_fields: dict = Body(VideoDetailsSearcher.BOOSTED_FIELDS),
         limit: Optional[int] = Body(VideoDetailsSearcher.SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
@@ -68,6 +70,8 @@ class SearchApp:
             query,
             match_fields=match_fields,
             match_type=match_type,
+            boost=boost,
+            boosted_fields=boosted_fields,
             limit=limit,
             verbose=verbose,
         )
