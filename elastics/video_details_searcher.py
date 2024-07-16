@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 from pprint import pformat
 from tclogger import logger
@@ -27,14 +28,11 @@ class VideoDetailsSearcher:
         "desc",
         "desc.pinyin",
     ]
-    BOOSTED_SEARCH_MATCH_FIELDS = [
-        "title^2.5",
-        "title.pinyin",
-        "owner.name^2",
-        "owner.name.pinyin",
-        "desc^1.5",
-        "desc.pinyin",
-    ]
+    BOOSTED_FIELDS = {
+        "title": 2.5,
+        "owner.name": 2,
+        "desc": 1.5,
+    }
     DOC_EXCLUDED_SOURCE_FIELDS = ["rights", "argue_info"]
 
     MATCH_TYPE = Literal[
@@ -73,6 +71,14 @@ class VideoDetailsSearcher:
             "fields": highlight_fields_dict,
         }
         return highlight_settings
+
+    def boost_fields(self, match_fields: list, boosted_fields: dict):
+        boosted_match_fields = deepcopy(match_fields)
+        for key in boosted_fields:
+            if key in boosted_match_fields:
+                key_index = boosted_match_fields.index(key)
+                boosted_match_fields[key_index] += f"^{boosted_fields[key]}"
+        return boosted_match_fields
 
     def suggest(
         self,
@@ -131,11 +137,13 @@ class VideoDetailsSearcher:
     def search(
         self,
         query: str,
-        match_fields: list[str] = BOOSTED_SEARCH_MATCH_FIELDS,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         parse_hits: bool = True,
         is_explain: bool = False,
+        boost: bool = True,
+        boosted_fields: dict = BOOSTED_FIELDS,
         limit: int = SEARCH_LIMIT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
@@ -153,7 +161,12 @@ class VideoDetailsSearcher:
                 "multi_match": {
                     "query": query,
                     "type": match_type,
-                    "fields": match_fields,
+                    "fields": (
+                        match_fields
+                        if not boost
+                        else self.boost_fields(match_fields, boosted_fields)
+                    ),
+                    "operator": "or",
                 }
             },
             "_source": source_fields,
