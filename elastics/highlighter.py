@@ -8,8 +8,9 @@ from typing import Union
 class HighlightMerger:
     def merge(self, text: str, htexts: list[str], tag: str = "em"):
         """Merge all highlighted text segments into one."""
-        if not htexts:
+        if not text or not htexts:
             return None
+
         pattern = f"<{tag}>(.*?)</{tag}>"
         highlighted_segements = set()
         for htext in htexts:

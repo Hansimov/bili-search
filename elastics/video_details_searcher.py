@@ -34,7 +34,7 @@ class VideoDetailsSearcher:
     BOOSTED_FIELDS = {
         "title": 2.5,
         "owner.name": 2,
-        "desc": 1.5,
+        "desc": 1,
         "pubdate_str": 2.5,
         "pubdate_str.string": 2.5,
     }
@@ -57,7 +57,7 @@ class VideoDetailsSearcher:
     SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must"},
+        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
         2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
         3: {"match_type": "cross_fields", "bool": "must"},
         4: {"match_type": "most_fields", "bool": "must"},
