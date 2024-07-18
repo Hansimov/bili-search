@@ -13,12 +13,20 @@ from elastics.client import ElasticSearchClient
 VIDEO_DETAILS_INDEX_SETTINGS = {
     "analysis": {
         "analyzer": {
-            "word_analyzer": {
-                "type": "ik_max_word",
+            "chinese_analyzer": {
+                "type": "custom",
+                "tokenizer": "ik_max_word",
+                "char_filter": "tscovert_char_filter",
+            },
+            "chinese_search_analyzer": {
+                "type": "custom",
+                "tokenizer": "ik_smart",
+                "char_filter": "tscovert_char_filter",
             },
             "pinyin_analyzer": {
                 "type": "custom",
                 "tokenizer": "pinyin_tokenizer",
+                "char_filter": "tscovert_char_filter",
             },
             "whitespace_analyzer": {
                 "type": "custom",
@@ -40,6 +48,12 @@ VIDEO_DETAILS_INDEX_SETTINGS = {
                 "ignore_pinyin_offset": True,
             }
         },
+        "char_filter": {
+            "tscovert_char_filter": {
+                "type": "stconvert",
+                "convert_type": "t2s",
+            }
+        },
     }
 }
 
@@ -51,7 +65,8 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "match_pattern": "regex",
                 "mapping": {
                     "type": "text",
-                    "analyzer": "word_analyzer",
+                    "analyzer": "chinese_analyzer",
+                    "search_analyzer": "chinese_search_analyzer",
                     "fields": {
                         "pinyin": {
                             "type": "text",
@@ -63,7 +78,8 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                         },
                         "text_suggest": {
                             "type": "completion",
-                            "analyzer": "word_analyzer",
+                            "analyzer": "chinese_analyzer",
+                            "search_analyzer": "chinese_search_analyzer",
                         },
                     },
                 },
@@ -75,7 +91,8 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "match_pattern": "regex",
                 "mapping": {
                     "type": "text",
-                    "analyzer": "word_analyzer",
+                    "analyzer": "chinese_analyzer",
+                    "search_analyzer": "chinese_search_analyzer",
                     "fields": {
                         "pinyin": {
                             "type": "text",
@@ -101,7 +118,8 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "match_pattern": "regex",
                 "mapping": {
                     "type": "text",
-                    "analyzer": "word_analyzer",
+                    "analyzer": "chinese_analyzer",
+                    "search_analyzer": "chinese_search_analyzer",
                     "fields": {
                         "string": {
                             "type": "text",
@@ -124,7 +142,8 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "match_mapping_type": "string",
                 "mapping": {
                     "type": "text",
-                    "analyzer": "word_analyzer",
+                    "analyzer": "chinese_analyzer",
+                    "search_analyzer": "chinese_search_analyzer",
                     "fields": {
                         "keyword": {
                             "type": "keyword",
@@ -261,8 +280,8 @@ if __name__ == "__main__":
     if args.recreate:
         indexer.create_index(args.recreate)
 
-    # mid = args.mid or 946974
-    # indexer.udpate_docs(mid)
+    mid = args.mid or 946974
+    indexer.udpate_docs(mid)
 
     # for field in ["pubdate_str", "ctime_str"]:
     #     indexer.delete_field_from_doc(field)
@@ -271,7 +290,7 @@ if __name__ == "__main__":
     #     "pubdate_str",
     #     {
     #         "type": "text",
-    #         "analyzer": "word_analyzer",
+    #         "analyzer": "chinese_analyzer",
     #         "fields": {
     #             "string": {
     #                 "type": "text",
@@ -280,9 +299,9 @@ if __name__ == "__main__":
     #         },
     #     },
     # )
-    indexer.update_datetime_str_field(["pubdate", "ctime"])
+    # indexer.update_datetime_str_field(["pubdate", "ctime"])
 
     # python -m elastics.video_details_indexer
 
     # Index video deatails for mid
-    # python -m elastics.video_details_indexer -m 14871346
+    # python -m elastics.video_details_indexer -i bili_video_details_dev -r -m 12566101
