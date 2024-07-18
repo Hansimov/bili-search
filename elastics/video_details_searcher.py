@@ -5,7 +5,7 @@ from tclogger import logger
 from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
-from elastics.highlighter import PinyinHighlighter
+from elastics.highlighter import PinyinHighlighter, HighlightMerger
 from elastics.structure import get_es_source_val
 
 
@@ -427,10 +427,9 @@ class VideoDetailsSearcher:
             pinyin_highlighter = PinyinHighlighter()
             for field in match_fields:
                 if field.endswith(".pinyin"):
+                    text = get_es_source_val(_source, field.replace(".pinyin", ""))
                     highlighted_text = pinyin_highlighter.highlight(
-                        query,
-                        get_es_source_val(_source, field[: -len(".pinyin")]),
-                        tag="hit",
+                        query, text, tag="hit"
                     )
                     if highlighted_text:
                         pinyin_highlights[field] = [highlighted_text]
@@ -459,6 +458,24 @@ class VideoDetailsSearcher:
             score = hit["_score"]
             common_highlights = hit.get("highlight", {})
             pinyin_highlights = self.get_pinyin_highlights(query, match_fields, _source)
+
+            merged_highlights = {}
+            merger = HighlightMerger()
+
+            pinyin_fields = [
+                field.replace(".pinyin", "") for field in pinyin_highlights.keys()
+            ]
+            merged_fields = list(common_highlights.keys()) + pinyin_fields
+
+            for field in merged_fields:
+                common_highlight = common_highlights.get(field, [])
+                pinyin_highlight = pinyin_highlights.get(field + ".pinyin", [])
+                merged_highlights[field] = merger.merge(
+                    get_es_source_val(_source, field),
+                    common_highlight + pinyin_highlight,
+                    tag="hit",
+                )
+
             if (
                 drop_no_highlights
                 and (not common_highlights)
@@ -472,6 +489,7 @@ class VideoDetailsSearcher:
                 "score": score,
                 "common_highlights": common_highlights,
                 "pinyin_highlights": pinyin_highlights,
+                "merged_highlights": merged_highlights,
             }
             hits.append(hit_info)
         if limit > 0:
@@ -497,7 +515,7 @@ if __name__ == "__main__":
     # searcher.latest(limit=10)
     # searcher.doc("BV1Qz421B7W9")
     searcher.search(
-        "影视飓风 2024-01", boost=True, detail_level=5, limit=10, verbose=True
+        "影视飓风 xiangsu", boost=True, detail_level=1, limit=10, verbose=True
     )
 
     # python -m elastics.video_details_searcher
