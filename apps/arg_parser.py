@@ -1,28 +1,33 @@
 import argparse
 import sys
 
+from copy import deepcopy
+from tclogger import logger
+from pprint import pformat
+
 
 class ArgParser(argparse.ArgumentParser):
-    def __init__(self, app_envs={}, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.host = app_envs.get("host", "127.0.0.1")
-        self.port = app_envs.get("port", 19898)
-        self.app_name = app_envs.get("app_name", f"App on {self.host}")
 
         self.add_argument(
             "-s",
             "--host",
             type=str,
-            default=self.host,
-            help=f"Host ({self.host}) for {self.app_name}",
+            help=f"Host of app",
         )
         self.add_argument(
             "-p",
             "--port",
             type=int,
-            default=app_envs["port"],
-            help=f"Port ({self.port}) for {self.app_name}",
+            help=f"Port of app",
+        )
+        self.add_argument(
+            "-m",
+            "--mode",
+            type=str,
+            default="prod",
+            help=f"Running mode of app",
         )
         self.add_argument(
             "-r",
@@ -32,3 +37,23 @@ class ArgParser(argparse.ArgumentParser):
         )
 
         self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
+
+    def update_app_envs(self, app_envs: dict):
+        new_app_envs = deepcopy(app_envs)
+        new_app_envs["mode"] = self.args.mode
+        mode = new_app_envs["mode"]
+        for key, val in app_envs.items():
+            if isinstance(val, dict) and mode in val.keys():
+                new_app_envs[key] = val[mode]
+
+        if self.args.host:
+            new_app_envs["host"] = self.args.host
+        if self.args.port:
+            new_app_envs["port"] = self.args.port
+
+        self.new_app_envs = new_app_envs
+
+        logger.note(f"App Envs:")
+        logger.mesg(pformat(new_app_envs, sort_dicts=False, indent=4))
+
+        return new_app_envs
