@@ -83,26 +83,26 @@ class PinyinHighlighter:
 
         return matched_indices
 
-    def highlight(
-        self, query: str, text: str, tag: str = "em", verbose: bool = False
+    def highlight_keyword(
+        self, keyword: str, text: str, tag: str = "em", verbose: bool = False
     ) -> Union[str, None]:
-        if not query:
+        if not keyword:
             return None
 
         logger.enter_quiet(not verbose)
         text_segs = list(text)
 
-        query_pinyin = self.text_to_pinyin_str(query)
+        keyword_pinyin = self.text_to_pinyin_str(keyword)
         text_pinyins = lazy_pinyin(text_segs)
         text_pinyins = self.filter_chars_from_pinyin(text_pinyins)
 
-        logger.mesg(f"Query : {query}")
-        logger.mesg(f"Text  : {text}")
-        logger.mesg(f"Segs  : {text_segs}")
-        logger.mesg(f"Query Pinyin : {query_pinyin}")
-        logger.mesg(f"Text Pinyin  : {text_pinyins}")
+        logger.mesg(f"Keyword : {keyword}")
+        logger.mesg(f"Text    : {text}")
+        logger.mesg(f"Segs    : {text_segs}")
+        logger.mesg(f"Keyword Pinyin : {keyword_pinyin}")
+        logger.mesg(f"Text Pinyin    : {text_pinyins}")
 
-        matched_indices = self.get_matched_indices(query_pinyin, text_pinyins)
+        matched_indices = self.get_matched_indices(keyword_pinyin, text_pinyins)
         if not matched_indices:
             logger.exit_quiet(not verbose)
             return None
@@ -127,15 +127,33 @@ class PinyinHighlighter:
 
         return combined_highlighted_text
 
+    def highlight(self, query: str, text: str, tag: str = "em", verbose: bool = False):
+        keywords = query.split()
+        highlighted_texts = []
+        for keyword in keywords:
+            highlighted_text = self.highlight_keyword(
+                keyword, text, tag=tag, verbose=verbose
+            )
+            if highlighted_text:
+                highlighted_texts.append(highlighted_text)
+        if highlighted_texts:
+            merger = HighlightMerger()
+            res_text = merger.merge(text, highlighted_texts, tag=tag)
+        else:
+            res_text = None
+        return res_text
+
 
 if __name__ == "__main__":
     highlighter = PinyinHighlighter()
-    query = "vlog"
-    text = "【Vlog】在阿里巴巴达摩院工作是什么样的体验？"
+    # query = "vlog alibaba"
+    # text = "【Vlog】在阿里巴巴达摩院工作是什么样的体验？"
     # query = "ali"
     # text = "给百大UP主加上特效，这可太炸裂了！【百大UP主颁奖】"
-    text_highlighted = highlighter.highlight(query, text, verbose=True)
-    logger.mesg(f"Highlighted text:", end=" ")
-    logger.success(text_highlighted)
+    query = "影视飓风 xiangsu"
+    text = "【影视飓风】4万块的1亿像素中画幅？"
+    res_text = highlighter.highlight(query, text, verbose=True)
+    logger.mesg(f"Merged highlighted text:", end=" ")
+    logger.success(res_text)
 
     # python -m elastics.highlighter
