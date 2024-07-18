@@ -21,8 +21,11 @@ class SearchApp:
             version=self.version,
             swagger_ui_parameters={"defaultModelsExpandDepth": -1},
         )
+        self.mode = app_envs.get("mode", "prod")
         # self.allow_cors()
-        self.video_details_searcher = VideoDetailsSearcher()
+        self.video_details_searcher = VideoDetailsSearcher(
+            app_envs["bili_video_details_index"]
+        )
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
 
@@ -146,11 +149,13 @@ class SearchApp:
 
 if __name__ == "__main__":
     app_envs = SEARCH_APP_ENVS
-    app = SearchApp(app_envs).app
-    app_args = ArgParser(app_envs).args
-    if app_args.reload:
-        uvicorn.run("__main__:app", host=app_args.host, port=app_args.port, reload=True)
-    else:
-        uvicorn.run("__main__:app", host=app_args.host, port=app_args.port)
+    arg_parser = ArgParser()
+    new_app_envs = arg_parser.update_app_envs(app_envs)
+    app = SearchApp(new_app_envs).app
+    uvicorn.run("__main__:app", host=new_app_envs["host"], port=new_app_envs["port"])
 
+    # Production mode by default:
     # python -m apps.search_app
+
+    # Development mode:
+    # python -m apps.search_app -m dev
