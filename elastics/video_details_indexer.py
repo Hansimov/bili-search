@@ -66,7 +66,7 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "mapping": {
                     "type": "text",
                     "analyzer": "chinese_analyzer",
-                    "search_analyzer": "chinese_search_analyzer",
+                    "search_analyzer": "chinese_analyzer",
                     "fields": {
                         "pinyin": {
                             "type": "text",
@@ -79,7 +79,7 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                         "text_suggest": {
                             "type": "completion",
                             "analyzer": "chinese_analyzer",
-                            "search_analyzer": "chinese_search_analyzer",
+                            "search_analyzer": "chinese_analyzer",
                         },
                     },
                 },
@@ -92,7 +92,7 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "mapping": {
                     "type": "text",
                     "analyzer": "chinese_analyzer",
-                    "search_analyzer": "chinese_search_analyzer",
+                    "search_analyzer": "chinese_analyzer",
                     "fields": {
                         "pinyin": {
                             "type": "text",
@@ -119,7 +119,7 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "mapping": {
                     "type": "text",
                     "analyzer": "chinese_analyzer",
-                    "search_analyzer": "chinese_search_analyzer",
+                    "search_analyzer": "chinese_analyzer",
                     "fields": {
                         "string": {
                             "type": "text",
@@ -143,7 +143,7 @@ VIDEO_DETAILS_INDEX_MAPPINGS = {
                 "mapping": {
                     "type": "text",
                     "analyzer": "chinese_analyzer",
-                    "search_analyzer": "chinese_search_analyzer",
+                    "search_analyzer": "chinese_analyzer",
                     "fields": {
                         "keyword": {
                             "type": "keyword",
@@ -280,8 +280,21 @@ if __name__ == "__main__":
     if args.recreate:
         indexer.create_index(args.recreate)
 
-    mid = args.mid or 946974
-    indexer.udpate_docs(mid)
+    # mid = args.mid or 946974
+    # indexer.udpate_docs(mid)
+
+    mids = [
+        946974,
+        12566101,
+        14871346,
+        18937923,
+        20259914,
+        46377861,
+        1018175068,
+        1369507485,
+    ]
+    for mid in mids:
+        indexer.udpate_docs(mid)
 
     # for field in ["pubdate_str", "ctime_str"]:
     #     indexer.delete_field_from_doc(field)
@@ -301,7 +314,11 @@ if __name__ == "__main__":
     # )
     # indexer.update_datetime_str_field(["pubdate", "ctime"])
 
+    # Just run the main funciton:
     # python -m elastics.video_details_indexer
 
-    # Index video deatails for mid
+    # Index video details in production index (with recreate):
+    # python -m elastics.video_details_indexer -i bili_video_details_dev -r
+
+    # Index video details in dev index for mid:
     # python -m elastics.video_details_indexer -i bili_video_details_dev -r -m 12566101
