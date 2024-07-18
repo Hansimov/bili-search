@@ -57,17 +57,11 @@ class VideoDetailsSearcher:
     SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
-        2: {
-            "match_type": "cross_fields",
-            "bool": "must",
-            "operator": "and",
-            "pinyin": False,
-        },
-        3: {"match_type": "phrase_prefix", "bool": "must"},
-        4: {"match_type": "cross_fields", "bool": "must"},
-        5: {"match_type": "most_fields", "bool": "must"},
-        6: {"match_type": "most_fields", "bool": "should"},
+        1: {"match_type": "phrase_prefix", "bool": "must"},
+        2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
+        3: {"match_type": "cross_fields", "bool": "must"},
+        4: {"match_type": "most_fields", "bool": "must"},
+        5: {"match_type": "most_fields", "bool": "should"},
     }
     MAX_SEARCH_DETAIL_LEVEL = 4
 
