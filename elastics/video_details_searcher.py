@@ -464,11 +464,13 @@ class VideoDetailsSearcher:
             for field in merged_fields:
                 common_highlight = common_highlights.get(field, [])
                 pinyin_highlight = pinyin_highlights.get(field + ".pinyin", [])
-                merged_highlights[field] = merger.merge(
+                merged_highlight = merger.merge(
                     get_es_source_val(_source, field),
                     common_highlight + pinyin_highlight,
                     tag="hit",
                 )
+                if merged_highlight:
+                    merged_highlights[field] = [merged_highlight]
 
             if (
                 drop_no_highlights
