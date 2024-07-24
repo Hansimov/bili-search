@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import sys
 
 from copy import deepcopy
@@ -148,8 +149,15 @@ class VideoIndexer:
         }
         return elastic_doc
 
-    def index_docs_to_elastic(self, docs: list):
-        bulk(self.es.client, docs)
+    def index_docs_to_elastic(self, docs: list, max_workers: int = 4):
+        doc_chunks = [docs[i::max_workers] for i in range(max_workers)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(bulk, self.es.client, docs_chunk)
+                for docs_chunk in doc_chunks
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
 
     def get_not_existent_doc_ids(self, doc_ids: list):
         if not doc_ids:
@@ -165,6 +173,7 @@ class VideoIndexer:
         mongo_collection: str = "videos",
         max_count: int = None,
         batch_size: int = 100,
+        max_workers: int = 4,
         overwrite: bool = True,
     ):
         logger.note(f"> Indexing docs:", end=" ")
@@ -193,11 +202,11 @@ class VideoIndexer:
                         docs_batch = [
                             doc for doc in docs_batch if doc["_id"] in not_existent_ids
                         ]
-                self.index_docs_to_elastic(docs_batch)
+                self.index_docs_to_elastic(docs_batch, max_workers=max_workers)
                 docs_batch = []
 
         if docs_batch:
-            self.index_docs_to_elastic(docs_batch)
+            self.index_docs_to_elastic(docs_batch, max_workers=max_workers)
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -228,7 +237,7 @@ if __name__ == "__main__":
         indexer.create_index(args.rewrite)
 
     indexer.index_docs_from_mongo_to_elastic(
-        "videos", max_count=10000, batch_size=1000, overwrite=True
+        "videos", batch_size=1000 * 16, max_workers=16
     )
 
     # python -m elastics.video_indexer
