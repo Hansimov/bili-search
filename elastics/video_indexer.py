@@ -151,11 +151,21 @@ class VideoIndexer:
     def index_docs_to_elastic(self, docs: list):
         bulk(self.es.client, docs)
 
+    def get_not_existent_doc_ids(self, doc_ids: list):
+        if not doc_ids:
+            return []
+        response = self.es.client.mget(
+            index=self.index_name, ids=doc_ids, _source=False
+        )
+        not_existent_ids = [doc["_id"] for doc in response["docs"] if not doc["found"]]
+        return not_existent_ids
+
     def index_docs_from_mongo_to_elastic(
         self,
         mongo_collection: str = "videos",
         max_count: int = None,
         batch_size: int = 100,
+        overwrite: bool = True,
     ):
         logger.note(f"> Indexing docs:", end=" ")
         logger.file(f"[{mongo_collection}] (mongo) -> [{self.index_name}] (elastic)")
@@ -176,6 +186,13 @@ class VideoIndexer:
             docs_batch.append(elastic_doc)
 
             if len(docs_batch) >= batch_size:
+                if not overwrite:
+                    doc_ids = [doc["_id"] for doc in docs_batch]
+                    not_existent_ids = set(self.get_not_existent_doc_ids(doc_ids))
+                    if not_existent_ids:
+                        docs_batch = [
+                            doc for doc in docs_batch if doc["_id"] in not_existent_ids
+                        ]
                 self.index_docs_to_elastic(docs_batch)
                 docs_batch = []
 
@@ -210,7 +227,9 @@ if __name__ == "__main__":
     if args.rewrite:
         indexer.create_index(args.rewrite)
 
-    indexer.index_docs_from_mongo_to_elastic("videos", max_count=10000, batch_size=500)
+    indexer.index_docs_from_mongo_to_elastic(
+        "videos", max_count=10000, batch_size=1000, overwrite=True
+    )
 
     # python -m elastics.video_indexer
     # python -m elastics.video_indexer -i bili_videos_dev
