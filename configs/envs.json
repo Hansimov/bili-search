@@ -12,7 +12,7 @@
         },
         "bili_video_details_index": {
             "prod": "bili_video_details",
-            "dev": "bili_video_details_dev"
+            "dev": "bili_videos_dev"
         },
         "version": "0.0.1"
     }
