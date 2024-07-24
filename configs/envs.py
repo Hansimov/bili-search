@@ -21,4 +21,5 @@ else:
 
 BILI_DATA_ROOT = Path(SECRETS["bili_data_root"])
 ELASTIC_ENVS = SECRETS["elastic"]
+MONGO_ENVS = SECRETS["mongo"]
 LLMS_ENVS = SECRETS["llms"]
