@@ -1,13 +1,14 @@
 import argparse
-import json
 import sys
 
 from datetime import datetime
 from tclogger import logger
+from termcolor import colored
 from tqdm import tqdm
 
 from configs.envs import BILI_DATA_ROOT
 from elastics.client import ElasticSearchClient
+from networks.mongo import MongoOperator
 
 VIDEO_INDEX_SETTINGS = {
     "analysis": {
@@ -120,6 +121,7 @@ class VideoIndexer:
         self.index_name = index_name
         self.es = ElasticSearchClient()
         self.es.connect()
+        self.mongo = MongoOperator()
 
     def create_index(self, rewrite: bool = False):
         logger.note(f"> Creating index:", end=" ")
@@ -136,6 +138,33 @@ class VideoIndexer:
             )
         except Exception as e:
             logger.warn(f"× Error: {e}")
+
+    def update_docs_to_elastic(self, docs: list):
+        pass
+
+    def index_docs_from_mongo_to_elastic(
+        self,
+        mongo_collection: str = "videos",
+        max_count: int = None,
+    ):
+        logger.note(f"> Indexing docs:", end=" ")
+        logger.file(f"[{mongo_collection}] (mongo) -> [{self.index_name}] (elastic)")
+
+        total_count = self.mongo.db[mongo_collection].estimated_document_count()
+        cursor = self.mongo.get_cursor(collection=mongo_collection, sort_index="aid")
+        progress_bar = tqdm(cursor, total=max_count or total_count)
+        for idx, doc in enumerate(progress_bar):
+            if max_count and idx + 1 > max_count:
+                break
+            pubdate_str = doc["pubdate_str"]
+            progress_desc = f"{pubdate_str}, aid: {doc['aid']}"
+            progress_bar.set_description(progress_desc)
+            doc_id = doc.pop("_id")
+            self.es.client.index(
+                index=self.index_name,
+                id=doc_id,
+                body=doc,
+            )
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -164,6 +193,8 @@ if __name__ == "__main__":
 
     if args.rewrite:
         indexer.create_index(args.rewrite)
+
+    indexer.index_docs_from_mongo_to_elastic("videos", max_count=10)
 
     # python -m elastics.video_indexer
     # python -m elastics.video_indexer -i bili_videos_dev -r
