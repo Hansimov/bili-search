@@ -1,12 +1,11 @@
 import argparse
 import sys
 
-from datetime import datetime
+from copy import deepcopy
+from elasticsearch.helpers import bulk
 from tclogger import logger
-from termcolor import colored
 from tqdm import tqdm
 
-from configs.envs import BILI_DATA_ROOT
 from elastics.client import ElasticSearchClient
 from networks.mongo import MongoOperator
 
@@ -139,13 +138,24 @@ class VideoIndexer:
         except Exception as e:
             logger.warn(f"× Error: {e}")
 
-    def update_docs_to_elastic(self, docs: list):
-        pass
+    def mongo_doc_to_elastic_doc(self, doc):
+        mongo_doc = deepcopy(doc)
+        doc_id = mongo_doc.pop("_id")
+        elastic_doc = {
+            "_index": self.index_name,
+            "_id": doc_id,
+            "_source": mongo_doc,
+        }
+        return elastic_doc
+
+    def index_docs_to_elastic(self, docs: list):
+        bulk(self.es.client, docs)
 
     def index_docs_from_mongo_to_elastic(
         self,
         mongo_collection: str = "videos",
         max_count: int = None,
+        batch_size: int = 100,
     ):
         logger.note(f"> Indexing docs:", end=" ")
         logger.file(f"[{mongo_collection}] (mongo) -> [{self.index_name}] (elastic)")
@@ -153,18 +163,24 @@ class VideoIndexer:
         total_count = self.mongo.db[mongo_collection].estimated_document_count()
         cursor = self.mongo.get_cursor(collection=mongo_collection, sort_index="aid")
         progress_bar = tqdm(cursor, total=max_count or total_count)
+
+        docs_batch = []
         for idx, doc in enumerate(progress_bar):
             if max_count and idx + 1 > max_count:
                 break
             pubdate_str = doc["pubdate_str"]
             progress_desc = f"{pubdate_str}, aid: {doc['aid']}"
             progress_bar.set_description(progress_desc)
-            doc_id = doc.pop("_id")
-            self.es.client.index(
-                index=self.index_name,
-                id=doc_id,
-                body=doc,
-            )
+
+            elastic_doc = self.mongo_doc_to_elastic_doc(doc)
+            docs_batch.append(elastic_doc)
+
+            if len(docs_batch) >= batch_size:
+                self.index_docs_to_elastic(docs_batch)
+                docs_batch = []
+
+        if docs_batch:
+            self.index_docs_to_elastic(docs_batch)
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -194,7 +210,8 @@ if __name__ == "__main__":
     if args.rewrite:
         indexer.create_index(args.rewrite)
 
-    indexer.index_docs_from_mongo_to_elastic("videos", max_count=10)
+    indexer.index_docs_from_mongo_to_elastic("videos", max_count=10000, batch_size=500)
 
     # python -m elastics.video_indexer
+    # python -m elastics.video_indexer -i bili_videos_dev
     # python -m elastics.video_indexer -i bili_videos_dev -r
