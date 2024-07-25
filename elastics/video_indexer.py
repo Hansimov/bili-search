@@ -4,9 +4,12 @@ import sys
 
 from copy import deepcopy
 from elasticsearch.helpers import bulk
+from pathlib import Path
 from tclogger import logger
 from tqdm import tqdm
 
+from configs.envs import LOG_ENVS
+from converters.times import get_now_ts_str
 from elastics.client import ElasticSearchClient
 from networks.mongo import MongoOperator
 
@@ -122,6 +125,13 @@ class VideoIndexer:
         self.es = ElasticSearchClient()
         self.es.connect()
         self.mongo = MongoOperator()
+        self.log_path = Path(__file__).parents[1] / "logs" / LOG_ENVS["video_indexer"]
+
+    def log_file(self, log_msg: str):
+        if not self.log_path.parent.exists():
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.log_path, "a") as af:
+            af.write(log_msg + "\n")
 
     def create_index(self, rewrite: bool = False):
         logger.note(f"> Creating index:", end=" ")

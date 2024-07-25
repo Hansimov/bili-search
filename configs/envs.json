@@ -15,5 +15,8 @@
             "dev": "bili_videos_dev"
         },
         "version": "0.0.1"
+    },
+    "logs": {
+        "video_indexer": "video_indexer.log"
     }
 }
