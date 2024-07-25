@@ -171,30 +171,40 @@ class VideoIndexer:
     def index_docs_from_mongo_to_elastic(
         self,
         mongo_collection: str = "videos",
-        max_count: int = None,
+        sort_index: str = "aid",
         index_offset: int = None,
+        max_count: int = None,
         batch_size: int = 100,
-        log_interval: int = 100000,
         max_workers: int = 4,
+        log_interval: int = 100000,
         overwrite: bool = True,
     ):
         logger.note(f"> Indexing docs:", end=" ")
         logger.file(f"[{mongo_collection}] (mongo) -> [{self.index_name}] (elastic)")
 
-        total_count = self.mongo.db[mongo_collection].estimated_document_count()
+        logger.note(f"> Get count of docs ...")
+        db_collect = self.mongo.db[mongo_collection]
+        if index_offset is not None:
+            filter_dict = {sort_index: {"$gte": index_offset}}
+            total_count = db_collect.count_documents(filter_dict)
+        else:
+            total_count = db_collect.estimated_document_count()
+
         cursor = self.mongo.get_cursor(
-            collection=mongo_collection, sort_index="aid", index_offset=index_offset
+            collection=mongo_collection,
+            sort_index=sort_index,
+            index_offset=index_offset,
         )
         progress_bar = tqdm(cursor, total=max_count or total_count)
-
         docs_batch = []
         futures = set()
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             for idx, doc in enumerate(progress_bar):
                 if max_count and idx + 1 > max_count:
                     break
                 pubdate_str = doc["pubdate_str"]
-                progress_desc = f"{pubdate_str}, aid: {doc['aid']}"
+                progress_desc = f"{pubdate_str}, {sort_index}: {doc[sort_index]}"
                 progress_bar.set_description(progress_desc)
 
                 elastic_doc = self.mongo_doc_to_elastic_doc(doc)
@@ -260,7 +270,7 @@ if __name__ == "__main__":
         indexer.create_index(args.rewrite)
 
     indexer.index_docs_from_mongo_to_elastic(
-        "videos", index_offset=96881773, batch_size=1000, max_workers=8
+        "videos", index_offset=229719009, batch_size=1000, max_workers=8
     )
 
     # python -m elastics.video_indexer
