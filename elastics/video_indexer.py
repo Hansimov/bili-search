@@ -174,6 +174,7 @@ class VideoIndexer:
         max_count: int = None,
         index_offset: int = None,
         batch_size: int = 100,
+        log_interval: int = 100000,
         max_workers: int = 4,
         overwrite: bool = True,
     ):
@@ -187,39 +188,48 @@ class VideoIndexer:
         progress_bar = tqdm(cursor, total=max_count or total_count)
 
         docs_batch = []
-        future_batches = {}
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-        for idx, doc in enumerate(progress_bar):
-            if max_count and idx + 1 > max_count:
-                break
-            pubdate_str = doc["pubdate_str"]
-            progress_desc = f"{pubdate_str}, aid: {doc['aid']}"
-            progress_bar.set_description(progress_desc)
+        futures = set()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, doc in enumerate(progress_bar):
+                if max_count and idx + 1 > max_count:
+                    break
+                pubdate_str = doc["pubdate_str"]
+                progress_desc = f"{pubdate_str}, aid: {doc['aid']}"
+                progress_bar.set_description(progress_desc)
 
-            elastic_doc = self.mongo_doc_to_elastic_doc(doc)
-            docs_batch.append(elastic_doc)
+                elastic_doc = self.mongo_doc_to_elastic_doc(doc)
+                docs_batch.append(elastic_doc)
 
-            if len(docs_batch) >= batch_size:
-                if not overwrite:
-                    doc_ids = [doc["_id"] for doc in docs_batch]
-                    not_existent_ids = set(self.get_not_existent_doc_ids(doc_ids))
-                    if not_existent_ids:
-                        docs_batch = [
-                            doc for doc in docs_batch if doc["_id"] in not_existent_ids
-                        ]
+                if len(docs_batch) >= batch_size:
+                    if not overwrite:
+                        doc_ids = [doc["_id"] for doc in docs_batch]
+                        not_existent_ids = set(self.get_not_existent_doc_ids(doc_ids))
+                        if not_existent_ids:
+                            docs_batch = [
+                                doc
+                                for doc in docs_batch
+                                if doc["_id"] in not_existent_ids
+                            ]
 
+                    future = executor.submit(bulk, self.es.client, docs_batch)
+                    futures.add(future)
+                    docs_batch = []
+
+                    if len(futures) >= max_workers:
+                        done, futures = concurrent.futures.wait(
+                            futures, return_when=concurrent.futures.FIRST_COMPLETED
+                        )
+
+                if idx % log_interval == 0:
+                    log_msg = f"[{get_now_ts_str()[1]}] {idx}: {progress_desc}"
+                    self.log_file(log_msg)
+
+            if docs_batch:
                 future = executor.submit(bulk, self.es.client, docs_batch)
-                future_batches[future] = docs_batch
-                docs_batch = []
+                futures.add(future)
 
-        if docs_batch:
-            future = executor.submit(bulk, self.es.client, docs_batch)
-            future_batches[future] = docs_batch
-
-        for future in concurrent.futures.as_completed(future_batches):
-            future.result()
-
-        executor.shutdown()
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -250,7 +260,7 @@ if __name__ == "__main__":
         indexer.create_index(args.rewrite)
 
     indexer.index_docs_from_mongo_to_elastic(
-        "videos", index_offset=53220000, batch_size=1000, max_workers=16
+        "videos", index_offset=96881773, batch_size=1000, max_workers=8
     )
 
     # python -m elastics.video_indexer
