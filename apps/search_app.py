@@ -8,7 +8,7 @@ from typing import Optional, List
 
 from apps.arg_parser import ArgParser
 from configs.envs import SEARCH_APP_ENVS
-from elastics.video_details_searcher import VideoDetailsSearcher
+from elastics.video_searcher import VideoSearcher
 
 
 class SearchApp:
@@ -23,9 +23,7 @@ class SearchApp:
         )
         self.mode = app_envs.get("mode", "prod")
         # self.allow_cors()
-        self.video_details_searcher = VideoDetailsSearcher(
-            app_envs["bili_video_details_index"]
-        )
+        self.video_searcher = VideoSearcher(app_envs["bili_videos_index"])
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
 
@@ -41,14 +39,12 @@ class SearchApp:
     def suggest(
         self,
         query: str = Body(...),
-        match_fields: Optional[list[str]] = Body(
-            VideoDetailsSearcher.SUGGEST_MATCH_FIELDS
-        ),
-        match_type: Optional[str] = Body(VideoDetailsSearcher.SUGGEST_MATCH_TYPE),
-        limit: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        match_fields: Optional[list[str]] = Body(VideoSearcher.SUGGEST_MATCH_FIELDS),
+        match_type: Optional[str] = Body(VideoSearcher.SUGGEST_MATCH_TYPE),
+        limit: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.suggest(
+        suggestions = self.video_searcher.suggest(
             query,
             match_fields=match_fields,
             match_type=match_type,
@@ -60,18 +56,16 @@ class SearchApp:
     def search(
         self,
         query: str = Body(...),
-        match_fields: Optional[list[str]] = Body(
-            VideoDetailsSearcher.SEARCH_MATCH_FIELDS
-        ),
-        match_type: Optional[str] = Body(VideoDetailsSearcher.SEARCH_MATCH_TYPE),
+        match_fields: Optional[list[str]] = Body(VideoSearcher.SEARCH_MATCH_FIELDS),
+        match_type: Optional[str] = Body(VideoSearcher.SEARCH_MATCH_TYPE),
         boost: bool = Body(True),
-        boosted_fields: dict = Body(VideoDetailsSearcher.BOOSTED_FIELDS),
+        boosted_fields: dict = Body(VideoSearcher.BOOSTED_FIELDS),
         detail_level: int = Body(-1),
-        max_detail_level: int = Body(VideoDetailsSearcher.MAX_SEARCH_DETAIL_LEVEL),
-        limit: Optional[int] = Body(VideoDetailsSearcher.SEARCH_LIMIT),
+        max_detail_level: int = Body(VideoSearcher.MAX_SEARCH_DETAIL_LEVEL),
+        limit: Optional[int] = Body(VideoSearcher.SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.detailed_search(
+        suggestions = self.video_searcher.detailed_search(
             query,
             match_fields=match_fields,
             match_type=match_type,
@@ -86,21 +80,21 @@ class SearchApp:
 
     def random(
         self,
-        seed_update_seconds: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
-        limit: Optional[int] = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        seed_update_seconds: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
+        limit: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.random(
+        suggestions = self.video_searcher.random(
             seed_update_seconds=seed_update_seconds, limit=limit, verbose=verbose
         )
         return suggestions
 
     def latest(
         self,
-        limit: int = Body(VideoDetailsSearcher.SUGGEST_LIMIT),
+        limit: int = Body(VideoSearcher.SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_details_searcher.latest(limit=limit, verbose=verbose)
+        suggestions = self.video_searcher.latest(limit=limit, verbose=verbose)
         return suggestions
 
     def doc(
@@ -108,11 +102,11 @@ class SearchApp:
         bvid: str = Body(...),
         included_source_fields: Optional[List[str]] = Body([]),
         excluded_source_fields: Optional[List[str]] = Body(
-            VideoDetailsSearcher.DOC_EXCLUDED_SOURCE_FIELDS
+            VideoSearcher.DOC_EXCLUDED_SOURCE_FIELDS
         ),
         verbose: Optional[bool] = Body(False),
     ):
-        doc = self.video_details_searcher.doc(
+        doc = self.video_searcher.doc(
             bvid,
             included_source_fields=included_source_fields,
             excluded_source_fields=excluded_source_fields,

@@ -10,7 +10,7 @@
             "prod": 20001,
             "dev": 21001
         },
-        "bili_video_details_index": {
+        "bili_videos_index": {
             "prod": "bili_video_details",
             "dev": "bili_videos_dev"
         },
