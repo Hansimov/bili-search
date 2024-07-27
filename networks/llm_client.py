@@ -4,15 +4,28 @@ import re
 import requests
 
 from tclogger import logger, Runtimer
+from typing import Literal
 
 
 class LLMClient:
-    def __init__(self, endpoint: str, api_key: str, response_format="openai"):
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str,
+        response_format: Literal["openai", "ollama"] = "openai",
+    ):
         self.endpoint = endpoint
         self.api_key = api_key
         self.response_format = response_format
 
-    def create_response(self, messages, model, stream=True):
+    def create_response(
+        self,
+        messages: list,
+        model: str,
+        temperature: float = 0,
+        seed: int = 42,
+        stream: bool = True,
+    ):
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
@@ -23,6 +36,16 @@ class LLMClient:
             "messages": messages,
             "stream": stream,
         }
+
+        options = {
+            "temperature": temperature,
+            "seed": seed,
+        }
+        if self.response_format == "ollama":
+            payload["options"] = options
+        else:
+            payload.update(options)
+
         response = requests.post(
             self.endpoint, headers=headers, json=payload, stream=stream
         )
@@ -80,10 +103,23 @@ class LLMClient:
             logger.warn(f"× Error: {response.text}")
         return response_content
 
-    def chat(self, messages, model, stream=True):
+    def chat(
+        self,
+        messages: list,
+        model: str,
+        temperature: float = 0,
+        seed: int = 42,
+        stream=True,
+    ):
         timer = Runtimer(verbose=False)
         timer.start_time()
-        response = self.create_response(messages, model, stream)
+        response = self.create_response(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            seed=seed,
+            stream=stream,
+        )
         if stream:
             response_content = self.parse_stream_response(response)
         else:
