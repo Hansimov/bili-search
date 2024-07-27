@@ -9,6 +9,88 @@ from elastics.highlighter import PinyinHighlighter, HighlightMerger
 from elastics.structure import get_es_source_val
 
 
+class MultiMatchQueryDSLConstructor:
+    def remove_boost_from_fields(self, fields: list[str]) -> list[str]:
+        return [field.split("^", 1)[0] for field in fields]
+
+    def remove_pinyin_fields(self, fields: list[str]) -> list[str]:
+        return [field for field in fields if not field.endswith(".pinyin")]
+
+    def remove_field_from_fields(
+        self, field_to_remove: str, fields: list[str]
+    ) -> list[str]:
+        return [field for field in fields if not field.startswith(field_to_remove)]
+
+    def is_field_in_fields(self, field_to_check: str, fields: list[str]) -> bool:
+        for field in fields:
+            if field.startswith(field_to_check):
+                return True
+        return False
+
+    def construct(
+        self,
+        query: str,
+        match_fields: list[str] = ["title", "owner.name", "desc", "pubdate_str"],
+        match_bool: str = "must",
+        match_type: str = "phrase_prefix",
+        match_operator: str = "or",
+    ) -> dict:
+        query_keywords = query.split()
+        if self.is_field_in_fields("pubdate_str", match_fields):
+            match_bool_clause = []
+            for keyword in query_keywords:
+                fields_without_pubdate_str = self.remove_field_from_fields(
+                    "pubdate_str", match_fields
+                )
+                fields_groups = [
+                    {
+                        "fields": fields_without_pubdate_str,
+                        "type": match_type,
+                    },
+                    {
+                        "fields": "pubdate_str",
+                        "type": "bool_prefix",
+                    },
+                ]
+                should_clause = []
+                for fields_group in fields_groups:
+                    multi_match_clause = {
+                        "multi_match": {
+                            "query": keyword,
+                            "type": fields_group["type"],
+                            "fields": fields_group["fields"],
+                            "operator": match_operator,
+                        },
+                    }
+                    should_clause.append(multi_match_clause)
+                bool_should_clause = {
+                    "bool": {
+                        "should": should_clause,
+                        "minimum_should_match": 1,
+                    }
+                }
+                match_bool_clause.append(bool_should_clause)
+            query_dsl_dict = {
+                "bool": {match_bool: match_bool_clause},
+            }
+        else:
+            multi_match_clauses = []
+            for keyword in query_keywords:
+                multi_match_clause = {
+                    "multi_match": {
+                        "query": keyword,
+                        "type": match_type,
+                        "fields": match_fields,
+                        "operator": match_operator,
+                    }
+                }
+                multi_match_clauses.append(multi_match_clause)
+            query_dsl_dict = {
+                "bool": {match_bool: multi_match_clauses},
+            }
+        return query_dsl_dict
+
+
 class VideoSearcher:
     SOURCE_FIELDS = [
         "title",
@@ -56,7 +138,7 @@ class VideoSearcher:
     SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
+        1: {"match_type": "bool_prefix", "bool": "must", "pinyin": False},
         2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
         3: {"match_type": "cross_fields", "bool": "must"},
         4: {"match_type": "most_fields", "bool": "must"},
@@ -504,7 +586,23 @@ class VideoSearcher:
 
 
 if __name__ == "__main__":
-    searcher = VideoSearcher("bili_videos_dev")
-    searcher.search("碧诗", boost=True, detail_level=1, limit=10, verbose=True)
+    # searcher = VideoSearcher("bili_videos_dev")
+    # searcher.search(
+    #     "Hansimov 2018",
+    #     source_fields=["title", "owner.name", "desc", "pubdate_str"],
+    #     boost=True,
+    #     detail_level=1,
+    #     limit=3,
+    #     verbose=True,
+    # )
+
+    query = "Hansimov 2018"
+    query = "影视飓风 2024"
+    match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
+    constructor = MultiMatchQueryDSLConstructor()
+    query_dsl_dict = constructor.construct(query=query, match_fields=match_fields)
+    logger.note(f"> Construct DSL for query:", end=" ")
+    logger.mesg(f"[{query}]")
+    logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2))
 
     # python -m elastics.video_searcher
