@@ -1,7 +1,7 @@
 from copy import deepcopy
 from datetime import datetime
 from pprint import pformat
-from tclogger import logger
+from tclogger import logger, get_now_ts
 from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
@@ -111,6 +111,34 @@ class MultiMatchQueryDSLConstructor:
                 "bool": {match_bool: multi_match_clauses},
             }
         return query_dsl_dict
+
+
+class ScriptScoreQueryDSLConstructor:
+    def log_func(self, field: str) -> str:
+        log_str = "Math.log10"
+        field_str = f"doc['{field}'].value"
+        res_str = f"{log_str}({field_str}+1)"
+        return res_str
+
+    def get_script_sourse(self):
+        # score = log(stat.view+1) * log(stat.like+1) * log(stat.coin+1) / (pubdate - now_timestamp)
+        log = self.log_func
+        script_source = f"{log('stat.view')} * {log('stat.like')} * {log('stat.coin')} / (params.now_ts - doc['pubdate'].value.getMillis()/1000+1) * 100000"
+        return script_source
+
+    def construct(self, query_dsl_dict: dict) -> dict:
+        script_score_dsl_dict = {
+            "script_score": {
+                "query": query_dsl_dict,
+                "script": {
+                    "source": self.get_script_sourse(),
+                    "params": {
+                        "now_ts": get_now_ts(),
+                    },
+                },
+            }
+        }
+        return script_score_dsl_dict
 
 
 class VideoSearcher:
@@ -311,14 +339,18 @@ class VideoSearcher:
             match_type=match_type,
             match_operator=match_operator,
         )
-        query_keywords = query.split()
+        script_score_constructor = ScriptScoreQueryDSLConstructor()
+        script_score_dsl_dict = script_score_constructor.construct(query_dsl_dict)
+
         search_body = {
-            "query": query_dsl_dict,
+            # "query": query_dsl_dict,
+            "query": script_score_dsl_dict,
             "_source": source_fields,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
         }
 
+        query_keywords = query.split()
         if detail_level > 2 and match_bool == "should":
             search_body["query"]["bool"]["minimum_should_match"] = (
                 len(query_keywords) - 1
@@ -603,7 +635,7 @@ class VideoSearcher:
 
 if __name__ == "__main__":
     # query = "Hansimov 2018"
-    query = "影视飓风 2024/7"
+    query = "影视飓风 2024-07"
     match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
     constructor = MultiMatchQueryDSLConstructor()
     query_dsl_dict = constructor.construct(query=query, match_fields=match_fields)
@@ -614,7 +646,7 @@ if __name__ == "__main__":
     searcher = VideoSearcher("bili_videos_dev")
     searcher.search(
         query,
-        source_fields=["title", "owner.name", "desc", "pubdate_str"],
+        source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
         boost=True,
         detail_level=1,
         limit=3,

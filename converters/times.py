@@ -110,10 +110,10 @@ class DateFormatChecker:
 
         if not start and not end:
             logger.exit_quiet(not verbose)
-            return False
+            return True
         if check_format and not self.is_date_format(input_str, verbose=verbose):
-            logger.exit_quiet(not verbose)
             logger.warn("× Invalid date format!")
+            logger.exit_quiet(not verbose)
             return False
 
         if start:
@@ -153,7 +153,7 @@ class DateFormatChecker:
         logger.enter_quiet(not verbose)
         input_str = input_str.strip()
 
-        if check_format and not self.is_date_format(input_str):
+        if check_format and not self.is_date_format(input_str, verbose=verbose):
             output_str = ""
 
         if self.real_year:
