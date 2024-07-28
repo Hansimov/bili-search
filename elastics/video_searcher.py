@@ -48,7 +48,7 @@ class MultiMatchQueryDSLConstructor:
                     "type": match_type,
                 },
                 {
-                    "fields": "pubdate_str",
+                    "fields": ["pubdate_str"],
                     "type": "bool_prefix",
                 },
             ]
@@ -57,11 +57,19 @@ class MultiMatchQueryDSLConstructor:
                 if date_format_checker.is_in_date_range(
                     keyword, start="2009-09-09", end=datetime.now(), verbose=False
                 ):
+                    date_keyword = date_format_checker.rewrite(
+                        keyword, sep="-", check_format=False
+                    )
+                    date_format_checker.init_year_month_day()
                     should_clause = []
                     for fields_group in splitted_fields_groups:
+                        if "pubdate_str" in fields_group["fields"]:
+                            field_keyword = date_keyword
+                        else:
+                            field_keyword = keyword
                         multi_match_clause = {
                             "multi_match": {
-                                "query": keyword,
+                                "query": field_keyword,
                                 "type": fields_group["type"],
                                 "fields": fields_group["fields"],
                                 "operator": match_operator,
@@ -611,7 +619,7 @@ if __name__ == "__main__":
     # )
 
     query = "Hansimov 2018"
-    query = "影视飓风 2024"
+    query = "影视飓风 2024/7"
     match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
     constructor = MultiMatchQueryDSLConstructor()
     query_dsl_dict = constructor.construct(query=query, match_fields=match_fields)
