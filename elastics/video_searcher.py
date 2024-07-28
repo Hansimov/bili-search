@@ -58,7 +58,7 @@ class MultiMatchQueryDSLConstructor:
                     keyword, start="2009-09-09", end=datetime.now(), verbose=False
                 ):
                     date_keyword = date_format_checker.rewrite(
-                        keyword, sep="-", check_format=False
+                        keyword, sep="-", check_format=False, use_current_year=True
                     )
                     date_format_checker.init_year_month_day()
                     should_clause = []

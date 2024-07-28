@@ -147,6 +147,7 @@ class DateFormatChecker:
         sep="-",
         padding_zeros: bool = True,
         check_format: bool = True,
+        use_current_year: bool = False,
         verbose: bool = False,
     ) -> str:
         logger.enter_quiet(not verbose)
@@ -155,7 +156,14 @@ class DateFormatChecker:
         if check_format and not self.is_date_format(input_str):
             output_str = ""
 
-        year_str = self.real_year if self.real_year else ""
+        if self.real_year:
+            year_str = self.real_year
+        else:
+            if use_current_year and self.month:
+                year_str = datetime.now().year
+            else:
+                year_str = ""
+
         month_str = self.real_month if self.real_month else ""
         day_str = self.real_day if self.real_day else ""
 
@@ -206,7 +214,9 @@ if __name__ == "__main__":
         checker.is_in_date_range(
             input_str, start="2009-09-09", end=datetime.now(), verbose=True
         )
-        checker.rewrite(input_str, sep="-", check_format=True, verbose=True)
+        checker.rewrite(
+            input_str, sep="-", use_current_year=True, check_format=True, verbose=True
+        )
         checker.init_year_month_day()
 
     # python -m converters.times
