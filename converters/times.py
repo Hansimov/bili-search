@@ -87,8 +87,10 @@ class DateFormatChecker:
         input_str = input_str.strip()
 
         if not start and not end:
+            logger.exit_quiet(not verbose)
             return False
         if not self.is_date_format(input_str, verbose=verbose):
+            logger.exit_quiet(not verbose)
             logger.warn("× Invalid date format!")
             return False
 

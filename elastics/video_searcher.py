@@ -7,6 +7,7 @@ from typing import Literal, Union
 from elastics.client import ElasticSearchClient
 from elastics.highlighter import PinyinHighlighter, HighlightMerger
 from elastics.structure import get_es_source_val
+from converters.times import DateFormatChecker
 
 
 class MultiMatchQueryDSLConstructor:
@@ -36,39 +37,52 @@ class MultiMatchQueryDSLConstructor:
         match_operator: str = "or",
     ) -> dict:
         query_keywords = query.split()
+        fields_without_pubdate_str = self.remove_field_from_fields(
+            "pubdate_str", match_fields
+        )
         if self.is_field_in_fields("pubdate_str", match_fields):
+            date_format_checker = DateFormatChecker()
+            splitted_fields_groups = [
+                {
+                    "fields": fields_without_pubdate_str,
+                    "type": match_type,
+                },
+                {
+                    "fields": "pubdate_str",
+                    "type": "bool_prefix",
+                },
+            ]
             match_bool_clause = []
             for keyword in query_keywords:
-                fields_without_pubdate_str = self.remove_field_from_fields(
-                    "pubdate_str", match_fields
-                )
-                fields_groups = [
-                    {
-                        "fields": fields_without_pubdate_str,
-                        "type": match_type,
-                    },
-                    {
-                        "fields": "pubdate_str",
-                        "type": "bool_prefix",
-                    },
-                ]
-                should_clause = []
-                for fields_group in fields_groups:
-                    multi_match_clause = {
+                if date_format_checker.is_in_date_range(
+                    keyword, start="2009-09-09", end=datetime.now(), verbose=False
+                ):
+                    should_clause = []
+                    for fields_group in splitted_fields_groups:
+                        multi_match_clause = {
+                            "multi_match": {
+                                "query": keyword,
+                                "type": fields_group["type"],
+                                "fields": fields_group["fields"],
+                                "operator": match_operator,
+                            },
+                        }
+                        should_clause.append(multi_match_clause)
+                    bool_should_clause = {
+                        "bool": {
+                            "should": should_clause,
+                            "minimum_should_match": 1,
+                        }
+                    }
+                else:
+                    bool_should_clause = {
                         "multi_match": {
                             "query": keyword,
-                            "type": fields_group["type"],
-                            "fields": fields_group["fields"],
+                            "type": match_type,
+                            "fields": fields_without_pubdate_str,
                             "operator": match_operator,
-                        },
+                        }
                     }
-                    should_clause.append(multi_match_clause)
-                bool_should_clause = {
-                    "bool": {
-                        "should": should_clause,
-                        "minimum_should_match": 1,
-                    }
-                }
                 match_bool_clause.append(bool_should_clause)
             query_dsl_dict = {
                 "bool": {match_bool: match_bool_clause},
