@@ -2,8 +2,7 @@ import argparse
 import json
 import sys
 
-from datetime import datetime
-from tclogger import logger
+from tclogger import logger, ts_to_str
 from tqdm import tqdm
 
 from configs.envs import BILI_DATA_ROOT
@@ -175,9 +174,6 @@ class VideoDetailsIndexer:
             mappings=VIDEO_DETAILS_INDEX_MAPPINGS,
         )
 
-    def convert_timestamp_to_datetime_str(self, timestamp: int):
-        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-
     def udpate_docs(self, mid: int = None):
         video_details_dir = BILI_DATA_ROOT / f"{mid}" / "video_details"
         logger.note("> Updating video details docs ...")
@@ -188,11 +184,7 @@ class VideoDetailsIndexer:
             if bvid:
                 for key in ["pubdate", "ctime"]:
                     if video_details.get(key, None):
-                        video_details[f"{key}_str"] = (
-                            self.convert_timestamp_to_datetime_str(
-                                video_details.get(key)
-                            )
-                        )
+                        video_details[f"{key}_str"] = ts_to_str(video_details.get(key))
                 self.es.client.index(
                     index=self.index_name,
                     id=bvid,

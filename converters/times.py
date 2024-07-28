@@ -2,13 +2,6 @@ from datetime import datetime, timedelta
 from typing import Union
 
 
-def get_now_ts_str() -> tuple[int, str]:
-    now = datetime.now()
-    now_ts = round(now.timestamp())
-    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    return now_ts, now_str
-
-
 def timestamp_to_datetime_str(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 

@@ -9,7 +9,7 @@ from tclogger import logger
 from tqdm import tqdm
 
 from configs.envs import LOG_ENVS
-from converters.times import get_now_ts_str
+from tclogger import get_now_ts_str
 from elastics.client import ElasticSearchClient
 from networks.mongo import MongoOperator
 
