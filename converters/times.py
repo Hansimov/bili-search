@@ -35,25 +35,29 @@ def decimal_seconds_to_srt_timestamp(dot_seconds: Union[float, str]) -> str:
 
 class DateFormatChecker:
     def __init__(self):
-        self.year = None
-        self.month = None
-        self.day = None
-
-    def is_date_format(self, input_str: str, verbose: bool = False):
-        logger.enter_quiet(not verbose)
-        input_str = input_str.strip()
-        logger.note(f"{input_str}:")
-        patterns = [
+        self.init_year_month_day()
+        self.date_patterns = [
             ("^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}$", "%Y-%m-%d"),  # yyyy-mm-dd
             ("^[0-9]{4}/[0-9]{1,2}/[0-9]{1,2}$", "%Y/%m/%d"),  # yyyy/mm/dd
+            ("^[0-9]{4}-[0-9]{1,2}/[0-9]{1,2}$", "%Y-%m/%d"),  # yyyy-mm/dd
+            ("^[0-9]{4}/[0-9]{1,2}-[0-9]{1,2}$", "%Y/%m-%d"),  # yyyy/mm-dd
             ("^[0-9]{4}-[0-9]{1,2}$", "%Y-%m"),  # yyyy-mm
             ("^[0-9]{4}/[0-9]{1,2}$", "%Y/%m"),  # yyyy/mm
             ("^[0-9]{4}$", "%Y"),  # yyyy
             ("^[0-9]{1,2}-[0-9]{1,2}$", "%m-%d"),  # mm/dd
             ("^[0-9]{1,2}/[0-9]{1,2}$", "%m/%d"),  # mm-dd
         ]
-        for pattern, date_format in patterns:
-            match = re.match(pattern, input_str)
+
+    def init_year_month_day(self):
+        self.year, self.month, self.day = None, None, None
+        self.real_year, self.real_month, self.real_day = None, None, None
+
+    def is_date_format(self, input_str: str, verbose: bool = False) -> bool:
+        logger.enter_quiet(not verbose)
+        input_str = input_str.strip()
+        logger.note(f"{input_str}:")
+        for date_pattern, date_format in self.date_patterns:
+            match = re.match(date_pattern, input_str)
             if match:
                 try:
                     date = datetime.strptime(input_str, date_format)
@@ -61,17 +65,34 @@ class DateFormatChecker:
                     logger.warn(f"× Error: {e}")
                     logger.exit_quiet(not verbose)
                     return False
+
                 if date_format in ["%m-%d", "%m/%d"]:
                     self.year = datetime.now().year
+                    self.real_year = None
                 else:
                     self.year = date.year
-                self.month = date.month
-                self.day = date.day
+                    self.real_year = date.year
+
+                if date_format in ["%Y"]:
+                    self.month = date.month
+                    self.real_month = None
+                else:
+                    self.month = date.month
+                    self.real_month = date.month
+
+                if date_format in ["%Y-%m", "%Y/%m", "%Y"]:
+                    self.day = date.day
+                    self.real_day = None
+                else:
+                    self.day = date.day
+                    self.real_day = date.day
+
                 logger.success(
                     f"✓ Parsed date: {self.year:04}-{self.month:02}-{self.day:02}"
                 )
                 logger.exit_quiet(not verbose)
                 return True
+
         logger.warn("× Invalid date format!")
         logger.exit_quiet(not verbose)
         return False
@@ -81,15 +102,16 @@ class DateFormatChecker:
         input_str: str,
         start: Union[str, datetime] = None,
         end: Union[str, datetime] = None,
+        check_format: bool = True,
         verbose: bool = False,
-    ):
+    ) -> bool:
         logger.enter_quiet(not verbose)
         input_str = input_str.strip()
 
         if not start and not end:
             logger.exit_quiet(not verbose)
             return False
-        if not self.is_date_format(input_str, verbose=verbose):
+        if check_format and not self.is_date_format(input_str, verbose=verbose):
             logger.exit_quiet(not verbose)
             logger.warn("× Invalid date format!")
             return False
