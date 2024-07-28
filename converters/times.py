@@ -141,6 +141,43 @@ class DateFormatChecker:
             logger.exit_quiet(not verbose)
             return False
 
+    def rewrite(
+        self,
+        input_str: str,
+        sep="-",
+        padding_zeros: bool = True,
+        check_format: bool = True,
+        verbose: bool = False,
+    ) -> str:
+        logger.enter_quiet(not verbose)
+        input_str = input_str.strip()
+
+        if check_format and not self.is_date_format(input_str):
+            output_str = ""
+
+        year_str = self.real_year if self.real_year else ""
+        month_str = self.real_month if self.real_month else ""
+        day_str = self.real_day if self.real_day else ""
+
+        element_strs = []
+        for idx, element in enumerate([year_str, month_str, day_str]):
+            if element:
+                if padding_zeros:
+                    if idx == 0:
+                        element_str = f"{element:04}"
+                    else:
+                        element_str = f"{element:02}"
+                else:
+                    element_str = str(element)
+                element_strs.append(element_str)
+        output_str = sep.join(element_strs)
+
+        if output_str:
+            logger.success(f"> {output_str}")
+
+        logger.exit_quiet(not verbose)
+        return output_str
+
 
 if __name__ == "__main__":
     decimal_seconds = "666.123"
@@ -148,6 +185,8 @@ if __name__ == "__main__":
 
     input_str_list = [
         "2022-02-28",
+        "2022-02/28",
+        "2022/02-28",
         "2022-02",
         "2022-2",
         "2022",
@@ -167,5 +206,7 @@ if __name__ == "__main__":
         checker.is_in_date_range(
             input_str, start="2009-09-09", end=datetime.now(), verbose=True
         )
+        checker.rewrite(input_str, sep="-", check_format=True, verbose=True)
+        checker.init_year_month_day()
 
     # python -m converters.times
