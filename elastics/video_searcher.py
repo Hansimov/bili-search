@@ -160,7 +160,7 @@ class VideoSearcher:
     SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "bool_prefix", "bool": "must", "pinyin": False},
+        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
         2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
         3: {"match_type": "cross_fields", "bool": "must"},
         4: {"match_type": "most_fields", "bool": "must"},
@@ -303,23 +303,17 @@ class VideoSearcher:
         else:
             boosted_fields = match_fields
 
+        query_constructor = MultiMatchQueryDSLConstructor()
+        query_dsl_dict = query_constructor.construct(
+            query,
+            match_fields=boosted_fields,
+            match_bool=match_bool,
+            match_type=match_type,
+            match_operator=match_operator,
+        )
         query_keywords = query.split()
-
-        multi_match_clauses = [
-            {
-                "multi_match": {
-                    "query": keyword,
-                    "type": match_type,
-                    "fields": boosted_fields,
-                    "operator": match_operator,
-                }
-            }
-            for keyword in query_keywords
-        ]
         search_body = {
-            "query": {
-                "bool": {match_bool: multi_match_clauses},
-            },
+            "query": query_dsl_dict,
             "_source": source_fields,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
@@ -608,17 +602,7 @@ class VideoSearcher:
 
 
 if __name__ == "__main__":
-    # searcher = VideoSearcher("bili_videos_dev")
-    # searcher.search(
-    #     "Hansimov 2018",
-    #     source_fields=["title", "owner.name", "desc", "pubdate_str"],
-    #     boost=True,
-    #     detail_level=1,
-    #     limit=3,
-    #     verbose=True,
-    # )
-
-    query = "Hansimov 2018"
+    # query = "Hansimov 2018"
     query = "影视飓风 2024/7"
     match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
     constructor = MultiMatchQueryDSLConstructor()
@@ -626,5 +610,15 @@ if __name__ == "__main__":
     logger.note(f"> Construct DSL for query:", end=" ")
     logger.mesg(f"[{query}]")
     logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2))
+
+    searcher = VideoSearcher("bili_videos_dev")
+    searcher.search(
+        query,
+        source_fields=["title", "owner.name", "desc", "pubdate_str"],
+        boost=True,
+        detail_level=1,
+        limit=3,
+        verbose=True,
+    )
 
     # python -m elastics.video_searcher
