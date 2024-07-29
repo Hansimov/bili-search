@@ -298,7 +298,7 @@ class VideoSearcher:
         is_explain: bool = False,
         boost: bool = True,
         boosted_fields: dict = BOOSTED_FIELDS,
-        use_script_score: bool = False,
+        use_script_score: bool = True,
         detail_level: int = -1,
         limit: int = SEARCH_LIMIT,
         verbose: bool = False,
@@ -462,15 +462,16 @@ class VideoSearcher:
         search_body = {
             "query": {
                 "function_score": {
-                    "functions": [
-                        {
-                            "random_score": {
-                                "seed": seed,
-                                "field": "_seq_no",
-                            }
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"range": {"stat.view": {"gte": 1000000}}},
+                                {"range": {"pubdate": {"gte": "now-30d/d"}}},
+                            ]
                         }
-                    ],
-                    "score_mode": "sum",
+                    },
+                    "random_score": {"seed": seed, "field": "_seq_no"},
+                    "boost_mode": "replace",
                 }
             },
             "_source": source_fields,
