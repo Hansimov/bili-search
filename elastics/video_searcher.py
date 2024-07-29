@@ -117,13 +117,13 @@ class ScriptScoreQueryDSLConstructor:
     def log_func(self, field: str) -> str:
         log_str = "Math.log10"
         field_str = f"doc['{field}'].value"
-        res_str = f"{log_str}({field_str}+1)"
+        res_str = f"{log_str}({field_str}+2)"
         return res_str
 
     def get_script_sourse(self):
         # score = log(stat.view+1) * log(stat.like+1) * log(stat.coin+1) / (pubdate - now_timestamp)
         log = self.log_func
-        script_source = f"{log('stat.view')} * {log('stat.like')} * {log('stat.coin')} / (params.now_ts - doc['pubdate'].value.getMillis()/1000+1) * 100000"
+        script_source = f"{log('stat.view')} * {log('stat.like')} * {log('stat.coin')} / (params.now_ts - doc['pubdate'].value.getMillis()/1000+2) * 100000"
         return script_source
 
     def construct(self, query_dsl_dict: dict) -> dict:
@@ -165,8 +165,11 @@ class VideoSearcher:
     ]
     BOOSTED_FIELDS = {
         "title": 2.5,
+        "title.pinyin": 0.25,
         "owner.name": 2,
+        "owner.name.pinyin": 0.2,
         "desc": 1,
+        "desc.pinyin": 0.1,
         "pubdate_str": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = []
@@ -295,6 +298,7 @@ class VideoSearcher:
         is_explain: bool = False,
         boost: bool = True,
         boosted_fields: dict = BOOSTED_FIELDS,
+        use_script_score: bool = False,
         detail_level: int = -1,
         limit: int = SEARCH_LIMIT,
         verbose: bool = False,
@@ -339,12 +343,12 @@ class VideoSearcher:
             match_type=match_type,
             match_operator=match_operator,
         )
-        script_score_constructor = ScriptScoreQueryDSLConstructor()
-        script_score_dsl_dict = script_score_constructor.construct(query_dsl_dict)
+        if use_script_score:
+            script_score_constructor = ScriptScoreQueryDSLConstructor()
+            query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
 
         search_body = {
-            # "query": query_dsl_dict,
-            "query": script_score_dsl_dict,
+            "query": query_dsl_dict,
             "_source": source_fields,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
@@ -648,6 +652,7 @@ if __name__ == "__main__":
         query,
         source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
         boost=True,
+        use_script_score=True,
         detail_level=1,
         limit=3,
         verbose=True,
