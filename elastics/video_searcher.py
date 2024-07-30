@@ -150,6 +150,7 @@ class VideoSearcher:
         "duration",
         "desc",
         "stat",
+        "tname",
         "pubdate_str",
         "insert_at_str",
     ]
@@ -191,10 +192,10 @@ class VideoSearcher:
     SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
+        1: {"match_type": "phrase_prefix", "bool": "must"},
         2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
-        3: {"match_type": "cross_fields", "bool": "must"},
-        4: {"match_type": "most_fields", "bool": "must"},
+        3: {"match_type": "cross_fields", "bool": "must", "pinyin": True},
+        4: {"match_type": "most_fields", "bool": "must", "pinyin": True},
         5: {"match_type": "most_fields", "bool": "should"},
     }
     MAX_SEARCH_DETAIL_LEVEL = 4
@@ -323,7 +324,7 @@ class VideoSearcher:
             match_type = match_detail["match_type"]
             match_bool = match_detail["bool"]
             match_operator = match_detail.get("operator", "or")
-            use_pinyin_fields = match_detail.get("pinyin", True)
+            use_pinyin_fields = match_detail.get("pinyin", False)
 
         if not use_pinyin_fields:
             match_fields = [
