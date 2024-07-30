@@ -114,16 +114,44 @@ class MultiMatchQueryDSLConstructor:
 
 
 class ScriptScoreQueryDSLConstructor:
-    def log_func(self, field: str) -> str:
-        log_str = "Math.log10"
-        field_str = f"doc['{field}'].value"
-        res_str = f"{log_str}({field_str}+2)"
-        return res_str
+    def assign_var(
+        self, field: str, get_value_func: str = None, default_value: float = 0
+    ):
+        field_var = field.replace(".", "_")
+        if not get_value_func:
+            get_value_func = f"doc['{field}'].value"
+        if field == "pubdate":
+            get_value_func = "doc['pubdate'].value.getMillis()/1000"
+        return f"double {field_var} = (doc['{field}'].size() > 0) ? {get_value_func} : {default_value};"
 
-    def get_script_sourse(self):
-        # score = log(stat.view+1) * log(stat.like+1) * log(stat.coin+1) / (pubdate - now_timestamp)
-        log = self.log_func
-        script_source = f"{log('stat.view')} * {log('stat.like')} * {log('stat.coin')} / (params.now_ts - doc['pubdate'].value.getMillis()/1000+2) * 100000"
+    def log_func(self, field: str) -> str:
+        field_var = field.replace(".", "_")
+        func_str = f"Math.log10({field_var}+2)"
+        return func_str
+
+    def pubdate_decay_func(
+        self,
+        field: str = "pubdate",
+        half_life_days: int = 7,
+        power: float = 1.5,
+        lower_bound: float = 0.001,
+    ) -> str:
+        field_var = field.replace(".", "_")
+        passed_seconds_str = f"(params.now_ts - {field_var})"
+        seconds_per_day = 86400
+        func_str = f"1/(1+Math.pow({passed_seconds_str}/{seconds_per_day}/{half_life_days}, {power})) + {lower_bound}"
+        return func_str
+
+    def get_script_source(self):
+        # score = log(stat.view+1) * log(stat.like+1) * log(stat.coin+1) * (1/(1+Math.pow(passed_days/7, 1.5)) + 0.001)
+        assign_vars = []
+        stat_fields = ["stat.view", "stat.like", "stat.coin"]
+        for field in stat_fields + ["pubdate"]:
+            assign_vars.append(self.assign_var(field))
+        assign_vars_str = "\n".join(assign_vars)
+        stat_func_str = " * ".join(self.log_func(field) for field in stat_fields)
+        func_str = f"return {stat_func_str} * ({self.pubdate_decay_func()});"
+        script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
     def construct(self, query_dsl_dict: dict) -> dict:
@@ -131,7 +159,7 @@ class ScriptScoreQueryDSLConstructor:
             "script_score": {
                 "query": query_dsl_dict,
                 "script": {
-                    "source": self.get_script_sourse(),
+                    "source": self.get_script_source(),
                     "params": {
                         "now_ts": get_now_ts(),
                     },
@@ -648,6 +676,8 @@ if __name__ == "__main__":
     logger.note(f"> Construct DSL for query:", end=" ")
     logger.mesg(f"[{query}]")
     logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2))
+
+    logger.note(ScriptScoreQueryDSLConstructor().get_script_source())
 
     searcher = VideoSearcher("bili_videos_dev")
     searcher.search(
