@@ -37,14 +37,14 @@ class WordMiner:
         else:
             self.tokenizer = WordMiner.JIEBA_TOKENIZE_METHODS[jieba_method.lower()]
 
-    def tokenize(self, text: Union[str, list[str]], verbose: bool = False):
+    def tokenize(self, text: Union[str, list[str]], verbose: bool = False, **kwargs):
         logger.enter_quiet(not verbose)
         logger.note(f"> Tokenizing:", end=" ")
         logger.mesg(f"[{text}]")
         if isinstance(text, list):
-            tokenize_res = [self.tokenizer(subtext) for subtext in text]
+            tokenize_res = [self.tokenizer(subtext, **kwargs) for subtext in text]
         else:
-            tokenize_res = self.tokenizer(text)
+            tokenize_res = self.tokenizer(text, **kwargs)
         logger.success(tokenize_res)
         logger.exit_quiet(not verbose)
         return tokenize_res
@@ -74,17 +74,19 @@ if __name__ == "__main__":
         boost=True,
         use_script_score=True,
         detail_level=1,
-        limit=5,
+        limit=200,
         verbose=False,
     )
     titles = [
         " | ".join([res["title"], res["desc"], res["owner"]["name"]])
         for res in search_results["hits"]
     ]
+    # titles = ["影视飓风我们团队本期视频使用了高速相机拍摄"]
 
     miner = WordMiner()
+    # miner.load_tokenizer(engine="hanlp", hanlp_level="coarse")
     miner.load_tokenizer(engine="jieba", jieba_method="cut_for_search")
-    tokens_list = miner.tokenize(titles, verbose=True)
-    # word_counts = miner.count(tokens_list, verbose=True)
+    tokens_list = miner.tokenize(titles, verbose=False)
+    word_counts = miner.count(tokens_list, verbose=True)
 
     # python -m statistics.word_miner
