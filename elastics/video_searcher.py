@@ -129,12 +129,20 @@ class ScriptScoreQueryDSLConstructor:
             get_value_func = "doc['pubdate'].value.getMillis()/1000"
         return f"double {field_var} = (doc['{field}'].size() > 0) ? {get_value_func} : {default_value};"
 
-    def log_func(self, field: str, lower_bound: float = 2) -> str:
-        func_str = f"Math.log10({field} + {lower_bound})"
+    def log_func(self, field: str, min_value: float = 2) -> str:
+        func_str = f"Math.log10(Math.max({field}, {min_value}))"
         return func_str
 
-    def pow_func(self, field: str, power: float = 1, lower_bound: float = 0) -> str:
-        func_str = f"Math.pow({field} + {lower_bound}, {power})"
+    def pow_func(
+        self,
+        field: str,
+        power: float = 1,
+        min_value: float = 1,
+        power_precision: int = 4,
+    ) -> str:
+        func_str = (
+            f"Math.pow(Math.max({field}, {min_value}), {power:.{power_precision}f})"
+        )
         return func_str
 
     def pubdate_decay_func(
@@ -143,13 +151,13 @@ class ScriptScoreQueryDSLConstructor:
         now_ts_field: str = "params.now_ts",
         half_life_days: int = 7,
         power: float = 1.5,
-        lower_bound: float = 0.1,
+        min_value: float = 0.1,
     ) -> str:
         passed_seconds_str = f"({now_ts_field} - {field})"
         seconds_per_day = 86400
         scaled_pass_days = f"{passed_seconds_str}/{seconds_per_day}/{half_life_days}"
         power_str = self.pow_func(scaled_pass_days, power=power)
-        func_str = f"1 / (1 + {power_str}) + {lower_bound}"
+        func_str = f"1 / (1 + {power_str}) + {min_value}"
         return func_str
 
     def get_script_source(self):
