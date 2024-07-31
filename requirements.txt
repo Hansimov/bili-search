@@ -1,5 +1,7 @@
 elasticsearch
 fastapi
+hanlp
+jieba
 pydantic
 pypinyin
 tclogger
