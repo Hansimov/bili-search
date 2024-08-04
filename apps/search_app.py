@@ -173,7 +173,6 @@ class ArgParser(argparse.ArgumentParser):
             "-i",
             "--index",
             type=str,
-            default="bili_videos",
             help=f"Bili videos index name",
         )
 

@@ -156,7 +156,7 @@ class ScriptScoreQueryDSLConstructor:
         passed_seconds_str = f"({now_ts_field} - {field})"
         seconds_per_day = 86400
         scaled_pass_days = f"{passed_seconds_str}/{seconds_per_day}/{half_life_days}"
-        power_str = self.pow_func(scaled_pass_days, power=power)
+        power_str = self.pow_func(scaled_pass_days, power=power, min_value=min_value)
         func_str = f"1 / (1 + {power_str}) + {min_value}"
         return func_str
 
@@ -712,6 +712,7 @@ if __name__ == "__main__":
     logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2, compact=True))
     script_query_dsl_dict = ScriptScoreQueryDSLConstructor().construct(query_dsl_dict)
     logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
+    # logger.mesg(ScriptScoreQueryDSLConstructor().get_script_source())
 
     searcher = VideoSearcher("bili_videos_dev")
     searcher.search(
