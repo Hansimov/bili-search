@@ -39,30 +39,12 @@ class SearchApp:
             allow_headers=["*"],
         )
 
-    def suggest(
-        self,
-        query: str = Body(...),
-        match_fields: Optional[list[str]] = Body(VideoSearcher.SUGGEST_MATCH_FIELDS),
-        match_type: Optional[str] = Body(VideoSearcher.SUGGEST_MATCH_TYPE),
-        limit: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
-        verbose: Optional[bool] = Body(False),
-    ):
-        suggestions = self.video_searcher.suggest(
-            query,
-            match_fields=match_fields,
-            match_type=match_type,
-            limit=limit,
-            verbose=verbose,
-        )
-        return suggestions
-
     def search(
         self,
         query: str = Body(...),
         match_fields: Optional[list[str]] = Body(VideoSearcher.SEARCH_MATCH_FIELDS),
+        source_fields: Optional[list[str]] = Body(VideoSearcher.SOURCE_FIELDS),
         match_type: Optional[str] = Body(VideoSearcher.SEARCH_MATCH_TYPE),
-        boost: bool = Body(True),
-        boosted_fields: dict = Body(VideoSearcher.BOOSTED_FIELDS),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(VideoSearcher.MAX_SEARCH_DETAIL_LEVEL),
         limit: Optional[int] = Body(VideoSearcher.SEARCH_LIMIT),
@@ -71,11 +53,33 @@ class SearchApp:
         suggestions = self.video_searcher.detailed_search(
             query,
             match_fields=match_fields,
+            source_fields=source_fields,
             match_type=match_type,
-            boost=boost,
-            boosted_fields=boosted_fields,
             detail_level=detail_level,
             max_detail_level=max_detail_level,
+            limit=limit,
+            verbose=verbose,
+        )
+        return suggestions
+
+    def suggest(
+        self,
+        query: str = Body(...),
+        match_fields: Optional[list[str]] = Body(VideoSearcher.SUGGEST_MATCH_FIELDS),
+        source_fields: Optional[list[str]] = Body(VideoSearcher.SOURCE_FIELDS),
+        match_type: Optional[str] = Body(VideoSearcher.SEARCH_MATCH_TYPE),
+        use_script_score: Optional[bool] = Body(True),
+        use_pinyin: Optional[bool] = Body(True),
+        limit: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
+        verbose: Optional[bool] = Body(False),
+    ):
+        suggestions = self.video_searcher.suggest(
+            query,
+            match_fields=match_fields,
+            source_fields=source_fields,
+            match_type=match_type,
+            use_script_score=use_script_score,
+            use_pinyin=use_pinyin,
             limit=limit,
             verbose=verbose,
         )
