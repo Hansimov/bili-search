@@ -216,7 +216,6 @@ class VideoSearcher:
         "pubdate_str",
         "insert_at_str",
     ]
-    SUGGEST_MATCH_FIELDS = ["title", "title.pinyin"]
     SEARCH_MATCH_FIELDS = [
         "title",
         "title.pinyin",
@@ -226,13 +225,20 @@ class VideoSearcher:
         "desc.pinyin",
         "pubdate_str",
     ]
+    SUGGEST_MATCH_FIELDS = [
+        "title",
+        "title.pinyin",
+        "owner.name",
+        "owner.name.pinyin",
+        "pubdate_str",
+    ]
     BOOSTED_FIELDS = {
         "title": 2.5,
         "title.pinyin": 0.25,
         "owner.name": 2,
         "owner.name.pinyin": 0.2,
-        "desc": 1,
-        "desc.pinyin": 0.1,
+        "desc": 0.5,
+        "desc.pinyin": 0.05,
         "pubdate_str": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = []
@@ -248,8 +254,8 @@ class VideoSearcher:
     MATCH_BOOL = Literal["must", "should", "must_not", "filter"]
     MATCH_OPERATOR = Literal["or", "and"]
 
-    SUGGEST_MATCH_TYPE = "phrase_prefix"
     SEARCH_MATCH_TYPE = "phrase_prefix"
+    SUGGEST_MATCH_TYPE = "phrase_prefix"
     SEARCH_MATCH_BOOL = "must"
     SEARCH_MATCH_OPERATOR = "or"
 
@@ -528,7 +534,7 @@ class VideoSearcher:
                     "query": {
                         "bool": {
                             "filter": [
-                                {"range": {"stat.view": {"gte": 1000000}}},
+                                {"range": {"stat.coin": {"gte": 1000}}},
                                 {"range": {"pubdate": {"gte": "now-30d/d"}}},
                             ]
                         }
