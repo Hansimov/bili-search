@@ -302,59 +302,6 @@ class VideoSearcher:
                 boosted_match_fields[key_index] += f"^{boosted_fields[key]}"
         return boosted_match_fields
 
-    def suggest(
-        self,
-        query: str,
-        match_fields: list[str] = SUGGEST_MATCH_FIELDS,
-        source_fields: list[str] = SOURCE_FIELDS,
-        match_type: MATCH_TYPE = SUGGEST_MATCH_TYPE,
-        parse_hits: bool = True,
-        is_explain: bool = False,
-        limit: int = SUGGEST_LIMIT,
-        verbose: bool = False,
-    ) -> Union[dict, list[dict]]:
-        """
-        Multi-match query:
-            - https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-multi-match-query.html#multi-match-types
-
-        I have compared the suggestion results of:
-            - `suggest`with "completion"
-            - `multi_search` with "phrase_prefix"
-
-        And the conclusion is that `multi_search` is better and more flexible.
-        """
-        logger.enter_quiet(not verbose)
-        search_body = {
-            "query": {
-                "multi_match": {
-                    "query": query,
-                    "type": match_type,
-                    "fields": match_fields,
-                }
-            },
-            "_source": source_fields,
-            "explain": is_explain,
-            "highlight": self.get_highlight_settings(match_fields),
-        }
-        if limit and limit > 0:
-            search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
-
-        logger.note(f"> Get suggestions by query:", end=" ")
-        logger.mesg(f"[{query}]")
-        res = self.es.client.search(index=self.index_name, body=search_body)
-        res_dict = res.body
-        return_res = self.parse_hits(
-            query,
-            match_fields,
-            res_dict,
-            request_type="suggest",
-            is_parse_hits=parse_hits,
-            drop_no_highlights=True,
-            limit=limit,
-        )
-        logger.exit_quiet(not verbose)
-        return return_res
-
     def search(
         self,
         query: str,
@@ -368,6 +315,7 @@ class VideoSearcher:
         boost: bool = True,
         boosted_fields: dict = BOOSTED_FIELDS,
         use_script_score: bool = True,
+        use_pinyin: bool = False,
         detail_level: int = -1,
         limit: int = SEARCH_LIMIT,
         verbose: bool = False,
@@ -392,9 +340,9 @@ class VideoSearcher:
             match_type = match_detail["match_type"]
             match_bool = match_detail["bool"]
             match_operator = match_detail.get("operator", "or")
-            use_pinyin_fields = match_detail.get("pinyin", False)
+            use_pinyin = match_detail.get("pinyin", use_pinyin)
 
-        if not use_pinyin_fields:
+        if not use_pinyin:
             match_fields = [
                 field for field in match_fields if not field.endswith(".pinyin")
             ]
@@ -505,6 +453,40 @@ class VideoSearcher:
             )
             detail_level += 1
         return return_res
+
+    def suggest(
+        self,
+        query: str,
+        match_fields: list[str] = SUGGEST_MATCH_FIELDS,
+        source_fields: list[str] = SOURCE_FIELDS,
+        match_type: MATCH_TYPE = SUGGEST_MATCH_TYPE,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        parse_hits: bool = True,
+        is_explain: bool = False,
+        boost: bool = True,
+        boosted_fields: dict = BOOSTED_FIELDS,
+        use_script_score: bool = True,
+        limit: int = SUGGEST_LIMIT,
+        verbose: bool = False,
+    ) -> Union[dict, list[dict]]:
+        return self.search(
+            query=query,
+            match_fields=match_fields,
+            source_fields=source_fields,
+            match_type=match_type,
+            match_bool=match_bool,
+            match_operator=match_operator,
+            parse_hits=parse_hits,
+            is_explain=is_explain,
+            boost=boost,
+            boosted_fields=boosted_fields,
+            use_script_score=use_script_score,
+            use_pinyin=True,
+            detail_level=-1,
+            limit=limit,
+            verbose=verbose,
+        )
 
     def random(
         self,
