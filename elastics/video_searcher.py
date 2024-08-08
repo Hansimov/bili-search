@@ -232,13 +232,20 @@ class VideoSearcher:
         "owner.name.pinyin",
         "pubdate_str",
     ]
-    BOOSTED_FIELDS = {
+    SEARCH_BOOSTED_FIELDS = {
         "title": 2.5,
         "title.pinyin": 0.25,
         "owner.name": 2,
         "owner.name.pinyin": 0.2,
         "desc": 0.5,
         "desc.pinyin": 0.05,
+        "pubdate_str": 2.5,
+    }
+    SUGGEST_BOOSTED_FIELDS = {
+        "title": 2.5,
+        "title.pinyin": 1.25,
+        "owner.name": 2,
+        "owner.name.pinyin": 1,
         "pubdate_str": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = []
@@ -313,7 +320,7 @@ class VideoSearcher:
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
-        boosted_fields: dict = BOOSTED_FIELDS,
+        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         use_script_score: bool = True,
         use_pinyin: bool = False,
         detail_level: int = -1,
@@ -411,7 +418,7 @@ class VideoSearcher:
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
-        boosted_fields: dict = BOOSTED_FIELDS,
+        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         detail_level: int = -1,
         max_detail_level: int = MAX_SEARCH_DETAIL_LEVEL,
         limit: int = SEARCH_LIMIT,
@@ -465,8 +472,9 @@ class VideoSearcher:
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
-        boosted_fields: dict = BOOSTED_FIELDS,
+        boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
         use_script_score: bool = True,
+        use_pinyin: bool = True,
         limit: int = SUGGEST_LIMIT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
@@ -482,7 +490,7 @@ class VideoSearcher:
             boost=boost,
             boosted_fields=boosted_fields,
             use_script_score=use_script_score,
-            use_pinyin=True,
+            use_pinyin=use_pinyin,
             detail_level=-1,
             limit=limit,
             verbose=verbose,
