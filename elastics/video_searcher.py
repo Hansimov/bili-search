@@ -389,8 +389,14 @@ class VideoSearcher:
             search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
         logger.mesg(f"[{query}]")
-        res = self.es.client.search(index=self.index_name, body=search_body)
-        res_dict = res.body
+
+        try:
+            res = self.es.client.search(index=self.index_name, body=search_body)
+            res_dict = res.body
+        except Exception as e:
+            logger.warn(f"× Error: {e}")
+            res_dict = {}
+
         return_res = self.parse_hits(
             query,
             match_fields,
@@ -639,6 +645,14 @@ class VideoSearcher:
     ) -> list[dict]:
         if not is_parse_hits:
             return res_dict
+        if not res_dict:
+            hits_info = {
+                "request_type": request_type,
+                "total_hits": 0,
+                "return_hits": 0,
+                "hits": [],
+            }
+            return hits_info
         hits = []
         for hit in res_dict["hits"]["hits"]:
             _source = hit["_source"]
