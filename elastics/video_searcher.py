@@ -232,6 +232,11 @@ class VideoSearcher:
         "owner.name.pinyin",
         "pubdate_str",
     ]
+    DATE_MATCH_FIELDS = [
+        "title" "desc",
+        "owner.name",
+        "pubdate_str",
+    ]
     SEARCH_BOOSTED_FIELDS = {
         "title": 2.5,
         "title.pinyin": 0.25,
@@ -243,9 +248,15 @@ class VideoSearcher:
     }
     SUGGEST_BOOSTED_FIELDS = {
         "title": 2.5,
-        "title.pinyin": 1.25,
+        "title.pinyin": 0.5,
         "owner.name": 2,
-        "owner.name.pinyin": 1,
+        "owner.name.pinyin": 0.4,
+        "pubdate_str": 2.5,
+    }
+    DATE_BOOSTED_FIELDS = {
+        "title": 0.1,
+        "owner.name": 0.1,
+        "desc": 0.05,
         "pubdate_str": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = []
@@ -267,7 +278,7 @@ class VideoSearcher:
     SEARCH_MATCH_OPERATOR = "or"
 
     SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must"},
+        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
         2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
         3: {"match_type": "cross_fields", "bool": "must", "pinyin": True},
         4: {"match_type": "most_fields", "bool": "must", "pinyin": True},
