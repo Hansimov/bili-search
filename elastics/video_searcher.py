@@ -34,27 +34,35 @@ class MultiMatchQueryDSLConstructor:
         self,
         query: str,
         match_fields: list[str] = ["title", "owner.name", "desc", "pubdate_str"],
+        date_match_fields: list[str] = ["title", "owner.name", "desc", "pubdate_str"],
         match_bool: str = "must",
         match_type: str = "phrase_prefix",
         match_operator: str = "or",
     ) -> dict:
         query_keywords = query.split()
-        fields_without_pubdate_str = self.remove_field_from_fields(
+        fields_without_pubdate = self.remove_field_from_fields(
             "pubdate_str", match_fields
+        )
+        date_match_fields_without_pubdate = self.remove_field_from_fields(
+            "pubdate_str", date_match_fields
         )
         if self.is_field_in_fields("pubdate_str", match_fields):
             date_format_checker = DateFormatChecker()
-            splitted_fields_groups = [
+            match_bool_clause = []
+            splitted_fields_groups_by_pubdate = [
                 {
-                    "fields": fields_without_pubdate_str,
+                    "fields": date_match_fields_without_pubdate,
                     "type": match_type,
                 },
                 {
-                    "fields": ["pubdate_str"],
+                    "fields": [
+                        field
+                        for field in date_match_fields
+                        if field.startswith("pubdate_str")
+                    ],
                     "type": "bool_prefix",
                 },
             ]
-            match_bool_clause = []
             for keyword in query_keywords:
                 if date_format_checker.is_in_date_range(
                     keyword, start="2009-09-09", end=datetime.now(), verbose=False
@@ -64,7 +72,7 @@ class MultiMatchQueryDSLConstructor:
                     )
                     date_format_checker.init_year_month_day()
                     should_clause = []
-                    for fields_group in splitted_fields_groups:
+                    for fields_group in splitted_fields_groups_by_pubdate:
                         if "pubdate_str" in fields_group["fields"]:
                             field_keyword = date_keyword
                         else:
@@ -89,7 +97,7 @@ class MultiMatchQueryDSLConstructor:
                         "multi_match": {
                             "query": keyword,
                             "type": match_type,
-                            "fields": fields_without_pubdate_str,
+                            "fields": fields_without_pubdate,
                             "operator": match_operator,
                         }
                     }
@@ -367,13 +375,21 @@ class VideoSearcher:
 
         if boost:
             boosted_fields = self.boost_fields(match_fields, boosted_fields)
+            date_fields = [
+                field for field in match_fields if not field.endswith(".pinyin")
+            ]
+            date_boosted_fields = self.boost_fields(
+                date_fields, self.DATE_BOOSTED_FIELDS
+            )
         else:
             boosted_fields = match_fields
+            date_boosted_fields = match_fields
 
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
             query,
             match_fields=boosted_fields,
+            date_match_fields=date_boosted_fields,
             match_bool=match_bool,
             match_type=match_type,
             match_operator=match_operator,
@@ -726,24 +742,28 @@ if __name__ == "__main__":
     # query = "Hansimov 2018"
     query = "影视飓风 2024-07"
     match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
+    date_match_fields = ["title^0.5", "owner.name^0.25", "desc^0.2", "pubdate_str^2.5"]
     constructor = MultiMatchQueryDSLConstructor()
-    query_dsl_dict = constructor.construct(query=query, match_fields=match_fields)
+    query_dsl_dict = constructor.construct(
+        query=query, match_fields=match_fields, date_match_fields=date_match_fields
+    )
     logger.note(f"> Construct DSL for query:", end=" ")
     logger.mesg(f"[{query}]")
     logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2, compact=True))
     script_query_dsl_dict = ScriptScoreQueryDSLConstructor().construct(query_dsl_dict)
-    logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
+    # logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
     # logger.mesg(ScriptScoreQueryDSLConstructor().get_script_source())
 
-    searcher = VideoSearcher("bili_videos_dev")
-    searcher.search(
-        query,
-        source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
-        boost=True,
-        use_script_score=True,
-        detail_level=1,
-        limit=3,
-        verbose=True,
-    )
+    # searcher = VideoSearcher("bili_videos_dev")
+    # searcher.search(
+    #     query,
+    #     source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
+    #     boost=True,
+    #     use_script_score=True,
+    #     detail_level=1,
+    #     limit=3,
+    #     verbose=True,
+    # )
+    # searcher.suggest("ysjf", limit=3, verbose=True)
 
     # python -m elastics.video_searcher
