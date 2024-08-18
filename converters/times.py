@@ -49,6 +49,7 @@ class DateFormatChecker:
         ]
 
     def init_year_month_day(self):
+        self.matched_pattern = None
         self.year, self.month, self.day = None, None, None
         self.real_year, self.real_month, self.real_day = None, None, None
 
@@ -65,6 +66,8 @@ class DateFormatChecker:
                     logger.warn(f"× Error: {e}")
                     logger.exit_quiet(not verbose)
                     return False
+
+                self.matched_format = date_format
 
                 if date_format in ["%m-%d", "%m/%d"]:
                     self.year = datetime.now().year

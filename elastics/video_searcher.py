@@ -51,10 +51,6 @@ class MultiMatchQueryDSLConstructor:
             match_bool_clause = []
             splitted_fields_groups_by_pubdate = [
                 {
-                    "fields": date_match_fields_without_pubdate,
-                    "type": match_type,
-                },
-                {
                     "fields": [
                         field
                         for field in date_match_fields
@@ -64,13 +60,21 @@ class MultiMatchQueryDSLConstructor:
                 },
             ]
             for keyword in query_keywords:
-                if date_format_checker.is_in_date_range(
+                date_format_checker.init_year_month_day()
+                is_keyword_date_format = date_format_checker.is_in_date_range(
                     keyword, start="2009-09-09", end=datetime.now(), verbose=False
-                ):
+                )
+                if is_keyword_date_format:
+                    if date_format_checker.matched_format == "%Y":
+                        splitted_fields_groups_by_pubdate.append(
+                            {
+                                "fields": date_match_fields_without_pubdate,
+                                "type": match_type,
+                            }
+                        )
                     date_keyword = date_format_checker.rewrite(
                         keyword, sep="-", check_format=False, use_current_year=True
                     )
-                    date_format_checker.init_year_month_day()
                     should_clause = []
                     for fields_group in splitted_fields_groups_by_pubdate:
                         if "pubdate_str" in fields_group["fields"]:
@@ -159,7 +163,7 @@ class ScriptScoreQueryDSLConstructor:
         now_ts_field: str = "params.now_ts",
         half_life_days: int = 7,
         power: float = 1.5,
-        min_value: float = 0.1,
+        min_value: float = 0.2,
     ) -> str:
         passed_seconds_str = f"({now_ts_field} - {field})"
         seconds_per_day = 86400
@@ -189,7 +193,7 @@ class ScriptScoreQueryDSLConstructor:
             self.pow_func(self.field_to_var(field), field_power * stat_pow_ratio, 1)
             for field, field_power in stat_powers.items()
         )
-        score_str = self.pow_func("_score", 0.5, 1)
+        score_str = self.pow_func("_score", 1, 1)
         func_str = (
             f"return ({stat_func_str}) * ({self.pubdate_decay_func()}) * {score_str};"
         )
@@ -250,8 +254,8 @@ class VideoSearcher:
         "title.pinyin": 0.25,
         "owner.name": 2,
         "owner.name.pinyin": 0.2,
-        "desc": 0.5,
-        "desc.pinyin": 0.05,
+        "desc": 0.25,
+        "desc.pinyin": 0.025,
         "pubdate_str": 2.5,
     }
     SUGGEST_BOOSTED_FIELDS = {
