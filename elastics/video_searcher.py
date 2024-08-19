@@ -348,6 +348,7 @@ class VideoSearcher:
         use_pinyin: bool = False,
         detail_level: int = -1,
         limit: int = SEARCH_LIMIT,
+        timeout: Union[int, float, str] = 2,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         """
@@ -408,6 +409,14 @@ class VideoSearcher:
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
         }
+        if timeout:
+            if isinstance(timeout, str):
+                search_body["timeout"] = timeout
+            elif isinstance(timeout, int) or isinstance(timeout, float):
+                timeout_str = round(timeout * 1000)
+                search_body["timeout"] = f"{timeout_str}ms"
+            else:
+                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
 
         query_keywords = query.split()
         if detail_level > 2 and match_bool == "should":
@@ -512,6 +521,7 @@ class VideoSearcher:
         use_script_score: bool = True,
         use_pinyin: bool = True,
         limit: int = SUGGEST_LIMIT,
+        timeout: Union[int, float, str] = 2,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         return self.search(
@@ -529,6 +539,7 @@ class VideoSearcher:
             use_pinyin=use_pinyin,
             detail_level=-1,
             limit=limit,
+            timeout=timeout,
             verbose=verbose,
         )
 
@@ -682,6 +693,8 @@ class VideoSearcher:
                 "total_hits": 0,
                 "return_hits": 0,
                 "hits": [],
+                "took": -1,
+                "timed_out": True,
             }
             return hits_info
         hits = []
@@ -731,6 +744,8 @@ class VideoSearcher:
         hits_info = {
             "request_type": request_type,
             "detail_level": detail_level,
+            "took": res_dict["took"],
+            "timed_out": res_dict["timed_out"],
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
@@ -740,6 +755,8 @@ class VideoSearcher:
         logger.mesg(f"  * detail level: {detail_level}")
         logger.mesg(f"  * return hits count: {hits_info['return_hits']}")
         logger.mesg(f"  * total hits count: {hits_info['total_hits']}")
+        logger.mesg(f"  * took: {hits_info['took']}ms")
+        logger.mesg(f"  * timed_out: {hits_info['timed_out']}")
         return hits_info
 
 
@@ -759,16 +776,19 @@ if __name__ == "__main__":
     # logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
     # logger.mesg(ScriptScoreQueryDSLConstructor().get_script_source())
 
-    # searcher = VideoSearcher("bili_videos_dev")
-    # searcher.search(
+    searcher = VideoSearcher("bili_videos_dev")
+    # search_res = searcher.search(
     #     query,
     #     source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
     #     boost=True,
     #     use_script_score=True,
     #     detail_level=1,
     #     limit=3,
+    #     timeout=1,
     #     verbose=True,
     # )
-    # searcher.suggest("ysjf", limit=3, verbose=True)
+    # if search_res["took"] < 0:
+    #     logger.warn(pformat(search_res, sort_dicts=False, indent=4))
+    searcher.suggest("yingshi", limit=3, verbose=True, timeout=1)
 
     # python -m elastics.video_searcher
