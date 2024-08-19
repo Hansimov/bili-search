@@ -254,8 +254,8 @@ class VideoSearcher:
         "title.pinyin": 0.25,
         "owner.name": 2,
         "owner.name.pinyin": 0.2,
-        "desc": 0.25,
-        "desc.pinyin": 0.025,
+        "desc": 0.1,
+        "desc.pinyin": 0.01,
         "pubdate_str": 2.5,
     }
     SUGGEST_BOOSTED_FIELDS = {
@@ -440,7 +440,6 @@ class VideoSearcher:
             detail_level=detail_level,
             limit=limit,
         )
-        return_res["detail_level"] = detail_level
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
         return return_res
@@ -679,6 +678,7 @@ class VideoSearcher:
         if not res_dict:
             hits_info = {
                 "request_type": request_type,
+                "detail_level": detail_level,
                 "total_hits": 0,
                 "return_hits": 0,
                 "hits": [],
@@ -730,6 +730,7 @@ class VideoSearcher:
             hits = hits[:limit]
         hits_info = {
             "request_type": request_type,
+            "detail_level": detail_level,
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
