@@ -77,10 +77,11 @@ class MultiMatchQueryDSLConstructor:
                     )
                     should_clause = []
                     for fields_group in splitted_fields_groups_by_pubdate:
-                        if "pubdate_str" in fields_group["fields"]:
-                            field_keyword = date_keyword
-                        else:
-                            field_keyword = keyword
+                        field_keyword = keyword
+                        for field in fields_group["fields"]:
+                            if field.startswith("pubdate_str"):
+                                field_keyword = date_keyword
+                                break
                         multi_match_clause = {
                             "multi_match": {
                                 "query": field_keyword,
