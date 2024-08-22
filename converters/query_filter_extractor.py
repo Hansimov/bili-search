@@ -28,7 +28,7 @@ class QueryFilterExtractor:
         "]": "lte",
     }
 
-    def split_keyword_and_filter_expr(self, query: str) -> tuple[list, list]:
+    def split_keyword_and_filter_expr(self, query: str) -> dict:
         """use regex to split keywords and filter exprs, which allows spaces in filter exprs
         Examples:
             - "影视飓风 :view>1000 :fav<=1000 :coin=[1000,2000)"
@@ -43,23 +43,56 @@ class QueryFilterExtractor:
             - "黑神话 ::bf >1000 :view<2500 map"
                 -> ["黑神话", "map"]
                 -> [":bf>1000", ":view<2500"]
+            - "黑神话 :view>1000 :date=2024-08-20"
+                -> ["黑神话"]
+                -> [":view>1000]
+                -> [":date=2024-08-20"]
+            - "黑神话 :view>1000 :date=[08-10,08-20)"
+                -> ["黑神话"]
+                -> [":view>1000]
+                -> [":date=[08-10,08-20)"]
         """
-        pattern = r"(?P<keyword>[^:\n\s]+)|(?P<filter>:+\w+\s*(<=?|>=?|=)\s*([\d\-]+|(\[|\()[\d\-\s]*,[\d\-\s]*(\]|\))))"
+
+        RE_WORD = r"[^:\n\s]+"
+        RE_NUM = r"\d+[kKwWmM]*"
+        RE_LB = r"[\[\(]"
+        RE_RB = r"[\]\)]"
+        RE_OP = r"(<=?|>=?|=)"
+        RE_DATE = r"(\d{4}(-\d{1,2}){0,2}|\d{1,2}-\d{1,2})"
+        pattern = (
+            rf"(?P<keyword>{RE_WORD})"
+            rf"|(?P<date_filter>:+(date|dt)\s*{RE_OP}\s*({RE_DATE}|{RE_LB}\s*{RE_DATE}\s*,\s*{RE_DATE}\s*{RE_RB}))"
+            rf"|(?P<stat_filter>:+\w+\s*{RE_OP}\s*({RE_NUM}|{RE_LB}\s*{RE_NUM}\s*,\s*{RE_NUM}\s*{RE_RB}))"
+        )
+
+        logger.note(pattern)
         matches = re.finditer(pattern, query)
+        res = {}
         keywords = []
-        filter_exprs = []
+        stat_filter_exprs = []
+        date_filter_exprs = []
         filter_subs = {" ": "", ":+": ":"}
         for match in matches:
             keyword = match.group("keyword")
-            filter_expr = match.group("filter")
+            stat_filter_expr = match.group("stat_filter")
+            date_filter_expr = match.group("date_filter")
             if keyword:
                 keyword = keyword.strip()
                 keywords.append(keyword)
-            if filter_expr:
+            if stat_filter_expr:
                 for k, v in filter_subs.items():
-                    filter_expr = re.sub(k, v, filter_expr)
-                filter_exprs.append(filter_expr)
-        return keywords, filter_exprs
+                    stat_filter_expr = re.sub(k, v, stat_filter_expr)
+                stat_filter_exprs.append(stat_filter_expr)
+            if date_filter_expr:
+                for k, v in filter_subs.items():
+                    date_filter_expr = re.sub(k, v, date_filter_expr)
+                date_filter_exprs.append(date_filter_expr)
+        res = {
+            "keywords": keywords,
+            "stat_filter_exprs": stat_filter_exprs,
+            "date_filter_exprs": date_filter_exprs,
+        }
+        return res
 
     def map_key_to_stat_field(self, key: str) -> str:
         for stat_field, aliases in self.STAT_ALIASES.items():
@@ -216,7 +249,9 @@ class QueryFilterExtractor:
 
     def extract(self, query: str) -> tuple[list[str], list[dict]]:
         filters = {}
-        keywords, filter_exprs = self.split_keyword_and_filter_expr(query)
+        split_res = self.split_keyword_and_filter_expr(query)
+        keywords = split_res["keywords"]
+        filter_exprs = split_res["stat_filter_exprs"] + split_res["date_filter_exprs"]
         for filter_expr in filter_exprs:
             filter_item = self.filter_expr_to_dict(filter_expr)
             self.merge_filter(filter_item=filter_item, filters=filters)
@@ -237,13 +272,18 @@ if __name__ == "__main__":
         "影视飓风 :view>1000 :fav<=1000 :coin=[1000,2000)",
         "影视飓风 :view>1000 :view<2000 :播放<=2000 :fav=[,2000)",
         "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
-        "黑神话 :bf=1000 :date=2024-08",
+        "黑神话 :bf=1000 :date>=2024-08-21 rank",
+        "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
         "黑神话 ::bf >1000 :view< 2500 2024-10-11",
         "黑神话 ::bf >1000 map :view<2500",
+        "黑神话 :view>1000 :date=2024-08-20",
+        "黑神话 :view>1000 :date=[08-10,08-20)",
     ]
     for query in queries:
         logger.line(f"{query}")
-        keywords, filter_exprs = extractor.split_keyword_and_filter_expr(query)
+        res = extractor.split_keyword_and_filter_expr(query)
+        keywords = res["keywords"]
+        filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
         keywords, filter_dicts = extractor.extract(query)
         logger.note("  - Keywords:", end=" ")
         logger.mesg(f"{keywords}")
