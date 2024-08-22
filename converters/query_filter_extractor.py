@@ -181,7 +181,7 @@ class QueryFilterExtractor:
             filter_item[filter_key] = filter_val
         return filter_item
 
-    def extract(self, query: str) -> tuple[dict, list]:
+    def extract(self, query: str) -> tuple[dict, list[str]]:
         query_keywords = query.split()
         query_keywords_without_filters = []
         filters = {}
@@ -192,6 +192,14 @@ class QueryFilterExtractor:
             else:
                 query_keywords_without_filters.append(keyword)
 
+        return filters, query_keywords_without_filters
+
+    def construct(self, query: str) -> tuple[list, list[str]]:
+        range_filters, query_keywords_without_filters = self.extract(query)
+        if range_filters:
+            filters = [{"range": range_filters}]
+        else:
+            filters = []
         return filters, query_keywords_without_filters
 
 
