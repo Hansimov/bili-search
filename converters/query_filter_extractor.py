@@ -28,6 +28,39 @@ class QueryFilterExtractor:
         "]": "lte",
     }
 
+    def split_keyword_and_filter_expr(self, query: str) -> tuple[list, list]:
+        """use regex to split keywords and filter exprs, which allows spaces in filter exprs
+        Examples:
+            - "影视飓风 :view>1000 :fav<=1000 :coin=[1000,2000)"
+                -> ["影视飓风"]
+                -> [":view>1000", ":fav<=1000", ":coin=[1000,2000)"]
+            - "黑神话 2024 :bf >1000 :view = (2000, 3000] :view< 2500"
+                -> ["黑神话", "2024"]
+                -> [":bf>1000", ":view=(2000,3000]", ":view<2500"]
+            - "黑神话 ::bf >1000 :view< 2500 2024-10-11"
+                -> ["黑神话", "2024-10-11"]
+                -> [":bf>1000", ":view<2500"]
+            - "黑神话 ::bf >1000 :view<2500 map"
+                -> ["黑神话", "map"]
+                -> [":bf>1000", ":view<2500"]
+        """
+        pattern = r"(?P<keyword>[^:\n\s]+)|(?P<filter>:+\w+\s*(<=?|>=?|=)\s*([\d\-]+|(\[|\()[\d\-\s]*,[\d\-\s]*(\]|\))))"
+        matches = re.finditer(pattern, query)
+        keywords = []
+        filter_exprs = []
+        filter_subs = {" ": "", ":+": ":"}
+        for match in matches:
+            keyword = match.group("keyword")
+            filter_expr = match.group("filter")
+            if keyword:
+                keyword = keyword.strip()
+                keywords.append(keyword)
+            if filter_expr:
+                for k, v in filter_subs.items():
+                    filter_expr = re.sub(k, v, filter_expr)
+                filter_exprs.append(filter_expr)
+        return keywords, filter_exprs
+
     def map_key_to_stat_field(self, key: str) -> str:
         for stat_field, aliases in self.STAT_ALIASES.items():
             if (
