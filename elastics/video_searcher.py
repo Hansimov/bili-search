@@ -10,6 +10,7 @@ from elastics.client import ElasticSearchClient
 from elastics.highlighter import PinyinHighlighter, HighlightMerger
 from elastics.structure import get_es_source_val
 from converters.times import DateFormatChecker
+from converters.query_filter_extractor import QueryFilterExtractor
 
 
 class MultiMatchQueryDSLConstructor:
@@ -391,15 +392,23 @@ class VideoSearcher:
             boosted_fields = match_fields
             date_boosted_fields = match_fields
 
+        filter_extractor = QueryFilterExtractor()
+        filters, query_keywords = filter_extractor.construct(query)
+        query_without_filters = " ".join(query_keywords)
+
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
-            query,
+            query_without_filters,
             match_fields=boosted_fields,
             date_match_fields=date_boosted_fields,
             match_bool=match_bool,
             match_type=match_type,
             match_operator=match_operator,
         )
+
+        if filters:
+            query_dsl_dict["bool"]["filter"] = filters
+
         if use_script_score:
             script_score_constructor = ScriptScoreQueryDSLConstructor()
             query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
@@ -409,6 +418,7 @@ class VideoSearcher:
             "_source": source_fields,
             "explain": is_explain,
             "highlight": self.get_highlight_settings(match_fields),
+            "track_total_hits": True,
         }
         if timeout:
             if isinstance(timeout, str):
@@ -419,7 +429,6 @@ class VideoSearcher:
             else:
                 logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
 
-        query_keywords = query.split()
         if detail_level > 2 and match_bool == "should":
             search_body["query"]["bool"]["minimum_should_match"] = (
                 len(query_keywords) - 1
@@ -763,21 +772,32 @@ class VideoSearcher:
 
 if __name__ == "__main__":
     # query = "Hansimov 2018"
-    query = "影视飓风 2024-07"
+    query = "影视飓风 2024 :coin>1000"
     match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
     date_match_fields = ["title^0.5", "owner.name^0.25", "desc^0.2", "pubdate_str^2.5"]
-    constructor = MultiMatchQueryDSLConstructor()
-    query_dsl_dict = constructor.construct(
-        query=query, match_fields=match_fields, date_match_fields=date_match_fields
+
+    filter_extractor = QueryFilterExtractor()
+    filters, query_keywords = filter_extractor.construct(query)
+    query_without_filters = " ".join(query_keywords)
+
+    query_constructor = MultiMatchQueryDSLConstructor()
+    query_dsl_dict = query_constructor.construct(
+        query=query_without_filters,
+        match_fields=match_fields,
+        date_match_fields=date_match_fields,
     )
+
+    if filters:
+        query_dsl_dict["bool"]["filter"] = filters
+
     logger.note(f"> Construct DSL for query:", end=" ")
     logger.mesg(f"[{query}]")
     logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2, compact=True))
     script_query_dsl_dict = ScriptScoreQueryDSLConstructor().construct(query_dsl_dict)
-    # logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
+    logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
     # logger.mesg(ScriptScoreQueryDSLConstructor().get_script_source())
 
-    searcher = VideoSearcher("bili_videos_dev")
+    # searcher = VideoSearcher("bili_videos_dev")
     # search_res = searcher.search(
     #     query,
     #     source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
@@ -790,6 +810,6 @@ if __name__ == "__main__":
     # )
     # if search_res["took"] < 0:
     #     logger.warn(pformat(search_res, sort_dicts=False, indent=4))
-    searcher.suggest("yingshi", limit=3, verbose=True, timeout=1)
+    # searcher.suggest("yingshi", limit=3, verbose=True, timeout=1)
 
     # python -m elastics.video_searcher
