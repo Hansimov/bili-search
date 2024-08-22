@@ -28,6 +28,21 @@ class QueryFilterExtractor:
         "]": "lte",
     }
 
+    RE_WORD = r"[^:\n\s]+"
+    RE_NUM = r"\d+[kKwWmM百千万亿]*"
+    RE_LB = r"[\[\(]"
+    RE_RB = r"[\]\)]"
+    RE_OP = r"(<=?|>=?|=)"
+    RE_DURATION = r"(年|years?|yr|y|个?月|months?|mon|周|weeks?|wk|w|天|days?|d|个?小时|hours?|hr|h|分钟|minutes?|min|秒|seconds?|s)"
+    RE_DATE = (
+        rf"(\d{{4}}([-/]\d{{1,2}}){{0,2}}|\d{{1,2}}[-/]\\d{1,2}|\d+\s*{RE_DURATION}\s*)"
+    )
+    QUERY_PATTERN = (
+        rf"(?P<keyword>{RE_WORD})"
+        rf"|(?P<date_filter>:+(date|dt)\s*{RE_OP}\s*({RE_DATE}|{RE_LB}\s*{RE_DATE}\s*,\s*{RE_DATE}\s*{RE_RB}))"
+        rf"|(?P<stat_filter>:+\w+\s*{RE_OP}\s*({RE_NUM}|{RE_LB}\s*{RE_NUM}\s*,\s*{RE_NUM}\s*{RE_RB}))"
+    )
+
     def split_keyword_and_filter_expr(self, query: str) -> dict:
         """use regex to split keywords and filter exprs, which allows spaces in filter exprs
         Examples:
@@ -51,22 +66,12 @@ class QueryFilterExtractor:
                 -> ["黑神话"]
                 -> [":view>1000]
                 -> [":date=[08-10,08-20)"]
+            - "黑神话 :view>1000 :date<=7d"
+                -> ["黑神话"]
+                -> [":date<=7d"]
         """
 
-        RE_WORD = r"[^:\n\s]+"
-        RE_NUM = r"\d+[kKwWmM]*"
-        RE_LB = r"[\[\(]"
-        RE_RB = r"[\]\)]"
-        RE_OP = r"(<=?|>=?|=)"
-        RE_DATE = r"(\d{4}(-\d{1,2}){0,2}|\d{1,2}-\d{1,2})"
-        pattern = (
-            rf"(?P<keyword>{RE_WORD})"
-            rf"|(?P<date_filter>:+(date|dt)\s*{RE_OP}\s*({RE_DATE}|{RE_LB}\s*{RE_DATE}\s*,\s*{RE_DATE}\s*{RE_RB}))"
-            rf"|(?P<stat_filter>:+\w+\s*{RE_OP}\s*({RE_NUM}|{RE_LB}\s*{RE_NUM}\s*,\s*{RE_NUM}\s*{RE_RB}))"
-        )
-
-        logger.note(pattern)
-        matches = re.finditer(pattern, query)
+        matches = re.finditer(self.QUERY_PATTERN, query)
         res = {}
         keywords = []
         stat_filter_exprs = []
@@ -278,6 +283,11 @@ if __name__ == "__main__":
         "黑神话 ::bf >1000 map :view<2500",
         "黑神话 :view>1000 :date=2024-08-20",
         "黑神话 :view>1000 :date=[08-10,08-20)",
+        "黑神话 :view>1000 :date=[08-10,08/20)",
+        "黑神话 :view>1000 :date <= 7 days",
+        "黑神话 :view>1000 :date=[7d,1d]",
+        "黑神话 :view>1000 :date <= 3 天",
+        "黑神话 :view>1000 :date <= 3 个小时 1小时",
     ]
     for query in queries:
         logger.line(f"{query}")
