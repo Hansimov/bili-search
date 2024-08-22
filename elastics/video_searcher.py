@@ -393,7 +393,7 @@ class VideoSearcher:
             date_boosted_fields = match_fields
 
         filter_extractor = QueryFilterExtractor()
-        filters, query_keywords = filter_extractor.construct(query)
+        query_keywords, filters = filter_extractor.construct(query)
         query_without_filters = " ".join(query_keywords)
 
         query_constructor = MultiMatchQueryDSLConstructor()
@@ -772,12 +772,12 @@ class VideoSearcher:
 
 if __name__ == "__main__":
     # query = "Hansimov 2018"
-    query = "影视飓风 2024 :coin>1000"
+    query = "黑神话 2024 :coin>1000 :view<100000"
     match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
     date_match_fields = ["title^0.5", "owner.name^0.25", "desc^0.2", "pubdate_str^2.5"]
 
     filter_extractor = QueryFilterExtractor()
-    filters, query_keywords = filter_extractor.construct(query)
+    query_keywords, filters = filter_extractor.construct(query)
     query_without_filters = " ".join(query_keywords)
 
     query_constructor = MultiMatchQueryDSLConstructor()

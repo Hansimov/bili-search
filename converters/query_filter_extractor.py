@@ -207,33 +207,28 @@ class QueryFilterExtractor:
                 else:
                     filters[key].pop("lte")
 
-    def categorize_filter(self, keyword: str) -> dict[str, dict]:
+    def filter_expr_to_dict(self, filter_expr: str) -> dict[str, dict]:
         filter_item = {}
-        filter_key, filter_val = self.split_stat_filter_key_and_val(keyword)
+        filter_key, filter_val = self.split_stat_filter_key_and_val(filter_expr)
         if filter_key and filter_val:
             filter_item[filter_key] = filter_val
         return filter_item
 
-    def extract(self, query: str) -> tuple[dict, list[str]]:
-        query_keywords = query.split()
-        query_keywords_without_filters = []
+    def extract(self, query: str) -> tuple[list[str], list[dict]]:
         filters = {}
-        for keyword in query_keywords:
-            if keyword.startswith(":"):
-                filter_item = self.categorize_filter(keyword)
-                self.merge_filter(filter_item=filter_item, filters=filters)
-            else:
-                query_keywords_without_filters.append(keyword)
-
-        return filters, query_keywords_without_filters
+        keywords, filter_exprs = self.split_keyword_and_filter_expr(query)
+        for filter_expr in filter_exprs:
+            filter_item = self.filter_expr_to_dict(filter_expr)
+            self.merge_filter(filter_item=filter_item, filters=filters)
+        return keywords, filters
 
     def construct(self, query: str) -> tuple[list, list[str]]:
-        range_filters, query_keywords_without_filters = self.extract(query)
+        keywords, range_filters = self.extract(query)
         if range_filters:
-            filters = [{"range": range_filters}]
+            filters = [{"range": {k: v}} for k, v in range_filters.items()]
         else:
             filters = []
-        return filters, query_keywords_without_filters
+        return keywords, filters
 
 
 if __name__ == "__main__":
@@ -243,13 +238,18 @@ if __name__ == "__main__":
         "影视飓风 :view>1000 :view<2000 :播放<=2000 :fav=[,2000)",
         "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
         "黑神话 :bf=1000 :date=2024-08",
+        "黑神话 ::bf >1000 :view< 2500 2024-10-11",
+        "黑神话 ::bf >1000 map :view<2500",
     ]
     for query in queries:
         logger.line(f"{query}")
-        filters, query_keywords_without_filters = extractor.extract(query)
-        logger.note("  - Filters:")
-        logger.success(pformat(filters, sort_dicts=False, compact=False), indent=2)
+        keywords, filter_exprs = extractor.split_keyword_and_filter_expr(query)
+        keywords, filter_dicts = extractor.extract(query)
         logger.note("  - Keywords:", end=" ")
-        logger.mesg(f"{query_keywords_without_filters}")
+        logger.mesg(f"{keywords}")
+        logger.note("  - Filters :", end=" ")
+        logger.success(pformat(filter_exprs, sort_dicts=False, compact=False))
+        logger.note("  - Filters :", end=" ")
+        logger.success(pformat(filter_dicts, sort_dicts=False, compact=False))
 
     # python -m converters.query_filter_extractor
