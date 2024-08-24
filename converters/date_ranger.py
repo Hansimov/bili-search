@@ -142,44 +142,56 @@ class DateRangeConverter:
 
     def get_date_ts_range_of_date(self, date_str: str) -> tuple[int, int]:
         logger.mesg(f"> <range_date>: {date_str}")
-        return 0, 0
         now = datetime.now()
-        this_year = now.year
-
-        def to_timestamp(dt: datetime) -> int:
-            return int(dt.timestamp())
 
         match = re.match(self.RE_RANGE_DATE, date_str)
         if match:
             if match.group("yyyy_mm_dd_hh"):
-                dt = datetime.strptime(match.group("yyyy_mm_dd_hh"), "%Y-%m-%d-%H")
-                start = dt
-                end = dt + timedelta(hours=1) - timedelta(seconds=1)
+                year = int(match.group("ymdh_year"))
+                month = int(match.group("ymdh_mm"))
+                day = int(match.group("ymdh_dd"))
+                hour = int(match.group("ymdh_hh"))
+                start_dt = datetime(year, month, day, hour)
+                end_dt = start_dt + timedelta(hours=1) - timedelta(milliseconds=1)
             elif match.group("yyyy_mm_dd"):
-                dt = datetime.strptime(match.group("yyyy_mm_dd"), "%Y-%m-%d")
-                start = dt
-                end = dt + timedelta(days=1) - timedelta(seconds=1)
+                year = int(match.group("ymd_year"))
+                month = int(match.group("ymd_mm"))
+                day = int(match.group("ymd_dd"))
+                start_dt = datetime(year, month, day)
+                end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
             elif match.group("yyyy_mm"):
-                dt = datetime.strptime(match.group("yyyy_mm"), "%Y-%m")
-                start = dt
-                end = (dt + timedelta(days=31)).replace(day=1) - timedelta(seconds=1)
+                year = int(match.group("ym_year"))
+                month = int(match.group("ym_mm"))
+                start_dt = datetime(year, month, 1)
+                end_dt = (start_dt + timedelta(days=31)).replace(day=1) - timedelta(
+                    milliseconds=1
+                )
+            elif match.group("yyyy"):
+                year = int(match.group("yyyy"))
+                start_dt = datetime(year, 1, 1)
+                end_dt = datetime(year, 12, 31, 23, 59, 59)
             elif match.group("mm_dd_hh"):
-                dt = datetime.strptime(
-                    f"{this_year}-{match.group('mm_dd_hh')}", "%Y-%m-%d-%H"
-                )
-                start = dt
-                end = dt + timedelta(hours=1) - timedelta(seconds=1)
+                month = int(match.group("mdh_mm"))
+                day = int(match.group("mdh_dd"))
+                hour = int(match.group("mdh_hh"))
+                start_dt = datetime(now.year, month, day, hour)
+                end_dt = start_dt + timedelta(hours=1) - timedelta(milliseconds=1)
             elif match.group("mm_dd"):
-                dt = datetime.strptime(
-                    f"{this_year}-{match.group('mm_dd')}", "%Y-%m-%d"
-                )
-                start = dt
-                end = dt + timedelta(days=1) - timedelta(seconds=1)
+                month = int(match.group("md_mm"))
+                day = int(match.group("md_dd"))
+                start_dt = datetime(now.year, month, day)
+                end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
             else:
-                raise ValueError("Invalid date string format")
-            return to_timestamp(start), to_timestamp(end)
-        else:
-            raise ValueError("Invalid date string format")
+                logger.warn(f"× No match for type <range_date>: {date_str}")
+                start_dt = None
+                end_dt = None
+
+            if start_dt and end_dt:
+                return int(start_dt.timestamp()), int(end_dt.timestamp())
+            else:
+                return 0, 0
+
+        return 0, 0
 
     def get_date_ts_range_of_this(self, date_str: str) -> tuple[int, int]:
         logger.mesg(f"> <range_this>: {date_str}")
@@ -293,21 +305,21 @@ if __name__ == "__main__":
         "2014/08/12",
         "08/12",
         "2014-08-12.12",
-        "this_year",
-        "this_month",
-        "this_week",
-        "this_day",
-        "this_hour",
-        "last_year",
-        "last_month",
-        "last_week",
-        "last_day",
-        "last_hour",
-        "1 year",
-        "2 months",
-        "3 weeks",
-        "4 days",
-        "5 hours",
+        # "this_year",
+        # "this_month",
+        # "this_week",
+        # "this_day",
+        # "this_hour",
+        # "last_year",
+        # "last_month",
+        # "last_week",
+        # "last_day",
+        # "last_hour",
+        # "1 year",
+        # "2 months",
+        # "3 weeks",
+        # "4 days",
+        # "5 hours",
     ]
     converter = DateRangeConverter()
     for date_str in date_strs:
@@ -315,7 +327,7 @@ if __name__ == "__main__":
         start_ts, end_ts = converter.get_date_ts_range(date_str)
         start_str = ts_to_str(start_ts)
         end_str = ts_to_str(end_ts)
-        # logger.success(f"> start: {start_ts}")
-        # logger.success(f">   end: {end_ts}")
+        logger.success(f"> start: {start_str}")
+        logger.success(f">   end: {end_str}")
 
     # python -m converters.date_ranger
