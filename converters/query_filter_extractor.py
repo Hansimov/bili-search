@@ -3,6 +3,8 @@ import re
 from tclogger import logger
 from pprint import pformat
 
+from converters.date_ranger import DateRangeConverter
+
 
 class QueryFilterExtractor:
     STAT_FIELDS = ["view", "like", "coin", "favorite", "reply", "danmaku", "share"]
@@ -33,13 +35,11 @@ class QueryFilterExtractor:
     RE_LB = r"[\[\(]"
     RE_RB = r"[\]\)]"
     RE_OP = r"(<=?|>=?|=)"
-    RE_DURATION = r"(年|years?|yr|y|个?月|months?|mon|周|weeks?|wk|w|天|days?|d|个?小时|hours?|hr|h|分钟|minutes?|min|秒|seconds?|s)"
-    RE_DATE = (
-        rf"(\d{{4}}([-/]\d{{1,2}}){{0,2}}|\d{{1,2}}[-/]\\d{1,2}|\d+\s*{RE_DURATION}\s*)"
-    )
+    RE_DATE_FIELD = r"(日期|rq|d|date|dt)"
+    RE_DATE = DateRangeConverter.RE_DATE_ALL
     QUERY_PATTERN = (
         rf"(?P<keyword>{RE_WORD})"
-        rf"|(?P<date_filter>:+(date|dt)\s*{RE_OP}\s*({RE_DATE}|{RE_LB}\s*{RE_DATE}\s*,\s*{RE_DATE}\s*{RE_RB}))"
+        rf"|(?P<date_filter>:+{RE_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE}*)\s*,\s*(?P<date_rval>{RE_DATE})*\s*(?P<date_rb>{RE_RB})))"
         rf"|(?P<stat_filter>:+\w+\s*{RE_OP}\s*({RE_NUM}|{RE_LB}\s*{RE_NUM}\s*,\s*{RE_NUM}\s*{RE_RB}))"
     )
 
@@ -283,15 +283,18 @@ if __name__ == "__main__":
         "黑神话 ::bf >1000 map :view<2500",
         "黑神话 :view>1000 :date=2024-08-20",
         "黑神话 :view>1000 :date=[08-10,08-20)",
-        "黑神话 :view>1000 :date=[08-10,08/20)",
+        "黑神话 :view>1000 :date=[08.10, 08/20)",
         "黑神话 :view>1000 :date <= 7 days",
         "黑神话 :view>1000 :date=[7d,1d]",
         "黑神话 :view>1000 :date <= 3 天",
-        "黑神话 :view>1000 :date <= 3 个小时 1小时",
+        "黑神话 :view>1000 :date <= past_hour 1小时",
+        "黑神话 :view>1000 :d = 1小时学完",
     ]
     for query in queries:
         logger.line(f"{query}")
         res = extractor.split_keyword_and_filter_expr(query)
+        logger.note("  - Parsed  :")
+        logger.success(pformat(res, sort_dicts=False, compact=False))
         keywords = res["keywords"]
         filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
         keywords, filter_dicts = extractor.extract(query)

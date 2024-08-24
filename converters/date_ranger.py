@@ -37,7 +37,7 @@ class DateRangeConverter:
     )
 
     # THIS/PAST/LAST + YEAR/MONTH/WEEK/DAY/HOUR
-    RE_CH_SEP = r"[\_\.\s\-]+"
+    RE_CH_SEP = r"[\_\.\s\-]*"
     RE_THIS_YEAR = rf"(本年|今年|this{RE_CH_SEP}year)"
     RE_LAST_YEAR = rf"(上年|去年|last{RE_CH_SEP}year)"
     RE_PAST_YEAR = rf"(过去一年|past{RE_CH_SEP}year)"
@@ -107,7 +107,7 @@ class DateRangeConverter:
     REP_N_HOUR = rf"(?P<n_hours>(?P<hour_n>\d+){RE_DU_SEP}{RE_HOUR_UNIT})"
     REP_RANGE_DIST = rf"(?P<range_dist>{REP_N_YEAR}|{REP_N_MONTH}|{REP_N_WEEK}|{REP_N_DAY}|{REP_N_HOUR})"
 
-    RE_DATE_ALL = rf"{RE_RANGE_DATE}|{RE_RANGE_RECENT}|{RE_RANGE_DIST}"
+    RE_DATE_ALL = rf"({RE_RANGE_DATE}|{RE_RANGE_RECENT}|{RE_RANGE_DIST})"
 
     def get_date_ts_range(self, date_str: str) -> tuple[int, int]:
         """Get the timestamp range of the date.
