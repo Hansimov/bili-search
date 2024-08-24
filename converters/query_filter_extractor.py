@@ -6,17 +6,27 @@ from pprint import pformat
 from converters.date_ranger import DateRangeConverter
 
 
+class StatFilterRegexer:
+    RE_VIEW = r"(播放|bofang|bf|view|view|v)"
+    RE_LIKE = r"(点赞|dianzan|dz|like|like|l)"
+    RE_COIN = r"(投币|toubi|tb|coin|coin|c)"
+    RE_FAVORITE = r"(收藏|shouchang|sc|favorite|fav|f)"
+    RE_REPLY = r"(评论|回复|pinglun|huifu|pl|hf|reply|r)"
+    RE_DANMAKU = r"(弹幕|danmu|dm|danmaku|d)"
+    RE_SHARE = r"(分享|转发|fenxiang|zhuanfa|fx|zf|share|s)"
+    RE_STAT_FIELD = rf"({RE_VIEW}|{RE_LIKE}|{RE_COIN}|{RE_FAVORITE}|{RE_REPLY}|{RE_DANMAKU}|{RE_SHARE})"
+
+    REP_VIEW = rf"(?P<view>{RE_VIEW})"
+    REP_LIKE = rf"(?P<like>{RE_LIKE})"
+    REP_COIN = rf"(?P<coin>{RE_COIN})"
+    REP_FAVORITE = rf"(?P<favorite>{RE_FAVORITE})"
+    REP_REPLY = rf"(?P<reply>{RE_REPLY})"
+    REP_DANMAKU = rf"(?P<danmaku>{RE_DANMAKU})"
+    REP_SHARE = rf"(?P<share>{RE_SHARE})"
+    REP_STAT_FIELD = rf"(?P<stat_field>{REP_VIEW}|{REP_LIKE}|{REP_COIN}|{REP_FAVORITE}|{REP_REPLY}|{REP_DANMAKU}|{REP_SHARE})"
+
+
 class QueryFilterExtractor:
-    STAT_FIELDS = ["view", "like", "coin", "favorite", "reply", "danmaku", "share"]
-    STAT_ALIASES = {
-        "view": ["播放", "bf", "bofang"],
-        "like": ["点赞", "dz", "dianzan"],
-        "coin": ["投币", "tb", "toubi"],
-        "favorite": ["收藏", "sc", "shoucang"],
-        "reply": ["评论", "pl", "pinglun"],
-        "danmaku": ["弹幕", "dm", "danmu"],
-        "share": ["分享", "fx", "fenxiang"],
-    }
     OPERATOR_MAPS = {
         ">": "gt",
         "<": "lt",
@@ -30,18 +40,26 @@ class QueryFilterExtractor:
         "]": "lte",
     }
 
-    RE_WORD = r"[^:\n\s]+"
-    RE_NUM = r"\d+[kKwWmM百千万亿]*"
     RE_LB = r"[\[\(]"
     RE_RB = r"[\]\)]"
     RE_OP = r"(<=?|>=?|=)"
-    RE_DATE_FIELD = r"(日期|rq|d|date|dt)"
-    RE_DATE = DateRangeConverter.RE_DATE_ALL
-    QUERY_PATTERN = (
-        rf"(?P<keyword>{RE_WORD})"
-        rf"|(?P<date_filter>:+{RE_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE}*)\s*,\s*(?P<date_rval>{RE_DATE})*\s*(?P<date_rb>{RE_RB})))"
-        rf"|(?P<stat_filter>:+\w+\s*{RE_OP}\s*({RE_NUM}|{RE_LB}\s*{RE_NUM}\s*,\s*{RE_NUM}\s*{RE_RB}))"
-    )
+
+    RE_KEYWORD = r"[^:\n\s\.]+"
+    RE_FILTER_SEP = r"[:：]+"
+    RE_NUM_UNIT = r"[百千万亿kKwWmM]*"
+    RE_NUM = rf"\d+\s*{RE_NUM_UNIT}"
+
+    RE_DATE_FIELD = rf"(日期|rq|d|date|dt)"
+    REP_DATE_FIELD = rf"(?P<date_field>{RE_DATE_FIELD})"
+    RE_DATE_VAL = DateRangeConverter.RE_DATE_ALL
+    REP_STAT_FIELD = StatFilterRegexer.REP_STAT_FIELD
+    RE_STAT_VAL = rf"{RE_NUM}"
+
+    REP_DATE_FILTER = rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*,\s*(?P<date_rval>{RE_DATE_VAL})*\s*(?P<date_rb>{RE_RB})))"
+    REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_DATE_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_DATE_VAL}*)\s*,\s*(?P<stat_rval>{RE_DATE_VAL})*\s*(?P<stat_rb>{RE_RB})))"
+    REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
+
+    QUERY_PATTERN = rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_KEYWORD})"
 
     def split_keyword_and_filter_expr(self, query: str) -> dict:
         """use regex to split keywords and filter exprs, which allows spaces in filter exprs
@@ -100,16 +118,15 @@ class QueryFilterExtractor:
         return res
 
     def map_key_to_stat_field(self, key: str) -> str:
-        for stat_field, aliases in self.STAT_ALIASES.items():
-            if (
-                stat_field.startswith(key)
-                or f"stat.{stat_field}".startswith(key)
-                or any(alias.startswith(key) for alias in aliases)
-            ):
-                return f"stat.{stat_field}"
-
-        logger.warn(f"× No matching stat field: {key}")
-        return None
+        match = re.match(self.REP_STAT_FIELD, key)
+        if match:
+            stat_field = list(
+                key for key in match.groupdict().keys() if key != "stat_field"
+            )[0]
+            return stat_field
+        else:
+            logger.warn(f"× No matching stat field: {key}")
+            return None
 
     def map_val_to_range_dict(self, val: str) -> dict:
         """
