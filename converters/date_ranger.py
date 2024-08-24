@@ -5,23 +5,27 @@ from tclogger import logger, ts_to_str
 
 
 class DateRangeConverter:
-    RE_MD_SEP = r"[-/\.]*"
-    RE_DH_SEP = r"[\_\.]*"
-    RE_YEAR = r"(\d{4})"
-    RE_MM = r"(\d{1,2})"
-    RE_DD = r"(\d{1,2})"
-    RE_HH = r"(\d{1,2})"
-    RE_SEP_MM = rf"{RE_MD_SEP}{RE_MM}"
-    RE_SEP_DD = rf"{RE_MD_SEP}{RE_DD}"
-    RE_SEP_HH = rf"{RE_DH_SEP}{RE_HH}"
-    RE_YM = rf"(?P<yyyy_mm>{RE_YEAR}{RE_SEP_MM})"
-    RE_YMD = rf"(?P<yyyy_mm_dd>{RE_YEAR}{RE_SEP_MM}{RE_SEP_DD})"
-    RE_YMDH = rf"(?P<yyyy_mm_dd_hh>{RE_YEAR}{RE_SEP_MM}{RE_SEP_DD}{RE_SEP_HH})"
-    RE_MD = rf"(?P<mm_dd>{RE_MM}{RE_SEP_DD})"
-    RE_MDH = rf"(?P<mm_dd_hh>{RE_MM}{RE_SEP_DD}{RE_SEP_HH})"
-    RE_RANGE_DATE = rf"(?P<range_date>{RE_YMDH}|{RE_YMD}|{RE_YM}|{RE_MDH}|{RE_MD})"
+    RE_MM_SEP = r"[-/\.]+"
+    RE_DD_SEP = r"[-/\.]+"
+    RE_HH_SEP = r"[\_\.]+"
+    RE_YEAR = r"\d{4}"
+    RE_MM = r"\d{1,2}"
+    RE_DD = r"\d{1,2}"
+    RE_HH = r"\d{1,2}"
+    RE_SEP_MM = rf"{RE_MM_SEP}{RE_MM}"
+    RE_SEP_DD = rf"{RE_DD_SEP}{RE_DD}"
+    RE_SEP_HH = rf"{RE_HH_SEP}{RE_HH}"
+    RE_YMDH = rf"(?P<yyyy_mm_dd_hh>(?P<ymdh_year>{RE_YEAR}){RE_MM_SEP}(?P<ymdh_mm>{RE_MM}){RE_DD_SEP}(?P<ymdh_dd>{RE_DD}){RE_HH_SEP}(?P<ymdh_hh>{RE_HH}))"
+    RE_YMD = rf"(?P<yyyy_mm_dd>(?P<ymd_year>{RE_YEAR}){RE_MM_SEP}(?P<ymd_mm>{RE_MM}){RE_DD_SEP}(?P<ymd_dd>{RE_DD}))"
+    RE_YM = rf"(?P<yyyy_mm>(?P<ym_year>{RE_YEAR}){RE_MM_SEP}(?P<ym_mm>{RE_MM}))"
+    RE_YYYY = rf"(?P<yyyy>{RE_YEAR})"
+    RE_MDH = rf"(?P<mm_dd_hh>(?P<mdh_mm>{RE_MM}){RE_DD_SEP}(?P<mdh_dd>{RE_DD}){RE_HH_SEP}(?P<mdh_hh>{RE_HH}))"
+    RE_MD = rf"(?P<mm_dd>(?P<md_mm>{RE_MM}){RE_DD_SEP}(?P<md_dd>{RE_DD}))"
+    RE_RANGE_DATE = (
+        rf"(?P<range_date>{RE_YMDH}|{RE_YMD}|{RE_YM}|{RE_YYYY}|{RE_MDH}|{RE_MD})"
+    )
 
-    RE_CH_SEP = r"[\_\.\s]*"
+    RE_CH_SEP = r"[\_\.\s]+"
 
     RE_THIS_YEAR = rf"(?P<this_year>本年|今年|this{RE_CH_SEP}year)"
     RE_LAST_YEAR = rf"(?P<last_year>上年|去年|last{RE_CH_SEP}year)"
