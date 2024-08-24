@@ -259,40 +259,41 @@ class DateRangeConverter:
         return 0, 0
 
     def get_date_ts_range_of_dist(self, date_str: str) -> tuple[int, int]:
-        logger.mesg(f"> <range_dist>: {date_str}")
-        return 0, 0
         now = datetime.now()
-
-        def to_timestamp(dt: datetime) -> int:
-            return int(dt.timestamp())
 
         match = re.match(self.RE_RANGE_DIST, date_str)
         if match:
             if match.group("n_years"):
                 n = int(match.group("year_n"))
-                start = now - timedelta(days=365 * n)
-                end = now
+                start_dt = datetime(
+                    now.year - n, now.month, now.day, now.hour, now.minute, now.second
+                )
             elif match.group("n_months"):
                 n = int(match.group("month_n"))
-                start = now - timedelta(days=30 * n)
-                end = now
+                start_year = now.year - ((now.month - n) // 12 + 1)
+                start_month = ((now.month - n) % 12) or 12
+                start_dt = datetime(
+                    start_year, start_month, now.day, now.hour, now.minute, now.second
+                )
             elif match.group("n_weeks"):
                 n = int(match.group("week_n"))
-                start = now - timedelta(weeks=n)
-                end = now
+                start_dt = now - timedelta(weeks=n)
             elif match.group("n_days"):
                 n = int(match.group("day_n"))
-                start = now - timedelta(days=n)
-                end = now
+                start_dt = now - timedelta(days=n)
             elif match.group("n_hours"):
                 n = int(match.group("hour_n"))
-                start = now - timedelta(hours=n)
-                end = now
+                start_dt = now - timedelta(hours=n)
             else:
-                raise ValueError("Invalid date string format")
-            return to_timestamp(start), to_timestamp(end)
-        else:
-            raise ValueError("Invalid date string format")
+                logger.warn(f"× No match for type <range_dist>: {date_str}")
+                start_dt = None
+
+            if start_dt:
+                return int(start_dt.timestamp()), int(now.timestamp())
+            else:
+                return 0, 0
+
+        return 0, 0
 
 
 if __name__ == "__main__":
@@ -307,16 +308,16 @@ if __name__ == "__main__":
         # "this_week",
         # "this_day",
         # "this_hour",
-        "last_year",
-        "last_month",
-        "last_week",
-        "last_day",
-        "last_hour",
-        # "1 year",
-        # "2 months",
-        # "3 weeks",
-        # "4 days",
-        # "5 hours",
+        # "last_year",
+        # "last_month",
+        # "last_week",
+        # "last_day",
+        # "last_hour",
+        "1 year",
+        "2 months",
+        "3 weeks",
+        "4 days",
+        "5 hours",
     ]
     converter = DateRangeConverter()
     for date_str in date_strs:
