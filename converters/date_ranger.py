@@ -1,5 +1,6 @@
 import re
 
+from calendar import monthrange
 from datetime import datetime, timedelta
 from tclogger import logger, ts_to_str
 
@@ -142,7 +143,6 @@ class DateRangeConverter:
 
     def get_date_ts_range_of_date(self, date_str: str) -> tuple[int, int]:
         now = datetime.now()
-
         match = re.match(self.RE_RANGE_DATE, date_str)
         if match:
             if match.group("yyyy_mm_dd_hh"):
@@ -162,8 +162,9 @@ class DateRangeConverter:
                 year = int(match.group("ym_year"))
                 month = int(match.group("ym_mm"))
                 start_dt = datetime(year, month, 1)
-                end_dt = (start_dt + timedelta(days=31)).replace(day=1) - timedelta(
-                    milliseconds=1
+                month_days = monthrange(year, month)[1]
+                end_dt = (
+                    start_dt + timedelta(days=month_days) - timedelta(milliseconds=1)
                 )
             elif match.group("yyyy"):
                 year = int(match.group("yyyy"))
@@ -194,7 +195,6 @@ class DateRangeConverter:
 
     def get_date_ts_range_of_this(self, date_str: str) -> tuple[int, int]:
         now = datetime.now()
-
         match = re.match(self.RE_RANGE_THIS, date_str)
         if match:
             if match.group("this_year"):
@@ -220,39 +220,43 @@ class DateRangeConverter:
         return 0, 0
 
     def get_date_ts_range_of_last(self, date_str: str) -> tuple[int, int]:
-        logger.mesg(f"> <range_last>: {date_str}")
-        return 0, 0
         now = datetime.now()
-        this_year = now.year
-        this_month = now.month
+        match = re.match(self.RE_RANGE_LAST, date_str)
+        if match:
+            if match.group("last_year"):
+                start_dt = datetime(now.year - 1, 1, 1)
+                end_dt = datetime(now.year - 1, 12, 31, 23, 59, 59)
+            elif match.group("last_month"):
+                if now.month == 1:
+                    start_dt = datetime(now.year - 1, 12, 1)
+                else:
+                    start_dt = datetime(now.year, now.month - 1, 1)
+                month_days = monthrange(start_dt.year, start_dt.month)[1]
+                end_dt = (
+                    start_dt + timedelta(days=month_days) - timedelta(milliseconds=1)
+                )
+            elif match.group("last_week"):
+                start_dt = now - timedelta(days=now.weekday() + 7)
+                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_dt = start_dt + timedelta(days=7) - timedelta(milliseconds=1)
+            elif match.group("last_day"):
+                start_dt = now - timedelta(days=1)
+                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
+            elif match.group("last_hour"):
+                start_dt = now - timedelta(hours=1)
+                start_dt = start_dt.replace(minute=0, second=0, microsecond=0)
+                end_dt = start_dt + timedelta(hours=1) - timedelta(milliseconds=1)
+            else:
+                logger.warn(f"× No match for type <range_last>: {date_str}")
+                start_dt = None
 
-        def to_timestamp(dt: datetime) -> int:
-            return int(dt.timestamp())
+            if start_dt:
+                return int(start_dt.timestamp()), int(end_dt.timestamp())
+            else:
+                return 0, 0
 
-        if re.match(self.RE_LAST_YEAR, date_str):
-            start = datetime(this_year - 1, 1, 1)
-            end = datetime(this_year - 1, 12, 31, 23, 59, 59)
-        elif re.match(self.RE_LAST_MONTH, date_str):
-            last_month = this_month - 1 if this_month > 1 else 12
-            last_month_year = this_year if this_month > 1 else this_year - 1
-            start = datetime(last_month_year, last_month, 1)
-            end = (start + timedelta(days=31)).replace(day=1) - timedelta(seconds=1)
-        elif re.match(self.RE_LAST_WEEK, date_str):
-            start = now - timedelta(days=now.weekday() + 7)
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-            end = start + timedelta(days=6, hours=23, minutes=59, seconds=59)
-        elif re.match(self.RE_LAST_DAY, date_str):
-            start = now - timedelta(days=1)
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-            end = start + timedelta(hours=23, minutes=59, seconds=59)
-        elif re.match(self.RE_LAST_HOUR, date_str):
-            start = now - timedelta(hours=1)
-            start = start.replace(minute=0, second=0, microsecond=0)
-            end = start + timedelta(minutes=59, seconds=59)
-        else:
-            raise ValueError("Invalid date string format")
-
-        return to_timestamp(start), to_timestamp(end)
+        return 0, 0
 
     def get_date_ts_range_of_dist(self, date_str: str) -> tuple[int, int]:
         logger.mesg(f"> <range_dist>: {date_str}")
@@ -294,20 +298,20 @@ class DateRangeConverter:
 if __name__ == "__main__":
     date_strs = [
         # "2014",
-        # "2014-08",
+        # "2014-02",
         # "2014/08/12",
         # "08/12",
         # "2014-08-12.12",
-        "this_year",
-        "this_month",
-        "this_week",
-        "this_day",
-        "this_hour",
-        # "last_year",
-        # "last_month",
-        # "last_week",
-        # "last_day",
-        # "last_hour",
+        # "this_year",
+        # "this_month",
+        # "this_week",
+        # "this_day",
+        # "this_hour",
+        "last_year",
+        "last_month",
+        "last_week",
+        "last_day",
+        "last_hour",
         # "1 year",
         # "2 months",
         # "3 weeks",
