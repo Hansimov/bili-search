@@ -141,7 +141,6 @@ class DateRangeConverter:
             return None
 
     def get_date_ts_range_of_date(self, date_str: str) -> tuple[int, int]:
-        logger.mesg(f"> <range_date>: {date_str}")
         now = datetime.now()
 
         match = re.match(self.RE_RANGE_DATE, date_str)
@@ -194,37 +193,31 @@ class DateRangeConverter:
         return 0, 0
 
     def get_date_ts_range_of_this(self, date_str: str) -> tuple[int, int]:
-        logger.mesg(f"> <range_this>: {date_str}")
-        return 0, 0
         now = datetime.now()
-        this_year = now.year
-        this_month = now.month
-        this_day = now.day
-        this_hour = now.hour
 
-        def to_timestamp(dt: datetime) -> int:
-            return int(dt.timestamp())
+        match = re.match(self.RE_RANGE_THIS, date_str)
+        if match:
+            if match.group("this_year"):
+                start_dt = datetime(now.year, 1, 1)
+            elif match.group("this_month"):
+                start_dt = datetime(now.year, now.month, 1)
+            elif match.group("this_week"):
+                start_dt = now - timedelta(days=now.weekday())
+                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif match.group("this_day"):
+                start_dt = datetime(now.year, now.month, now.day)
+            elif match.group("this_hour"):
+                start_dt = datetime(now.year, now.month, now.day, now.hour)
+            else:
+                logger.warn(f"× No match for type <range_this>: {date_str}")
+                start_dt = None
 
-        if re.match(self.RE_THIS_YEAR, date_str):
-            start = datetime(this_year, 1, 1)
-            end = now
-        elif re.match(self.RE_THIS_MONTH, date_str):
-            start = datetime(this_year, this_month, 1)
-            end = now
-        elif re.match(self.RE_THIS_WEEK, date_str):
-            start = now - timedelta(days=now.weekday())
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-            end = now
-        elif re.match(self.RE_THIS_DAY, date_str):
-            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end = now
-        elif re.match(self.RE_THIS_HOUR, date_str):
-            start = now.replace(minute=0, second=0, microsecond=0)
-            end = now
-        else:
-            raise ValueError("Invalid date string format")
+            if start_dt:
+                return int(start_dt.timestamp()), int(now.timestamp())
+            else:
+                return 0, 0
 
-        return to_timestamp(start), to_timestamp(end)
+        return 0, 0
 
     def get_date_ts_range_of_last(self, date_str: str) -> tuple[int, int]:
         logger.mesg(f"> <range_last>: {date_str}")
@@ -300,16 +293,16 @@ class DateRangeConverter:
 
 if __name__ == "__main__":
     date_strs = [
-        "2014",
-        "2014-08",
-        "2014/08/12",
-        "08/12",
-        "2014-08-12.12",
-        # "this_year",
-        # "this_month",
-        # "this_week",
-        # "this_day",
-        # "this_hour",
+        # "2014",
+        # "2014-08",
+        # "2014/08/12",
+        # "08/12",
+        # "2014-08-12.12",
+        "this_year",
+        "this_month",
+        "this_week",
+        "this_day",
+        "this_hour",
         # "last_year",
         # "last_month",
         # "last_week",
@@ -328,6 +321,6 @@ if __name__ == "__main__":
         start_str = ts_to_str(start_ts)
         end_str = ts_to_str(end_ts)
         logger.success(f"> start: {start_str}")
-        logger.success(f">   end: {end_str}")
+        logger.success(f"> end  : {end_str}")
 
     # python -m converters.date_ranger
