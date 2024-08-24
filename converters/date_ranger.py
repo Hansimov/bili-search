@@ -26,20 +26,25 @@ class DateRangeConverter:
         rf"(?P<range_date>{RE_YMDH}|{RE_YMD}|{RE_YM}|{RE_YYYY}|{RE_MDH}|{RE_MD})"
     )
 
-    RE_CH_SEP = r"[\_\.\s]+"
-
+    RE_CH_SEP = r"[\_\.\s\-]+"
     RE_THIS_YEAR = rf"(?P<this_year>本年|今年|this{RE_CH_SEP}year)"
     RE_LAST_YEAR = rf"(?P<last_year>上年|去年|last{RE_CH_SEP}year)"
+    RE_PAST_YEAR = rf"(?P<past_year>过去一年|past{RE_CH_SEP}year)"
     RE_THIS_MONTH = rf"(?P<this_month>本月|this{RE_CH_SEP}month)"
     RE_LAST_MONTH = rf"(?P<last_month>上个?月|last{RE_CH_SEP}month)"
+    RE_PAST_MONTH = rf"(?P<past_month>过去一个?月|past{RE_CH_SEP}month)"
     RE_THIS_WEEK = rf"(?P<this_week>本周|this{RE_CH_SEP}week)"
     RE_LAST_WEEK = rf"(?P<last_week>上周|last{RE_CH_SEP}week)"
+    RE_PAST_WEEK = rf"(?P<past_week>过去一周|past{RE_CH_SEP}week)"
     RE_THIS_DAY = rf"(?P<this_day>本日|今日|今天|this{RE_CH_SEP}day|today)"
     RE_LAST_DAY = rf"(?P<last_day>上日|昨日|昨天|last{RE_CH_SEP}day|yesterday)"
+    RE_PAST_DAY = rf"(?P<past_day>过去一天|past{RE_CH_SEP}day)"
     RE_THIS_HOUR = rf"(?P<this_hour>本时|当前小时|this{RE_CH_SEP}hour)"
     RE_LAST_HOUR = rf"(?P<last_hour>上时|上个小时|last{RE_CH_SEP}hour)"
+    RE_PAST_HOUR = rf"(?P<past_hour>过去一个小时|past{RE_CH_SEP}hour)"
     RE_RANGE_THIS = rf"(?P<range_this>{RE_THIS_YEAR}|{RE_THIS_MONTH}|{RE_THIS_WEEK}|{RE_THIS_DAY}|{RE_THIS_HOUR})"
     RE_RANGE_LAST = rf"(?P<range_last>{RE_LAST_YEAR}|{RE_LAST_MONTH}|{RE_LAST_WEEK}|{RE_LAST_DAY}|{RE_LAST_HOUR})"
+    RE_RANGE_PAST = rf"(?P<range_past>{RE_PAST_YEAR}|{RE_PAST_MONTH}|{RE_PAST_WEEK}|{RE_PAST_DAY}|{RE_PAST_HOUR})"
 
     RE_DU_SEP = r"[\s]*"
     RE_YEAR_UNIT = r"(?P<year_unit>年|years?|yr|y)"
@@ -111,7 +116,7 @@ class DateRangeConverter:
             - "last_hour"
                 - from: [DATE_OF_LAST_HOUR] [LAST_HOUR]:00:00
                 - from: [DATE_OF_LAST_HOUR] [LAST_HOUR]:59:59
-        4. <range_dist>
+        4. <range_dist> (<range_past> is the special case of <range_dist>)
             - "1 year"
                 - from: [DATE_OF_ONE_YEAR_AGO]
                 -   to: [DATE_OF_ONE_YEAR_AGO]
@@ -137,6 +142,8 @@ class DateRangeConverter:
             return self.get_date_ts_range_of_last(date_str)
         elif re.match(self.RE_RANGE_DIST, date_str):
             return self.get_date_ts_range_of_dist(date_str)
+        elif re.match(self.RE_RANGE_PAST, date_str):
+            return self.get_date_ts_range_of_past(date_str)
         else:
             logger.warn(f"× No matched range for date_str: {date_str}")
             return None
@@ -295,6 +302,25 @@ class DateRangeConverter:
 
         return 0, 0
 
+    def get_date_ts_range_of_past(self, date_str: str) -> tuple[int, int]:
+        match = re.match(self.RE_RANGE_PAST, date_str)
+        if match:
+            if match.group("past_year"):
+                return self.get_date_ts_range_of_dist("1 year")
+            elif match.group("past_month"):
+                return self.get_date_ts_range_of_dist("1 month")
+            elif match.group("past_week"):
+                return self.get_date_ts_range_of_dist("1 week")
+            elif match.group("past_day"):
+                return self.get_date_ts_range_of_dist("1 day")
+            elif match.group("past_hour"):
+                return self.get_date_ts_range_of_dist("1 hour")
+            else:
+                logger.warn(f"× No match for type <range_past>: {date_str}")
+                return 0, 0
+
+        return 0, 0
+
 
 if __name__ == "__main__":
     date_strs = [
@@ -313,11 +339,16 @@ if __name__ == "__main__":
         # "last_week",
         # "last_day",
         # "last_hour",
-        "1 year",
-        "2 months",
-        "3 weeks",
-        "4 days",
-        "5 hours",
+        # "1 year",
+        # "2 months",
+        # "3 weeks",
+        # "4 days",
+        # "5 hours",
+        "past year",
+        "past.month",
+        "past-week",
+        "过去一天",
+        "past_hour",
     ]
     converter = DateRangeConverter()
     for date_str in date_strs:
