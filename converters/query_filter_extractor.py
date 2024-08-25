@@ -11,20 +11,21 @@ class QueryFilterExtractor:
     OP_MAPS = {">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
     BRACKET_MAPS = {"(": "gt", ")": "lt", "[": "gte", "]": "lte"}
 
-    RE_LB = r"[\[\(]"
-    RE_RB = r"[\]\)]"
-    RE_OP = r"(<=?|>=?|=)"
+    RE_LB = r"(\[|\(|【|（)"
+    RE_RB = r"(\]|\)|】|）)"
+    RE_OP = r"(<=?|>=?|=|《=?|》=?)"
+    RE_RANGE_SEP = r"[,，]"
 
     RE_KEYWORD = r"[^:\n\s\.]+"
-    RE_FILTER_SEP = r"[:：]+"
+    RE_FILTER_SEP = r"[:;：；]+"
 
     REP_DATE_FIELD = DateFieldConverter.REP_DATE_FIELD
     REP_STAT_FIELD = StatFieldConverter.REP_STAT_FIELD
     RE_DATE_VAL = DateFieldConverter.RE_DATE_VAL
     RE_STAT_VAL = StatFieldConverter.RE_STAT_VAL
 
-    REP_DATE_FILTER = rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*,\s*(?P<date_rval>{RE_DATE_VAL})*\s*(?P<date_rb>{RE_RB})))"
-    REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_STAT_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_STAT_VAL}*)\s*,\s*(?P<stat_rval>{RE_STAT_VAL})*\s*(?P<stat_rb>{RE_RB})))"
+    REP_DATE_FILTER = rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<date_rval>{RE_DATE_VAL}*)\s*(?P<date_rb>{RE_RB})))"
+    REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_STAT_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_STAT_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<stat_rval>{RE_STAT_VAL}*)\s*(?P<stat_rb>{RE_RB})))"
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
 
     QUERY_PATTERN = rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_KEYWORD})"
