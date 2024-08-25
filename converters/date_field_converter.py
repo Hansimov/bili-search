@@ -5,7 +5,10 @@ from datetime import datetime, timedelta
 from tclogger import logger, ts_to_str
 
 
-class DateRangeConverter:
+class DateFieldConverter:
+    RE_DATE_FIELD = rf"(日期|rq|d|date|dt)"
+    REP_DATE_FIELD = rf"(?P<date_field>{RE_DATE_FIELD})"
+
     # DATE: YMDH, YMD, YM, YYYY, MDH, MD
     RE_MM_SEP = r"[-/\.]+"
     RE_DD_SEP = r"[-/\.]+"
@@ -107,7 +110,7 @@ class DateRangeConverter:
     REP_N_HOUR = rf"(?P<n_hours>(?P<hour_n>\d+){RE_DU_SEP}{RE_HOUR_UNIT})"
     REP_RANGE_DIST = rf"(?P<range_dist>{REP_N_YEAR}|{REP_N_MONTH}|{REP_N_WEEK}|{REP_N_DAY}|{REP_N_HOUR})"
 
-    RE_DATE_ALL = rf"({RE_RANGE_DATE}|{RE_RANGE_RECENT}|{RE_RANGE_DIST})"
+    RE_DATE_VAL = rf"({RE_RANGE_DATE}|{RE_RANGE_RECENT}|{RE_RANGE_DIST})"
 
     def get_date_ts_range(self, date_str: str) -> tuple[int, int]:
         """Get the timestamp range of the date.
@@ -411,4 +414,4 @@ if __name__ == "__main__":
         logger.success(f"> start: {start_str}")
         logger.success(f"> end  : {end_str}")
 
-    # python -m converters.date_ranger
+    # python -m converters.date_field_converter
