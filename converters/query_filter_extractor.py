@@ -197,7 +197,7 @@ class QueryFilterExtractor:
             res[f"val_type"] = "range"
         else:
             logger.warn(f"× No matched stat_val: {keyword}")
-        logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
+        logger.mesg(pformat(res, sort_dicts=False, compact=False), indent=4)
 
         return res
 
@@ -237,9 +237,21 @@ class QueryFilterExtractor:
                     filters[key].pop("lte")
 
     def filter_expr_to_dict(self, filter_expr: str) -> dict[str, dict]:
-        filter_item = {}
+        res = {}
         filter_dict = self.get_filter_field_and_val_from_expr(filter_expr)
-        return {}
+        if filter_dict["field_type"] == "stat":
+            converter = StatFieldConverter()
+            res = converter.filter_dict_to_es_dict(filter_dict)
+        # elif filter_dict["field_type"]=="date":
+        #     converter = DateFieldConverter()
+        #     res = converter.filter_dict_to_es_dict(filter_dict)
+        else:
+            logger.warn(f"× No matching field type: {filter_dict['field_type']}")
+
+        if res:
+            logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
+
+        return res
 
     def extract(self, query: str) -> tuple[list[str], list[dict]]:
         filters = {}
@@ -268,7 +280,8 @@ if __name__ == "__main__":
         "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
         # "黑神话 :bf=1000 :date>=2024-08-21 rank",
         "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
-        "黑神话 ::bf >1000K :view<2百w 2024-10-11",
+        "黑神话 ：bf >1000K :view<2百w 2024-10-11",
+        "黑神话 :bf=【200,1000) :date=[2020-08-20,） 2024",
         # "黑神话 ::bf >1000 map :view<2500",
         # "黑神话 :view>1000 :date=2024-08-20",
         # "黑神话 :view>1000 :date=[08-10,08-20)",
