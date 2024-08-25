@@ -35,7 +35,7 @@ class StatFieldConverter:
     BRACKET_ZH_MAPS = {"（": "gt", "）": "lt", "【": "gte", "】": "lte"}
     BRACKET_MAPS = {**BRACKET_EN_MAPS, **BRACKET_ZH_MAPS}
 
-    def val_unit_to_int(self, val: str) -> int:
+    def val_to_int(self, val: str) -> int:
         if val == "":
             return None
 
@@ -53,11 +53,11 @@ class StatFieldConverter:
             logger.warn(f"× No matching stat val: {val}")
             return None
 
-    def val_to_elastic_dict(
+    def op_val_to_es_dict(
         self,
         field: str,
-        val: str,
         op: Literal["=", "<", ">", "<=", ">="],
+        val: str,
     ) -> dict:
         """
         Examples:
@@ -70,7 +70,7 @@ class StatFieldConverter:
         res_val = {}
 
         if val:
-            val_int = self.val_unit_to_int(val)
+            val_int = self.val_to_int(val)
         else:
             return {}
 
@@ -83,16 +83,13 @@ class StatFieldConverter:
         res = {f"stat.{field}": res_val}
         return res
 
-    def range_to_elastic_dict(
+    def range_val_to_es_dict(
         self,
         field: str,
-        val: str,
         lb: str,
         lval: str,
         rval: str,
         rb: str,
-        op: str = "=",
-        field_type: Literal["stat", "date"] = "stat",
     ) -> dict:
         """
         - {'field':'coin', 'field_type':'stat', 'op':'=', 'lb':'[', 'lval':'1000', 'rval':'2000', 'rb':')', 'val_type':'range'}
@@ -100,25 +97,76 @@ class StatFieldConverter:
         - {'field':'danmaku', 'field_type':'stat', 'op':'=', 'lb':'[', 'lval':'', 'rval':'2000', 'rb':')', 'val_type':'range'}
             -> {"stat.danmaku": {"lt": 2000}}
         """
-        pass
+        res = {}
+        res_val = {}
+
+        if lval:
+            lval_int = self.val_to_int(lval)
+            lb_str = self.BRACKET_MAPS[lb]
+        else:
+            lval_int = None
+            lb_str = None
+
+        if rval:
+            rval_int = self.val_to_int(rval)
+            rb_str = self.BRACKET_MAPS[rb]
+        else:
+            rval_int = None
+            rb_str = None
+
+        if lval_int and lb_str:
+            res_val[lb_str] = lval_int
+        if rval_int and rb_str:
+            res_val[rb_str] = rval_int
+
+        res = {f"stat.{field}": res_val}
+        return res
+
+    def filter_dict_to_es_dict(self, filter_dict: dict) -> dict:
+        """
+        - {'field':'view', 'field_type':'stat', 'op':'>', 'val':'1000','val_type':'value'}
+            -> {"stat.view": {"gt": 1000}}
+        - {'field':'coin', 'field_type':'stat', 'op':'=', 'lb':'[', 'lval':'', 'rval':'2000', 'rb':')', 'val_type':'range'}
+            -> {"stat.coin": {"lt": 2000}}
+        - {'field':'reply', 'field_type':'stat', 'op':'=', 'lb':'[', 'lval':'100', 'rval':'2000', 'rb':']', 'val_type':'range'}
+            -> {"stat.reply": {"gte": 100, "lte": 2000}}
+        """
+        res = {}
+        if filter_dict["val_type"] == "value":
+            res = self.op_val_to_es_dict(
+                filter_dict["field"], filter_dict["op"], filter_dict["val"]
+            )
+        elif filter_dict["val_type"] == "range":
+            res = self.range_val_to_es_dict(
+                filter_dict["field"],
+                filter_dict["lb"],
+                filter_dict["lval"],
+                filter_dict["rval"],
+                filter_dict["rb"],
+            )
+        else:
+            logger.warn(f"× No matching val type: {filter_dict['val_type']}")
+        return res
 
 
 if __name__ == "__main__":
     converter = StatFieldConverter()
-    for val_unit in [
-        "1000",
-        "100k",
-        "100K",
-        "100kk",
-        "100w",
-        "100W",
-        "100kW",
-        "10m",
-        "10M",
-        "1百万亿",
+    for field_op_val in [
+        ("view", "<", "1000"),
+        ("like", ">", "100k"),
+        ("coin", "<=", "100K"),
+        ("favorite", ">=", "100kk"),
+        ("danmaku", "=", "100w"),
+        ("reply", "<", "100W"),
+        ("share", ">", "100kW"),
+        ("view", "<=", "10m"),
+        ("coin", ">=", "10M"),
+        ("reply", "=", "1百万亿"),
     ]:
-        logger.note(f"> {val_unit}:", end=" ")
-        res = converter.val_unit_to_int(val_unit)
+        field, op, val = field_op_val
+        logger.note(f"> {field}{op}{val}:", end=" ")
+        # res = converter.val_to_int(val_unit)
+        res = converter.op_val_to_es_dict(field, op, val)
         logger.success(f"{res}")
 
     # python -m converters.stat_field_converter
