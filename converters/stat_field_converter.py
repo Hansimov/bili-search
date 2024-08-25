@@ -5,13 +5,13 @@ from typing import Literal
 
 
 class StatFieldConverter:
-    RE_VIEW = r"(播放|bofang|bf|view|view|v)"
-    RE_LIKE = r"(点赞|dianzan|dz|like|like|l)"
-    RE_COIN = r"(投币|toubi|tb|coin|coin|c)"
-    RE_FAVORITE = r"(收藏|shouchang|sc|favorite|fav|f)"
-    RE_REPLY = r"(评论|回复|pinglun|huifu|pl|hf|reply|r)"
-    RE_DANMAKU = r"(弹幕|danmu|dm|danmaku|d)"
-    RE_SHARE = r"(分享|转发|fenxiang|zhuanfa|fx|zf|share|s)"
+    RE_VIEW = r"(播放|bofang|bof|bf|view|vw|v)"
+    RE_LIKE = r"(点赞|dianzan|dianz|dz|like|lk|l)"
+    RE_COIN = r"(投币|toubi|toub|tb|coin|cn|c)"
+    RE_FAVORITE = r"(收藏|shouchang|shouc|sc|favorite|fav|fv|star|f)"
+    RE_REPLY = r"(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp|r)"
+    RE_DANMAKU = r"(弹幕|danmu|danm|dm|danmaku|m)"
+    RE_SHARE = r"(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh|s)"
     RE_STAT_FIELD = rf"({RE_VIEW}|{RE_LIKE}|{RE_COIN}|{RE_FAVORITE}|{RE_REPLY}|{RE_DANMAKU}|{RE_SHARE})"
 
     REP_VIEW = rf"(?P<view>{RE_VIEW})"
@@ -28,8 +28,12 @@ class StatFieldConverter:
     REP_STAT_VAL = rf"((?P<num>\d+)\s*(?P<unit>{RE_UNIT}))"
 
     UNIT_MAPS = {"百": 100, "千kK": 1000, "万wW": 10000, "mM": 1000000, "亿": 100000000}
-    OP_MAPS = {">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
-    BRACKET_MAPS = {"(": "gt", ")": "lt", "[": "gte", "]": "lte"}
+    OP_EN_MAPS = {">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
+    OP_ZH_MAPS = {"》": "gt", "《": "lt", "》=": "gte", "《=": "lte"}
+    OP_MAPS = {**OP_EN_MAPS, **OP_ZH_MAPS}
+    BRACKET_EN_MAPS = {"(": "gt", ")": "lt", "[": "gte", "]": "lte"}
+    BRACKET_ZH_MAPS = {"（": "gt", "）": "lt", "【": "gte", "】": "lte"}
+    BRACKET_MAPS = {**BRACKET_EN_MAPS, **BRACKET_ZH_MAPS}
 
     def val_unit_to_int(self, val: str) -> int:
         if val == "":
