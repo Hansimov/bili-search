@@ -118,6 +118,8 @@ class QueryFilterExtractor:
         return res
 
     def map_key_to_stat_field(self, key: str) -> str:
+        if re.match(self.REP_DATE_FIELD, key):
+            return "date"
         match = re.match(self.REP_STAT_FIELD, key)
         if match:
             stat_field = list(
@@ -194,7 +196,7 @@ class QueryFilterExtractor:
 
         return range_dict
 
-    def split_stat_filter_key_and_val(self, keyword: str) -> tuple[str, dict]:
+    def get_filter_key_and_val_from_expr(self, keyword: str) -> tuple[str, dict]:
         """
         Syntaxes:
             - input_keys: stat_fields, or stat_fields with matched prefix
@@ -215,12 +217,33 @@ class QueryFilterExtractor:
         filter_val = None
 
         # use regex to split the keyword into filter_key and filter_val
-        match = re.match(r":(\w+)(.*)", keyword)
-        if match:
-            matched_key = match.group(1)
-            filter_key = self.map_key_to_stat_field(matched_key)
-            matched_val = match.group(2)
-            filter_val = self.map_val_to_range_dict(matched_val)
+        res = {}
+        if re.match(self.REP_STAT_FILTER, keyword):
+            field_type = "stat"
+            match = re.match(self.REP_STAT_FILTER, keyword)
+        elif re.match(self.REP_DATE_FILTER, keyword):
+            field_type = "date"
+            match = re.match(self.REP_DATE_FILTER, keyword)
+        else:
+            logger.warn(f"× No matched stat_field: {keyword}")
+            return None, None
+
+        res[f"field"] = self.map_key_to_stat_field(match.group(f"{field_type}_field"))
+        res[f"field_type"] = field_type
+        res[f"op"] = match.group(f"{field_type}_op")
+
+        if match.group(f"{field_type}_val"):
+            res[f"val"] = match.group(f"{field_type}_val")
+            res[f"val_type"] = "value"
+        elif match.group(f"{field_type}_lb"):
+            res[f"lb"] = match.group(f"{field_type}_lb")
+            res[f"lval"] = match.group(f"{field_type}_lval")
+            res[f"rval"] = match.group(f"{field_type}_rval")
+            res[f"rb"] = match.group(f"{field_type}_rb")
+            res[f"val_type"] = "range"
+        else:
+            logger.warn(f"× No matched stat_val: {keyword}")
+        logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
 
         if filter_key and filter_val:
             return filter_key, filter_val
@@ -264,7 +287,7 @@ class QueryFilterExtractor:
 
     def filter_expr_to_dict(self, filter_expr: str) -> dict[str, dict]:
         filter_item = {}
-        filter_key, filter_val = self.split_stat_filter_key_and_val(filter_expr)
+        filter_key, filter_val = self.get_filter_key_and_val_from_expr(filter_expr)
         if filter_key and filter_val:
             filter_item[filter_key] = filter_val
         return filter_item
@@ -311,15 +334,16 @@ if __name__ == "__main__":
         logger.line(f"{query}")
         res = extractor.split_keyword_and_filter_expr(query)
         logger.note("  - Parsed  :")
-        logger.success(pformat(res, sort_dicts=False, compact=False))
-        keywords = res["keywords"]
-        filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
+        logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
+        # keywords = res["keywords"]
+        # filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
+        logger.note("  - Extracted:")
         keywords, filter_dicts = extractor.extract(query)
-        logger.note("  - Keywords:", end=" ")
-        logger.mesg(f"{keywords}")
-        logger.note("  - Filters :", end=" ")
-        logger.success(pformat(filter_exprs, sort_dicts=False, compact=False))
-        logger.note("  - Filters :", end=" ")
-        logger.success(pformat(filter_dicts, sort_dicts=False, compact=False))
+        # logger.note("  - Keywords:", end=" ")
+        # logger.mesg(f"{keywords}")
+        # logger.note("  - Filters :", end=" ")
+        # logger.success(pformat(filter_exprs, sort_dicts=False, compact=False))
+        # logger.note("  - Filters :", end=" ")
+        # logger.success(pformat(filter_dicts, sort_dicts=False, compact=False))
 
     # python -m converters.query_filter_extractor
