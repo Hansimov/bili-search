@@ -94,22 +94,16 @@ class QueryFilterExtractor:
         keywords = []
         stat_filter_exprs = []
         date_filter_exprs = []
-        filter_subs = {" ": "", ":+": ":"}
         for match in matches:
             keyword = match.group("keyword")
             stat_filter_expr = match.group("stat_filter")
             date_filter_expr = match.group("date_filter")
             if keyword:
-                keyword = keyword.strip()
-                keywords.append(keyword)
+                keywords.append(keyword.strip())
             if stat_filter_expr:
-                for k, v in filter_subs.items():
-                    stat_filter_expr = re.sub(k, v, stat_filter_expr)
-                stat_filter_exprs.append(stat_filter_expr)
+                stat_filter_exprs.append(stat_filter_expr.strip())
             if date_filter_expr:
-                for k, v in filter_subs.items():
-                    date_filter_expr = re.sub(k, v, date_filter_expr)
-                date_filter_exprs.append(date_filter_expr)
+                date_filter_exprs.append(date_filter_expr.strip())
         res = {
             "keywords": keywords,
             "stat_filter_exprs": stat_filter_exprs,
@@ -117,7 +111,7 @@ class QueryFilterExtractor:
         }
         return res
 
-    def map_key_to_stat_field(self, key: str) -> str:
+    def map_key_to_field(self, key: str) -> str:
         if re.match(self.REP_DATE_FIELD, key):
             return "date"
         match = re.match(self.REP_STAT_FIELD, key)
@@ -196,27 +190,18 @@ class QueryFilterExtractor:
 
         return range_dict
 
-    def get_filter_key_and_val_from_expr(self, keyword: str) -> tuple[str, dict]:
+    def get_filter_field_and_val_from_expr(self, keyword: str) -> dict:
         """
-        Syntaxes:
-            - input_keys: stat_fields, or stat_fields with matched prefix
-                - Eg: view, vi, v, stat.view, stat.vi ... all maps to "view"
-            - operators: <, >, =, <=, >=
-            - values: int, float, range
-                - int, float
-                - range: [a,b), (a,b], (a,b), [a,b], and a or b could be empty
-
         Examples:
-            - ":view>1000" -> ("view", ">1000")
-            - ":fav<=1000" -> ("favorite", "<=1000")
-            - ":coin=[1000,2000)" -> ("coin", "[1000,2000)")
-            - ":danm=[,2000)" -> ("danmaku", "[,2000)")
+            - ":view>1000"
+                {'field':'view', 'field_type':'stat', 'op':'>', 'val':'1000','val_type':'value'}
+            - ":fav<=1000"
+                {'field':'favorite', 'field_type':'stat', 'op':'<=', 'val':'1000', 'val_type':'value'}
+            - ":coin=[1000,2000)"
+                {'field':'coin', 'field_type':'stat', 'op':'[', 'lb':'[', 'lval':'1000', 'rval':'2000', 'rb':')', 'val_type':'range'}
+            - ":danm=[,2000)"
+                {'field':'danmaku', 'field_type':'stat', 'op':'=', 'lb':'[', 'lval':'', 'rval':'2000', 'rb':')', 'val_type':'range'}
         """
-
-        filter_key = None
-        filter_val = None
-
-        # use regex to split the keyword into filter_key and filter_val
         res = {}
         if re.match(self.REP_STAT_FILTER, keyword):
             field_type = "stat"
@@ -228,7 +213,7 @@ class QueryFilterExtractor:
             logger.warn(f"× No matched stat_field: {keyword}")
             return None, None
 
-        res[f"field"] = self.map_key_to_stat_field(match.group(f"{field_type}_field"))
+        res[f"field"] = self.map_key_to_field(match.group(f"{field_type}_field"))
         res[f"field_type"] = field_type
         res[f"op"] = match.group(f"{field_type}_op")
 
@@ -245,10 +230,7 @@ class QueryFilterExtractor:
             logger.warn(f"× No matched stat_val: {keyword}")
         logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
 
-        if filter_key and filter_val:
-            return filter_key, filter_val
-        else:
-            return None, None
+        return res
 
     def merge_filter(self, filter_item: dict[str, dict], filters: dict[str, dict]):
         """
@@ -287,10 +269,8 @@ class QueryFilterExtractor:
 
     def filter_expr_to_dict(self, filter_expr: str) -> dict[str, dict]:
         filter_item = {}
-        filter_key, filter_val = self.get_filter_key_and_val_from_expr(filter_expr)
-        if filter_key and filter_val:
-            filter_item[filter_key] = filter_val
-        return filter_item
+        filter_dict = self.get_filter_field_and_val_from_expr(filter_expr)
+        return {}
 
     def extract(self, query: str) -> tuple[list[str], list[dict]]:
         filters = {}
@@ -314,21 +294,21 @@ class QueryFilterExtractor:
 if __name__ == "__main__":
     extractor = QueryFilterExtractor()
     queries = [
-        "影视飓风 :view>1000 :fav<=1000 :coin=[1000,2000)",
-        "影视飓风 :view>1000 :view<2000 :播放<=2000 :fav=[,2000)",
+        # "影视飓风 :view>1000 :fav<=1000 :coin=[1000,2000)",
+        # "影视飓风 :view>1000 :view<2000 :播放<=2000 :fav=[,2000)",
         "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
-        "黑神话 :bf=1000 :date>=2024-08-21 rank",
+        # "黑神话 :bf=1000 :date>=2024-08-21 rank",
         "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
         "黑神话 ::bf >1000 :view< 2500 2024-10-11",
-        "黑神话 ::bf >1000 map :view<2500",
-        "黑神话 :view>1000 :date=2024-08-20",
-        "黑神话 :view>1000 :date=[08-10,08-20)",
-        "黑神话 :view>1000 :date=[08.10, 08/20)",
-        "黑神话 :view>1000 :date <= 7 days",
-        "黑神话 :view>1000 :date=[7d,1d]",
-        "黑神话 :view>1000 :date <= 3 天",
-        "黑神话 :view>1000 :date <= past_hour 1小时",
-        "黑神话 :view>1000 :d = 1小时学完",
+        # "黑神话 ::bf >1000 map :view<2500",
+        # "黑神话 :view>1000 :date=2024-08-20",
+        # "黑神话 :view>1000 :date=[08-10,08-20)",
+        # "黑神话 :view>1000 :date=[08.10, 08/20)",
+        # "黑神话 :view>1000 :date <= 7 days",
+        # "黑神话 :view>1000 :date=[7d,1d]",
+        # "黑神话 :view>1000 :date <= 3 天",
+        # "黑神话 :view>1000 :date <= past_hour 1小时",
+        # "黑神话 :view>1000 :d = 1小时学完",
     ]
     for query in queries:
         logger.line(f"{query}")
