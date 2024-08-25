@@ -1,44 +1,15 @@
 import re
 
-from tclogger import logger
 from pprint import pformat
+from tclogger import logger
 
-from converters.date_ranger import DateRangeConverter
-
-
-class StatFilterRegexer:
-    RE_VIEW = r"(播放|bofang|bf|view|view|v)"
-    RE_LIKE = r"(点赞|dianzan|dz|like|like|l)"
-    RE_COIN = r"(投币|toubi|tb|coin|coin|c)"
-    RE_FAVORITE = r"(收藏|shouchang|sc|favorite|fav|f)"
-    RE_REPLY = r"(评论|回复|pinglun|huifu|pl|hf|reply|r)"
-    RE_DANMAKU = r"(弹幕|danmu|dm|danmaku|d)"
-    RE_SHARE = r"(分享|转发|fenxiang|zhuanfa|fx|zf|share|s)"
-    RE_STAT_FIELD = rf"({RE_VIEW}|{RE_LIKE}|{RE_COIN}|{RE_FAVORITE}|{RE_REPLY}|{RE_DANMAKU}|{RE_SHARE})"
-
-    REP_VIEW = rf"(?P<view>{RE_VIEW})"
-    REP_LIKE = rf"(?P<like>{RE_LIKE})"
-    REP_COIN = rf"(?P<coin>{RE_COIN})"
-    REP_FAVORITE = rf"(?P<favorite>{RE_FAVORITE})"
-    REP_REPLY = rf"(?P<reply>{RE_REPLY})"
-    REP_DANMAKU = rf"(?P<danmaku>{RE_DANMAKU})"
-    REP_SHARE = rf"(?P<share>{RE_SHARE})"
-    REP_STAT_FIELD = rf"(?P<stat_field>{REP_VIEW}|{REP_LIKE}|{REP_COIN}|{REP_FAVORITE}|{REP_REPLY}|{REP_DANMAKU}|{REP_SHARE})"
+from converters.date_field_converter import DateFieldConverter
+from converters.stat_field_converter import StatFieldConverter
 
 
 class QueryFilterExtractor:
-    OPERATOR_MAPS = {
-        ">": "gt",
-        "<": "lt",
-        ">=": "gte",
-        "<=": "lte",
-    }
-    BRACKET_MAPS = {
-        "(": "gt",
-        ")": "lt",
-        "[": "gte",
-        "]": "lte",
-    }
+    OP_MAPS = {">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
+    BRACKET_MAPS = {"(": "gt", ")": "lt", "[": "gte", "]": "lte"}
 
     RE_LB = r"[\[\(]"
     RE_RB = r"[\]\)]"
@@ -46,17 +17,14 @@ class QueryFilterExtractor:
 
     RE_KEYWORD = r"[^:\n\s\.]+"
     RE_FILTER_SEP = r"[:：]+"
-    RE_NUM_UNIT = r"[百千万亿kKwWmM]*"
-    RE_NUM = rf"\d+\s*{RE_NUM_UNIT}"
 
-    RE_DATE_FIELD = rf"(日期|rq|d|date|dt)"
-    REP_DATE_FIELD = rf"(?P<date_field>{RE_DATE_FIELD})"
-    RE_DATE_VAL = DateRangeConverter.RE_DATE_ALL
-    REP_STAT_FIELD = StatFilterRegexer.REP_STAT_FIELD
-    RE_STAT_VAL = rf"{RE_NUM}"
+    REP_DATE_FIELD = DateFieldConverter.REP_DATE_FIELD
+    REP_STAT_FIELD = StatFieldConverter.REP_STAT_FIELD
+    RE_DATE_VAL = DateFieldConverter.RE_DATE_VAL
+    RE_STAT_VAL = StatFieldConverter.RE_STAT_VAL
 
     REP_DATE_FILTER = rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*,\s*(?P<date_rval>{RE_DATE_VAL})*\s*(?P<date_rb>{RE_RB})))"
-    REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_DATE_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_DATE_VAL}*)\s*,\s*(?P<stat_rval>{RE_DATE_VAL})*\s*(?P<stat_rb>{RE_RB})))"
+    REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_STAT_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_STAT_VAL}*)\s*,\s*(?P<stat_rval>{RE_STAT_VAL})*\s*(?P<stat_rb>{RE_RB})))"
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
 
     QUERY_PATTERN = rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_KEYWORD})"
@@ -147,8 +115,8 @@ class QueryFilterExtractor:
             match = re.match(pattern, val)
             if match:
                 op = match.group(1)
-                if op in self.OPERATOR_MAPS.keys():
-                    op_str = self.OPERATOR_MAPS[op]
+                if op in self.OP_MAPS.keys():
+                    op_str = self.OP_MAPS[op]
                     num = int(match.group(2))
                     range_dict[op_str] = num
                 elif op == "=" and len(match.groups()) == 2:
@@ -299,7 +267,7 @@ if __name__ == "__main__":
         "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
         # "黑神话 :bf=1000 :date>=2024-08-21 rank",
         "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
-        "黑神话 ::bf >1000 :view< 2500 2024-10-11",
+        "黑神话 ::bf >1000K :view<2百w 2024-10-11",
         # "黑神话 ::bf >1000 map :view<2500",
         # "黑神话 :view>1000 :date=2024-08-20",
         # "黑神话 :view>1000 :date=[08-10,08-20)",
