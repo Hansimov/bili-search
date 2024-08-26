@@ -113,7 +113,7 @@ class DateFieldConverter:
 
     RE_DATE_VAL = rf"({RE_RANGE_DATE}|{RE_RANGE_RECENT}|{RE_RANGE_DIST})"
 
-    def get_date_ts_range(self, date_str: str) -> tuple[int, int]:
+    def get_date_ts_range(self, date_str: str) -> tuple[str, int, int]:
         """Get the timestamp range of the date.
         Examples:
         1. <range_date>
@@ -183,18 +183,18 @@ class DateFieldConverter:
         """
 
         if re.match(self.REP_RANGE_DATE, date_str):
-            return self.get_date_ts_range_of_date(date_str)
+            return "date", *self.get_date_ts_range_of_date(date_str)
         elif re.match(self.REP_RANGE_THIS, date_str):
-            return self.get_date_ts_range_of_this(date_str)
+            return "this", *self.get_date_ts_range_of_this(date_str)
         elif re.match(self.REP_RANGE_LAST, date_str):
-            return self.get_date_ts_range_of_last(date_str)
+            return "last", *self.get_date_ts_range_of_last(date_str)
         elif re.match(self.REP_RANGE_DIST, date_str):
-            return self.get_date_ts_range_of_dist(date_str)
+            return "dist", *self.get_date_ts_range_of_dist(date_str)
         elif re.match(self.REP_RANGE_PAST, date_str):
-            return self.get_date_ts_range_of_past(date_str)
+            return "past", *self.get_date_ts_range_of_past(date_str)
         else:
-            logger.warn(f"× No matched range for date_str: {date_str}")
-            return 0, 0
+            logger.warn(f"× No matched date_ts_range for date_str: {date_str}")
+            return "", 0, 0
 
     def get_date_ts_range_of_date(self, date_str: str) -> tuple[int, int]:
         now = datetime.now()
@@ -377,6 +377,72 @@ class DateFieldConverter:
 
         return 0, 0
 
+    def op_val_to_es_dict(self, op: str, val: str, use_date_str: bool = False) -> dict:
+        """
+        Examples:
+        - {'field':'date', 'field_type':'date', 'op':'>', 'val':'2024','val_type':'value'}
+            -> {"pubdate": {"gt": ts of (end of 2024)}}
+        - {'field':'date', 'field_type':'date', 'op':'<=', 'val':'2024-11','val_type':'value'}
+            -> {"pubdate": {"gte": ts of (start of 2024-11)}}
+        - {'field':'date', 'field_type':'date', 'op':'=', 'val':'2024-11','val_type':'value'}
+            -> {"pubdate": {"gte": ts of (start of 2024-11), "lte": ts of (end of 2024-11)}}
+        """
+        range_type, start_ts, end_ts = self.get_date_ts_range(val)
+        if op in OP_MAP.keys():
+            op_str = OP_MAP[op]
+        res = {}
+        res_val = {}
+        if range_type == "dist":
+            if op not in OP_MAP.keys():
+                res_val = {"gte": start_ts, "lte": end_ts}
+            else:
+                op_range = {
+                    "gt": {"lt": start_ts},
+                    "lt": {"gt": start_ts},
+                    "gte": {"lte": start_ts},
+                    "lte": {"gte": start_ts},
+                }
+                res_val = op_range[op_str]
+        elif range_type in ["date", "this", "last", "past"]:
+            if op not in OP_MAP.keys():
+                res_val = {"gte": start_ts, "lte": end_ts}
+            else:
+                op_range = {
+                    "gt": {"gt": end_ts},
+                    "lt": {"lt": start_ts},
+                    "gte": {"gte": start_ts},
+                    "lte": {"lte": end_ts},
+                }
+                res_val = op_range[op_str]
+        else:
+            logger.warn(f"× No matching date range type for: {val}")
+            return {}
+
+        res = {"pubdate": res_val}
+        if use_date_str:
+            res = {"pubdate_str": {k: ts_to_str(v) for k, v in res_val.items()}}
+        return res
+
+    def filter_dict_to_es_dict(
+        self, filter_dict: dict, use_date_str: bool = False
+    ) -> dict:
+        res = {}
+        if filter_dict["val_type"] == "value":
+            res = self.op_val_to_es_dict(
+                filter_dict["op"], filter_dict["val"], use_date_str=use_date_str
+            )
+        # elif filter_dict["val_type"] == "range":
+        #     res = self.range_val_to_es_dict(
+        #         filter_dict["field"],
+        #         filter_dict["lb"],
+        #         filter_dict["lval"],
+        #         filter_dict["rval"],
+        #         filter_dict["rb"],
+        #     )
+        else:
+            logger.warn(f"× No matching val type: {filter_dict['val_type']}")
+        return res
+
 
 if __name__ == "__main__":
     date_strs = [
@@ -406,12 +472,13 @@ if __name__ == "__main__":
         "过去一天",
         "past_hour",
     ]
-    converter = DateRangeConverter()
+    converter = DateFieldConverter()
     for date_str in date_strs:
         logger.note(f"{date_str}")
-        start_ts, end_ts = converter.get_date_ts_range(date_str)
+        range_type, start_ts, end_ts = converter.get_date_ts_range(date_str)
         start_str = ts_to_str(start_ts)
         end_str = ts_to_str(end_ts)
+        logger.mesg(f"> type : {range_type}")
         logger.success(f"> start: {start_str}")
         logger.success(f"> end  : {end_str}")
 

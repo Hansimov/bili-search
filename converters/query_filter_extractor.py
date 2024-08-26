@@ -242,9 +242,9 @@ class QueryFilterExtractor:
         if filter_dict["field_type"] == "stat":
             converter = StatFieldConverter()
             res = converter.filter_dict_to_es_dict(filter_dict)
-        # elif filter_dict["field_type"]=="date":
-        #     converter = DateFieldConverter()
-        #     res = converter.filter_dict_to_es_dict(filter_dict)
+        elif filter_dict["field_type"] == "date":
+            converter = DateFieldConverter()
+            res = converter.filter_dict_to_es_dict(filter_dict, use_date_str=True)
         else:
             logger.warn(f"× No matching field type: {filter_dict['field_type']}")
 
@@ -281,8 +281,9 @@ if __name__ == "__main__":
         # "黑神话 :bf=1000 :date>=2024-08-21 rank",
         "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
         "黑神话 ：bf >1000K :view<2百w 2024-10-11",
-        "黑神话 :bf=【200,1000) :date=[2020-08-20,） 2024",
-        # "黑神话 ::bf >1000 map :view<2500",
+        # "黑神话 :bf=【200,1000) :date=[2020-08-20,） 2024",
+        "黑神话 :bf=【200,1000) :date=2020-08-20 2024",
+        "黑神话 ::bf >1000 map :view<2500 :date<=7days",
         # "黑神话 :view>1000 :date=2024-08-20",
         # "黑神话 :view>1000 :date=[08-10,08-20)",
         # "黑神话 :view>1000 :date=[08.10, 08/20)",
