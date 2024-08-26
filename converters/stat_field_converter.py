@@ -1,7 +1,7 @@
 import re
 
 from tclogger import logger
-from typing import Literal
+from converters.operators import OP_MAP, BRACKET_MAP
 
 
 class StatFieldConverter:
@@ -27,13 +27,7 @@ class StatFieldConverter:
     RE_STAT_VAL = rf"(\d+\s*{RE_UNIT})"
     REP_STAT_VAL = rf"((?P<num>\d+)\s*(?P<unit>{RE_UNIT}))"
 
-    UNIT_MAPS = {"百": 100, "千kK": 1000, "万wW": 10000, "mM": 1000000, "亿": 100000000}
-    OP_EN_MAPS = {">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
-    OP_ZH_MAPS = {"》": "gt", "《": "lt", "》=": "gte", "《=": "lte"}
-    OP_MAPS = {**OP_EN_MAPS, **OP_ZH_MAPS}
-    BRACKET_EN_MAPS = {"(": "gt", ")": "lt", "[": "gte", "]": "lte"}
-    BRACKET_ZH_MAPS = {"（": "gt", "）": "lt", "【": "gte", "】": "lte"}
-    BRACKET_MAPS = {**BRACKET_EN_MAPS, **BRACKET_ZH_MAPS}
+    UNIT_MAP = {"百": 100, "千kK": 1000, "万wW": 10000, "mM": 1000000, "亿": 100000000}
 
     def val_to_int(self, val: str) -> int:
         if val == "":
@@ -44,7 +38,7 @@ class StatFieldConverter:
             num = int(match.group("num"))
             unit = match.group("unit")
             for ch in unit:
-                for k, v in self.UNIT_MAPS.items():
+                for k, v in self.UNIT_MAP.items():
                     if ch in k:
                         num *= v
                         break
@@ -53,12 +47,7 @@ class StatFieldConverter:
             logger.warn(f"× No matching stat val: {val}")
             return None
 
-    def op_val_to_es_dict(
-        self,
-        field: str,
-        op: Literal["=", "<", ">", "<=", ">="],
-        val: str,
-    ) -> dict:
+    def op_val_to_es_dict(self, field: str, op: str, val: str) -> dict:
         """
         Examples:
         - {'field':'view', 'field_type':'stat', 'op':'>', 'val':'1000','val_type':'value'}
@@ -77,19 +66,14 @@ class StatFieldConverter:
         if op == "=":
             res_val = {"gte": val_int, "lte": val_int}
         else:
-            op_str = self.OP_MAPS[op]
+            op_str = OP_MAP[op]
             res_val[op_str] = val_int
 
         res = {f"stat.{field}": res_val}
         return res
 
     def range_val_to_es_dict(
-        self,
-        field: str,
-        lb: str,
-        lval: str,
-        rval: str,
-        rb: str,
+        self, field: str, lb: str, lval: str, rval: str, rb: str
     ) -> dict:
         """
         - {'field':'coin', 'field_type':'stat', 'op':'=', 'lb':'[', 'lval':'1000', 'rval':'2000', 'rb':')', 'val_type':'range'}
@@ -102,14 +86,14 @@ class StatFieldConverter:
 
         if lval:
             lval_int = self.val_to_int(lval)
-            lb_str = self.BRACKET_MAPS[lb]
+            lb_str = BRACKET_MAP[lb]
         else:
             lval_int = None
             lb_str = None
 
         if rval:
             rval_int = self.val_to_int(rval)
-            rb_str = self.BRACKET_MAPS[rb]
+            rb_str = BRACKET_MAP[rb]
         else:
             rval_int = None
             rb_str = None
