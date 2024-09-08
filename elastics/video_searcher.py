@@ -458,6 +458,7 @@ class VideoSearcher:
             match_operator=match_operator,
             detail_level=detail_level,
             limit=limit,
+            verbose=verbose,
         )
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
@@ -602,7 +603,7 @@ class VideoSearcher:
         return_res = self.parse_hits(
             "", [], res_dict, request_type="random", is_parse_hits=parse_hits
         )
-        logger.enter_quiet(not verbose)
+        logger.exit_quiet(not verbose)
         return return_res
 
     def latest(
@@ -693,6 +694,7 @@ class VideoSearcher:
         match_operator: MATCH_OPERATOR = "or",
         detail_level: int = -1,
         limit: int = -1,
+        verbose: bool = False,
     ) -> list[dict]:
         if not is_parse_hits:
             return res_dict
@@ -700,11 +702,11 @@ class VideoSearcher:
             hits_info = {
                 "request_type": request_type,
                 "detail_level": detail_level,
+                "took": -1,
+                "timed_out": True,
                 "total_hits": 0,
                 "return_hits": 0,
                 "hits": [],
-                "took": -1,
-                "timed_out": True,
             }
             return hits_info
         hits = []
@@ -760,13 +762,15 @@ class VideoSearcher:
             "return_hits": len(hits),
             "hits": hits,
         }
-        logger.success(pformat(hits_info, indent=4, sort_dicts=False))
+        logger.enter_quiet(not verbose)
+        # logger.success(pformat(hits_info, indent=4, sort_dicts=False))
         logger.note(f"Request type: [{request_type}]")
         logger.mesg(f"  * detail level: {detail_level}")
         logger.mesg(f"  * return hits count: {hits_info['return_hits']}")
         logger.mesg(f"  * total hits count: {hits_info['total_hits']}")
         logger.mesg(f"  * took: {hits_info['took']}ms")
         logger.mesg(f"  * timed_out: {hits_info['timed_out']}")
+        logger.exit_quiet(not verbose)
         return hits_info
 
 
