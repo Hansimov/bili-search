@@ -236,7 +236,10 @@ class QueryFilterExtractor:
                 else:
                     filters[key].pop("lte")
 
-    def filter_expr_to_dict(self, filter_expr: str) -> dict[str, dict]:
+    def filter_expr_to_dict(
+        self, filter_expr: str, use_date_str: bool = False, verbose: bool = False
+    ) -> dict[str, dict]:
+        logger.enter_quiet(not verbose)
         res = {}
         filter_dict = self.get_filter_field_and_val_from_expr(filter_expr)
         if filter_dict["field_type"] == "stat":
@@ -244,27 +247,36 @@ class QueryFilterExtractor:
             res = converter.filter_dict_to_es_dict(filter_dict)
         elif filter_dict["field_type"] == "date":
             converter = DateFieldConverter()
-            res = converter.filter_dict_to_es_dict(filter_dict, use_date_str=True)
+            res = converter.filter_dict_to_es_dict(
+                filter_dict, use_date_str=use_date_str
+            )
         else:
             logger.warn(f"× No matching field type: {filter_dict['field_type']}")
 
         if res:
             logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
+        logger.exit_quiet(not verbose)
 
         return res
 
-    def extract(self, query: str) -> tuple[list[str], list[dict]]:
+    def extract(
+        self, query: str, use_date_str: bool = False
+    ) -> tuple[list[str], list[dict]]:
         filters = {}
         split_res = self.split_keyword_and_filter_expr(query)
         keywords = split_res["keywords"]
         filter_exprs = split_res["stat_filter_exprs"] + split_res["date_filter_exprs"]
         for filter_expr in filter_exprs:
-            filter_item = self.filter_expr_to_dict(filter_expr)
+            filter_item = self.filter_expr_to_dict(
+                filter_expr, use_date_str=use_date_str
+            )
             self.merge_filter(filter_item=filter_item, filters=filters)
         return keywords, filters
 
-    def construct(self, query: str) -> tuple[list, list[str]]:
-        keywords, range_filters = self.extract(query)
+    def construct(
+        self, query: str, use_date_str: bool = False
+    ) -> tuple[list, list[str]]:
+        keywords, range_filters = self.extract(query, use_date_str=use_date_str)
         if range_filters:
             filters = [{"range": {k: v}} for k, v in range_filters.items()]
         else:
@@ -277,17 +289,19 @@ if __name__ == "__main__":
     queries = [
         # "影视飓风 :view>1000 :fav<=1000 :coin=[1000,2000)",
         # "影视飓风 :view>1000 :view<2000 :播放<=2000 :fav=[,2000)",
-        "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
+        # "黑神话 :bf>1000 :view=(2000,3000] :view>=1000 :view<2500",
         # "黑神话 :bf=1000 :date>=2024-08-21 rank",
-        "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
-        "黑神话 ：bf >1000K :view<2百w 2024-10-11",
+        # "黑神话 :bf=1000 :date=[2020-08-20, 08-22] 2024",
+        # "黑神话 ：bf >1000K :view<2百w 2024-10-11",
         # "黑神话 :bf=【200,1000) :date=[2020-08-20,） 2024",
-        "黑神话 :bf=【200,1000) :date=2020-08-20 2024",
-        "黑神话 ::bf >1000 map :view<2500 :date<=7days",
+        # "黑神话 :bf=【200,1000) :date=2020-08-20 2024",
+        # "黑神话 ::bf >1000 map :view<2500 :date<=7days",
         # "黑神话 :view>1000 :date=2024-08-20",
         # "黑神话 :view>1000 :date=[08-10,08-20)",
         # "黑神话 :view>1000 :date=[08.10, 08/20)",
-        # "黑神话 :view>1000 :date <= 7 days",
+        "黑神话 ::date=[7d,]",
+        "黑神话 :date>7d",
+        "黑神话 :date>=7d",
         # "黑神话 :view>1000 :date=[7d,1d]",
         # "黑神话 :view>1000 :date <= 3 天",
         # "黑神话 :view>1000 :date <= past_hour 1小时",
@@ -296,17 +310,15 @@ if __name__ == "__main__":
     for query in queries:
         logger.line(f"{query}")
         res = extractor.split_keyword_and_filter_expr(query)
-        logger.note("  - Parsed  :")
-        logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
+        logger.note("  * Parsed:")
+        # logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
         # keywords = res["keywords"]
         # filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
-        logger.note("  - Extracted:")
+        logger.note("  * Extracted:")
         keywords, filter_dicts = extractor.extract(query)
-        # logger.note("  - Keywords:", end=" ")
-        # logger.mesg(f"{keywords}")
-        # logger.note("  - Filters :", end=" ")
-        # logger.success(pformat(filter_exprs, sort_dicts=False, compact=False))
-        # logger.note("  - Filters :", end=" ")
-        # logger.success(pformat(filter_dicts, sort_dicts=False, compact=False))
+        logger.note("  * Constructed:")
+        keywords, filter_dicts = extractor.construct(query)
+        logger.mesg(keywords, indent=4)
+        logger.success(filter_dicts, indent=4)
 
     # python -m converters.query_filter_extractor
