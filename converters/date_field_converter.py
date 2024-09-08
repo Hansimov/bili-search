@@ -2,7 +2,7 @@ import re
 
 from calendar import monthrange
 from datetime import datetime, timedelta
-from tclogger import logger, ts_to_str
+from tclogger import logger, ts_to_str, get_now_ts
 from converters.operators import OP_MAP, BRACKET_MAP
 
 
@@ -350,7 +350,7 @@ class DateFieldConverter:
                 start_dt = None
 
             if start_dt:
-                return int(start_dt.timestamp()), int(now.timestamp())
+                return int(start_dt.timestamp()), int(start_dt.timestamp())
             else:
                 return 0, 0
         else:
@@ -388,13 +388,14 @@ class DateFieldConverter:
             -> {"pubdate": {"gte": ts of (start of 2024-11), "lte": ts of (end of 2024-11)}}
         """
         range_type, start_ts, end_ts = self.get_date_ts_range(val)
+        now_ts = get_now_ts()
         if op in OP_MAP.keys():
             op_str = OP_MAP[op]
         res = {}
         res_val = {}
         if range_type == "dist":
             if op not in OP_MAP.keys():
-                res_val = {"gte": start_ts, "lte": end_ts}
+                res_val = {"gte": start_ts, "lte": now_ts}
             else:
                 op_range = {
                     "gt": {"lt": start_ts},
@@ -423,6 +424,76 @@ class DateFieldConverter:
             res = {"pubdate_str": {k: ts_to_str(v) for k, v in res_val.items()}}
         return res
 
+    def range_val_to_es_dict(
+        self, lb: str, lval: str, rval: str, rb: str, use_date_str: bool = False
+    ) -> dict:
+        """
+        Rules:
+            * [: >= lval_start
+            * (: >  lval_end
+            * ]: <= rval_end
+            * ): <  rval_start
+        """
+        res = {}
+        res_val = {}
+
+        if lval:
+            lval_type, lval_start, lval_end = self.get_date_ts_range(lval)
+            lb_str = BRACKET_MAP[lb]
+        else:
+            lval_type, lval_start, lval_end = None, None, None
+
+        if rval:
+            rval_type, rval_start, rval_end = self.get_date_ts_range(rval)
+            rb_str = BRACKET_MAP[rb]
+        else:
+            rval_type, rval_start, rval_end = None, None, None
+
+        # ignore order of lval and rval for "dist" val_type
+        if (
+            lval_type == "dist"
+            and rval_type == "dist"
+            and lval_start is not None
+            and rval_start is not None
+        ):
+            if lval_start < rval_start:
+                lval_start, rval_start = rval_start, lval_start
+                lval_end, rval_end = rval_end, lval_end
+
+        if lval_start is not None and lb_str:
+            if lb_str == "gt":
+                if lval_type == "dist":
+                    res_val["lt"] = lval_end
+                else:
+                    res_val["gt"] = lval_end
+            elif lb_str == "gte":
+                if lval_type == "dist":
+                    res_val["lte"] = lval_start
+                else:
+                    res_val["gte"] = lval_start
+            else:
+                logger.warn(f"× No matching lb: {lb_str}")
+
+        if rval_start is not None and rb_str:
+            if rb_str == "lt":
+                if rval_type == "dist":
+                    res_val["gt"] = rval_start
+                else:
+                    res_val["lt"] = rval_start
+            elif rb_str == "lte":
+                if rval_type == "dist":
+                    res_val["gte"] = rval_end
+                else:
+                    res_val["lte"] = rval_end
+            else:
+                logger.warn(f"× No matching rb: {rb_str}")
+
+        res = {"pubdate": res_val}
+        if use_date_str:
+            res = {"pubdate_str": {k: ts_to_str(v) for k, v in res_val.items()}}
+
+        return res
+
     def filter_dict_to_es_dict(
         self, filter_dict: dict, use_date_str: bool = False
     ) -> dict:
@@ -431,14 +502,14 @@ class DateFieldConverter:
             res = self.op_val_to_es_dict(
                 filter_dict["op"], filter_dict["val"], use_date_str=use_date_str
             )
-        # elif filter_dict["val_type"] == "range":
-        #     res = self.range_val_to_es_dict(
-        #         filter_dict["field"],
-        #         filter_dict["lb"],
-        #         filter_dict["lval"],
-        #         filter_dict["rval"],
-        #         filter_dict["rb"],
-        #     )
+        elif filter_dict["val_type"] == "range":
+            res = self.range_val_to_es_dict(
+                filter_dict["lb"],
+                filter_dict["lval"],
+                filter_dict["rval"],
+                filter_dict["rb"],
+                use_date_str=use_date_str,
+            )
         else:
             logger.warn(f"× No matching val type: {filter_dict['val_type']}")
         return res
