@@ -140,7 +140,7 @@ class ScriptScoreQueryDSLConstructor:
         if not get_value_func:
             get_value_func = f"doc['{field}'].value"
         if field == "pubdate":
-            get_value_func = "doc['pubdate'].value.getMillis()/1000"
+            get_value_func = "doc['pubdate'].value"
         return f"double {field_var} = (doc['{field}'].size() > 0) ? {get_value_func} : {default_value};"
 
     def log_func(self, field: str, min_value: float = 2) -> str:
@@ -561,32 +561,34 @@ class VideoSearcher:
         source_fields: list[str] = SOURCE_FIELDS,
         parse_hits: bool = True,
         is_explain: bool = False,
+        filters: list[dict] = None,
         limit: int = 1,
         verbose: bool = False,
     ):
         logger.enter_quiet(not verbose)
         now = datetime.now()
-        ts = round(now.timestamp())
+        now_ts = int(now.timestamp())
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         if seed is None:
             if seed_update_seconds is None:
-                seed = ts
+                seed = now_ts
             else:
                 seed_update_seconds = max(int(abs(seed_update_seconds)), 1)
-                seed = ts // seed_update_seconds
+                seed = now_ts // seed_update_seconds
         else:
             seed = int(seed)
+
+        if filters is None:
+            past_month_ts = now_ts = now_ts - 3600 * 24 * 30
+            filters = [
+                {"range": {"stat.coin": {"gte": 1000}}},
+                {"range": {"pubdate": {"gte": past_month_ts}}},
+            ]
+
         search_body = {
             "query": {
                 "function_score": {
-                    "query": {
-                        "bool": {
-                            "filter": [
-                                {"range": {"stat.coin": {"gte": 1000}}},
-                                {"range": {"pubdate": {"gte": "now-30d/d"}}},
-                            ]
-                        }
-                    },
+                    "query": {"bool": {"filter": filters}},
                     "random_score": {"seed": seed, "field": "_seq_no"},
                     "boost_mode": "replace",
                 }
@@ -775,30 +777,41 @@ class VideoSearcher:
 
 
 if __name__ == "__main__":
+    video_searcher = VideoSearcher("bili_videos_dev2")
+    logger.note("> Getting random results ...")
+    res = video_searcher.random()
+    logger.mesg(res)
+
+    # query = "电"
+    # logger.note("> Searching results:", end=" ")
+    # logger.file(f"[{query}]")
+    # res = video_searcher.search(query, verbose=True)
+    # logger.success(pformat(res, sort_dicts=False))
+
     # query = "Hansimov 2018"
-    query = "黑神话 2024 :coin>1000 :view<100000"
-    match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
-    date_match_fields = ["title^0.5", "owner.name^0.25", "desc^0.2", "pubdate_str^2.5"]
+    # query = "黑神话 2024 :coin>1000 :view<100000"
+    # match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
+    # date_match_fields = ["title^0.5", "owner.name^0.25", "desc^0.2", "pubdate_str^2.5"]
 
-    filter_extractor = QueryFilterExtractor()
-    query_keywords, filters = filter_extractor.construct(query)
-    query_without_filters = " ".join(query_keywords)
+    # filter_extractor = QueryFilterExtractor()
+    # query_keywords, filters = filter_extractor.construct(query)
+    # query_without_filters = " ".join(query_keywords)
 
-    query_constructor = MultiMatchQueryDSLConstructor()
-    query_dsl_dict = query_constructor.construct(
-        query=query_without_filters,
-        match_fields=match_fields,
-        date_match_fields=date_match_fields,
-    )
+    # query_constructor = MultiMatchQueryDSLConstructor()
+    # query_dsl_dict = query_constructor.construct(
+    #     query=query_without_filters,
+    #     match_fields=match_fields,
+    #     date_match_fields=date_match_fields,
+    # )
 
-    if filters:
-        query_dsl_dict["bool"]["filter"] = filters
+    # if filters:
+    #     query_dsl_dict["bool"]["filter"] = filters
 
-    logger.note(f"> Construct DSL for query:", end=" ")
-    logger.mesg(f"[{query}]")
-    logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2, compact=True))
-    script_query_dsl_dict = ScriptScoreQueryDSLConstructor().construct(query_dsl_dict)
-    logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
+    # logger.note(f"> Construct DSL for query:", end=" ")
+    # logger.mesg(f"[{query}]")
+    # logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2, compact=True))
+    # script_query_dsl_dict = ScriptScoreQueryDSLConstructor().construct(query_dsl_dict)
+    # logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
     # logger.mesg(ScriptScoreQueryDSLConstructor().get_script_source())
 
     # searcher = VideoSearcher("bili_videos_dev")
