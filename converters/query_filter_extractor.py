@@ -85,13 +85,12 @@ class QueryFilterExtractor:
             return "date"
         match = re.match(self.REP_STAT_FIELD, key)
         if match:
-            stat_field = list(
-                key for key in match.groupdict().keys() if key != "stat_field"
-            )[0]
-            return stat_field
+            for k, v in match.groupdict().items():
+                if k != "stat_field" and v:
+                    return k
         else:
             logger.warn(f"× No matching stat field: {key}")
-            return None
+        return None
 
     def map_val_to_range_dict(self, val: str) -> dict:
         """
@@ -301,7 +300,7 @@ if __name__ == "__main__":
         # "黑神话 :view>1000 :date=[08.10, 08/20)",
         "黑神话 ::date=[7d,]",
         "黑神话 :date>7d",
-        "黑神话 :date>=7d",
+        "黑神话 :date<=7d :vw>100w :coin>2k :star>1k",
         # "黑神话 :view>1000 :date=[7d,1d]",
         # "黑神话 :view>1000 :date <= 3 天",
         # "黑神话 :view>1000 :date <= past_hour 1小时",
@@ -316,6 +315,7 @@ if __name__ == "__main__":
         # filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
         logger.note("  * Extracted:")
         keywords, filter_dicts = extractor.extract(query)
+        # logger.success(filter_dicts, indent=4)
         logger.note("  * Constructed:")
         keywords, filter_dicts = extractor.construct(query)
         logger.mesg(keywords, indent=4)
