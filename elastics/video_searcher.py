@@ -3,7 +3,7 @@ import math
 from copy import deepcopy
 from datetime import datetime
 from pprint import pformat
-from tclogger import logger, get_now_ts
+from tclogger import logger, logstr, get_now_ts, dict_to_str
 from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
@@ -227,12 +227,15 @@ class VideoSearcher:
         "desc",
         "stat",
         "tname",
+        "tags",
         "pubdate_str",
         "insert_at_str",
     ]
     SEARCH_MATCH_FIELDS = [
         "title",
         "title.pinyin",
+        "tags",
+        "tags.pinyin",
         "owner.name",
         "owner.name.pinyin",
         "desc",
@@ -242,18 +245,23 @@ class VideoSearcher:
     SUGGEST_MATCH_FIELDS = [
         "title",
         "title.pinyin",
+        "tags",
+        "tags.pinyin",
         "owner.name",
         "owner.name.pinyin",
         "pubdate_str",
     ]
     DATE_MATCH_FIELDS = [
-        "title" "desc",
+        "title",
+        "desc",
         "owner.name",
         "pubdate_str",
     ]
     SEARCH_BOOSTED_FIELDS = {
         "title": 2.5,
         "title.pinyin": 0.25,
+        "tags": 2,
+        "tags.pinyin": 0.2,
         "owner.name": 2,
         "owner.name.pinyin": 0.2,
         "desc": 0.1,
@@ -263,6 +271,8 @@ class VideoSearcher:
     SUGGEST_BOOSTED_FIELDS = {
         "title": 2.5,
         "title.pinyin": 0.5,
+        "tags": 2,
+        "tags.pinyin": 0.4,
         "owner.name": 2,
         "owner.name.pinyin": 0.4,
         "pubdate_str": 2.5,
@@ -433,8 +443,7 @@ class VideoSearcher:
             search_body["query"]["bool"]["minimum_should_match"] = (
                 len(query_keywords) - 1
             )
-
-        logger.note(pformat(search_body, sort_dicts=False))
+        logger.note(dict_to_str(search_body, is_colored=True, align_list=False))
         if limit and limit > 0:
             search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
@@ -778,15 +787,28 @@ class VideoSearcher:
 
 if __name__ == "__main__":
     video_searcher = VideoSearcher("bili_videos_dev2")
-    logger.note("> Getting random results ...")
-    res = video_searcher.random()
-    logger.mesg(res)
+    # logger.note("> Getting random results ...")
+    # res = video_searcher.random()
+    # logger.mesg(res)
 
-    # query = "电"
+    # query = "田文镜"
     # logger.note("> Searching results:", end=" ")
     # logger.file(f"[{query}]")
-    # res = video_searcher.search(query, verbose=True)
-    # logger.success(pformat(res, sort_dicts=False))
+    # res = video_searcher.search(query, limit=5, verbose=True)
+    # hits = res.pop("hits")
+    # logger.success(dict_to_str(res, is_colored=False))
+    # for idx, hit in enumerate(hits):
+    #     logger.note(f"* Hit {idx}:")
+    #     logger.file(dict_to_str(hit, align_list=False), indent=4)
+
+    # query = "田文镜"
+    # logger.note(f"> Suggest results: " + logstr.file(f"[{query}]"))
+    # res = video_searcher.suggest(query, limit=5, verbose=True)
+    # hits = res.pop("hits")
+    # logger.success(dict_to_str(res, is_colored=False))
+    # for idx, hit in enumerate(hits):
+    #     logger.note(f"* Hit {idx}:")
+    #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
     # query = "Hansimov 2018"
     # query = "黑神话 2024 :coin>1000 :view<100000"
