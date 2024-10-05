@@ -683,7 +683,10 @@ class VideoSearcher:
             pinyin_highlighter = PinyinHighlighter()
             for field in match_fields:
                 if field.endswith(".pinyin"):
-                    text = get_es_source_val(_source, field.replace(".pinyin", ""))
+                    no_pinyin_field = field.replace(".pinyin", "")
+                    text = get_es_source_val(_source, no_pinyin_field)
+                    if text is None:
+                        continue
                     highlighted_text = pinyin_highlighter.highlight(
                         query, text, tag="hit"
                     )
@@ -801,7 +804,7 @@ if __name__ == "__main__":
     #     logger.note(f"* Hit {idx}:")
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
-    # query = "田文镜"
+    # query = "twj"
     # logger.note(f"> Suggest results: " + logstr.file(f"[{query}]"))
     # res = video_searcher.suggest(query, limit=5, verbose=True)
     # hits = res.pop("hits")
