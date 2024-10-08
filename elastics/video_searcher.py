@@ -229,19 +229,20 @@ class ScriptScoreQueryDSLConstructor:
                 "stat.reply",
                 "stat.share",
             ]
-        ] = ["stat.like", "stat.coin", "stat.danmaku"],
+        ] = ["stat.like", "stat.coin", "stat.danmaku", "stat.reply"],
     ):
         assign_vars = []
         for field in stat_fields + ["pubdate"]:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
         assign_vars_str += self.assign_var_of_pubdate_decay(
-            half_life_days=7, power=1, max_life_days=90, min_value=0.25
+            half_life_days=7, power=1, max_life_days=90, min_value=0.15
         )
         stat_func_str = " * ".join(
             f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
         )
-        func_str = f"return {stat_func_str} * pubdate_decay * _score / 1e2;"
+        score_str = "Math.max(_score, 1)"
+        func_str = f"return {stat_func_str} * pubdate_decay * {score_str} / 1e2;"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
@@ -311,56 +312,77 @@ class VideoSearcher:
         "pubdate_str",
         "insert_at_str",
     ]
+    # search match fields
+    SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name", "desc"]
+    SEARCH_MATCH_FIELDS_WORDS = [
+        f"{field}.words" for field in SEARCH_MATCH_FIELDS_DEFAULT
+    ]
+    SEARCH_MATCH_FIELDS_PINYIN = [
+        f"{field}.pinyin" for field in SEARCH_MATCH_FIELDS_DEFAULT
+    ]
     SEARCH_MATCH_FIELDS = [
-        "title",
-        "title.pinyin",
-        "tags",
-        "tags.pinyin",
-        "owner.name",
-        "owner.name.pinyin",
-        "desc",
-        "desc.pinyin",
+        # *SEARCH_MATCH_FIELDS_DEFAULT,
+        *SEARCH_MATCH_FIELDS_WORDS,
+        *SEARCH_MATCH_FIELDS_PINYIN,
         "pubdate_str",
+    ]
+    # suggest match fields
+    SUGGEST_MATCH_FIELDS_DFAULT = ["title", "tags", "owner.name"]
+    SUGGEST_MATCH_FIELDS_WORDS = [
+        f"{field}.words" for field in SUGGEST_MATCH_FIELDS_DFAULT
+    ]
+    SUGGEST_MATCH_FIELDS_PINYIN = [
+        f"{field}.pinyin" for field in SUGGEST_MATCH_FIELDS_DFAULT
     ]
     SUGGEST_MATCH_FIELDS = [
-        "title",
-        "title.pinyin",
-        "tags",
-        "tags.pinyin",
-        "owner.name",
-        "owner.name.pinyin",
+        # *SUGGEST_MATCH_FIELDS_DFAULT,
+        *SUGGEST_MATCH_FIELDS_WORDS,
+        *SUGGEST_MATCH_FIELDS_PINYIN,
         "pubdate_str",
     ]
+    # date match fields
+    DATE_MATCH_FIELDS_DEFAULT = ["title", "desc", "owner.name"]
+    DATE_MATCH_FIELDS_WORDS = [f"{field}.words" for field in DATE_MATCH_FIELDS_DEFAULT]
     DATE_MATCH_FIELDS = [
-        "title",
-        "desc",
-        "owner.name",
+        # *DATE_MATCH_FIELDS_DEFAULT,
+        *DATE_MATCH_FIELDS_WORDS,
         "pubdate_str",
     ]
+    # boosted fields
     SEARCH_BOOSTED_FIELDS = {
         "title": 2.5,
+        "title.words": 2.5,
         "title.pinyin": 0.25,
         "tags": 2,
+        "tags.words": 2,
         "tags.pinyin": 0.2,
         "owner.name": 2,
+        "owner.name.words": 2,
         "owner.name.pinyin": 0.2,
         "desc": 0.1,
+        "desc.words": 0.1,
         "desc.pinyin": 0.01,
         "pubdate_str": 2.5,
     }
     SUGGEST_BOOSTED_FIELDS = {
         "title": 2.5,
+        "title.words": 2.5,
         "title.pinyin": 0.5,
         "tags": 2,
+        "tags.words": 2,
         "tags.pinyin": 0.4,
         "owner.name": 2,
+        "owner.name.words": 2,
         "owner.name.pinyin": 0.4,
         "pubdate_str": 2.5,
     }
     DATE_BOOSTED_FIELDS = {
         "title": 0.1,
+        "title.words": 0.1,
         "owner.name": 0.1,
+        "owner.name.words": 0.1,
         "desc": 0.05,
+        "desc.words": 0.05,
         "pubdate_str": 2.5,
     }
     DOC_EXCLUDED_SOURCE_FIELDS = []
@@ -396,7 +418,7 @@ class VideoSearcher:
     # as drop_no_highlights would drop some hits
     NO_HIGHLIGHT_REDUNDANCE_RATIO = 2
 
-    def __init__(self, index_name: str = "bili_videos"):
+    def __init__(self, index_name: str = "bili_videos_dev2"):
         self.index_name = index_name
         self.es = ElasticSearchClient()
         self.es.connect()
@@ -532,7 +554,9 @@ class VideoSearcher:
             search_body["query"]["bool"]["minimum_should_match"] = (
                 len(query_keywords) - 1
             )
-        logger.note(dict_to_str(search_body, is_colored=True, align_list=False))
+        logger.note(
+            dict_to_str(search_body, add_quotes=True, is_colored=True, align_list=False)
+        )
         if limit and limit > 0:
             search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
@@ -827,8 +851,10 @@ class VideoSearcher:
             ]
             merged_fields = list(common_highlights.keys()) + pinyin_fields
 
-            for field in merged_fields:
-                common_highlight = common_highlights.get(field, [])
+            for hit_field in merged_fields:
+                for suffix in [".pinyin", ".words"]:
+                    field = hit_field.removesuffix(suffix)
+                common_highlight = common_highlights.get(hit_field, [])
                 pinyin_highlight = pinyin_highlights.get(field + ".pinyin", [])
                 merged_highlight = merger.merge(
                     get_es_source_val(_source, field),
@@ -883,10 +909,10 @@ if __name__ == "__main__":
     # res = video_searcher.random()
     # logger.mesg(res)
 
-    # query = "田文镜"
+    # query = "影视飓风"
     # logger.note("> Searching results:", end=" ")
     # logger.file(f"[{query}]")
-    # res = video_searcher.search(query, limit=5, use_script_score=True, verbose=True)
+    # res = video_searcher.search(query, limit=3, use_script_score=True, verbose=True)
     # hits = res.pop("hits")
     # logger.success(dict_to_str(res, is_colored=False))
     # for idx, hit in enumerate(hits):
