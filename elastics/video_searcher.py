@@ -139,9 +139,15 @@ class ScriptScoreQueryDSLConstructor:
         field_var = self.field_to_var(field)
         if not get_value_func:
             get_value_func = f"doc['{field}'].value"
+        new_var = ""
         if field == "pubdate":
+            default_value = 1262275200
             get_value_func = "doc['pubdate'].value"
-        return f"double {field_var} = (doc['{field}'].size() > 0) ? {get_value_func} : {default_value};"
+            new_var = f"\ndouble pubdate_decay;\n"
+        return (
+            f"double {field_var} = (doc['{field}'].size() > 0) ? {get_value_func} : {default_value};"
+            f"{new_var}"
+        )
 
     def log_func(self, field: str, min_value: float = 2) -> str:
         func_str = f"Math.log10(Math.max({field}, {min_value}))"
@@ -154,27 +160,38 @@ class ScriptScoreQueryDSLConstructor:
         min_value: float = 1,
         power_precision: int = 4,
     ) -> str:
-        func_str = (
-            f"Math.pow(Math.max({field}, {min_value}), {power:.{power_precision}f})"
-        )
+        if power == 1.0:
+            func_str = f"Math.max({field}, {min_value})"
+        else:
+            func_str = (
+                f"Math.pow(Math.max({field}, {min_value}), {power:.{power_precision}f})"
+            )
         return func_str
 
-    def pubdate_decay_func(
+    def assign_var_of_pubdate_decay(
         self,
         field: str = "pubdate",
         now_ts_field: str = "params.now_ts",
         half_life_days: int = 7,
+        max_life_days: int = 365,
         power: float = 1.5,
         min_value: float = 0.2,
     ) -> str:
-        passed_seconds_str = f"({now_ts_field} - {field})"
+        pass_seconds_str = f"({now_ts_field} - {field})"
         seconds_per_day = 86400
-        scaled_pass_days = f"{passed_seconds_str}/{seconds_per_day}/{half_life_days}"
+        pass_days = f"{pass_seconds_str}/{seconds_per_day}"
+        scaled_pass_days = f"{pass_days}/{half_life_days}"
         power_str = self.pow_func(scaled_pass_days, power=power, min_value=min_value)
-        func_str = f"1 / (1 + {power_str}) + {min_value}"
+        min_reciprocal_str = f"1 + {min_value}"
+        reciprocal_str = f"1 / (1 + {power_str}) + {min_value}"
+        func_str = f"""if ({pass_days} > {max_life_days}) {{
+            pubdate_decay = {min_reciprocal_str};
+        }} else {{
+            pubdate_decay = {reciprocal_str};
+        }}"""
         return func_str
 
-    def get_script_source(self):
+    def get_script_source_by_powers(self):
         assign_vars = []
         stat_powers = {
             "stat.view": 0.1,
@@ -191,14 +208,39 @@ class ScriptScoreQueryDSLConstructor:
         for field in list(stat_powers.keys()) + ["pubdate"]:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
+        assign_vars_str += self.assign_var_of_pubdate_decay()
         stat_func_str = " * ".join(
             self.pow_func(self.field_to_var(field), field_power * stat_pow_ratio, 1)
             for field, field_power in stat_powers.items()
         )
         score_str = self.pow_func("_score", 1, 1)
-        func_str = (
-            f"return ({stat_func_str}) * ({self.pubdate_decay_func()}) * {score_str};"
+        func_str = f"return ({stat_func_str}) * pubdate_decay * {score_str};"
+        script_source = f"{assign_vars_str}\n{func_str}"
+        return script_source
+
+    def get_script_source_by_stats(
+        self,
+        stat_fields: list[
+            Literal[
+                "stat.view",
+                "stat.like",
+                "stat.coin",
+                "stat.favorite",
+                "stat.danmaku",
+                "stat.reply",
+                "stat.share",
+            ]
+        ] = ["stat.danmaku"],
+    ):
+        assign_vars = []
+        for field in stat_fields + ["pubdate"]:
+            assign_vars.append(self.assign_var(field))
+        assign_vars_str = "\n".join(assign_vars)
+        assign_vars_str += self.assign_var_of_pubdate_decay(
+            half_life_days=7, power=20, max_life_days=90, min_value=0.1
         )
+        stat_func_str = " * ".join(self.field_to_var(field) for field in stat_fields)
+        func_str = f"return {stat_func_str} * pubdate_decay * _score / 1e10;"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
@@ -207,7 +249,10 @@ class ScriptScoreQueryDSLConstructor:
             "script_score": {
                 "query": query_dsl_dict,
                 "script": {
-                    "source": self.get_script_source(),
+                    # "source": self.get_script_source_by_powers(),
+                    "source": self.get_script_source_by_stats(
+                        ["stat.danmaku", "stat.coin"]
+                    ),
                     "params": {
                         "now_ts": get_now_ts(),
                     },
@@ -842,7 +887,7 @@ if __name__ == "__main__":
     # query = "田文镜"
     # logger.note("> Searching results:", end=" ")
     # logger.file(f"[{query}]")
-    # res = video_searcher.search(query, limit=5, verbose=True)
+    # res = video_searcher.search(query, limit=5, use_script_score=False, verbose=True)
     # hits = res.pop("hits")
     # logger.success(dict_to_str(res, is_colored=False))
     # for idx, hit in enumerate(hits):
