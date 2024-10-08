@@ -181,13 +181,12 @@ class ScriptScoreQueryDSLConstructor:
         seconds_per_day = 86400
         pass_days = f"{pass_seconds_str}/{seconds_per_day}"
         scaled_pass_days = f"{pass_days}/{half_life_days}"
-        power_str = self.pow_func(scaled_pass_days, power=power, min_value=min_value)
-        min_reciprocal_str = f"1 + {min_value}"
-        reciprocal_str = f"1 / (1 + {power_str}) + {min_value}"
+        power_str = self.pow_func(scaled_pass_days, power=power, min_value=0.1)
+        reciprocal_str = f"(1 - {min_value}) / (1 + {power_str})"
         func_str = f"""if ({pass_days} > {max_life_days}) {{
-            pubdate_decay = {min_reciprocal_str};
+            pubdate_decay = {min_value};
         }} else {{
-            pubdate_decay = {reciprocal_str};
+            pubdate_decay = {reciprocal_str} + {min_value};
         }}"""
         return func_str
 
@@ -230,17 +229,19 @@ class ScriptScoreQueryDSLConstructor:
                 "stat.reply",
                 "stat.share",
             ]
-        ] = ["stat.danmaku"],
+        ] = ["stat.like", "stat.coin", "stat.danmaku"],
     ):
         assign_vars = []
         for field in stat_fields + ["pubdate"]:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
         assign_vars_str += self.assign_var_of_pubdate_decay(
-            half_life_days=7, power=20, max_life_days=90, min_value=0.1
+            half_life_days=7, power=1, max_life_days=90, min_value=0.25
         )
-        stat_func_str = " * ".join(self.field_to_var(field) for field in stat_fields)
-        func_str = f"return {stat_func_str} * pubdate_decay * _score / 1e10;"
+        stat_func_str = " * ".join(
+            f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
+        )
+        func_str = f"return {stat_func_str} * pubdate_decay * _score / 1e2;"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
@@ -250,9 +251,7 @@ class ScriptScoreQueryDSLConstructor:
                 "query": query_dsl_dict,
                 "script": {
                     # "source": self.get_script_source_by_powers(),
-                    "source": self.get_script_source_by_stats(
-                        ["stat.danmaku", "stat.coin"]
-                    ),
+                    "source": self.get_script_source_by_stats(),
                     "params": {
                         "now_ts": get_now_ts(),
                     },
@@ -887,7 +886,7 @@ if __name__ == "__main__":
     # query = "田文镜"
     # logger.note("> Searching results:", end=" ")
     # logger.file(f"[{query}]")
-    # res = video_searcher.search(query, limit=5, use_script_score=False, verbose=True)
+    # res = video_searcher.search(query, limit=5, use_script_score=True, verbose=True)
     # hits = res.pop("hits")
     # logger.success(dict_to_str(res, is_colored=False))
     # for idx, hit in enumerate(hits):
