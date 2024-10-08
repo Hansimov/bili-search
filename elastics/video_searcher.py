@@ -216,6 +216,42 @@ class ScriptScoreQueryDSLConstructor:
         }
         return script_score_dsl_dict
 
+    def construct_rrf(
+        self,
+        query_dsl_dict: dict,
+        window_size: int = 50,
+        k: int = 20,
+    ):
+        """NOTE: Only available for subscription users. See more:
+        - https://www.elastic.co/subscriptions
+
+        Otherwise, an error will be raised:
+        - AuthorizationException(403, 'security_exception',
+            'current license is non-compliant for [Reciprocal Rank Fusion (RRF)]')
+        """
+        script_danmaku = {
+            "script_score": {
+                "query": query_dsl_dict,
+                "script": {"source": f"doc['danmaku'].value"},
+            }
+        }
+        script_coin = {
+            "script_score": {
+                "query": query_dsl_dict,
+                "script": {"source": f"doc['coin'].value"},
+            }
+        }
+        rrf_dsl_dict = {
+            "retriever": {
+                "rrf": {
+                    "retrievers": [script_danmaku, script_coin],
+                    "rank_window_size": window_size,
+                    "rank_constant": k,
+                }
+            }
+        }
+        return rrf_dsl_dict
+
 
 class VideoSearcher:
     SOURCE_FIELDS = [
@@ -419,17 +455,26 @@ class VideoSearcher:
         if filters:
             query_dsl_dict["bool"]["filter"] = filters
 
-        if use_script_score:
-            script_score_constructor = ScriptScoreQueryDSLConstructor()
-            query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
+        script_score_constructor = ScriptScoreQueryDSLConstructor()
 
-        search_body = {
-            "query": query_dsl_dict,
-            "_source": source_fields,
-            "explain": is_explain,
-            "highlight": self.get_highlight_settings(match_fields),
-            "track_total_hits": True,
-        }
+        if use_script_score:
+            query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
+            search_body = {
+                "query": query_dsl_dict,
+                "_source": source_fields,
+                "explain": is_explain,
+                "highlight": self.get_highlight_settings(match_fields),
+                "track_total_hits": True,
+            }
+        else:
+            rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
+            search_body = {
+                **rrf_dsl_dict,
+                "_source": source_fields,
+                "explain": is_explain,
+                "track_total_hits": True,
+            }
+
         if timeout:
             if isinstance(timeout, str):
                 search_body["timeout"] = timeout
