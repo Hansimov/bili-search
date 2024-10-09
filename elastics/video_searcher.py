@@ -625,24 +625,24 @@ if __name__ == "__main__":
     # res = video_searcher.random()
     # logger.mesg(res)
 
-    query = "影视飓风"
-    logger.note("> Searching results:", end=" ")
-    logger.file(f"[{query}]")
-    res = video_searcher.search(query, limit=3, use_script_score=True, verbose=True)
-    hits = res.pop("hits")
-    logger.success(dict_to_str(res, is_colored=False))
-    for idx, hit in enumerate(hits):
-        logger.note(f"* Hit {idx}:")
-        logger.file(dict_to_str(hit, align_list=False), indent=4)
-
-    # query = "twj"
-    # logger.note(f"> Suggest results: " + logstr.file(f"[{query}]"))
-    # res = video_searcher.suggest(query, limit=5, verbose=True)
+    # query = "影视飓风"
+    # logger.note("> Searching results:", end=" ")
+    # logger.file(f"[{query}]")
+    # res = video_searcher.search(query, limit=3, use_script_score=True, verbose=True)
     # hits = res.pop("hits")
     # logger.success(dict_to_str(res, is_colored=False))
     # for idx, hit in enumerate(hits):
     #     logger.note(f"* Hit {idx}:")
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
+
+    query = "影视飓feng"
+    logger.note(f"> Suggest results: " + logstr.file(f"[{query}]"))
+    res = video_searcher.suggest(query, limit=5, verbose=True)
+    hits = res.pop("hits")
+    logger.success(dict_to_str(res, is_colored=False))
+    for idx, hit in enumerate(hits):
+        logger.note(f"* Hit {idx}:")
+        logger.file(dict_to_str(hit, align_list=False), indent=4)
 
     # query = "Hansimov 2018"
     # query = "黑神话 2024 :coin>1000 :view<100000"
