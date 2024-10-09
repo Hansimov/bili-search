@@ -1,24 +1,37 @@
 import math
 
 from datetime import datetime
-from pprint import pformat
-from tclogger import logger, logstr, get_now_ts, dict_to_str
+from tclogger import get_now_ts
 from typing import Literal, Union
 
 from converters.times import DateFormatChecker
+from converters.pinyinizer import ChinesePinyinizer
 
 
 class MultiMatchQueryDSLConstructor:
+    def __init__(self) -> None:
+        self.pinyinizer = ChinesePinyinizer()
+
     def remove_boost_from_fields(self, fields: list[str]) -> list[str]:
         return [field.split("^", 1)[0] for field in fields]
 
-    def remove_pinyin_fields(self, fields: list[str]) -> list[str]:
-        return [field for field in fields if not field.endswith(".pinyin")]
+    def deboost_field(self, field: str):
+        return field.split("^", 1)[0]
 
-    def remove_field_from_fields(
-        self, field_to_remove: str, fields: list[str]
+    def is_pinyin_field(self, field: str):
+        return self.deboost_field(field).endswith(".pinyin")
+
+    def remove_fields_from_fields(
+        self, fields_to_remove: Union[str, list], fields: list[str]
     ) -> list[str]:
-        return [field for field in fields if not field.startswith(field_to_remove)]
+        if isinstance(fields_to_remove, str):
+            fields_to_remove = [fields_to_remove]
+        clean_fields = []
+        for field in fields:
+            for field_to_remove in fields_to_remove:
+                if not field.startswith(field_to_remove):
+                    clean_fields.append(field)
+        return clean_fields
 
     def is_field_in_fields(self, field_to_check: str, fields: list[str]) -> bool:
         for field in fields:
@@ -26,101 +39,131 @@ class MultiMatchQueryDSLConstructor:
                 return True
         return False
 
-    def construct(
+    def construct_query_for_date_keyword(
         self,
-        query: str,
-        match_fields: list[str] = ["title", "owner.name", "desc", "pubdate_str"],
-        date_match_fields: list[str] = ["title", "owner.name", "desc", "pubdate_str"],
-        match_bool: str = "must",
-        match_type: str = "phrase_prefix",
-        match_operator: str = "or",
-    ) -> dict:
-        query_keywords = query.split()
-        fields_without_pubdate = self.remove_field_from_fields(
-            "pubdate_str", match_fields
-        )
-        date_match_fields_without_pubdate = self.remove_field_from_fields(
-            "pubdate_str", date_match_fields
-        )
-        if self.is_field_in_fields("pubdate_str", match_fields):
-            date_format_checker = DateFormatChecker()
-            match_bool_clause = []
-            splitted_fields_groups_by_pubdate = [
-                {
-                    "fields": [
-                        field
-                        for field in date_match_fields
-                        if field.startswith("pubdate_str")
-                    ],
-                    "type": "bool_prefix",
-                },
-            ]
-            for keyword in query_keywords:
-                date_format_checker.init_year_month_day()
-                is_keyword_date_format = date_format_checker.is_in_date_range(
-                    keyword, start="2009-09-09", end=datetime.now(), verbose=False
-                )
-                if is_keyword_date_format:
-                    if date_format_checker.matched_format == "%Y":
-                        splitted_fields_groups_by_pubdate.append(
-                            {
-                                "fields": date_match_fields_without_pubdate,
-                                "type": match_type,
-                            }
-                        )
-                    date_keyword = date_format_checker.rewrite(
-                        keyword, sep="-", check_format=False, use_current_year=True
-                    )
-                    should_clause = []
-                    for fields_group in splitted_fields_groups_by_pubdate:
-                        field_keyword = keyword
-                        for field in fields_group["fields"]:
-                            if field.startswith("pubdate_str"):
-                                field_keyword = date_keyword
-                                break
-                        multi_match_clause = {
-                            "multi_match": {
-                                "query": field_keyword,
-                                "type": fields_group["type"],
-                                "fields": fields_group["fields"],
-                                "operator": match_operator,
-                            },
-                        }
-                        should_clause.append(multi_match_clause)
-                    bool_should_clause = {
-                        "bool": {
-                            "should": should_clause,
-                            "minimum_should_match": 1,
-                        }
-                    }
-                else:
-                    bool_should_clause = {
-                        "multi_match": {
-                            "query": keyword,
-                            "type": match_type,
-                            "fields": fields_without_pubdate,
-                            "operator": match_operator,
-                        }
-                    }
-                match_bool_clause.append(bool_should_clause)
-            query_dsl_dict = {
-                "bool": {match_bool: match_bool_clause},
+        keyword: str,
+        date_match_fields: list[str],
+        checker: DateFormatChecker,
+        date_fields: list[Literal["pubdate_str"]] = ["pubdate_str"],
+        match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
+        match_operator: Literal["or", "and"] = "or",
+    ):
+        clause = {
+            "bool": {
+                "should": [],
+                "minimum_should_match": 1,
             }
-        else:
-            multi_match_clauses = []
-            for keyword in query_keywords:
-                multi_match_clause = {
+        }
+        if date_fields:
+            keyword_date = checker.rewrite(
+                keyword, sep="-", check_format=False, use_current_year=True
+            )
+            clause["bool"]["should"].append(
+                {
                     "multi_match": {
-                        "query": keyword,
-                        "type": match_type,
-                        "fields": match_fields,
+                        "query": keyword_date,
+                        "type": "bool_prefix",
+                        "fields": date_fields,
                         "operator": match_operator,
                     }
                 }
-                multi_match_clauses.append(multi_match_clause)
-            query_dsl_dict = {
-                "bool": {match_bool: multi_match_clauses},
+            )
+        non_date_fields = self.remove_fields_from_fields(date_fields, date_match_fields)
+        if non_date_fields and checker.matched_format == "%Y":
+            clause["bool"]["should"].append(
+                {
+                    "multi_match": {
+                        "query": keyword,
+                        "type": match_type,
+                        "fields": non_date_fields,
+                        "operator": match_operator,
+                    }
+                }
+            )
+        return clause
+
+    def construct_query_for_text_keyword(
+        self,
+        keyword: str,
+        match_fields: list[str],
+        match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
+        match_operator: Literal["or", "and"] = "or",
+    ):
+        clause = {
+            "bool": {
+                "should": [],
+                "minimum_should_match": 1,
             }
+        }
+        fields_with_pinyin = [
+            field for field in match_fields if self.is_pinyin_field(field)
+        ]
+        if fields_with_pinyin:
+            keyword_pinyin = self.pinyinizer.convert(keyword)
+            clause["bool"]["should"].append(
+                {
+                    "multi_match": {
+                        "query": keyword_pinyin,
+                        "type": match_type,
+                        "fields": fields_with_pinyin,
+                        "operator": match_operator,
+                    }
+                }
+            )
+        fields_without_pinyin = [
+            field for field in match_fields if not self.is_pinyin_field(field)
+        ]
+        clause["bool"]["should"].append(
+            {
+                "multi_match": {
+                    "query": keyword,
+                    "type": match_type,
+                    "fields": fields_without_pinyin,
+                    "operator": match_operator,
+                }
+            }
+        )
+        return clause
+
+    def construct(
+        self,
+        query: str,
+        match_fields: list[str],
+        date_match_fields: list[str],
+        date_fields: list[Literal["pubdate_str"]] = ["pubdate_str"],
+        match_bool: Literal["must", "should"] = "must",
+        match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
+        match_operator: Literal["or", "and"] = "or",
+    ) -> dict:
+        query_dsl_dict = {"bool": {"must": []}}
+        query_keywords = query.split()
+        checker = DateFormatChecker()
+        match_non_date_fields = self.remove_fields_from_fields(
+            date_fields, match_fields
+        )
+
+        for keyword in query_keywords:
+            checker.init_year_month_day()
+            is_keyword_date_format = checker.is_in_date_range(
+                keyword, start="2009-09-09", end=datetime.now(), verbose=False
+            )
+            if is_keyword_date_format:
+                clause = self.construct_query_for_date_keyword(
+                    keyword,
+                    date_match_fields,
+                    checker,
+                    match_type=match_type,
+                    match_operator=match_operator,
+                )
+            else:
+                clause = self.construct_query_for_text_keyword(
+                    keyword,
+                    match_non_date_fields,
+                    match_type=match_type,
+                    match_operator=match_operator,
+                )
+            query_dsl_dict["bool"][match_bool].append(clause)
+
         return query_dsl_dict
 
 
@@ -291,3 +334,26 @@ class ScriptScoreQueryDSLConstructor:
             }
         }
         return rrf_dsl_dict
+
+
+if __name__ == "__main__":
+    from tclogger import logger, logstr, dict_to_str
+
+    match_fields_default = ["title", "owner.name", "desc", "tags"]
+    match_fields_words = [f"{field}.words" for field in match_fields_default]
+    match_fields_pinyin = [f"{field}.pinyin" for field in match_fields_default]
+    match_fields = match_fields_words + match_fields_pinyin + ["pubdate_str"]
+    date_match_fields = match_fields_words + ["pubdate_str"]
+
+    queries = ["秋葉aaaki 2024", "影视飓feng 2024-01"]
+    constructor = MultiMatchQueryDSLConstructor()
+    for query in queries:
+        logger.note(f"> [{logstr.mesg(query)}]:")
+        query_dsl_dict = constructor.construct(
+            query,
+            match_fields=match_fields,
+            date_match_fields=date_match_fields,
+        )
+        logger.success(dict_to_str(query_dsl_dict, add_quotes=True), indent=2)
+
+    # python -m converters.query_dsl_constructor
