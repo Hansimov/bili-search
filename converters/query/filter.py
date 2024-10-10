@@ -321,4 +321,4 @@ if __name__ == "__main__":
         logger.mesg(keywords, indent=4)
         logger.success(filter_dicts, indent=4)
 
-    # python -m converters.query_filter_extractor
+    # python -m converters.query.filter

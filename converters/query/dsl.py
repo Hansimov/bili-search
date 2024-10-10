@@ -356,4 +356,4 @@ if __name__ == "__main__":
         )
         logger.success(dict_to_str(query_dsl_dict, add_quotes=True), indent=2)
 
-    # python -m converters.query_dsl_constructor
+    # python -m converters.query.dsl

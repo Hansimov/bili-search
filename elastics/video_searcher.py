@@ -7,8 +7,8 @@ from typing import Literal, Union
 from elastics.client import ElasticSearchClient
 from elastics.highlighter import PinyinHighlighter, HighlightMerger
 from elastics.structure import get_es_source_val
-from converters.query_filter_extractor import QueryFilterExtractor
-from converters.query_dsl_constructor import (
+from converters.query.filter import QueryFilterExtractor
+from converters.query.dsl import (
     MultiMatchQueryDSLConstructor,
     ScriptScoreQueryDSLConstructor,
 )
