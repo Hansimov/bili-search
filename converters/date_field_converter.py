@@ -331,7 +331,7 @@ class DateFieldConverter:
                 )
             elif match.group("n_months"):
                 n = int(match.group("month_n"))
-                start_year = now.year - ((now.month - n) // 12 + 1)
+                start_year = now.year - (n + 12 - now.month) // 12
                 start_month = ((now.month - n) % 12) or 12
                 start_dt = datetime(
                     start_year, start_month, now.day, now.hour, now.minute, now.second
