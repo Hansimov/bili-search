@@ -13,6 +13,13 @@ from typing import Optional, List
 from configs.envs import SEARCH_APP_ENVS
 from elastics.videos.searcher import VideoSearcher
 
+from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
+from elastics.videos.constants import SEARCH_MATCH_FIELDS
+from elastics.videos.constants import SUGGEST_MATCH_FIELDS
+from elastics.videos.constants import SEARCH_MATCH_TYPE
+from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
+from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
+
 
 class SearchApp:
     def __init__(self, app_envs: dict = {}):
@@ -42,12 +49,12 @@ class SearchApp:
     def search(
         self,
         query: str = Body(...),
-        match_fields: Optional[list[str]] = Body(VideoSearcher.SEARCH_MATCH_FIELDS),
-        source_fields: Optional[list[str]] = Body(VideoSearcher.SOURCE_FIELDS),
-        match_type: Optional[str] = Body(VideoSearcher.SEARCH_MATCH_TYPE),
+        match_fields: Optional[list[str]] = Body(SEARCH_MATCH_FIELDS),
+        source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
+        match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
         detail_level: int = Body(-1),
-        max_detail_level: int = Body(VideoSearcher.MAX_SEARCH_DETAIL_LEVEL),
-        limit: Optional[int] = Body(VideoSearcher.SEARCH_LIMIT),
+        max_detail_level: int = Body(MAX_SEARCH_DETAIL_LEVEL),
+        limit: Optional[int] = Body(SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
         suggestions = self.video_searcher.detailed_search(
@@ -65,12 +72,12 @@ class SearchApp:
     def suggest(
         self,
         query: str = Body(...),
-        match_fields: Optional[list[str]] = Body(VideoSearcher.SUGGEST_MATCH_FIELDS),
-        source_fields: Optional[list[str]] = Body(VideoSearcher.SOURCE_FIELDS),
-        match_type: Optional[str] = Body(VideoSearcher.SEARCH_MATCH_TYPE),
+        match_fields: Optional[list[str]] = Body(SUGGEST_MATCH_FIELDS),
+        source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
+        match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
         use_script_score: Optional[bool] = Body(True),
         use_pinyin: Optional[bool] = Body(True),
-        limit: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
+        limit: Optional[int] = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
         suggestions = self.video_searcher.suggest(
@@ -87,8 +94,8 @@ class SearchApp:
 
     def random(
         self,
-        seed_update_seconds: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
-        limit: Optional[int] = Body(VideoSearcher.SUGGEST_LIMIT),
+        seed_update_seconds: Optional[int] = Body(SUGGEST_LIMIT),
+        limit: Optional[int] = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
         suggestions = self.video_searcher.random(
@@ -98,7 +105,7 @@ class SearchApp:
 
     def latest(
         self,
-        limit: int = Body(VideoSearcher.SUGGEST_LIMIT),
+        limit: int = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
         suggestions = self.video_searcher.latest(limit=limit, verbose=verbose)
@@ -108,9 +115,7 @@ class SearchApp:
         self,
         bvid: str = Body(...),
         included_source_fields: Optional[List[str]] = Body([]),
-        excluded_source_fields: Optional[List[str]] = Body(
-            VideoSearcher.DOC_EXCLUDED_SOURCE_FIELDS
-        ),
+        excluded_source_fields: Optional[List[str]] = Body(DOC_EXCLUDED_SOURCE_FIELDS),
         verbose: Optional[bool] = Body(False),
     ):
         doc = self.video_searcher.doc(

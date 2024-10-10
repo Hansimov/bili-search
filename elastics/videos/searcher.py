@@ -12,128 +12,26 @@ from converters.query.dsl import (
     MultiMatchQueryDSLConstructor,
     ScriptScoreQueryDSLConstructor,
 )
+from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
+from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
+from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
+from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS
+from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
+from elastics.videos.constants import (
+    SEARCH_MATCH_TYPE,
+    SEARCH_MATCH_BOOL,
+    SEARCH_MATCH_OPERATOR,
+)
+from elastics.videos.constants import SUGGEST_MATCH_TYPE
+from elastics.videos.constants import SEARCH_DETAIL_LEVELS, MAX_SEARCH_DETAIL_LEVEL
+from elastics.videos.constants import (
+    SUGGEST_LIMIT,
+    SEARCH_LIMIT,
+    NO_HIGHLIGHT_REDUNDANCE_RATIO,
+)
 
 
 class VideoSearcher:
-    SOURCE_FIELDS = [
-        "title",
-        "bvid",
-        "owner",
-        "pic",
-        "duration",
-        "desc",
-        "stat",
-        "tname",
-        "tags",
-        "pubdate_str",
-        "insert_at_str",
-    ]
-    # search match fields
-    SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name", "desc"]
-    SEARCH_MATCH_FIELDS_WORDS = [
-        f"{field}.words" for field in SEARCH_MATCH_FIELDS_DEFAULT
-    ]
-    SEARCH_MATCH_FIELDS_PINYIN = [
-        f"{field}.pinyin" for field in SEARCH_MATCH_FIELDS_DEFAULT
-    ]
-    SEARCH_MATCH_FIELDS = [
-        # *SEARCH_MATCH_FIELDS_DEFAULT,
-        *SEARCH_MATCH_FIELDS_WORDS,
-        *SEARCH_MATCH_FIELDS_PINYIN,
-        "pubdate_str",
-    ]
-    # suggest match fields
-    SUGGEST_MATCH_FIELDS_DFAULT = ["title", "tags", "owner.name"]
-    SUGGEST_MATCH_FIELDS_WORDS = [
-        f"{field}.words" for field in SUGGEST_MATCH_FIELDS_DFAULT
-    ]
-    SUGGEST_MATCH_FIELDS_PINYIN = [
-        f"{field}.pinyin" for field in SUGGEST_MATCH_FIELDS_DFAULT
-    ]
-    SUGGEST_MATCH_FIELDS = [
-        # *SUGGEST_MATCH_FIELDS_DFAULT,
-        *SUGGEST_MATCH_FIELDS_WORDS,
-        *SUGGEST_MATCH_FIELDS_PINYIN,
-        "pubdate_str",
-    ]
-    # date match fields
-    DATE_MATCH_FIELDS_DEFAULT = ["title", "desc", "owner.name"]
-    DATE_MATCH_FIELDS_WORDS = [f"{field}.words" for field in DATE_MATCH_FIELDS_DEFAULT]
-    DATE_MATCH_FIELDS = [
-        # *DATE_MATCH_FIELDS_DEFAULT,
-        *DATE_MATCH_FIELDS_WORDS,
-        "pubdate_str",
-    ]
-    # boosted fields
-    SEARCH_BOOSTED_FIELDS = {
-        "title": 2.5,
-        "title.words": 2.5,
-        "title.pinyin": 0.25,
-        "tags": 2,
-        "tags.words": 2,
-        "tags.pinyin": 0.2,
-        "owner.name": 2,
-        "owner.name.words": 2,
-        "owner.name.pinyin": 0.2,
-        "desc": 0.1,
-        "desc.words": 0.1,
-        "desc.pinyin": 0.01,
-        "pubdate_str": 2.5,
-    }
-    SUGGEST_BOOSTED_FIELDS = {
-        "title": 2.5,
-        "title.words": 2.5,
-        "title.pinyin": 0.5,
-        "tags": 2,
-        "tags.words": 2,
-        "tags.pinyin": 0.4,
-        "owner.name": 2,
-        "owner.name.words": 2,
-        "owner.name.pinyin": 0.4,
-        "pubdate_str": 2.5,
-    }
-    DATE_BOOSTED_FIELDS = {
-        "title": 0.1,
-        "title.words": 0.1,
-        "owner.name": 0.1,
-        "owner.name.words": 0.1,
-        "desc": 0.05,
-        "desc.words": 0.05,
-        "pubdate_str": 2.5,
-    }
-    DOC_EXCLUDED_SOURCE_FIELDS = []
-
-    MATCH_TYPE = Literal[
-        "best_fields",
-        "most_fields",
-        "cross_fields",
-        "phrase",
-        "phrase_prefix",
-        "bool_prefix",
-    ]
-    MATCH_BOOL = Literal["must", "should", "must_not", "filter"]
-    MATCH_OPERATOR = Literal["or", "and"]
-
-    SEARCH_MATCH_TYPE = "phrase_prefix"
-    SUGGEST_MATCH_TYPE = "phrase_prefix"
-    SEARCH_MATCH_BOOL = "must"
-    SEARCH_MATCH_OPERATOR = "or"
-
-    SEARCH_DETAIL_LEVELS = {
-        1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
-        2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
-        3: {"match_type": "cross_fields", "bool": "must", "pinyin": True},
-        4: {"match_type": "most_fields", "bool": "must", "pinyin": True},
-        5: {"match_type": "most_fields", "bool": "should"},
-    }
-    MAX_SEARCH_DETAIL_LEVEL = 4
-
-    SUGGEST_LIMIT = 10
-    SEARCH_LIMIT = 50
-    # This constant is to contain more hits for redundance,
-    # as drop_no_highlights would drop some hits
-    NO_HIGHLIGHT_REDUNDANCE_RATIO = 2
-
     def __init__(self, index_name: str = "bili_videos_dev2"):
         self.index_name = index_name
         self.es = ElasticSearchClient()
@@ -196,8 +94,8 @@ class VideoSearcher:
         """
         logger.enter_quiet(not verbose)
 
-        if detail_level in self.SEARCH_DETAIL_LEVELS:
-            match_detail = self.SEARCH_DETAIL_LEVELS[detail_level]
+        if detail_level in SEARCH_DETAIL_LEVELS:
+            match_detail = SEARCH_DETAIL_LEVELS[detail_level]
             match_type = match_detail["match_type"]
             match_bool = match_detail["bool"]
             match_operator = match_detail.get("operator", "or")
@@ -213,9 +111,7 @@ class VideoSearcher:
             date_fields = [
                 field for field in match_fields if not field.endswith(".pinyin")
             ]
-            date_boosted_fields = self.boost_fields(
-                date_fields, self.DATE_BOOSTED_FIELDS
-            )
+            date_boosted_fields = self.boost_fields(date_fields, DATE_BOOSTED_FIELDS)
         else:
             boosted_fields = match_fields
             date_boosted_fields = match_fields
@@ -274,7 +170,7 @@ class VideoSearcher:
             dict_to_str(search_body, add_quotes=True, is_colored=True, align_list=False)
         )
         if limit and limit > 0:
-            search_body["size"] = int(limit * self.NO_HIGHLIGHT_REDUNDANCE_RATIO)
+            search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
         logger.mesg(f"[{query}]")
 
@@ -319,7 +215,7 @@ class VideoSearcher:
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         detail_level_upper_bound = int(
-            min(max_detail_level, max(self.SEARCH_DETAIL_LEVELS.keys()))
+            min(max_detail_level, max(SEARCH_DETAIL_LEVELS.keys()))
         )
 
         if detail_level < 1:
@@ -635,7 +531,7 @@ if __name__ == "__main__":
     #     logger.note(f"* Hit {idx}:")
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
-    query = "影视飓feng"
+    query = "影视飓feng 2024"
     logger.note(f"> Suggest results: " + logstr.file(f"[{query}]"))
     res = video_searcher.suggest(query, limit=5, verbose=True)
     hits = res.pop("hits")
@@ -685,4 +581,4 @@ if __name__ == "__main__":
     #     logger.warn(pformat(search_res, sort_dicts=False, indent=4))
     # searcher.suggest("yingshi", limit=3, verbose=True, timeout=1)
 
-    # python -m elastics.video_searcher
+    # python -m elastics.videos.searcher
