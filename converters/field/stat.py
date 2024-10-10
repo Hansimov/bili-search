@@ -1,7 +1,7 @@
 import re
 
 from tclogger import logger
-from converters.operators import OP_MAP, BRACKET_MAP
+from converters.field.operators import OP_MAP, BRACKET_MAP
 
 
 class StatFieldConverter:

@@ -3,7 +3,7 @@ import re
 from calendar import monthrange
 from datetime import datetime, timedelta
 from tclogger import logger, ts_to_str, get_now_ts
-from converters.operators import OP_MAP, BRACKET_MAP
+from converters.field.operators import OP_MAP, BRACKET_MAP
 
 
 class DateFieldConverter:

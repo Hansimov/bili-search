@@ -5,7 +5,7 @@ from tclogger import get_now_ts
 from typing import Literal, Union
 
 from converters.times import DateFormatChecker
-from converters.pinyinizer import ChinesePinyinizer
+from converters.query.pinyin import ChinesePinyinizer
 
 
 class MultiMatchQueryDSLConstructor:

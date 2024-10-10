@@ -30,4 +30,4 @@ if __name__ == "__main__":
         pinyin = pinyinizer.convert(text)
         logger.success(f"{pinyin}")
 
-    # python -m converters.pinyinizer
+    # python -m converters.query.pinyin
