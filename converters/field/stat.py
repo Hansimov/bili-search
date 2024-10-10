@@ -153,4 +153,4 @@ if __name__ == "__main__":
         res = converter.op_val_to_es_dict(field, op, val)
         logger.success(f"{res}")
 
-    # python -m converters.stat_field_converter
+    # python -m converters.field.stat

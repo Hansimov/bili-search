@@ -3,8 +3,8 @@ import re
 from pprint import pformat
 from tclogger import logger
 
-from converters.date_field_converter import DateFieldConverter
-from converters.stat_field_converter import StatFieldConverter
+from converters.field.date import DateFieldConverter
+from converters.field.stat import StatFieldConverter
 
 
 class QueryFilterExtractor:
