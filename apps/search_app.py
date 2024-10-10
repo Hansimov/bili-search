@@ -11,7 +11,7 @@ from tclogger import logger
 from typing import Optional, List
 
 from configs.envs import SEARCH_APP_ENVS
-from elastics.video_searcher import VideoSearcher
+from elastics.videos.searcher import VideoSearcher
 
 
 class SearchApp:

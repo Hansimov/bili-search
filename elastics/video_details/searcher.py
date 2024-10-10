@@ -514,4 +514,4 @@ if __name__ == "__main__":
         "影视飓风 xiangsu", boost=True, detail_level=1, limit=10, verbose=True
     )
 
-    # python -m elastics.video_details_searcher
+    # python -m elastics.video_details.searcher
