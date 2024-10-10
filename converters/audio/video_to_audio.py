@@ -117,6 +117,6 @@ if __name__ == "__main__":
         videos_paths, overwrite=args.overwrite, verbose=args.verbose
     )
 
-    # python -m converters.video_to_audio -m 14871346
-    # python -m converters.video_to_audio -m 14871346 -o
-    # python -m converters.video_to_audio -m 14871346 -o -v
+    # python -m converters.audio.video_to_audio -m 14871346
+    # python -m converters.audio.video_to_audio -m 14871346 -o
+    # python -m converters.audio.video_to_audio -m 14871346 -o -v

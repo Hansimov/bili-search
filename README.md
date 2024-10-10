@@ -34,6 +34,6 @@ python -m workers.user_worker -p -v -d -od -m $BILI_MID
 
 cd ~/repos/bili-search
 python -m elastics.video_details_indexer -m $BILI_MID
-python -m converters.video_to_audio -m $BILI_MID -o
-python -m converters.audio_to_subtitle -m $BILI_MID -o
+python -m converters.audio.video_to_audio -m $BILI_MID -o
+python -m converters.audio.audio_to_subtitle -m $BILI_MID -o
 ```

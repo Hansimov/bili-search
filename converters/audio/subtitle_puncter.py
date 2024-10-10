@@ -96,4 +96,4 @@ if __name__ == "__main__":
         "质量或者一些成本的保证对用户来说好像是满足他的诉求以满足他的体验这是何为最佳匹配第二的话就是定义了匹配之后那么背后如何去做到这种精心化的匹配"
     )
 
-    # python -m converters.subtitle_puncter
+    # python -m converters.audio.subtitle_puncter

@@ -236,6 +236,6 @@ if __name__ == "__main__":
     for audio_path in tqdm(audio_paths):
         converter.convert(audio_path, overwrite=args.overwrite, verbose=args.verbose)
 
-    # python -m converters.audio_to_subtitle -m 14871346
-    # python -m converters.audio_to_subtitle -m 14871346 -o
-    # python -m converters.audio_to_subtitle -m 14871346 -o -v
+    # python -m converters.audio.audio_to_subtitle -m 14871346
+    # python -m converters.audio.audio_to_subtitle -m 14871346 -o
+    # python -m converters.audio.audio_to_subtitle -m 14871346 -o -v
