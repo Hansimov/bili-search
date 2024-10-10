@@ -168,6 +168,27 @@ class MultiMatchQueryDSLConstructor:
 
 
 class ScriptScoreQueryDSLConstructor:
+    def log_func(
+        self, field: str, min_input: float = 2, min_output: float = 0.0
+    ) -> str:
+        func_str = f"(Math.log10(Math.max({field}, {min_input})) + {min_output})"
+        return func_str
+
+    def pow_func(
+        self,
+        field: str,
+        power: float = 1,
+        min_value: float = 1,
+        power_precision: int = 4,
+    ) -> str:
+        if power == 1.0:
+            func_str = f"Math.max({field}, {min_value})"
+        else:
+            func_str = (
+                f"Math.pow(Math.max({field}, {min_value}), {power:.{power_precision}f})"
+            )
+        return func_str
+
     def field_to_var(self, field: str):
         return field.replace(".", "_")
 
@@ -187,46 +208,53 @@ class ScriptScoreQueryDSLConstructor:
             f"{new_var}"
         )
 
-    def log_func(self, field: str, min_value: float = 2) -> str:
-        func_str = f"Math.log10(Math.max({field}, {min_value}))"
-        return func_str
-
-    def pow_func(
-        self,
-        field: str,
-        power: float = 1,
-        min_value: float = 1,
-        power_precision: int = 4,
-    ) -> str:
-        if power == 1.0:
-            func_str = f"Math.max({field}, {min_value})"
-        else:
-            func_str = (
-                f"Math.pow(Math.max({field}, {min_value}), {power:.{power_precision}f})"
-            )
-        return func_str
-
     def assign_var_of_pubdate_decay(
         self,
         field: str = "pubdate",
         now_ts_field: str = "params.now_ts",
         half_life_days: int = 7,
         max_life_days: int = 365,
-        power: float = 1.5,
         min_value: float = 0.2,
+        max_value: float = 1.0,
     ) -> str:
-        pass_seconds_str = f"({now_ts_field} - {field})"
+        """f(x) = k / (1 + (x / b)^power) + min_value
+            where k, b is unknown.
+        if power == 1.0, then we have:
+            f(x) = k / (1 + x / b) + min_value
+
+        a. when x->inf, f(x) -> min_value
+        b. when x->0,   f(x) -> max_value, we get:
+            k = max_value - min_value
+        c. when x=half_life_days, f(x) -> max_value/2, we get:
+            k / (1 + half_life_days / b) + min_value = (max_value + min_value) / 2
+            b = half_life_days
+
+        Here is the guide of finetuning the params:
+        1. b (half_life_days) is higher, decay is slower
+        2. (max_value - min_value) is higher, the effects of pubdate is larger
+        3. max_life_days is higher, the window of recent videos is larger
+        """
         seconds_per_day = 86400
-        pass_days = f"{pass_seconds_str}/{seconds_per_day}"
-        scaled_pass_days = f"{pass_days}/{half_life_days}"
-        power_str = self.pow_func(scaled_pass_days, power=power, min_value=0.1)
-        reciprocal_str = f"(1 - {min_value}) / (1 + {power_str})"
-        func_str = f"""if ({pass_days} > {max_life_days}) {{
+        pass_seconds_str = f"({now_ts_field} - {field})"
+        pass_days_str = f"{pass_seconds_str}/{seconds_per_day}"
+        k = max_value - min_value
+        b = half_life_days
+        pass_days_scale = round(seconds_per_day * half_life_days * b, 2)
+        reciprocal_str = f"{k} / (1 + {pass_seconds_str} / {pass_days_scale})"
+        max_life_seconds = max_life_days * seconds_per_day
+        func_str = f"""if ({pass_seconds_str} > {max_life_seconds}) {{
             pubdate_decay = {min_value};
         }} else {{
             pubdate_decay = {reciprocal_str} + {min_value};
         }}"""
         return func_str
+
+    def assign_var_of_relevance_score(
+        self, min_relevance_score: float = 0.01, down_scale: float = 100
+    ):
+        score_str = f"Math.max(_score, {min_relevance_score}) / {down_scale}"
+        assign_str = f"\ndouble r_score = {score_str};\n"
+        return assign_str
 
     def get_script_source_by_powers(self):
         assign_vars = []
@@ -274,13 +302,15 @@ class ScriptScoreQueryDSLConstructor:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
         assign_vars_str += self.assign_var_of_pubdate_decay(
-            half_life_days=7, power=1, max_life_days=90, min_value=0.15
+            half_life_days=7, max_life_days=30, min_value=0.25, max_value=1.0
+        )
+        assign_vars_str += self.assign_var_of_relevance_score(
+            min_relevance_score=0.01, down_scale=100
         )
         stat_func_str = " * ".join(
             f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
         )
-        score_str = "Math.max(_score, 1)"
-        func_str = f"return {stat_func_str} * pubdate_decay * {score_str} / 1e2;"
+        func_str = f"return {stat_func_str} * pubdate_decay * r_score;"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
