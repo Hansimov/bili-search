@@ -1,34 +1,24 @@
 from copy import deepcopy
 from datetime import datetime
 from pprint import pformat
-from tclogger import logger, logstr, get_now_ts, dict_to_str
-from typing import Literal, Union
+from tclogger import logger, logstr, dict_to_str
+from typing import Union
 
-from elastics.client import ElasticSearchClient
-from elastics.highlighter import PinyinHighlighter, HighlightMerger
-from elastics.structure import get_es_source_val
 from converters.query.filter import QueryFilterExtractor
-from converters.query.dsl import (
-    MultiMatchQueryDSLConstructor,
-    ScriptScoreQueryDSLConstructor,
-)
+from converters.query.dsl import MultiMatchQueryDSLConstructor
+from converters.query.dsl import ScriptScoreQueryDSLConstructor
+from elastics.client import ElasticSearchClient
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
-from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS
+from elastics.videos.constants import DATE_BOOSTED_FIELDS
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
-from elastics.videos.constants import (
-    SEARCH_MATCH_TYPE,
-    SEARCH_MATCH_BOOL,
-    SEARCH_MATCH_OPERATOR,
-)
-from elastics.videos.constants import SUGGEST_MATCH_TYPE
+from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
+from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_DETAIL_LEVELS, MAX_SEARCH_DETAIL_LEVEL
-from elastics.videos.constants import (
-    SUGGEST_LIMIT,
-    SEARCH_LIMIT,
-    NO_HIGHLIGHT_REDUNDANCE_RATIO,
-)
+from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
+from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
+from elastics.videos.hits import VideoHitsParser
 
 
 class VideoSearcher:
@@ -36,6 +26,7 @@ class VideoSearcher:
         self.index_name = index_name
         self.es = ElasticSearchClient()
         self.es.connect()
+        self.hit_parser = VideoHitsParser()
 
     def get_highlight_settings(self, match_fields: list[str], tag: str = "hit"):
         highlight_fields = [
@@ -181,19 +172,21 @@ class VideoSearcher:
             logger.warn(f"× Error: {e}")
             res_dict = {}
 
-        return_res = self.parse_hits(
-            query,
-            match_fields,
-            res_dict,
-            request_type="search",
-            is_parse_hits=parse_hits,
-            drop_no_highlights=True,
-            match_type=match_type,
-            match_operator=match_operator,
-            detail_level=detail_level,
-            limit=limit,
-            verbose=verbose,
-        )
+        if parse_hits:
+            return_res = self.hit_parser.parse(
+                query,
+                match_fields,
+                res_dict,
+                request_type="search",
+                drop_no_highlights=True,
+                match_type=match_type,
+                match_operator=match_operator,
+                detail_level=detail_level,
+                limit=limit,
+                verbose=verbose,
+            )
+        else:
+            return_res = res_dict
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
         return return_res
@@ -336,9 +329,10 @@ class VideoSearcher:
         logger.mesg(f"[{seed}] ({now_str})")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        return_res = self.parse_hits(
-            "", [], res_dict, request_type="random", is_parse_hits=parse_hits
-        )
+        if parse_hits:
+            return_res = self.hit_parser.parse("", [], res_dict, request_type="random")
+        else:
+            return_res = res_dict
         logger.exit_quiet(not verbose)
         return return_res
 
@@ -362,9 +356,10 @@ class VideoSearcher:
         logger.note(f"> Get latest {limit} docs:")
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
-        return_res = self.parse_hits(
-            "", [], res_dict, request_type="latest", is_parse_hits=parse_hits
-        )
+        if parse_hits:
+            return_res = self.hit_parser.parse("", [], res_dict, request_type="latest")
+        else:
+            return_res = res_dict
         logger.exit_quiet(not verbose)
         return return_res
 
@@ -399,120 +394,6 @@ class VideoSearcher:
         logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
         logger.exit_quiet(not verbose)
         return res_dict
-
-    def get_pinyin_highlights(
-        self, query: str, match_fields: list[str], _source: dict
-    ) -> dict:
-        pinyin_highlights = {}
-        if query:
-            pinyin_highlighter = PinyinHighlighter()
-            for field in match_fields:
-                if field.endswith(".pinyin"):
-                    no_pinyin_field = field.replace(".pinyin", "")
-                    text = get_es_source_val(_source, no_pinyin_field)
-                    if text is None:
-                        continue
-                    highlighted_text = pinyin_highlighter.highlight(
-                        query, text, tag="hit"
-                    )
-                    if highlighted_text:
-                        pinyin_highlights[field] = [highlighted_text]
-        return pinyin_highlights
-
-    def parse_hits(
-        self,
-        query: str,
-        match_fields: list[str],
-        res_dict: dict,
-        request_type: Literal[
-            "suggest", "search", "random", "latest", "doc"
-        ] = "search",
-        is_parse_hits: bool = True,
-        drop_no_highlights: bool = False,
-        match_type: MATCH_TYPE = "most_fields",
-        match_operator: MATCH_OPERATOR = "or",
-        detail_level: int = -1,
-        limit: int = -1,
-        verbose: bool = False,
-    ) -> list[dict]:
-        if not is_parse_hits:
-            return res_dict
-        if not res_dict:
-            hits_info = {
-                "request_type": request_type,
-                "detail_level": detail_level,
-                "took": -1,
-                "timed_out": True,
-                "total_hits": 0,
-                "return_hits": 0,
-                "hits": [],
-            }
-            return hits_info
-        hits = []
-        for hit in res_dict["hits"]["hits"]:
-            _source = hit["_source"]
-            score = hit["_score"]
-            common_highlights = hit.get("highlight", {})
-            pinyin_highlights = self.get_pinyin_highlights(query, match_fields, _source)
-
-            merged_highlights = {}
-            merger = HighlightMerger()
-
-            pinyin_fields = [
-                field.replace(".pinyin", "") for field in pinyin_highlights.keys()
-            ]
-            merged_fields = list(common_highlights.keys()) + pinyin_fields
-
-            for hit_field in merged_fields:
-                for suffix in [".pinyin", ".words"]:
-                    field = hit_field.removesuffix(suffix)
-                common_highlight = common_highlights.get(hit_field, [])
-                pinyin_highlight = pinyin_highlights.get(field + ".pinyin", [])
-                merged_highlight = merger.merge(
-                    get_es_source_val(_source, field),
-                    common_highlight + pinyin_highlight,
-                    tag="hit",
-                )
-                if merged_highlight:
-                    merged_highlights[field] = [merged_highlight]
-
-            if (
-                drop_no_highlights
-                and (not common_highlights)
-                and (not pinyin_highlights)
-                and match_type == "most_fields"
-                and match_operator == "or"
-            ):
-                continue
-            hit_info = {
-                **_source,
-                "score": score,
-                "common_highlights": common_highlights,
-                "pinyin_highlights": pinyin_highlights,
-                "merged_highlights": merged_highlights,
-            }
-            hits.append(hit_info)
-        if limit > 0:
-            hits = hits[:limit]
-        hits_info = {
-            "request_type": request_type,
-            "detail_level": detail_level,
-            "took": res_dict["took"],
-            "timed_out": res_dict["timed_out"],
-            "total_hits": res_dict["hits"]["total"]["value"],
-            "return_hits": len(hits),
-            "hits": hits,
-        }
-        logger.enter_quiet(not verbose)
-        # logger.success(pformat(hits_info, indent=4, sort_dicts=False))
-        logger.note(f"Request type: [{request_type}]")
-        logger.mesg(f"  * detail level: {detail_level}")
-        logger.mesg(f"  * return hits count: {hits_info['return_hits']}")
-        logger.mesg(f"  * total hits count: {hits_info['total_hits']}")
-        logger.mesg(f"  * took: {hits_info['took']}ms")
-        logger.mesg(f"  * timed_out: {hits_info['timed_out']}")
-        logger.exit_quiet(not verbose)
-        return hits_info
 
 
 if __name__ == "__main__":
