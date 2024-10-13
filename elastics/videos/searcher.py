@@ -153,10 +153,6 @@ class VideoSearcher:
             else:
                 logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
 
-        if detail_level > 2 and match_bool == "should":
-            search_body["query"]["bool"]["minimum_should_match"] = (
-                len(query_keywords) - 1
-            )
         logger.note(
             dict_to_str(search_body, add_quotes=True, is_colored=True, align_list=False)
         )
@@ -207,26 +203,21 @@ class VideoSearcher:
         limit: int = SEARCH_LIMIT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
-        detail_level_upper_bound = int(
-            min(max_detail_level, max(SEARCH_DETAIL_LEVELS.keys()))
-        )
-
-        if detail_level < 1:
-            detail_level = 1
-        elif detail_level > detail_level_upper_bound:
-            detail_level = detail_level_upper_bound
-        else:
-            detail_level = int(detail_level)
-
         return_res = {
             "total_hits": 0,
             "return_hits": 0,
             "hits": [],
         }
+        max_detail_level = min(max_detail_level, max(SEARCH_DETAIL_LEVELS.keys()))
 
-        while (
-            return_res["total_hits"] == 0 and detail_level <= detail_level_upper_bound
-        ):
+        if detail_level < 1:
+            detail_level = min(SEARCH_DETAIL_LEVELS.keys())
+        elif detail_level > max_detail_level:
+            return return_res
+        else:
+            detail_level = int(detail_level)
+
+        while return_res["total_hits"] == 0 and detail_level <= max_detail_level:
             return_res = self.search(
                 query=query,
                 match_fields=match_fields,
@@ -394,73 +385,3 @@ class VideoSearcher:
         logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
         logger.exit_quiet(not verbose)
         return res_dict
-
-
-if __name__ == "__main__":
-    video_searcher = VideoSearcher("bili_videos_dev2")
-    # logger.note("> Getting random results ...")
-    # res = video_searcher.random()
-    # logger.mesg(res)
-
-    # query = "影视飓风"
-    # logger.note("> Searching results:", end=" ")
-    # logger.file(f"[{query}]")
-    # res = video_searcher.search(query, limit=3, use_script_score=True, verbose=True)
-    # hits = res.pop("hits")
-    # logger.success(dict_to_str(res, is_colored=False))
-    # for idx, hit in enumerate(hits):
-    #     logger.note(f"* Hit {idx}:")
-    #     logger.file(dict_to_str(hit, align_list=False), indent=4)
-
-    query = "影视飓feng 2024 :view>1k :coin>1"
-    logger.note(f"> Query: [{logstr.mesg(query)}]")
-    res = video_searcher.suggest(query, limit=50, verbose=True)
-    hits = res.pop("hits")
-    logger.success(f"✓ Suggest results:")
-    logger.success(dict_to_str(res), indent=2)
-    # for idx, hit in enumerate(hits):
-    #     logger.note(f"* Hit {idx}:")
-    #     logger.file(dict_to_str(hit, align_list=False), indent=4)
-
-    # query = "Hansimov 2018"
-    # query = "黑神话 2024 :coin>1000 :view<100000"
-    # match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
-    # date_match_fields = ["title^0.5", "owner.name^0.25", "desc^0.2", "pubdate_str^2.5"]
-
-    # filter_extractor = QueryFilterExtractor()
-    # query_keywords, filters = filter_extractor.construct(query)
-    # query_without_filters = " ".join(query_keywords)
-
-    # query_constructor = MultiMatchQueryDSLConstructor()
-    # query_dsl_dict = query_constructor.construct(
-    #     query=query_without_filters,
-    #     match_fields=match_fields,
-    #     date_match_fields=date_match_fields,
-    # )
-
-    # if filters:
-    #     query_dsl_dict["bool"]["filter"] = filters
-
-    # logger.note(f"> Construct DSL for query:", end=" ")
-    # logger.mesg(f"[{query}]")
-    # logger.success(pformat(query_dsl_dict, sort_dicts=False, indent=2, compact=True))
-    # script_query_dsl_dict = ScriptScoreQueryDSLConstructor().construct(query_dsl_dict)
-    # logger.note(pformat(script_query_dsl_dict, sort_dicts=False, compact=True))
-    # logger.mesg(ScriptScoreQueryDSLConstructor().get_script_source())
-
-    # searcher = VideoSearcher("bili_videos_dev")
-    # search_res = searcher.search(
-    #     query,
-    #     source_fields=["title", "owner.name", "desc", "pubdate_str", "stat"],
-    #     boost=True,
-    #     use_script_score=True,
-    #     detail_level=1,
-    #     limit=3,
-    #     timeout=1,
-    #     verbose=True,
-    # )
-    # if search_res["took"] < 0:
-    #     logger.warn(pformat(search_res, sort_dicts=False, indent=4))
-    # searcher.suggest("yingshi", limit=3, verbose=True, timeout=1)
-
-    # python -m elastics.videos.searcher

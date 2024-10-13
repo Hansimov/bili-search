@@ -135,7 +135,7 @@ class MultiMatchQueryDSLConstructor:
         match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
         match_operator: Literal["or", "and"] = "or",
     ) -> dict:
-        query_dsl_dict = {"bool": {"must": []}}
+        query_dsl_dict = {"bool": {match_bool: []}}
         query_keywords = query.split()
         checker = DateFormatChecker()
         match_non_date_fields = self.remove_fields_from_fields(

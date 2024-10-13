@@ -111,13 +111,11 @@ SEARCH_MATCH_OPERATOR = "or"
 
 # search detail levels
 SEARCH_DETAIL_LEVELS = {
-    1: {"match_type": "phrase_prefix", "bool": "must", "pinyin": False},
+    1: {"match_type": "phrase", "bool": "must"},
     2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
-    3: {"match_type": "cross_fields", "bool": "must", "pinyin": True},
-    4: {"match_type": "most_fields", "bool": "must", "pinyin": True},
-    5: {"match_type": "most_fields", "bool": "should"},
+    3: {"match_type": "most_fields", "bool": "should"},
 }
-MAX_SEARCH_DETAIL_LEVEL = 4
+MAX_SEARCH_DETAIL_LEVEL = 3
 
 # limits
 SUGGEST_LIMIT = 10
