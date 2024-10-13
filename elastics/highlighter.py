@@ -147,6 +147,41 @@ class PinyinHighlighter:
         return res_text
 
 
+class HighlightedKeywordCounter:
+    def extract_highlighted_keywords(self, htext: str, tag="hit") -> dict:
+        pattern = f"<{tag}>(.*?)</{tag}>"
+        highlighted_keywords = {}
+        match = re.findall(pattern, htext)
+        for m in match:
+            highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
+        return highlighted_keywords
+
+    def count(self, hits: list[dict], exclude_fields: list = ["pubdate_str"]) -> dict:
+        res = {}
+        for hit in hits:
+            merged_highlights = hit.get("merged_highlights", {})
+            for field, text in merged_highlights.items():
+                if field in exclude_fields:
+                    continue
+                if text:
+                    if isinstance(text, list):
+                        htext = text[0]
+                    else:
+                        htext = text
+                    highlighted_keywords = self.extract_highlighted_keywords(htext)
+                    res[field] = res.get(field, {})
+                    for keyword, keyword_count in highlighted_keywords.items():
+                        keyword = keyword.lower().replace(" ", "")
+                        res[field][keyword] = (
+                            res[field].get(keyword, 0) + keyword_count * hit["score"]
+                        )
+        res = {
+            field: dict(sorted(keywords.items(), key=lambda x: x[1], reverse=True))
+            for field, keywords in res.items()
+        }
+        return res
+
+
 if __name__ == "__main__":
     highlighter = PinyinHighlighter()
     # query = "vlog alibaba"
@@ -155,8 +190,11 @@ if __name__ == "__main__":
     # text = "给百大UP主加上特效，这可太炸裂了！【百大UP主颁奖】"
     query = "影视飓风 xiangsu"
     text = "【影视飓风】4万块的1亿像素中画幅？"
-    res_text = highlighter.highlight(query, text, verbose=True)
+    res_text = highlighter.highlight(query, text, tag="hit", verbose=True)
     logger.mesg(f"Merged highlighted text:", end=" ")
     logger.success(res_text)
+    counter = HighlightedKeywordCounter()
+    count_res = counter.extract_highlighted_keywords(res_text)
+    logger.success(count_res)
 
     # python -m elastics.highlighter

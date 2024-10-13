@@ -104,7 +104,7 @@ class MultiMatchQueryDSLConstructor:
                 {
                     "multi_match": {
                         "query": keyword_pinyin,
-                        "type": match_type,
+                        "type": match_type,  # use "bool_prefix" for higher recall, but more time cost
                         "fields": fields_with_pinyin,
                         "operator": match_operator,
                     }

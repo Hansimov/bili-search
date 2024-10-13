@@ -412,14 +412,15 @@ if __name__ == "__main__":
     #     logger.note(f"* Hit {idx}:")
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
-    query = "影视飓feng 2024"
-    logger.note(f"> Suggest results: " + logstr.file(f"[{query}]"))
-    res = video_searcher.suggest(query, limit=5, verbose=True)
+    query = "影视飓feng 2024 :view>1k :coin>1"
+    logger.note(f"> Query: [{logstr.mesg(query)}]")
+    res = video_searcher.suggest(query, limit=50, verbose=True)
     hits = res.pop("hits")
-    logger.success(dict_to_str(res, is_colored=False))
-    for idx, hit in enumerate(hits):
-        logger.note(f"* Hit {idx}:")
-        logger.file(dict_to_str(hit, align_list=False), indent=4)
+    logger.success(f"✓ Suggest results:")
+    logger.success(dict_to_str(res), indent=2)
+    # for idx, hit in enumerate(hits):
+    #     logger.note(f"* Hit {idx}:")
+    #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
     # query = "Hansimov 2018"
     # query = "黑神话 2024 :coin>1000 :view<100000"
