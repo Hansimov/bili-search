@@ -3,6 +3,7 @@ import re
 from pypinyin import lazy_pinyin
 from tclogger import logger
 from typing import Union
+from converters.query.punct import Puncter
 
 
 class HighlightMerger:
@@ -148,18 +149,34 @@ class PinyinHighlighter:
 
 
 class HighlightedKeywordCounter:
-    def extract_highlighted_keywords(self, htext: str, tag="hit") -> dict:
+    def __init__(self):
+        self.puncter = Puncter()
+
+    def extract_highlighted_keywords(
+        self, htext: str, tag="hit", remove_puncts: bool = True
+    ) -> dict:
         pattern = f"<{tag}>(.*?)</{tag}>"
         highlighted_keywords = {}
         match = re.findall(pattern, htext)
         for m in match:
+            if remove_puncts:
+                m = self.puncter.remove(m)
             highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
         return highlighted_keywords
 
-    def count(self, hits: list[dict], exclude_fields: list = ["pubdate_str"]) -> dict:
+    def count(
+        self,
+        hits: list[dict],
+        exclude_fields: list = ["pubdate_str"],
+        use_score: bool = False,
+    ) -> dict:
         res = {}
         for hit in hits:
             merged_highlights = hit.get("merged_highlights", {})
+            if use_score:
+                hit_score = hit.get("score", 1)
+            else:
+                hit_score = 1
             for field, text in merged_highlights.items():
                 if field in exclude_fields:
                     continue
@@ -173,7 +190,7 @@ class HighlightedKeywordCounter:
                     for keyword, keyword_count in highlighted_keywords.items():
                         keyword = keyword.lower().replace(" ", "")
                         res[field][keyword] = (
-                            res[field].get(keyword, 0) + keyword_count * hit["score"]
+                            res[field].get(keyword, 0) + keyword_count * hit_score
                         )
         res = {
             field: dict(sorted(keywords.items(), key=lambda x: x[1], reverse=True))
