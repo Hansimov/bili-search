@@ -279,7 +279,7 @@ class ScriptScoreQueryDSLConstructor:
             f"{new_var}"
         )
 
-    def assign_var_of_pubdate_decay(
+    def assign_var_of_pubdate_decay_by_reciprocal(
         self,
         field: str = "pubdate",
         now_ts_field: str = "params.now_ts",
@@ -320,6 +320,58 @@ class ScriptScoreQueryDSLConstructor:
         }}"""
         return func_str
 
+    def assign_var_of_pubdate_decay_by_interpolation(
+        self,
+        field: str = "pubdate",
+        now_ts_field: str = "params.now_ts",
+        points: list[tuple[float, float]] = [
+            *[(0, 4.0), (7, 1.0)],
+            *[(30, 0.6), (365, 0.3)],
+        ],
+        inf_value: float = 0.25,
+    ) -> str:
+        """
+        Creates a decay function that fits the provided points using linear interpolation.
+        Args:
+            field (str): The field name for publication date.
+            now_ts_field (str): The current timestamp field.
+            points (list[tuple[float, float]]): List of (x, y) points representing the decay curve.
+
+        Returns:
+            str: An ElasticSearch Painless script to handle pubdate decay.
+        """
+        seconds_per_day = 86400
+        pass_seconds_str = f"({now_ts_field} - {field})"
+        pass_days_var = f"double pass_days = {pass_seconds_str}/{seconds_per_day};\n"
+        func_str = pass_days_var
+
+        # Create condition blocks for each interval between points
+        conditions = []
+        for i in range(1, len(points)):
+            x1, y1 = points[i - 1]
+            x2, y2 = points[i]
+
+            # Calculate the slope for linear interpolation
+            slope = round((y2 - y1) / (x2 - x1) if x2 != x1 else 0, 6)
+            intercept = round(y1 - slope * x1, 6)
+
+            # Convert days to seconds for comparison in script
+            condition = f"""if (pass_days < {x2}) {{
+                pubdate_decay = {slope} * pass_days + {intercept};
+            }}"""
+            conditions.append(condition)
+
+        # Handling the case where the date is beyond the maximum x value
+        conditions.append(
+            f"""{{
+                pubdate_decay = {inf_value};
+            }}"""
+        )
+
+        # Combine conditions
+        func_str += " else ".join(conditions)
+        return func_str
+
     def assign_var_of_relevance_score(
         self, min_relevance_score: float = 0.01, down_scale: float = 100
     ):
@@ -344,7 +396,7 @@ class ScriptScoreQueryDSLConstructor:
         for field in list(stat_powers.keys()) + ["pubdate"]:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
-        assign_vars_str += self.assign_var_of_pubdate_decay()
+        assign_vars_str += self.assign_var_of_pubdate_decay_by_reciprocal()
         stat_func_str = " * ".join(
             self.pow_func(self.field_to_var(field), field_power * stat_pow_ratio, 1)
             for field, field_power in stat_powers.items()
@@ -372,9 +424,7 @@ class ScriptScoreQueryDSLConstructor:
         for field in stat_fields + ["pubdate"]:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
-        assign_vars_str += self.assign_var_of_pubdate_decay(
-            half_life_days=7, max_life_days=30, min_value=0.25, max_value=1.0
-        )
+        assign_vars_str += self.assign_var_of_pubdate_decay_by_interpolation()
         assign_vars_str += self.assign_var_of_relevance_score(
             min_relevance_score=0.01, down_scale=100
         )
@@ -461,7 +511,6 @@ if __name__ == "__main__":
             query,
             match_fields=match_fields,
             date_match_fields=date_match_fields,
-            combined_fields_list=SEARCH_COMBINED_FIELDS_LIST,
         )
         logger.success(dict_to_str(query_dsl_dict, add_quotes=True), indent=2)
 
