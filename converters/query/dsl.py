@@ -39,6 +39,23 @@ class MultiMatchQueryDSLConstructor:
                 return True
         return False
 
+    def construct_match_clause(
+        self,
+        query_type: Literal["multi_match", "combined_fields"],
+        keyword: str,
+        match_fields: list[str],
+        match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
+        match_operator: Literal["or", "and"] = "or",
+    ):
+        return {
+            query_type: {
+                "query": keyword,
+                "fields": match_fields,
+                "type": match_type,
+                "operator": match_operator,
+            }
+        }
+
     def construct_query_for_date_keyword(
         self,
         keyword: str,
@@ -54,33 +71,69 @@ class MultiMatchQueryDSLConstructor:
                 "minimum_should_match": 1,
             }
         }
+
         if date_fields:
             keyword_date = checker.rewrite(
                 keyword, sep="-", check_format=False, use_current_year=True
             )
             clause["bool"]["should"].append(
-                {
-                    "multi_match": {
-                        "query": keyword_date,
-                        "type": "bool_prefix",
-                        "fields": date_fields,
-                        "operator": match_operator,
-                    }
-                }
+                self.construct_match_clause(
+                    "multi_match",
+                    keyword_date,
+                    date_match_fields,
+                    match_type="bool_prefix",
+                    match_operator=match_operator,
+                )
             )
+
         non_date_fields = self.remove_fields_from_fields(date_fields, date_match_fields)
         if non_date_fields and checker.matched_format == "%Y":
             clause["bool"]["should"].append(
-                {
-                    "multi_match": {
-                        "query": keyword,
-                        "type": match_type,
-                        "fields": non_date_fields,
-                        "operator": match_operator,
-                    }
-                }
+                self.construct_match_clause(
+                    "multi_match",
+                    keyword,
+                    non_date_fields,
+                    match_type=match_type,
+                    match_operator=match_operator,
+                )
             )
         return clause
+
+    def construct_combined_fields_clauses(
+        self,
+        keyword: str,
+        match_fields: list[str],
+        match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
+        combined_fields_list: list[list[str]] = [],
+    ) -> list[dict]:
+        """NOTE: Only text fields are supported, and they must all have the same search analyzer.
+        See also:
+        - https://www.elastic.co/guide/en/elasticsearch/reference/8.14/query-dsl-combined-fields-query.html#combined-field-top-level-params
+        """
+        clauses = []
+        for combined_fields in combined_fields_list:
+            if all(
+                self.is_field_in_fields(cfield, match_fields)
+                for cfield in combined_fields
+            ):
+                combined_fields_fullnames = [
+                    mfield
+                    for mfield in match_fields
+                    if any(mfield.startswith(cfield) for cfield in combined_fields)
+                ]
+                clauses.append(
+                    self.construct_match_clause(
+                        "combined_fields",
+                        keyword,
+                        combined_fields_fullnames,
+                        match_type=match_type,
+                        match_operator="and",
+                    )
+                )
+                # remove combined_fields_with_pinyin from fields_with_pinyin
+                for cfield in combined_fields_fullnames:
+                    match_fields.remove(cfield)
+        return clauses
 
     def construct_query_for_text_keyword(
         self,
@@ -88,6 +141,7 @@ class MultiMatchQueryDSLConstructor:
         match_fields: list[str],
         match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
         match_operator: Literal["or", "and"] = "or",
+        combined_fields_list: list[list[str]] = [],
     ):
         clause = {
             "bool": {
@@ -95,34 +149,49 @@ class MultiMatchQueryDSLConstructor:
                 "minimum_should_match": 1,
             }
         }
+
         fields_with_pinyin = [
             field for field in match_fields if self.is_pinyin_field(field)
         ]
         if fields_with_pinyin:
             keyword_pinyin = self.pinyinizer.convert(keyword)
-            clause["bool"]["should"].append(
-                {
-                    "multi_match": {
-                        "query": keyword_pinyin,
-                        "type": match_type,  # use "bool_prefix" for higher recall, but more time cost
-                        "fields": fields_with_pinyin,
-                        "operator": match_operator,
-                    }
-                }
+
+            combined_fields_clauses = self.construct_combined_fields_clauses(
+                keyword_pinyin,
+                fields_with_pinyin,
+                match_type=match_type,
+                combined_fields_list=combined_fields_list,
             )
+            match_clause = self.construct_match_clause(
+                "multi_match",
+                keyword_pinyin,
+                fields_with_pinyin,
+                match_type=match_type,  # "bool_prefix" is better on recall, but slower
+                match_operator=match_operator,
+            )
+            clause["bool"]["should"].extend(combined_fields_clauses)
+            clause["bool"]["should"].append(match_clause)
+
         fields_without_pinyin = [
             field for field in match_fields if not self.is_pinyin_field(field)
         ]
-        clause["bool"]["should"].append(
-            {
-                "multi_match": {
-                    "query": keyword,
-                    "type": match_type,
-                    "fields": fields_without_pinyin,
-                    "operator": match_operator,
-                }
-            }
-        )
+        if fields_without_pinyin:
+            combined_fields_clauses = self.construct_combined_fields_clauses(
+                keyword,
+                fields_without_pinyin,
+                match_type=match_type,
+                combined_fields_list=combined_fields_list,
+            )
+            match_clause = self.construct_match_clause(
+                "multi_match",
+                keyword,
+                fields_without_pinyin,
+                match_type=match_type,
+                match_operator=match_operator,
+            )
+            clause["bool"]["should"].extend(combined_fields_clauses)
+            clause["bool"]["should"].append(match_clause)
+
         return clause
 
     def construct(
@@ -134,6 +203,7 @@ class MultiMatchQueryDSLConstructor:
         match_bool: Literal["must", "should"] = "must",
         match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
         match_operator: Literal["or", "and"] = "or",
+        combined_fields_list: list[list[str]] = [],
     ) -> dict:
         query_dsl_dict = {"bool": {match_bool: []}}
         query_keywords = query.split()
@@ -161,6 +231,7 @@ class MultiMatchQueryDSLConstructor:
                     match_non_date_fields,
                     match_type=match_type,
                     match_operator=match_operator,
+                    combined_fields_list=combined_fields_list,
                 )
             query_dsl_dict["bool"][match_bool].append(clause)
 
@@ -368,12 +439,19 @@ class ScriptScoreQueryDSLConstructor:
 
 if __name__ == "__main__":
     from tclogger import logger, logstr, dict_to_str
+    from elastics.videos.constants import SEARCH_BOOSTED_FIELDS
+    from elastics.videos.constants import SEARCH_COMBINED_FIELDS_LIST
 
     match_fields_default = ["title", "owner.name", "desc", "tags"]
     match_fields_words = [f"{field}.words" for field in match_fields_default]
     match_fields_pinyin = [f"{field}.pinyin" for field in match_fields_default]
     match_fields = match_fields_words + match_fields_pinyin + ["pubdate_str"]
     date_match_fields = match_fields_words + ["pubdate_str"]
+
+    for idx, mfield in enumerate(match_fields):
+        if SEARCH_BOOSTED_FIELDS.get(mfield):
+            boost = SEARCH_BOOSTED_FIELDS[mfield]
+            match_fields[idx] = f"{mfield}^{boost}"
 
     queries = ["秋葉aaaki 2024", "影视飓feng 2024-01"]
     constructor = MultiMatchQueryDSLConstructor()
@@ -383,6 +461,7 @@ if __name__ == "__main__":
             query,
             match_fields=match_fields,
             date_match_fields=date_match_fields,
+            combined_fields_list=SEARCH_COMBINED_FIELDS_LIST,
         )
         logger.success(dict_to_str(query_dsl_dict, add_quotes=True), indent=2)
 

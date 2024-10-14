@@ -91,6 +91,10 @@ DATE_BOOSTED_FIELDS = {
     "pubdate_str": 2.5,
 }
 
+# combined fields
+SEARCH_COMBINED_FIELDS_LIST = [["title", "tags"]]
+SUGGEST_COMBINED_FIELDS_LIST = [["title", "tags"]]
+
 # match type, bool and operator
 MATCH_TYPE = Literal[
     "best_fields",
@@ -111,7 +115,7 @@ SEARCH_MATCH_OPERATOR = "or"
 
 # search detail levels
 SEARCH_DETAIL_LEVELS = {
-    1: {"match_type": "phrase", "bool": "must"},
+    1: {"match_type": "phrase_prefix", "bool": "must"},
     2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
     3: {"match_type": "most_fields", "bool": "should"},
 }

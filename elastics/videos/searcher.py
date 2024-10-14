@@ -12,6 +12,8 @@ from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
 from elastics.videos.constants import DATE_BOOSTED_FIELDS
+from elastics.videos.constants import SEARCH_COMBINED_FIELDS_LIST
+from elastics.videos.constants import SUGGEST_COMBINED_FIELDS_LIST
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
@@ -63,6 +65,7 @@ class VideoSearcher:
         is_explain: bool = False,
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
+        combined_fields_list: list[list[str]] = [],
         use_script_score: bool = True,
         use_pinyin: bool = False,
         detail_level: int = -1,
@@ -119,6 +122,7 @@ class VideoSearcher:
             match_bool=match_bool,
             match_type=match_type,
             match_operator=match_operator,
+            combined_fields_list=combined_fields_list,
         )
 
         if filters:
@@ -198,6 +202,7 @@ class VideoSearcher:
         is_explain: bool = False,
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
+        combined_fields_list: list[list[str]] = [],
         detail_level: int = -1,
         max_detail_level: int = MAX_SEARCH_DETAIL_LEVEL,
         limit: int = SEARCH_LIMIT,
@@ -228,6 +233,7 @@ class VideoSearcher:
                 is_explain=is_explain,
                 boost=boost,
                 boosted_fields=boosted_fields,
+                combined_fields_list=combined_fields_list,
                 detail_level=detail_level,
                 limit=limit,
                 verbose=verbose,
@@ -247,6 +253,7 @@ class VideoSearcher:
         is_explain: bool = False,
         boost: bool = True,
         boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
+        combined_fields_list: list[list[str]] = [],
         use_script_score: bool = True,
         use_pinyin: bool = True,
         limit: int = SUGGEST_LIMIT,
@@ -264,6 +271,7 @@ class VideoSearcher:
             is_explain=is_explain,
             boost=boost,
             boosted_fields=boosted_fields,
+            combined_fields_list=combined_fields_list,
             use_script_score=use_script_score,
             use_pinyin=use_pinyin,
             detail_level=-1,
