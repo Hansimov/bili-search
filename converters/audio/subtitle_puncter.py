@@ -6,7 +6,7 @@ from tqdm import tqdm
 from typing import Union
 
 from configs.envs import BILI_DATA_ROOT, LLMS_ENVS
-from networks.llm_client import LLMClient
+from llms.client import LLMClient
 
 
 class SentencePuncter:

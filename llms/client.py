@@ -140,11 +140,15 @@ if __name__ == "__main__":
     response_format = llm["format"]
     messages = [
         {
+            "role": "system",
+            "content": "你是一个由 Hansimov 开发的基于开源大语言模型搜索助手。你的任务是根据用户的输入，分析他们的意图和需求，生成搜索语句，调用搜索工具，最后提供用户所需的信息。",
+        },
+        {
             "role": "user",
             "content": "你是谁？",
-        }
+        },
     ]
     client = LLMClient(endpoint, api_key, response_format)
     client.chat(messages, model, stream=True)
 
-    # python -m networks.llm_client
+    # python -m llms.client
