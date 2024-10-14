@@ -17,6 +17,7 @@ SOURCE_FIELDS = [
 DOC_EXCLUDED_SOURCE_FIELDS = []
 
 # search match fields
+# SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name"]
 SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name", "desc"]
 SEARCH_MATCH_FIELDS_WORDS = [f"{field}.words" for field in SEARCH_MATCH_FIELDS_DEFAULT]
 SEARCH_MATCH_FIELDS_PINYIN = [
@@ -25,7 +26,7 @@ SEARCH_MATCH_FIELDS_PINYIN = [
 SEARCH_MATCH_FIELDS = [
     # *SEARCH_MATCH_FIELDS_DEFAULT,
     *SEARCH_MATCH_FIELDS_WORDS,
-    *SEARCH_MATCH_FIELDS_PINYIN,
+    # *SEARCH_MATCH_FIELDS_PINYIN,
     "pubdate_str",
 ]
 
@@ -56,9 +57,9 @@ SEARCH_BOOSTED_FIELDS = {
     "title": 2.5,
     "title.words": 2.5,
     "title.pinyin": 0.25,
-    "tags": 2,
-    "tags.words": 2,
-    "tags.pinyin": 0.2,
+    "tags": 3.5,
+    "tags.words": 3.5,
+    "tags.pinyin": 0.35,
     "owner.name": 2,
     "owner.name.words": 2,
     "owner.name.pinyin": 0.2,
@@ -71,9 +72,9 @@ SUGGEST_BOOSTED_FIELDS = {
     "title": 2.5,
     "title.words": 2.5,
     "title.pinyin": 0.5,
-    "tags": 2,
-    "tags.words": 2,
-    "tags.pinyin": 0.4,
+    "tags": 3.5,
+    "tags.words": 3.5,
+    "tags.pinyin": 0.7,
     "owner.name": 2,
     "owner.name.words": 2,
     "owner.name.pinyin": 0.4,
@@ -107,23 +108,80 @@ MATCH_TYPE = Literal[
 MATCH_BOOL = Literal["must", "should", "must_not", "filter"]
 MATCH_OPERATOR = Literal["or", "and"]
 
-# search match type, bool and operator
+# match type, bool and operator
 SEARCH_MATCH_TYPE = "phrase_prefix"
-SUGGEST_MATCH_TYPE = "phrase_prefix"
 SEARCH_MATCH_BOOL = "must"
 SEARCH_MATCH_OPERATOR = "or"
+SUGGEST_MATCH_TYPE = "phrase_prefix"
+SUGGEST_MATCH_BOOL = SEARCH_MATCH_BOOL
+SUGGEST_MATCH_OPERATOR = SEARCH_MATCH_OPERATOR
 
 # search detail levels
+SEARCH_DETAIL_BASE = {"match_type": SEARCH_MATCH_TYPE, "bool": SEARCH_MATCH_BOOL}
 SEARCH_DETAIL_LEVELS = {
-    1: {"match_type": "phrase_prefix", "bool": "must"},
-    2: {"match_type": "cross_fields", "bool": "must", "operator": "and"},
-    3: {"match_type": "most_fields", "bool": "should"},
+    1: {
+        **SEARCH_DETAIL_BASE,
+        "filters": [
+            {"range": {"stat.view": {"gte": 100}}},
+        ],
+        "timeout": 1.5,
+    },
+    2: {
+        **SEARCH_DETAIL_BASE,
+        "filters": [
+            {"range": {"stat.view": {"gte": 1000}}},
+            {"range": {"stat.coin": {"gte": 10}}},
+        ],
+        "timeout": 2,
+    },
+    3: {
+        **SEARCH_DETAIL_BASE,
+        "filters": [
+            {"range": {"stat.view": {"gte": 10000}}},
+            {"range": {"stat.coin": {"gte": 25}}},
+        ],
+        "timeout": 2,
+    },
 }
 MAX_SEARCH_DETAIL_LEVEL = 3
 
+# suggest detail levels
+SUGGEST_DETAIL_BASE = {"match_type": SUGGEST_MATCH_TYPE, "bool": SUGGEST_MATCH_BOOL}
+SUGGEST_DETAIL_LEVELS = {
+    1: {
+        **SUGGEST_DETAIL_BASE,
+        "filters": [
+            {"range": {"stat.view": {"gte": 100}}},
+            {"range": {"stat.coin": {"gte": 5}}},
+        ],
+        "timeout": 1,
+    },
+    2: {
+        **SUGGEST_DETAIL_BASE,
+        "filters": [
+            {"range": {"stat.view": {"gte": 1000}}},
+            {"range": {"stat.coin": {"gte": 10}}},
+        ],
+        "timeout": 1,
+    },
+    3: {
+        **SEARCH_DETAIL_BASE,
+        "filters": [
+            {"range": {"stat.view": {"gt": 10000}}},
+            {"range": {"stat.coin": {"gt": 25}}},
+        ],
+        "timeout": 1,
+    },
+}
+MAX_SUGGEST_DETAIL_LEVEL = 3
+
 # limits
-SUGGEST_LIMIT = 10
 SEARCH_LIMIT = 50
+SUGGEST_LIMIT = 10
+
+# timeout
+SEARCH_TIMEOUT = 2
+SUGGEST_TIMEOUT = 1
 
 # This constant is to contain more hits for redundance,
 # as drop_no_highlights would drop some hits
