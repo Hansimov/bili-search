@@ -12,13 +12,14 @@ from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
 from elastics.videos.constants import DATE_BOOSTED_FIELDS
-from elastics.videos.constants import SEARCH_COMBINED_FIELDS_LIST
-from elastics.videos.constants import SUGGEST_COMBINED_FIELDS_LIST
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
+from elastics.videos.constants import SUGGEST_MATCH_BOOL, SUGGEST_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_DETAIL_LEVELS, MAX_SEARCH_DETAIL_LEVEL
-from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
+from elastics.videos.constants import SUGGEST_DETAIL_LEVELS, MAX_SUGGEST_DETAIL_LEVEL
+from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
+from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.hits import VideoHitsParser
 
@@ -61,6 +62,7 @@ class VideoSearcher:
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        extra_filters: list[dict] = [],
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -69,8 +71,9 @@ class VideoSearcher:
         use_script_score: bool = True,
         use_pinyin: bool = False,
         detail_level: int = -1,
+        detail_levels: dict = SEARCH_DETAIL_LEVELS,
         limit: int = SEARCH_LIMIT,
-        timeout: Union[int, float, str] = 2,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         """
@@ -88,12 +91,14 @@ class VideoSearcher:
         """
         logger.enter_quiet(not verbose)
 
-        if detail_level in SEARCH_DETAIL_LEVELS:
-            match_detail = SEARCH_DETAIL_LEVELS[detail_level]
+        if detail_level in detail_levels:
+            match_detail = detail_levels[detail_level]
             match_type = match_detail["match_type"]
             match_bool = match_detail["bool"]
             match_operator = match_detail.get("operator", "or")
             use_pinyin = match_detail.get("pinyin", use_pinyin)
+            extra_filters = match_detail.get("filters", extra_filters)
+            timeout = match_detail.get("timeout", timeout)
 
         if not use_pinyin:
             match_fields = [
@@ -125,8 +130,8 @@ class VideoSearcher:
             combined_fields_list=combined_fields_list,
         )
 
-        if filters:
-            query_dsl_dict["bool"]["filter"] = filters
+        if filters or extra_filters:
+            query_dsl_dict["bool"]["filter"] = filters + extra_filters
 
         script_score_constructor = ScriptScoreQueryDSLConstructor()
 
@@ -157,9 +162,7 @@ class VideoSearcher:
             else:
                 logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
 
-        logger.note(
-            dict_to_str(search_body, add_quotes=True, is_colored=True, align_list=False)
-        )
+        logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         logger.note(f"> Get search results by query:", end=" ")
@@ -191,7 +194,7 @@ class VideoSearcher:
         logger.exit_quiet(not verbose)
         return return_res
 
-    def detailed_search(
+    def multi_level_search(
         self,
         query: str,
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
@@ -203,9 +206,13 @@ class VideoSearcher:
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
+        use_script_score: bool = True,
+        use_pinyin: bool = False,
         detail_level: int = -1,
+        detail_levels: dict = SEARCH_DETAIL_LEVELS,
         max_detail_level: int = MAX_SEARCH_DETAIL_LEVEL,
         limit: int = SEARCH_LIMIT,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         return_res = {
@@ -213,10 +220,10 @@ class VideoSearcher:
             "return_hits": 0,
             "hits": [],
         }
-        max_detail_level = min(max_detail_level, max(SEARCH_DETAIL_LEVELS.keys()))
+        max_detail_level = min(max_detail_level, max(detail_levels.keys()))
 
         if detail_level < 1:
-            detail_level = min(SEARCH_DETAIL_LEVELS.keys())
+            detail_level = min(detail_levels.keys())
         elif detail_level > max_detail_level:
             return return_res
         else:
@@ -234,8 +241,12 @@ class VideoSearcher:
                 boost=boost,
                 boosted_fields=boosted_fields,
                 combined_fields_list=combined_fields_list,
+                use_script_score=use_script_score,
+                use_pinyin=use_pinyin,
                 detail_level=detail_level,
+                detail_levels=detail_levels,
                 limit=limit,
+                timeout=timeout,
                 verbose=verbose,
             )
             detail_level += 1
@@ -247,8 +258,9 @@ class VideoSearcher:
         match_fields: list[str] = SUGGEST_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SUGGEST_MATCH_TYPE,
-        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
-        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        match_bool: MATCH_BOOL = SUGGEST_MATCH_BOOL,
+        match_operator: MATCH_OPERATOR = SUGGEST_MATCH_OPERATOR,
+        extra_filters: list[dict] = [],
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -256,8 +268,10 @@ class VideoSearcher:
         combined_fields_list: list[list[str]] = [],
         use_script_score: bool = True,
         use_pinyin: bool = True,
+        detail_level: int = -1,
+        detail_levels: dict = SUGGEST_DETAIL_LEVELS,
         limit: int = SUGGEST_LIMIT,
-        timeout: Union[int, float, str] = 2,
+        timeout: Union[int, float, str] = SUGGEST_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         return self.search(
@@ -267,6 +281,7 @@ class VideoSearcher:
             match_type=match_type,
             match_bool=match_bool,
             match_operator=match_operator,
+            extra_filters=extra_filters,
             parse_hits=parse_hits,
             is_explain=is_explain,
             boost=boost,
@@ -274,7 +289,50 @@ class VideoSearcher:
             combined_fields_list=combined_fields_list,
             use_script_score=use_script_score,
             use_pinyin=use_pinyin,
-            detail_level=-1,
+            detail_level=detail_level,
+            detail_levels=detail_levels,
+            limit=limit,
+            timeout=timeout,
+            verbose=verbose,
+        )
+
+    def multi_level_suggest(
+        self,
+        query: str,
+        match_fields: list[str] = SUGGEST_MATCH_FIELDS,
+        source_fields: list[str] = SOURCE_FIELDS,
+        match_type: MATCH_TYPE = SUGGEST_MATCH_TYPE,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        parse_hits: bool = True,
+        is_explain: bool = False,
+        boost: bool = True,
+        boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
+        combined_fields_list: list[list[str]] = [],
+        use_script_score: bool = True,
+        use_pinyin: bool = False,
+        detail_level: int = -1,
+        detail_levels: dict = SUGGEST_DETAIL_LEVELS,
+        max_detail_level: int = MAX_SUGGEST_DETAIL_LEVEL,
+        limit: int = SEARCH_LIMIT,
+        timeout: Union[int, float, str] = SUGGEST_TIMEOUT,
+        verbose: bool = False,
+    ):
+        return self.multi_level_search(
+            query=query,
+            match_fields=match_fields,
+            source_fields=source_fields,
+            match_type=match_type,
+            match_bool=match_bool,
+            parse_hits=parse_hits,
+            is_explain=is_explain,
+            boost=boost,
+            boosted_fields=boosted_fields,
+            combined_fields_list=combined_fields_list,
+            use_script_score=use_script_score,
+            use_pinyin=use_pinyin,
+            detail_level=detail_level,
+            detail_levels=detail_levels,
+            max_detail_level=max_detail_level,
             limit=limit,
             timeout=timeout,
             verbose=verbose,
