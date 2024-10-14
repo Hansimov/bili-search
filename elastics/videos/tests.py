@@ -26,11 +26,13 @@ def test_suggest():
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
 
-def test_search():
-    query = "影视飓风"
+def test_multi_level_search():
+    query = "影视"
     logger.note("> Searching results:", end=" ")
     logger.file(f"[{query}]")
-    res = searcher.search(query, limit=50, use_script_score=True, verbose=True)
+    res = searcher.multi_level_search(
+        query, limit=500, use_script_score=True, verbose=True
+    )
     hits = res.pop("hits")
     logger.success(dict_to_str(res))
     # for idx, hit in enumerate(hits):
@@ -38,7 +40,7 @@ def test_search():
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
 
-def test_detailed_search():
+def test_search():
     query = "影视飓feng"
     logger.note("> Searching results:", end=" ")
     logger.file(f"[{query}]")
@@ -84,19 +86,19 @@ def test_filter():
         use_script_score=True,
         detail_level=1,
         limit=3,
-        timeout=1,
+        timeout=2,
         verbose=True,
     )
     if search_res["took"] < 0:
         logger.warn(dict_to_str(search_res))
-    searcher.suggest("yingshi", limit=3, verbose=True, timeout=1)
+    searcher.suggest("yingshi", limit=3, verbose=True, timeout=2)
 
 
 if __name__ == "__main__":
     test_random()
     test_suggest()
+    test_multi_level_search()
     test_search()
-    test_detailed_search()
     test_filter()
 
     # python -m elastics.videos.tests

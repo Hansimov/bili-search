@@ -16,8 +16,9 @@ from elastics.videos.searcher import VideoSearcher
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS
-from elastics.videos.constants import SEARCH_MATCH_TYPE
+from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
+from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
 
 
@@ -57,7 +58,7 @@ class SearchApp:
         limit: Optional[int] = Body(SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_searcher.detailed_search(
+        results = self.video_searcher.multi_level_search(
             query,
             match_fields=match_fields,
             source_fields=source_fields,
@@ -67,30 +68,34 @@ class SearchApp:
             limit=limit,
             verbose=verbose,
         )
-        return suggestions
+        return results
 
     def suggest(
         self,
         query: str = Body(...),
         match_fields: Optional[list[str]] = Body(SUGGEST_MATCH_FIELDS),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
-        match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
+        match_type: Optional[str] = Body(SUGGEST_MATCH_TYPE),
         use_script_score: Optional[bool] = Body(True),
         use_pinyin: Optional[bool] = Body(True),
+        detail_level: int = Body(-1),
+        max_detail_level: int = Body(MAX_SUGGEST_DETAIL_LEVEL),
         limit: Optional[int] = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_searcher.suggest(
+        results = self.video_searcher.multi_level_suggest(
             query,
             match_fields=match_fields,
             source_fields=source_fields,
             match_type=match_type,
             use_script_score=use_script_score,
             use_pinyin=use_pinyin,
+            detail_level=detail_level,
+            max_detail_level=max_detail_level,
             limit=limit,
             verbose=verbose,
         )
-        return suggestions
+        return results
 
     def random(
         self,
@@ -98,18 +103,18 @@ class SearchApp:
         limit: Optional[int] = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_searcher.random(
+        results = self.video_searcher.random(
             seed_update_seconds=seed_update_seconds, limit=limit, verbose=verbose
         )
-        return suggestions
+        return results
 
     def latest(
         self,
         limit: int = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        suggestions = self.video_searcher.latest(limit=limit, verbose=verbose)
-        return suggestions
+        results = self.video_searcher.latest(limit=limit, verbose=verbose)
+        return results
 
     def doc(
         self,
