@@ -3,7 +3,7 @@ import json
 import re
 import requests
 
-from tclogger import logger, Runtimer
+from tclogger import logger, dict_to_str, Runtimer
 from typing import Literal
 
 
@@ -77,8 +77,11 @@ class LLMClient:
         )
         return response
 
-    def parse_stream_response(self, response: requests.Response):
+    def parse_stream_response(
+        self, response: requests.Response, verbose: bool = True
+    ) -> tuple[str, dict]:
         response_content = ""
+        usage = None
         for line in response.iter_lines():
             line = line.decode("utf-8")
             remove_patterns = [r"^\s*data:\s*", r"^\s*\[DONE\]\s*"]
@@ -109,25 +112,38 @@ class LLMClient:
                 if "content" in delta_data:
                     delta_content = delta_data["content"]
                     response_content += delta_content
-                    logger.mesg(delta_content, end="")
+                    if verbose:
+                        logger.mesg(delta_content, end="")
+                if "usage" in line_data:
+                    usage = line_data["usage"]
+                    if usage and verbose:
+                        logger.file("\n" + dict_to_str(usage))
                 if finish_reason == "stop":
                     logger.success("\n[Finished]", end="")
 
-        return response_content
+        return response_content, usage
 
-    def parse_json_response(self, response: requests.Response):
+    def parse_json_response(
+        self, response: requests.Response, verbose: bool = True
+    ) -> tuple[str, dict]:
         response_content = ""
+        usage = None
         try:
             response_data = response.json()
             if self.api_format == "ollama":
                 response_content = response_data["message"]["content"]
             else:
                 response_content = response_data["choices"][0]["message"]["content"]
-            logger.mesg(response_content)
+            if "usage" in response_data:
+                usage = response_data["usage"]
+                if usage and verbose:
+                    logger.file("\n" + dict_to_str(usage))
+            if verbose:
+                logger.mesg(response_content)
             logger.success("[Finished]", end="")
         except Exception as e:
             logger.warn(f"× Error: {response.text}")
-        return response_content
+        return response_content, usage
 
     def chat(
         self,
@@ -172,7 +188,7 @@ if __name__ == "__main__":
     messages = [
         {
             "role": "system",
-            "content": "你是一个由 Hansimov 开发的基于开源大语言模型搜索助手。你的任务是根据用户的输入，分析他们的意图和需求，生成搜索语句，调用搜索工具，最后提供用户所需的信息。",
+            "content": "你是一个由 Hansimov 开发的基于开源大语言模型搜索助手。你的任务是根据用户的输入，分析他们的意图和需求，生成搜索语句，调用搜索工具，最后提供用户所需的信息。在思考和回答用户的问题过程中，你可以不断调用如下工具接口作为你的辅助，直到完成任务：(1)搜索网络: `search_online()`；(2)获取关键词联想和推荐: `suggest_keywords()`；(3)自然语言到搜索语法：`nl_to_dsl()`。",
         },
         {
             "role": "user",
@@ -180,6 +196,6 @@ if __name__ == "__main__":
         },
     ]
     client = LLMClient(**args_dict)
-    client.chat(messages)
+    response_content, usage = client.chat(messages)
 
     # python -m llms.client
