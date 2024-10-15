@@ -27,7 +27,6 @@ SEARCH_MATCH_FIELDS = [
     # *SEARCH_MATCH_FIELDS_DEFAULT,
     *SEARCH_MATCH_FIELDS_WORDS,
     # *SEARCH_MATCH_FIELDS_PINYIN,
-    "pubdate_str",
 ]
 
 # suggest match fields
@@ -40,16 +39,14 @@ SUGGEST_MATCH_FIELDS = [
     # *SUGGEST_MATCH_FIELDS_DFAULT,
     *SUGGEST_MATCH_FIELDS_WORDS,
     *SUGGEST_MATCH_FIELDS_PINYIN,
-    "pubdate_str",
 ]
 
 # date match fields
-DATE_MATCH_FIELDS_DEFAULT = ["title", "desc", "tags"]
+DATE_MATCH_FIELDS_DEFAULT = ["title"]
 DATE_MATCH_FIELDS_WORDS = [f"{field}.words" for field in DATE_MATCH_FIELDS_DEFAULT]
 DATE_MATCH_FIELDS = [
     # *DATE_MATCH_FIELDS_DEFAULT,
     *DATE_MATCH_FIELDS_WORDS,
-    "pubdate_str",
 ]
 
 # boosted fields
@@ -66,7 +63,6 @@ SEARCH_BOOSTED_FIELDS = {
     "desc": 0.1,
     "desc.words": 0.1,
     "desc.pinyin": 0.01,
-    "pubdate_str": 2.5,
 }
 SUGGEST_BOOSTED_FIELDS = {
     "title": 2.5,
@@ -78,7 +74,6 @@ SUGGEST_BOOSTED_FIELDS = {
     "owner.name": 2,
     "owner.name.words": 2,
     "owner.name.pinyin": 0.4,
-    "pubdate_str": 2.5,
 }
 DATE_BOOSTED_FIELDS = {
     "title": 0.1,
@@ -89,7 +84,6 @@ DATE_BOOSTED_FIELDS = {
     "desc.words": 0.03,
     "tags": 0.08,
     "tags.words": 0.08,
-    "pubdate_str": 2.5,
 }
 
 # combined fields
@@ -123,8 +117,9 @@ SEARCH_DETAIL_LEVELS = {
         **SEARCH_DETAIL_BASE,
         "filters": [
             {"range": {"stat.view": {"gte": 100}}},
+            {"range": {"stat.coin": {"gte": 1}}},
         ],
-        "timeout": 1.5,
+        "timeout": 2,
     },
     2: {
         **SEARCH_DETAIL_BASE,
@@ -132,7 +127,7 @@ SEARCH_DETAIL_LEVELS = {
             {"range": {"stat.view": {"gte": 1000}}},
             {"range": {"stat.coin": {"gte": 10}}},
         ],
-        "timeout": 2,
+        "timeout": 3,
     },
     3: {
         **SEARCH_DETAIL_BASE,
@@ -140,7 +135,7 @@ SEARCH_DETAIL_LEVELS = {
             {"range": {"stat.view": {"gte": 10000}}},
             {"range": {"stat.coin": {"gte": 25}}},
         ],
-        "timeout": 2,
+        "timeout": 4,
     },
 }
 MAX_SEARCH_DETAIL_LEVEL = 3
@@ -151,7 +146,7 @@ SUGGEST_DETAIL_LEVELS = {
     1: {
         **SUGGEST_DETAIL_BASE,
         "filters": [
-            {"range": {"stat.view": {"gte": 100}}},
+            {"range": {"stat.view": {"gte": 200}}},
             {"range": {"stat.coin": {"gte": 5}}},
         ],
         "timeout": 1,
@@ -165,7 +160,7 @@ SUGGEST_DETAIL_LEVELS = {
         "timeout": 1,
     },
     3: {
-        **SEARCH_DETAIL_BASE,
+        **SUGGEST_DETAIL_BASE,
         "filters": [
             {"range": {"stat.view": {"gt": 10000}}},
             {"range": {"stat.coin": {"gt": 25}}},
