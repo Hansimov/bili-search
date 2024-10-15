@@ -12,11 +12,11 @@ class LLMClient:
         self,
         endpoint: str,
         api_key: str,
-        response_format: Literal["openai", "ollama"] = "openai",
+        api_format: Literal["openai", "ollama"] = "openai",
     ):
         self.endpoint = endpoint
         self.api_key = api_key
-        self.response_format = response_format
+        self.api_format = api_format
 
     def create_response(
         self,
@@ -41,7 +41,7 @@ class LLMClient:
             "temperature": temperature,
             "seed": seed,
         }
-        if self.response_format == "ollama":
+        if self.api_format == "ollama":
             payload["options"] = options
         else:
             payload.update(options)
@@ -69,7 +69,7 @@ class LLMClient:
                         logger.warn(f"× Error: {line}")
                         raise e
 
-                if self.response_format == "ollama":
+                if self.api_format == "ollama":
                     # https://github.com/ollama/ollama/blob/main/docs/api.md#response-9
                     delta_data = line_data["message"]
                     finish_reason = "stop" if line_data["done"] else None
@@ -93,7 +93,7 @@ class LLMClient:
         response_content = ""
         try:
             response_data = response.json()
-            if self.response_format == "ollama":
+            if self.api_format == "ollama":
                 response_content = response_data["message"]["content"]
             else:
                 response_content = response_data["choices"][0]["message"]["content"]
@@ -133,11 +133,13 @@ class LLMClient:
 if __name__ == "__main__":
     from configs.envs import LLMS_ENVS
 
-    llm = LLMS_ENVS[0]
-    endpoint = llm["endpoint"]
-    api_key = llm["api_key"]
-    model = llm["model"]
-    response_format = llm["format"]
+    llm = LLMS_ENVS["deepseek"]
+    args_dict = {
+        "endpoint": llm["endpoint"],
+        "api_key": llm["api_key"],
+        "model": llm["model"],
+        "api_format": llm["api_format"],
+    }
     messages = [
         {
             "role": "system",
@@ -148,7 +150,7 @@ if __name__ == "__main__":
             "content": "你是谁？",
         },
     ]
-    client = LLMClient(endpoint, api_key, response_format)
+    client = LLMClient(endpoint, api_key, api_format)
     client.chat(messages, model, stream=True)
 
     # python -m llms.client
