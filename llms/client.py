@@ -13,24 +13,50 @@ class LLMClient:
         endpoint: str,
         api_key: str,
         api_format: Literal["openai", "ollama"] = "openai",
+        model: str = None,
+        stream: bool = None,
     ):
         self.endpoint = endpoint
         self.api_key = api_key
         self.api_format = api_format
+        self.model = model
+        self.stream = stream
+
+    def get_stream_bool(self, stream: bool = None, default: bool = True) -> bool:
+        if stream is None and self.stream is None:
+            stream = default
+        elif stream is None:
+            stream = self.stream
+        else:
+            stream = stream
+        return stream
+
+    def get_model_str(self, model: str = None, default: str = "gpt-3.5-turbo") -> str:
+        if model is None and self.model is None:
+            model = default
+        elif model is None:
+            model = self.model
+        else:
+            model = model
+        return model
 
     def create_response(
         self,
         messages: list,
-        model: str,
+        model: str = None,
         temperature: float = 0,
         seed: int = 42,
-        stream: bool = True,
+        stream: bool = None,
     ):
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
             "authorization": f"Bearer {self.api_key}",
         }
+
+        stream = self.get_stream_bool(stream)
+        model = self.get_model_str(model)
+
         payload = {
             "model": model,
             "messages": messages,
@@ -106,13 +132,15 @@ class LLMClient:
     def chat(
         self,
         messages: list,
-        model: str,
+        model: str = None,
         temperature: float = 0,
         seed: int = 42,
-        stream=True,
+        stream: bool = None,
     ):
         timer = Runtimer(verbose=False)
         timer.start_time()
+        stream = self.get_stream_bool(stream)
+        model = self.get_model_str(model)
         response = self.create_response(
             messages=messages,
             model=model,
@@ -139,6 +167,7 @@ if __name__ == "__main__":
         "api_key": llm["api_key"],
         "model": llm["model"],
         "api_format": llm["api_format"],
+        "stream": True,
     }
     messages = [
         {
@@ -150,7 +179,7 @@ if __name__ == "__main__":
             "content": "你是谁？",
         },
     ]
-    client = LLMClient(endpoint, api_key, api_format)
-    client.chat(messages, model, stream=True)
+    client = LLMClient(**args_dict)
+    client.chat(messages)
 
     # python -m llms.client
