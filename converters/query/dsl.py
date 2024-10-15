@@ -6,11 +6,13 @@ from typing import Literal, Union
 
 from converters.times import DateFormatChecker
 from converters.query.pinyin import ChinesePinyinizer
+from converters.field.date import DateFieldConverter
 
 
 class MultiMatchQueryDSLConstructor:
     def __init__(self) -> None:
         self.pinyinizer = ChinesePinyinizer()
+        self.date_field_converter = DateFieldConverter()
 
     def remove_boost_from_fields(self, fields: list[str]) -> list[str]:
         return [field.split("^", 1)[0] for field in fields]
@@ -61,33 +63,23 @@ class MultiMatchQueryDSLConstructor:
         keyword: str,
         date_match_fields: list[str],
         checker: DateFormatChecker,
-        date_fields: list[Literal["pubdate_str"]] = ["pubdate_str"],
+        date_fields: list[Literal["pubdate"]] = ["pubdate"],
         match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
         match_operator: Literal["or", "and"] = "or",
     ):
-        clause = {
-            "bool": {
-                "should": [],
-                "minimum_should_match": 1,
-            }
-        }
+        clause = {"bool": {"should": [], "minimum_should_match": 1}}
 
         if date_fields:
-            keyword_date = checker.rewrite(
-                keyword, sep="-", check_format=False, use_current_year=True
-            )
-            clause["bool"]["should"].append(
-                self.construct_match_clause(
-                    "multi_match",
-                    keyword_date,
-                    date_match_fields,
-                    match_type="bool_prefix",
-                    match_operator=match_operator,
-                )
+            _, start_ts, end_ts = self.date_field_converter.get_date_ts_range(keyword)
+            clause["bool"]["should"].extend(
+                [
+                    {"range": {date_field: {"gte": start_ts, "lte": end_ts}}}
+                    for date_field in date_fields
+                ]
             )
 
         non_date_fields = self.remove_fields_from_fields(date_fields, date_match_fields)
-        if non_date_fields and checker.matched_format == "%Y":
+        if non_date_fields:
             clause["bool"]["should"].append(
                 self.construct_match_clause(
                     "multi_match",
@@ -199,7 +191,7 @@ class MultiMatchQueryDSLConstructor:
         query: str,
         match_fields: list[str],
         date_match_fields: list[str],
-        date_fields: list[Literal["pubdate_str"]] = ["pubdate_str"],
+        date_fields: list[Literal["pubdate"]] = ["pubdate"],
         match_bool: Literal["must", "should"] = "must",
         match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
         match_operator: Literal["or", "and"] = "or",
@@ -495,8 +487,8 @@ if __name__ == "__main__":
     match_fields_default = ["title", "owner.name", "desc", "tags"]
     match_fields_words = [f"{field}.words" for field in match_fields_default]
     match_fields_pinyin = [f"{field}.pinyin" for field in match_fields_default]
-    match_fields = match_fields_words + match_fields_pinyin + ["pubdate_str"]
-    date_match_fields = match_fields_words + ["pubdate_str"]
+    match_fields = match_fields_words + match_fields_pinyin
+    date_match_fields = match_fields_words
 
     for idx, mfield in enumerate(match_fields):
         if SEARCH_BOOSTED_FIELDS.get(mfield):
