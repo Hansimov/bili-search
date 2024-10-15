@@ -11,7 +11,7 @@ from elastics.client import ElasticSearchClient
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
-from elastics.videos.constants import DATE_BOOSTED_FIELDS
+from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
@@ -105,15 +105,18 @@ class VideoSearcher:
                 field for field in match_fields if not field.endswith(".pinyin")
             ]
 
+        date_fields = [
+            field
+            for field in match_fields
+            if not field.endswith(".pinyin")
+            and any(field.startswith(date_field) for date_field in DATE_MATCH_FIELDS)
+        ]
         if boost:
             boosted_fields = self.boost_fields(match_fields, boosted_fields)
-            date_fields = [
-                field for field in match_fields if not field.endswith(".pinyin")
-            ]
             date_boosted_fields = self.boost_fields(date_fields, DATE_BOOSTED_FIELDS)
         else:
             boosted_fields = match_fields
-            date_boosted_fields = match_fields
+            date_boosted_fields = date_fields
 
         filter_extractor = QueryFilterExtractor()
         query_keywords, filters = filter_extractor.construct(query)
