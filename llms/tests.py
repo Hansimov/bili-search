@@ -30,9 +30,9 @@ def test_intension_to_query():
     system_prompt = "\n\n".join(
         [
             COPILOT_INTRO_PROMPT,
-            NOW_STR_PROMPT,
             DSL_SYNTAX_PROMPT,
             TOOL_INTENSION_TO_QUERY_PROMPT,
+            NOW_STR_PROMPT,
         ]
     )
     user_prompt = "影视飓风最近都有哪些高互动的视频？"
