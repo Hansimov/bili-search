@@ -5,6 +5,7 @@ from tclogger import logger
 
 from converters.field.date import DateFieldConverter
 from converters.field.stat import StatFieldConverter
+from converters.field.user import UserFieldConverter, UidFieldConverter
 
 
 class QueryFilterExtractor:
@@ -16,19 +17,27 @@ class QueryFilterExtractor:
     RE_OP = r"(<=?|>=?|=|《=?|》=?)"
     RE_RANGE_SEP = r"[,，]"
 
-    RE_KEYWORD = r"[^:\n\s\.]+"
-    RE_FILTER_SEP = r"[:;：；]+"
+    RE_KEYWORD = r"[^:：\n\s\.]+"
+    RE_FILTER_SEP = r"[:：]+"
 
     REP_DATE_FIELD = DateFieldConverter.REP_DATE_FIELD
     REP_STAT_FIELD = StatFieldConverter.REP_STAT_FIELD
+    REP_USER_FIELD = UserFieldConverter.REP_USER_FIELD
+    REP_UID_FIELD = UidFieldConverter.REP_UID_FIELD
+
     RE_DATE_VAL = DateFieldConverter.RE_DATE_VAL
     RE_STAT_VAL = StatFieldConverter.RE_STAT_VAL
+    RE_USER_VAL = UserFieldConverter.RE_USER_VAL
+    RE_UID_VAL = UidFieldConverter.RE_UID_VAL
 
     REP_DATE_FILTER = rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<date_rval>{RE_DATE_VAL}*)\s*(?P<date_rb>{RE_RB})))"
     REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_STAT_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_STAT_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<stat_rval>{RE_STAT_VAL}*)\s*(?P<stat_rb>{RE_RB})))"
+    REP_UID_FILTER = rf"(?P<uid_filter>{RE_FILTER_SEP}\s*{REP_UID_FIELD}\s*(?P<uid_op>{RE_OP})\s*((?P<uid_val>{RE_UID_VAL})|(?P<uid_lb>{RE_LB})\s*(?P<uid_lval>{RE_STAT_VAL}*)\s*(?P<uid_rvals>({RE_RANGE_SEP}\s*{RE_STAT_VAL})*)\s*(?P<uid_rb>{RE_RB})))"
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
 
-    QUERY_PATTERN = rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_KEYWORD})"
+    QUERY_PATTERN = (
+        rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_UID_FILTER}|{REP_KEYWORD})"
+    )
 
     def split_keyword_and_filter_expr(self, query: str) -> dict:
         """use regex to split keywords and filter exprs, which allows spaces in filter exprs
@@ -63,26 +72,33 @@ class QueryFilterExtractor:
         keywords = []
         stat_filter_exprs = []
         date_filter_exprs = []
+        uid_filter_exprs = []
         for match in matches:
             keyword = match.group("keyword")
             stat_filter_expr = match.group("stat_filter")
             date_filter_expr = match.group("date_filter")
+            uid_filter_expr = match.group("uid_filter")
             if keyword:
                 keywords.append(keyword.strip())
             if stat_filter_expr:
                 stat_filter_exprs.append(stat_filter_expr.strip())
             if date_filter_expr:
                 date_filter_exprs.append(date_filter_expr.strip())
+            if uid_filter_expr:
+                uid_filter_exprs.append(uid_filter_expr.strip())
         res = {
             "keywords": keywords,
             "stat_filter_exprs": stat_filter_exprs,
             "date_filter_exprs": date_filter_exprs,
+            "uid_filter_exprs": uid_filter_exprs,
         }
         return res
 
     def map_key_to_field(self, key: str) -> str:
         if re.match(self.REP_DATE_FIELD, key):
             return "date"
+        if re.match(self.REP_UID_FIELD, key):
+            return "uid"
         match = re.match(self.REP_STAT_FIELD, key)
         if match:
             for k, v in match.groupdict().items():
@@ -177,6 +193,9 @@ class QueryFilterExtractor:
         elif re.match(self.REP_DATE_FILTER, keyword):
             field_type = "date"
             match = re.match(self.REP_DATE_FILTER, keyword)
+        elif re.match(self.REP_UID_FILTER, keyword):
+            field_type = "uid"
+            match = re.match(self.REP_UID_FILTER, keyword)
         else:
             logger.warn(f"× No matched stat_field: {keyword}")
             return None, None
@@ -191,16 +210,22 @@ class QueryFilterExtractor:
         elif match.group(f"{field_type}_lb"):
             res[f"lb"] = match.group(f"{field_type}_lb")
             res[f"lval"] = match.group(f"{field_type}_lval")
-            res[f"rval"] = match.group(f"{field_type}_rval")
+            if field_type in ["uid"]:
+                res[f"rvals"] = match.group(f"{field_type}_rvals")
+                res["val_type"] = "list"
+            else:
+                res[f"rval"] = match.group(f"{field_type}_rval")
+                res[f"val_type"] = "range"
             res[f"rb"] = match.group(f"{field_type}_rb")
-            res[f"val_type"] = "range"
         else:
             logger.warn(f"× No matched stat_val: {keyword}")
         logger.mesg(pformat(res, sort_dicts=False, compact=False), indent=4)
 
         return res
 
-    def merge_filter(self, filter_item: dict[str, dict], filters: dict[str, dict]):
+    def merge_range_filter(
+        self, filter_item: dict[str, dict], filters: dict[str, dict]
+    ):
         """
         Examples:
             - {"gte": 1000} + {"gt": 1000} -> {"gt": 1000}
@@ -235,6 +260,25 @@ class QueryFilterExtractor:
                 else:
                     filters[key].pop("lte")
 
+    def merge_term_filter(self, filter_item: dict[str, dict], filters: dict[str, dict]):
+        for key, val in filter_item.items():
+            if key in filters.keys():
+                if isinstance(filters[key], list):
+                    if isinstance(val, list):
+                        filters[key] += val
+                    else:
+                        filters[key].append(val)
+                else:
+                    if isinstance(val, list):
+                        filters[key] = [filters[key]] + val
+                    else:
+                        filters[key] = [filters[key], val]
+            else:
+                if isinstance(val, list) and len(val) == 1:
+                    filters[key] = val[0]
+                else:
+                    filters.update(filter_item)
+
     def filter_expr_to_dict(
         self, filter_expr: str, use_date_str: bool = False, verbose: bool = False
     ) -> dict[str, dict]:
@@ -249,6 +293,9 @@ class QueryFilterExtractor:
             res = converter.filter_dict_to_es_dict(
                 filter_dict, use_date_str=use_date_str
             )
+        elif filter_dict["field_type"] == "uid":
+            converter = UidFieldConverter()
+            res = converter.filter_dict_to_es_dict(filter_dict)
         else:
             logger.warn(f"× No matching field type: {filter_dict['field_type']}")
 
@@ -260,26 +307,43 @@ class QueryFilterExtractor:
 
     def extract(
         self, query: str, use_date_str: bool = False
-    ) -> tuple[list[str], list[dict]]:
-        filters = {}
+    ) -> tuple[list[str], dict, dict]:
+        range_filters = {}
         split_res = self.split_keyword_and_filter_expr(query)
         keywords = split_res["keywords"]
-        filter_exprs = split_res["stat_filter_exprs"] + split_res["date_filter_exprs"]
-        for filter_expr in filter_exprs:
+        range_filter_exprs = (
+            split_res["stat_filter_exprs"] + split_res["date_filter_exprs"]
+        )
+        for filter_expr in range_filter_exprs:
             filter_item = self.filter_expr_to_dict(
                 filter_expr, use_date_str=use_date_str
             )
-            self.merge_filter(filter_item=filter_item, filters=filters)
-        return keywords, filters
+            self.merge_range_filter(filter_item=filter_item, filters=range_filters)
+
+        term_filters = {}
+        term_filter_exprs = split_res["uid_filter_exprs"]
+        for filter_expr in term_filter_exprs:
+            filter_item = self.filter_expr_to_dict(filter_expr)
+            self.merge_term_filter(filter_item=filter_item, filters=term_filters)
+
+        return keywords, range_filters, term_filters
 
     def construct(
         self, query: str, use_date_str: bool = False
     ) -> tuple[list, list[str]]:
-        keywords, range_filters = self.extract(query, use_date_str=use_date_str)
+        keywords, range_filters, term_filters = self.extract(
+            query, use_date_str=use_date_str
+        )
+        filters = []
         if range_filters:
-            filters = [{"range": {k: v}} for k, v in range_filters.items()]
-        else:
-            filters = []
+            for k, v in range_filters.items():
+                filters.append({"range": {k: v}})
+        if term_filters:
+            for k, v in term_filters.items():
+                if isinstance(v, list):
+                    filters.append({"terms": {k: v}})
+                else:
+                    filters.append({"term": {k: v}})
         return keywords, filters
 
 
@@ -298,9 +362,13 @@ if __name__ == "__main__":
         # "黑神话 :view>1000 :date=2024-08-20",
         # "黑神话 :view>1000 :date=[08-10,08-20)",
         # "黑神话 :view>1000 :date=[08.10, 08/20)",
-        "黑神话 ::date=[7d,]",
-        "黑神话 :date>7d",
-        "黑神话 :date<=7d :vw>100w :coin>2k :star>1k",
+        # "黑神话 ::date=[7d,]",
+        # "黑神话 :date>7d",
+        # "黑神话 :date<=7d :vw>100w :coin>2k :star>1k",
+        "黑神话 :date<=7d :vw>100w :uid=642389251",
+        "黑神话 :date<=7d :vw>100w :uid=[946974]",
+        "黑神话 :date<=7d :vw>100w :mid=[642389251,946974]",
+        "黑神话 :date<=7d :vw>100w :uid=[]",
         # "黑神话 :view>1000 :date=[7d,1d]",
         # "黑神话 :view>1000 :date <= 3 天",
         # "黑神话 :view>1000 :date <= past_hour 1小时",
@@ -310,12 +378,13 @@ if __name__ == "__main__":
         logger.line(f"{query}")
         res = extractor.split_keyword_and_filter_expr(query)
         logger.note("  * Parsed:")
-        # logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
+        logger.success(pformat(res, sort_dicts=False, compact=False), indent=4)
         # keywords = res["keywords"]
         # filter_exprs = res["stat_filter_exprs"] + res["date_filter_exprs"]
         logger.note("  * Extracted:")
-        keywords, filter_dicts = extractor.extract(query)
-        # logger.success(filter_dicts, indent=4)
+        keywords, range_filter_dicts, term_filter_dicts = extractor.extract(query)
+        logger.success(range_filter_dicts, indent=4)
+        logger.success(term_filter_dicts, indent=4)
         logger.note("  * Constructed:")
         keywords, filter_dicts = extractor.construct(query)
         logger.mesg(keywords, indent=4)
