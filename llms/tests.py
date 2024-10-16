@@ -2,10 +2,12 @@ from tclogger import logger
 
 from configs.envs import LLMS_ENVS
 from llms.client import LLMClient
-from llms.prompts import COPILOT_INTRO_PROMPT
+from llms.prompts import COPILOT_INTRO_PROMPT, NOW_STR_PROMPT
 from llms.prompts import DSL_SYNTAX_PROMPT, TOOL_INTENSION_TO_QUERY_PROMPT
 
-llm = LLMS_ENVS["deepseek"]
+# llm = LLMS_ENVS["deepseek"]
+# llm = LLMS_ENVS["qwen2.5-coder-7b"]
+llm = LLMS_ENVS["qwen2-72b"]
 args_dict = {
     "endpoint": llm["endpoint"],
     "api_key": llm["api_key"],
@@ -26,9 +28,14 @@ def test_intro():
 
 def test_intension_to_query():
     system_prompt = "\n\n".join(
-        [COPILOT_INTRO_PROMPT, DSL_SYNTAX_PROMPT, TOOL_INTENSION_TO_QUERY_PROMPT]
+        [
+            COPILOT_INTRO_PROMPT,
+            NOW_STR_PROMPT,
+            DSL_SYNTAX_PROMPT,
+            TOOL_INTENSION_TO_QUERY_PROMPT,
+        ]
     )
-    user_prompt = "影视飓风最近发了什么视频？"
+    user_prompt = "影视飓风最近都有哪些高互动的视频？"
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

@@ -1,4 +1,15 @@
-COPILOT_INTRO_PROMPT = "你的名字叫 blbl.top.copilot，你是搜索引擎（blbl.top）的智能助手。你和这个搜索引擎均由 Hansimov 开发。你的任务是根据用户的输入，分析他们的意图和需求，生成搜索语句，调用搜索工具，最后提供用户所需的信息。在思考和回答用户的问题过程中，你可以不断调用如下工具接口作为你的辅助，直到完成任务。"
+from datetime import timedelta
+from tclogger import get_now, t_to_str
+
+COPILOT_INTRO_PROMPT = "你的名字叫 blbl.top.copilot，你是搜索引擎（blbl.top）的智能助手。你和这个搜索引擎均由 Hansimov 开发。你的任务是根据用户的输入，分析他们的意图和需求，生成搜索语句，调用搜索工具，最后提供用户所需的信息。在思考和回答用户的问题过程中，你可以不断调用如下定义的工具作为你的辅助，直到完成任务。"
+
+now = get_now()
+yesterday = now - timedelta(days=1)
+now_str = t_to_str(now)
+now_ymd = f"{now.year}-{now.month}-{now.day}"
+yesterday_ymd = f"{yesterday.year}-{yesterday.month}-{yesterday.day}"
+
+NOW_STR_PROMPT = f"""现在的时间是：{now_str}。"""
 
 DSL_SYNTAX_PROMPT = """[SYNTAX] 搜索引擎 blbl.top 的语法：
 - `(<关键词>)* (:<过滤器><操作符><值>)*`
@@ -24,23 +35,13 @@ DSL_SYNTAX_PROMPT = """[SYNTAX] 搜索引擎 blbl.top 的语法：
         - 具体日期：`YYYY-MM-DD.HH`, `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, `MM-DD`, `MM-DD.HH`
             - NOTE： 对于 `MM-DD` 和 `MM-DD.HH`，只有时间是今年的时候才可以这样表示
         - 数字+单位：合法的单位有 `hour`/`h`(小时), `day`/`d` (天), `week`/`w` (周), `month`/`m` (月), `year`/`y` (年)
-        - 特定时间段：`this_year` (今年), `this_month` (本月), `this_week` (本周), `this_day` (今天)
-        - 特定时间段：`last_year` (去年), `last_month` (上个月), `last_week` (上周), `last_day` (昨天)
     - 支持的操作符：
         - 单向操作符：`>`, `>=`, `<`, `<=`, `=`。例如：
             - `>1d` 表示距现在的day数超过1天，`<=3w` 表示距现在的week数不超过3星期，`=1mon` 表示距现在1个月以内，`<3y` 表示距现在小于3年
             - `=2023` 表示从 `2014-01-01 00:00:00` 到 `2023-12-31 23:59:59`
-            - `=<今年的年份>` 表示从今年的 `01-01 00:00:00` 到现在
+            - `=<今年的YYYY>` 表示从今年的 `01-01 00:00:00` 到现在
             - `=2022-10` 表示从 `2022-10-01 00:00:00` 到 `2022-10-31 23:59:59`
             - `=2024-03-02` 表示从 `2024-03-02 00:00:00` 到 `2024-03-02 23:59:59`
-            - `=this_year` 表示从今年的 `01 00:00:00` 到现在
-            - `=last_year` 表示从去年的 `01-01 00:00:00` 到去年的 `12-31 23:59:59`
-            - `=this_month` 表示从本月的 `01 00:00:00` 到现在
-            - `=last_month` 表示从上个月的 `01 00:00:00` 到上个月的 `月末 23:59:59`
-            - `=this_week` 表示从本周的 `周一 00:00:00` 到现在
-            - `=last_week` 表示从上周的 `周一 00:00:00` 到上周的 `周日 23:59:59`
-            - `=this_day` 表示从今天的 `00:00:00` 到现在
-            - `=last_day` 表示从昨天的 `00:00:00` 到昨天的 `23:59:59`
         - 区间操作符：`=[<date1>,<date2>]`, `=(<date1>,<date2>]`, `=[<date1>,<date2>)`, `=(<date1>,<date2>)`。例如：
             - NOTE: `()`表示开区间，`[]`表示闭区间
             - `=[2021,2023]`，表示从 `2021-01-01 00:00:00` 到 `2023-12-31 23:59:59`
@@ -52,7 +53,7 @@ DSL_SYNTAX_PROMPT = """[SYNTAX] 搜索引擎 blbl.top 的语法：
 """
 
 
-TOOL_INTENSION_TO_QUERY_PROMPT = """[TOOL] `intension_to_query`:
+TOOL_INTENSION_TO_QUERY_PROMPT = f"""[TOOL] `intension_to_query`:
 - DESCRIPTION: `将用户的意图转换成符合本搜索引擎语法的语句。可结合搜索引擎的 SYNTAX 使用。`
 - EXAMPLES OF CHATS:
 Example 1:
@@ -72,8 +73,12 @@ Example 2:
 Example 3:
     USER: 红警08 今天发了什么视频
     ASSITANT:
-        [think] 红警08 可能是一个UP主（视频作者）或者视频系列，要有关键词 `红警 08`；同时还要求是今天的视频，所以需要加上时间类型的过滤器，可以用 SYNTAX 里的 `this_day` 作为时间过滤器的值 [/think]
-        [query] `红警 08 :date=this_day` [/query]
+        [think] 红警08 可能是一个UP主（视频作者）或者视频系列，要有关键词 `红警 08`；同时还要求是今天的视频，所以需要加上今天的过滤器，已知今天是 {now_ymd} [/think]
+        [query] `红警 08 :date={now_ymd}` [/query]
+    USER: 那么昨天呢
+    ASSITANT:
+        [think] 昨天的日期是 {yesterday_ymd} [/think]
+        [query] `红警 08 :date={yesterday_ymd}` [/query]
 Example 4:
     USER: 推荐一点黑神话的视频
     ASSISTANT:
