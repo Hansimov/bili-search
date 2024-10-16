@@ -3,7 +3,7 @@ import json
 import re
 import requests
 
-from tclogger import logger, dict_to_str, Runtimer
+from tclogger import logger, dict_to_str, dt_to_str, Runtimer
 from typing import Literal
 
 
@@ -114,11 +114,11 @@ class LLMClient:
                     response_content += delta_content
                     if verbose:
                         logger.mesg(delta_content, end="")
-                if "usage" in line_data:
-                    usage = line_data["usage"]
-                    if usage and verbose:
-                        logger.file("\n" + dict_to_str(usage))
                 if finish_reason == "stop":
+                    if "usage" in line_data:
+                        usage = line_data["usage"]
+                        if usage and verbose:
+                            logger.file("\n" + dict_to_str(usage))
                     logger.success("\n[Finished]", end="")
 
         return response_content, usage
@@ -169,6 +169,6 @@ class LLMClient:
         else:
             response_content = self.parse_json_response(response)
         timer.end_time()
-        elapsed_seconds = round(timer.elapsed_time().microseconds / 1e6, 1)
-        logger.note(f" ({elapsed_seconds}s)")
+        elapsed_time = dt_to_str(timer.elapsed_time(), precision=1, str_format="unit")
+        logger.note(f" ({elapsed_time})")
         return response_content
