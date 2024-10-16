@@ -93,7 +93,7 @@ class DateFieldConverter:
     # N + YEAR/MONTH/WEEK/DAY/HOUR
     RE_DU_SEP = r"[\s]*"
     RE_YEAR_UNIT = r"(年|years?|yr|y)"
-    RE_MONTH_UNIT = r"(个?月|months?|mon)"
+    RE_MONTH_UNIT = r"(个?月|months?|mon|m)"
     RE_WEEK_UNIT = r"(周|weeks?|wk|w)"
     RE_DAY_UNIT = r"(日|天|days?|d)"
     RE_HOUR_UNIT = r"(个?小时|hours?|hr|h)"
@@ -510,6 +510,8 @@ class DateFieldConverter:
                 filter_dict["rb"],
                 use_date_str=use_date_str,
             )
+        elif filter_dict["val_type"] == "list":
+            logger.warn(f"× Not implemented val type: {filter_dict['val_type']}")
         else:
             logger.warn(f"× No matching val type: {filter_dict['val_type']}")
         return res
