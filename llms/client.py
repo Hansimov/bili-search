@@ -172,30 +172,3 @@ class LLMClient:
         elapsed_seconds = round(timer.elapsed_time().microseconds / 1e6, 1)
         logger.note(f" ({elapsed_seconds}s)")
         return response_content
-
-
-if __name__ == "__main__":
-    from configs.envs import LLMS_ENVS
-
-    llm = LLMS_ENVS["deepseek"]
-    args_dict = {
-        "endpoint": llm["endpoint"],
-        "api_key": llm["api_key"],
-        "model": llm["model"],
-        "api_format": llm["api_format"],
-        "stream": True,
-    }
-    messages = [
-        {
-            "role": "system",
-            "content": "你是一个由 Hansimov 开发的基于开源大语言模型搜索助手。你的任务是根据用户的输入，分析他们的意图和需求，生成搜索语句，调用搜索工具，最后提供用户所需的信息。在思考和回答用户的问题过程中，你可以不断调用如下工具接口作为你的辅助，直到完成任务：(1)搜索网络: `search_online()`；(2)获取关键词联想和推荐: `suggest_keywords()`；(3)自然语言到搜索语法：`nl_to_dsl()`。",
-        },
-        {
-            "role": "user",
-            "content": "你是谁？",
-        },
-    ]
-    client = LLMClient(**args_dict)
-    response_content, usage = client.chat(messages)
-
-    # python -m llms.client
