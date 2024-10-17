@@ -6,6 +6,7 @@ from tclogger import logger
 from converters.field.date import DateFieldConverter
 from converters.field.stat import StatFieldConverter
 from converters.field.user import UserFieldConverter, UidFieldConverter
+from converters.field.operators import RE_COMMA
 
 
 class QueryFilterExtractor:
@@ -15,20 +16,20 @@ class QueryFilterExtractor:
     RE_LB = r"(\[|\(|【|（)"
     RE_RB = r"(\]|\)|】|）)"
     RE_OP = r"(<=?|>=?|=|《=?|》=?)"
-    RE_RANGE_SEP = r"[,，]"
+    RE_RANGE_SEP = RE_COMMA
 
     RE_KEYWORD = r"[^:：\n\s\.]+"
     RE_FILTER_SEP = r"[:：]+"
 
     REP_DATE_FIELD = DateFieldConverter.REP_DATE_FIELD
     REP_STAT_FIELD = StatFieldConverter.REP_STAT_FIELD
-    REP_USER_FIELD = UserFieldConverter.REP_USER_FIELD
     REP_UID_FIELD = UidFieldConverter.REP_UID_FIELD
+    REP_USER_FIELD = UserFieldConverter.REP_USER_FIELD
 
     RE_DATE_VAL = DateFieldConverter.RE_DATE_VAL
     RE_STAT_VAL = StatFieldConverter.RE_STAT_VAL
-    RE_USER_VAL = UserFieldConverter.RE_USER_VAL
     RE_UID_VAL = UidFieldConverter.RE_UID_VAL
+    RE_USER_VAL = UserFieldConverter.RE_USER_VAL
 
     REP_DATE_FILTER = (
         rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*"
@@ -43,13 +44,16 @@ class QueryFilterExtractor:
     REP_UID_FILTER = (
         rf"(?P<uid_filter>{RE_FILTER_SEP}\s*{REP_UID_FIELD}\s*"
         rf"(?P<uid_op>{RE_OP})\s*"
-        rf"((?:{RE_LB}?)\s*(?P<uid_vals>{RE_UID_VAL}(?:{RE_RANGE_SEP}\s*{RE_UID_VAL})*)\s*(?:{RE_RB}?)))"
+        rf"((?:{RE_LB}?)\s*(?P<uid_vals>{RE_UID_VAL}(?:\s*{RE_COMMA}\s*{RE_UID_VAL})*)\s*(?:{RE_RB}?)))"
+    )
+    REP_USER_FILTER = (
+        rf"(?P<user_filter>{RE_FILTER_SEP}\s*{REP_USER_FIELD}\s*"
+        rf"(?P<user_op>{RE_OP})\s*"
+        rf"((?:{RE_LB}?)\s*(?P<user_vals>{RE_USER_VAL}(?:\s*{RE_COMMA}\s*{RE_USER_VAL})*)\s*(?:{RE_RB}?)))"
     )
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
 
-    QUERY_PATTERN = (
-        rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_UID_FILTER}|{REP_KEYWORD})"
-    )
+    QUERY_PATTERN = rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_UID_FILTER}|{REP_USER_FILTER}|{REP_KEYWORD})"
 
     def split_keyword_and_filter_expr(self, query: str) -> dict:
         """use regex to split keywords and filter exprs, which allows spaces in filter exprs
@@ -85,11 +89,13 @@ class QueryFilterExtractor:
         stat_filter_exprs = []
         date_filter_exprs = []
         uid_filter_exprs = []
+        user_filter_exprs = []
         for match in matches:
             keyword = match.group("keyword")
             stat_filter_expr = match.group("stat_filter")
             date_filter_expr = match.group("date_filter")
             uid_filter_expr = match.group("uid_filter")
+            user_filter_expr = match.group("user_filter")
             if keyword:
                 keywords.append(keyword.strip())
             if stat_filter_expr:
@@ -98,11 +104,14 @@ class QueryFilterExtractor:
                 date_filter_exprs.append(date_filter_expr.strip())
             if uid_filter_expr:
                 uid_filter_exprs.append(uid_filter_expr.strip())
+            if user_filter_expr:
+                user_filter_exprs.append(user_filter_expr.strip())
         res = {
             "keywords": keywords,
             "stat_filter_exprs": stat_filter_exprs,
             "date_filter_exprs": date_filter_exprs,
             "uid_filter_exprs": uid_filter_exprs,
+            "user_filter_exprs": user_filter_exprs,
         }
         return res
 
@@ -111,6 +120,8 @@ class QueryFilterExtractor:
             return "date"
         if re.match(self.REP_UID_FIELD, key):
             return "uid"
+        if re.match(self.REP_USER_FIELD, key):
+            return "user"
         match = re.match(self.REP_STAT_FIELD, key)
         if match:
             for k, v in match.groupdict().items():
@@ -208,6 +219,9 @@ class QueryFilterExtractor:
         elif re.match(self.REP_UID_FILTER, keyword):
             field_type = "uid"
             match = re.match(self.REP_UID_FILTER, keyword)
+        elif re.match(self.REP_USER_FILTER, keyword):
+            field_type = "user"
+            match = re.match(self.REP_USER_FILTER, keyword)
         else:
             logger.warn(f"× No matched stat_field: {keyword}")
             return None, None
@@ -216,7 +230,7 @@ class QueryFilterExtractor:
         res[f"field_type"] = field_type
         res[f"op"] = match.group(f"{field_type}_op")
 
-        if field_type in ["uid"]:
+        if field_type in ["uid", "user"]:
             res[f"vals"] = match.group(f"{field_type}_vals")
             res["val_type"] = "list"
         else:
@@ -308,6 +322,9 @@ class QueryFilterExtractor:
         elif filter_dict["field_type"] == "uid":
             converter = UidFieldConverter()
             res = converter.filter_dict_to_es_dict(filter_dict)
+        elif filter_dict["field_type"] == "user":
+            converter = UserFieldConverter()
+            res = converter.filter_dict_to_es_dict(filter_dict)
         else:
             logger.warn(f"× No matching field type: {filter_dict['field_type']}")
 
@@ -333,7 +350,9 @@ class QueryFilterExtractor:
             self.merge_range_filter(filter_item=filter_item, filters=range_filters)
 
         term_filters = {}
-        term_filter_exprs = split_res["uid_filter_exprs"]
+        term_filter_exprs = (
+            split_res["uid_filter_exprs"] + split_res["user_filter_exprs"]
+        )
         for filter_expr in term_filter_exprs:
             filter_item = self.filter_expr_to_dict(filter_expr)
             self.merge_term_filter(filter_item=filter_item, filters=term_filters)
@@ -377,11 +396,14 @@ if __name__ == "__main__":
         # "黑神话 ::date=[7d,]",
         # "黑神话 :date>7d",
         # "黑神话 :date<=7d :vw>100w :coin>2k :star>1k",
-        "黑神话 :date<=7d :vw>100w :uid=642389251",
-        "黑神话 :date<=7d :vw>100w :uid=[946974]",
-        "黑神话 :date<=7d :vw>100w :mid=[642389251,946974]",
-        "黑神话 :date<=7d :vw>100w :mid=642389251,946974",
-        "黑神话 :date<=7d :vw>100w :uid=[]",
+        # "黑神话 :date<=7d :vw>100w :uid=642389251",
+        # "黑神话 :date<=7d :vw>100w :uid=[946974]",
+        # "黑神话 :date<=7d :vw>100w :mid=[642389251,946974]",
+        "黑神话 :date<=7d :vw>100w :mid=642389251，946974",
+        # "黑神话 :date<=7d :vw>100w :uid=[]",
+        # ":date<=7d :user=影视飓风",
+        ":date<=7d :user = 影视飓风, 亿点点不一样",
+        ":date<=7d :up=[影视飓风，飓多多StormCrew， 亿点点不一样]",
         # "黑神话 :view>1000 :date=[7d,1d]",
         # "黑神话 :view>1000 :date <= 3 天",
         # "黑神话 :view>1000 :date <= past_hour 1小时",
