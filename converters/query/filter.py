@@ -30,9 +30,21 @@ class QueryFilterExtractor:
     RE_USER_VAL = UserFieldConverter.RE_USER_VAL
     RE_UID_VAL = UidFieldConverter.RE_UID_VAL
 
-    REP_DATE_FILTER = rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<date_rval>{RE_DATE_VAL}*)\s*(?P<date_rb>{RE_RB})))"
-    REP_STAT_FILTER = rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_STAT_VAL})|(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_STAT_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<stat_rval>{RE_STAT_VAL}*)\s*(?P<stat_rb>{RE_RB})))"
-    REP_UID_FILTER = rf"(?P<uid_filter>{RE_FILTER_SEP}\s*{REP_UID_FIELD}\s*(?P<uid_op>{RE_OP})\s*((?P<uid_val>{RE_UID_VAL})|(?P<uid_lb>{RE_LB})\s*(?P<uid_lval>{RE_STAT_VAL}*)\s*(?P<uid_rvals>({RE_RANGE_SEP}\s*{RE_STAT_VAL})*)\s*(?P<uid_rb>{RE_RB})))"
+    REP_DATE_FILTER = (
+        rf"(?P<date_filter>{RE_FILTER_SEP}\s*{REP_DATE_FIELD}\s*"
+        rf"(?P<date_op>{RE_OP})\s*((?P<date_val>{RE_DATE_VAL})|"
+        rf"(?P<date_lb>{RE_LB})\s*(?P<date_lval>{RE_DATE_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<date_rval>{RE_DATE_VAL}*)\s*(?P<date_rb>{RE_RB})))"
+    )
+    REP_STAT_FILTER = (
+        rf"(?P<stat_filter>{RE_FILTER_SEP}\s*{REP_STAT_FIELD}\s*"
+        rf"(?P<stat_op>{RE_OP})\s*((?P<stat_val>{RE_STAT_VAL})|"
+        rf"(?P<stat_lb>{RE_LB})\s*(?P<stat_lval>{RE_STAT_VAL}*)\s*{RE_RANGE_SEP}\s*(?P<stat_rval>{RE_STAT_VAL}*)\s*(?P<stat_rb>{RE_RB})))"
+    )
+    REP_UID_FILTER = (
+        rf"(?P<uid_filter>{RE_FILTER_SEP}\s*{REP_UID_FIELD}\s*"
+        rf"(?P<uid_op>{RE_OP})\s*"
+        rf"((?:{RE_LB}?)\s*(?P<uid_vals>{RE_UID_VAL}(?:{RE_RANGE_SEP}\s*{RE_UID_VAL})*)\s*(?:{RE_RB}?)))"
+    )
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
 
     QUERY_PATTERN = (
@@ -204,21 +216,21 @@ class QueryFilterExtractor:
         res[f"field_type"] = field_type
         res[f"op"] = match.group(f"{field_type}_op")
 
-        if match.group(f"{field_type}_val"):
-            res[f"val"] = match.group(f"{field_type}_val")
-            res[f"val_type"] = "value"
-        elif match.group(f"{field_type}_lb"):
-            res[f"lb"] = match.group(f"{field_type}_lb")
-            res[f"lval"] = match.group(f"{field_type}_lval")
-            if field_type in ["uid"]:
-                res[f"rvals"] = match.group(f"{field_type}_rvals")
-                res["val_type"] = "list"
-            else:
+        if field_type in ["uid"]:
+            res[f"vals"] = match.group(f"{field_type}_vals")
+            res["val_type"] = "list"
+        else:
+            if match.group(f"{field_type}_val"):
+                res[f"val"] = match.group(f"{field_type}_val")
+                res[f"val_type"] = "value"
+            elif match.group(f"{field_type}_lb"):
+                res[f"lb"] = match.group(f"{field_type}_lb")
+                res[f"lval"] = match.group(f"{field_type}_lval")
                 res[f"rval"] = match.group(f"{field_type}_rval")
                 res[f"val_type"] = "range"
-            res[f"rb"] = match.group(f"{field_type}_rb")
-        else:
-            logger.warn(f"× No matched stat_val: {keyword}")
+                res[f"rb"] = match.group(f"{field_type}_rb")
+            else:
+                logger.warn(f"× No matched stat_val: {keyword}")
         logger.mesg(pformat(res, sort_dicts=False, compact=False), indent=4)
 
         return res
@@ -368,6 +380,7 @@ if __name__ == "__main__":
         "黑神话 :date<=7d :vw>100w :uid=642389251",
         "黑神话 :date<=7d :vw>100w :uid=[946974]",
         "黑神话 :date<=7d :vw>100w :mid=[642389251,946974]",
+        "黑神话 :date<=7d :vw>100w :mid=642389251,946974",
         "黑神话 :date<=7d :vw>100w :uid=[]",
         # "黑神话 :view>1000 :date=[7d,1d]",
         # "黑神话 :view>1000 :date <= 3 天",

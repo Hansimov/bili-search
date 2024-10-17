@@ -21,30 +21,22 @@ class UidFieldConverter:
             -> {"term": {"uid": 642389251}}
         """
         res = {}
-        if val:
-            val_int = int(val)
+        if val.strip():
+            val_int = int(val.strip())
             res = {"owner.mid": val_int}
         return res
 
-    def list_val_to_es_dict(self, lval: str, rvals: str) -> dict:
+    def list_val_to_es_dict(self, vals: str) -> dict:
         """
         - {'field':'uid', 'field_type':'uid', 'op':'=',
-            'lval':'642389251', 'rvals': ',946974,1780480185', 'val_type':'list'}
+            'vals': '642389251,946974,1780480185', 'val_type':'list'}
             -> {"terms": {"uid": [642389251,946974,1780480185]}}
         """
         res = {}
-        if lval:
-            lval_ints = [int(lval)]
-        else:
-            lval_ints = []
-        if rvals:
-            rvals_ints = [int(val.strip()) for val in rvals.split(",") if val.strip()]
-        else:
-            rvals_ints = []
-
-        val_ints = [*lval_ints, *rvals_ints]
-        if val_ints:
-            res = {"owner.mid": val_ints}
+        if vals:
+            vals_ints = [int(val.strip()) for val in vals.split(",") if val.strip()]
+            if vals_ints:
+                res = {"owner.mid": vals_ints}
         return res
 
     def filter_dict_to_es_dict(self, filter_dict: dict) -> dict:
@@ -52,7 +44,7 @@ class UidFieldConverter:
         if filter_dict["val_type"] == "value":
             res = self.op_val_to_es_dict(filter_dict["val"])
         elif filter_dict["val_type"] == "list":
-            res = self.list_val_to_es_dict(filter_dict["lval"], filter_dict["rvals"])
+            res = self.list_val_to_es_dict(filter_dict["vals"])
         else:
             logger.warn(f"× No matching val type: {filter_dict['val_type']}")
         return res
