@@ -5,7 +5,7 @@ from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.filter import QueryFilterExtractor
 
-searcher = VideoSearcher("bili_videos_dev2")
+searcher = VideoSearcher("bili_videos_dev3")
 
 
 def test_random():

@@ -25,7 +25,7 @@ from elastics.videos.hits import VideoHitsParser
 
 
 class VideoSearcher:
-    def __init__(self, index_name: str = "bili_videos_dev2"):
+    def __init__(self, index_name: str = "bili_videos_dev3"):
         self.index_name = index_name
         self.es = ElasticSearchClient()
         self.es.connect()

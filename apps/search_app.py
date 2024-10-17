@@ -224,7 +224,7 @@ if __name__ == "__main__":
 
     # Production mode by default:
     # python -m apps.search_app
-    # python -m apps.search_app -i bili_videos_dev
+    # python -m apps.search_app -i bili_videos_dev3
 
     # Development mode:
     # python -m apps.search_app -m dev

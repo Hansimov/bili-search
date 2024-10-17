@@ -11,8 +11,8 @@
             "dev": 21001
         },
         "bili_videos_index": {
-            "prod": "bili_videos_dev2",
-            "dev": "bili_videos_dev2"
+            "prod": "bili_videos_dev3",
+            "dev": "bili_videos_dev3"
         },
         "version": "0.0.1"
     },
