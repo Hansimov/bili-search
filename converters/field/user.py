@@ -12,7 +12,7 @@ class UserFieldConverter:
     # indeed, bilibili user names only support "-" and "_"
 
     def __init__(self):
-        self.puncter = Puncter()
+        self.puncter = Puncter(non_specials="-_")
         self.field = "owner.name.keyword"
 
     def validate_val(self, val: str) -> str:

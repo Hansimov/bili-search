@@ -2,11 +2,18 @@ import string
 
 
 class Puncter:
-    def __init__(self, encoding: str = "gb2312", is_whitespace_punct: bool = False):
+
+    def __init__(
+        self,
+        encoding: str = "gb2312",
+        is_whitespace_punct: bool = False,
+        non_specials: str = "",
+    ):
         self.encoding = encoding
         self.en_puncts = string.punctuation
         if is_whitespace_punct:
             self.en_puncts += string.whitespace
+        self.non_specials = non_specials
 
     def is_special_char(self, ch: str, non_specials: str = "") -> bool:
         """GB2312 编码表：https://www.toolhelper.cn/Encoding/GB2312"""
@@ -24,23 +31,29 @@ class Puncter:
                 return True
         return False
 
-    def is_contain_special(self, text: str, non_specials: str = ":：") -> bool:
+    def is_contain_special(self, text: str, non_specials: str = "") -> bool:
         for ch in text:
             if self.is_special_char(ch, non_specials=non_specials):
                 return True
 
         return False
 
-    def remove(self, text: str) -> str:
-        text = "".join([ch for ch in text if not self.is_special_char(ch)])
+    def remove(self, text: str, non_specials: str = "") -> str:
+        text = "".join(
+            ch
+            for ch in text
+            if not self.is_special_char(
+                ch, non_specials=non_specials or self.non_specials
+            )
+        )
         return text
 
 
 if __name__ == "__main__":
     from tclogger import logger
 
-    text = "Hello, world!  你好，世界！ @我のなまえは!"
-    puncter = Puncter()
+    text = "Hello, world! 你好，世界！ @-我_のなまえは!"
+    puncter = Puncter(non_specials="-_")
     logger.note(f"> {text}：")
     logger.success(f"{puncter.remove(text)}")
 
