@@ -3,7 +3,7 @@ import json
 import re
 import requests
 
-from tclogger import logger, dict_to_str, dt_to_str, Runtimer
+from tclogger import logger, logstr, dict_to_str, dt_to_str, Runtimer
 from typing import Literal
 
 
@@ -15,12 +15,14 @@ class LLMClient:
         api_format: Literal["openai", "ollama"] = "openai",
         model: str = None,
         stream: bool = None,
+        init_messages: str = None,
     ):
         self.endpoint = endpoint
         self.api_key = api_key
         self.api_format = api_format
         self.model = model
         self.stream = stream
+        self.init_messages = init_messages
 
     def get_stream_bool(self, stream: bool = None, default: bool = True) -> bool:
         if stream is None and self.stream is None:
@@ -59,7 +61,7 @@ class LLMClient:
 
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": self.init_messages + messages,
             "stream": stream,
         }
 
@@ -170,5 +172,6 @@ class LLMClient:
             response_content = self.parse_json_response(response)
         timer.end_time()
         elapsed_time = dt_to_str(timer.elapsed_time(), precision=1, str_format="unit")
-        logger.note(f" ({elapsed_time})")
+        model_name_str = "[" + model.split("/")[-1] + "]"
+        logger.note(f" ({elapsed_time}) {logstr.file(model_name_str)}")
         return response_content
