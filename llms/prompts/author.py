@@ -116,7 +116,3 @@ ASSISTANT: [think] 从数据库检索的结果可以发现，搜索到的前4个
 
 [/TOOL_EXAMPLE]
 """
-
-
-class AuthorCheckerAgent:
-    pass
