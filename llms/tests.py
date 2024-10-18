@@ -2,10 +2,10 @@ from tclogger import logger
 
 from configs.envs import LLMS_ENVS
 from llms.client import LLMClient
-from agents.query import COPILOT_INTRO, NOW_STR_PROMPT
-from agents.query import INSTRUCT_TO_QUERY_TOOL_DESC, QUERY_SYNTAX
-from agents.query import INSTRUCT_TO_QUERY_TOOL_EXAMPLE
-from agents.author import CHECK_AUTHOR_TOOL_DESC
+from llms.prompts.query import COPILOT_INTRO, NOW_STR_PROMPT
+from llms.prompts.query import INSTRUCT_TO_QUERY_TOOL_DESC, QUERY_SYNTAX
+from llms.prompts.query import INSTRUCT_TO_QUERY_TOOL_EXAMPLE
+from llms.prompts.author import CHECK_AUTHOR_TOOL_DESC
 
 # llm = LLMS_ENVS["deepseek"]
 # llm = LLMS_ENVS["qwen2.5-coder-7b"]
@@ -59,4 +59,4 @@ if __name__ == "__main__":
     # test_intro()
     test_intension_to_query()
 
-    # python -m agents.tests
+    # python -m llms.tests

@@ -9,11 +9,6 @@ yesterday_ymd = f"{{yesterday.year}}-{{yesterday.month}}-{{yesterday.day}}"
 
 COPILOT_INTRO = f"[INTRO] 你的名字叫 blbl.copilot，你是搜索引擎（blbl.top）的智能助手。你和这个搜索引擎均由 Hansimov 开发。你的任务是根据用户的问题，分析他们的意图和需求，生成搜索语句或者调用搜索工具，最后提供用户所需的信息。在思考和回答用户的问题过程中，你可以不断调用下面定义的工具作为你的辅助，直到完成任务。[/INTRO]"
 
-INSTRUCT_TO_QUERY_TOOL_DESC = f"""[TOOL_DESC] `instruct_to_query`:
-- DESCRIPTION: `分析用户的提问或指令，识别和提取出用户意图，然后转换成符合本搜索引擎语法的语句。需结合搜索引擎的 SYNTAX 使用。`
-[/TOOL_DESC]
-"""
-
 QUERY_SYNTAX = f"""[SYNTAX] 搜索引擎 query 的语法：
 - `(<关键词>)* (:<过滤器><操作符><值>)*`
 也就是说，关键词之间用空格分隔，过滤器以冒号`:`起始，后接操作符和值。
@@ -68,6 +63,11 @@ QUERY_SYNTAX = f"""[SYNTAX] 搜索引擎 query 的语法：
         - 单个uid。例如：`:uid=642389251`
         - 多个uid，用逗号`,`分开。例如：`:uid=642389251,946974,1780480185`
 [/SYNTAX]
+"""
+
+INSTRUCT_TO_QUERY_TOOL_DESC = f"""[TOOL_DESC] `instruct_to_query`:
+- DESCRIPTION: 分析用户的提问或指令，识别和提取出用户意图，然后转换成符合本搜索引擎语法的语句。需结合搜索引擎的 SYNTAX 使用。
+[/TOOL_DESC]
 """
 
 INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
@@ -135,12 +135,12 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
         }}
         ```
     ASSISTANT:
-        [think] 可知用户想搜索是昵称为`红警HBK08`的作者，因此需要使用昵称过滤器；同时用户强调了“今天”，所以需要加上日期过滤器，已知今天是 {{now_ymd}} [/think]
-        [query] `:name=红警HBK08 :date={{now_ymd}}` [/query]
+        [think] 可知用户想搜索是昵称为`红警HBK08`的作者，因此需要使用昵称过滤器；同时用户强调了“今天”，所以需要加上日期过滤器，已知今天是 {now_ymd} [/think]
+        [query] `:name=红警HBK08 :date={now_ymd}` [/query]
     USER: 那么昨天呢
     ASSISTANT:
-        [think] 昨天的日期是 {{yesterday_ymd}} [/think]
-        [query] `:name=红警HBK08 :date={{yesterday_ymd}}` [/query]
+        [think] 昨天的日期是 {yesterday_ymd} [/think]
+        [query] `:name=红警HBK08 :date={yesterday_ymd}` [/query]
     USER: 我还想加上月亮3的视频
     ASSISTANT:
         [think] 用户还想搜索昵称和“月亮3”相关的作者的视频，所以需要调用 `check_author` 来判断完整的昵称 [/think]
@@ -157,7 +157,7 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
         ```
     ASSISTANT:
         [think] 可知用户还想加上昵称为`红警月亮3`的作者的视频内容，故需要添加进昵称过滤器中 [/think]
-        [query] `:name=红警HBK08,红警月亮3 :date={{yesterday_ymd}}` [/query]
+        [query] `:name=红警HBK08,红警月亮3 :date={yesterday_ymd}` [/query]
 [/TOOL]
 """
 
