@@ -5,8 +5,8 @@ from configs.envs import ELASTIC_ENVS
 
 
 class ElasticSearchClient:
-    def __init__(self):
-        pass
+    def __init__(self, verbose: bool = True):
+        self.verbose = verbose
 
     def connect(self):
         """Connect to self-managed cluster with API Key authentication
@@ -20,8 +20,9 @@ class ElasticSearchClient:
         Connect to self-managed cluster with HTTP Bearer authentication
         * https://www.elastic.co/guide/en/elasticsearch/client/python-api/current/connecting.html#auth-bearer
         """
-        logger.note("> Connecting to Elasticsearch:", end=" ")
-        logger.mesg(f"[{ELASTIC_ENVS['host']}]")
+        if self.verbose:
+            logger.note("> Connecting to Elasticsearch:", end=" ")
+            logger.mesg(f"[{ELASTIC_ENVS['host']}]")
 
         self.client = Elasticsearch(
             hosts=ELASTIC_ENVS["host"],
@@ -29,8 +30,10 @@ class ElasticSearchClient:
             api_key=ELASTIC_ENVS["api_key"],
             # basic_auth=(ELASTIC_ENVS["username"], ELASTIC_ENVS["password"]),
         )
-        logger.success(f"+ Connected:")
-        logger.mesg(self.client.info())
+        
+        if self.verbose:
+            logger.success(f"+ Connected:")
+            logger.mesg(self.client.info())
 
 
 if __name__ == "__main__":

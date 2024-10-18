@@ -25,9 +25,11 @@ from elastics.videos.hits import VideoHitsParser
 
 
 class VideoSearcher:
-    def __init__(self, index_name: str = "bili_videos_dev3"):
+    def __init__(
+        self, index_name: str = "bili_videos_dev3", elastic_verbose: bool = True
+    ):
         self.index_name = index_name
-        self.es = ElasticSearchClient()
+        self.es = ElasticSearchClient(verbose=elastic_verbose)
         self.es.connect()
         self.hit_parser = VideoHitsParser()
 
@@ -192,6 +194,7 @@ class VideoSearcher:
                 verbose=verbose,
             )
         else:
+            logger.mesg(dict_to_str(res_dict))
             return_res = res_dict
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
