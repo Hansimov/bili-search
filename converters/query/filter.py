@@ -25,6 +25,7 @@ class QueryFilterExtractor:
     REP_STAT_FIELD = StatFieldConverter.REP_STAT_FIELD
     REP_UID_FIELD = UidFieldConverter.REP_UID_FIELD
     REP_USER_FIELD = UserFieldConverter.REP_USER_FIELD
+    RE_USER_SYM = "@"
 
     RE_DATE_VAL = DateFieldConverter.RE_DATE_VAL
     RE_STAT_VAL = StatFieldConverter.RE_STAT_VAL
@@ -47,8 +48,9 @@ class QueryFilterExtractor:
         rf"((?:{RE_LB}?)\s*(?P<uid_vals>{RE_UID_VAL}(?:\s*{RE_COMMA}\s*{RE_UID_VAL})*)\s*(?:{RE_RB}?)))"
     )
     REP_USER_FILTER = (
-        rf"(?P<user_filter>{RE_FILTER_SEP}\s*{REP_USER_FIELD}\s*"
-        rf"(?P<user_op>{RE_OP})\s*"
+        rf"(?P<user_filter>"
+        rf"({RE_FILTER_SEP}\s*{REP_USER_FIELD}\s*(?P<user_op>{RE_OP})\s*|"
+        rf"\s*(?P<user_sym>{RE_USER_SYM})\s*)"
         rf"((?:{RE_LB}?)\s*(?P<user_vals>{RE_USER_VAL}(?:\s*{RE_COMMA}\s*{RE_USER_VAL})*)\s*(?:{RE_RB}?)))"
     )
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
@@ -223,26 +225,31 @@ class QueryFilterExtractor:
             field_type = "user"
             match = re.match(self.REP_USER_FILTER, keyword)
         else:
-            logger.warn(f"× No matched stat_field: {keyword}")
+            logger.warn(f"× No matched filter field: {keyword}")
             return None, None
 
-        res[f"field"] = self.map_key_to_field(match.group(f"{field_type}_field"))
-        res[f"field_type"] = field_type
-        res[f"op"] = match.group(f"{field_type}_op")
+        res["field_type"] = field_type
+
+        if field_type == "user" and match.groupdict().get("user_sym"):
+            res["field"] = "user"
+            res["op"] = "="
+        else:
+            res["field"] = self.map_key_to_field(match.group(f"{field_type}_field"))
+            res["op"] = match.group(f"{field_type}_op")
 
         if field_type in ["uid", "user"]:
-            res[f"vals"] = match.group(f"{field_type}_vals")
+            res["vals"] = match.group(f"{field_type}_vals")
             res["val_type"] = "list"
         else:
             if match.group(f"{field_type}_val"):
-                res[f"val"] = match.group(f"{field_type}_val")
-                res[f"val_type"] = "value"
+                res["val"] = match.group(f"{field_type}_val")
+                res["val_type"] = "value"
             elif match.group(f"{field_type}_lb"):
-                res[f"lb"] = match.group(f"{field_type}_lb")
-                res[f"lval"] = match.group(f"{field_type}_lval")
-                res[f"rval"] = match.group(f"{field_type}_rval")
-                res[f"val_type"] = "range"
-                res[f"rb"] = match.group(f"{field_type}_rb")
+                res["lb"] = match.group(f"{field_type}_lb")
+                res["lval"] = match.group(f"{field_type}_lval")
+                res["rval"] = match.group(f"{field_type}_rval")
+                res["val_type"] = "range"
+                res["rb"] = match.group(f"{field_type}_rb")
             else:
                 logger.warn(f"× No matched stat_val: {keyword}")
         logger.mesg(pformat(res, sort_dicts=False, compact=False), indent=4)
@@ -403,6 +410,7 @@ if __name__ == "__main__":
         # "黑神话 :date<=7d :vw>100w :uid=[]",
         # ":date<=7d :user=影视飓风",
         ":date<=7d :user = 影视飓风, 亿点点不一样",
+        ":date<=7d @ 影视飓风, 亿点点不一样",
         ":date<=7d :up=[影视飓风，飓多多StormCrew， 亿点点不一样]",
         # "黑神话 :view>1000 :date=[7d,1d]",
         # "黑神话 :view>1000 :date <= 3 天",
