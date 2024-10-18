@@ -149,7 +149,7 @@ SUGGEST_DETAIL_LEVELS = {
             {"range": {"stat.view": {"gte": 200}}},
             {"range": {"stat.coin": {"gte": 5}}},
         ],
-        "timeout": 1,
+        "timeout": 1.5,
     },
     2: {
         **SUGGEST_DETAIL_BASE,
@@ -157,7 +157,7 @@ SUGGEST_DETAIL_LEVELS = {
             {"range": {"stat.view": {"gte": 1000}}},
             {"range": {"stat.coin": {"gte": 10}}},
         ],
-        "timeout": 1,
+        "timeout": 2,
     },
     3: {
         **SUGGEST_DETAIL_BASE,
@@ -165,7 +165,7 @@ SUGGEST_DETAIL_LEVELS = {
             {"range": {"stat.view": {"gt": 10000}}},
             {"range": {"stat.coin": {"gt": 25}}},
         ],
-        "timeout": 1,
+        "timeout": 3,
     },
 }
 MAX_SUGGEST_DETAIL_LEVEL = 3
