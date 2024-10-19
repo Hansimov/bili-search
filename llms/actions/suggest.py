@@ -5,7 +5,7 @@ from elastics.videos.searcher import VideoSearcher
 from configs.envs import SEARCH_APP_ENVS
 
 
-class SuggestTool:
+class QuerySuggester:
     def __init__(
         self,
         mode: Literal["prod", "dev"] = "dev",
@@ -37,8 +37,8 @@ class SuggestTool:
 if __name__ == "__main__":
     query = "红警 月亮3"
     logger.note(f"> Query: [{logstr.mesg(query)}]")
-    tool = SuggestTool()
-    hits = tool.suggest(query)
+    suggester = QuerySuggester()
+    hits = suggester.suggest(query)
     logger.success(dict_to_str(hits, add_quotes=True))
 
     # python -m agents.suggest
