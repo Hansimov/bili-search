@@ -1,6 +1,6 @@
 CHECK_AUTHOR_TOOL_DESC = """[TOOL_DESC] `check_author`:
 - DESCRIPTION: 根据用户输入的语句，和数据库的检索结果，来判断用户是下列哪种情况：
-    (a) 想搜索该语句中的关键词文本; (b) 想搜索关键词对应的视频作者。
+    (a) 想搜索该语句中的关键词文本; (b) 想搜索和关键词相近的昵称对应的视频作者。
 - INPUT:
     ```json
     {
@@ -15,11 +15,11 @@ CHECK_AUTHOR_TOOL_DESC = """[TOOL_DESC] `check_author`:
         "intension": "search_text"
     }
     ```
-(b) 想搜索关键词对应的视频作者:
+(b) 想搜索和关键词相近的昵称对应的视频作者:
     ```json
     {
         "intension": "search_author",
-        "author": {"name": <owner.name>, "uid": <owner.mid>}
+        "author": [{"name": <owner.name>, "uid": <owner.mid>}]
     }
     ```
 [/TOOL_DESC]
