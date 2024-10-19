@@ -60,9 +60,6 @@ class LLMActionsParser:
             logger.success(dict_to_str(actions))
         return actions
 
-    def call(self, tools: list[dict] = []):
-        pass
-
 
 if __name__ == "__main__":
     content = """
