@@ -11,6 +11,9 @@ class LLMClientByModel:
         self,
         model_config: MODEL_CONFIG_TYPE = "qwen2-72b",
         system_prompts: list[str] = [],
+        verbose_content: bool = True,
+        verbose_usage: bool = True,
+        verbose_finish: bool = True,
     ):
         llm_envs = LLMS_ENVS[model_config]
         init_messages = [{"role": "system", "content": "\n\n".join(system_prompts)}]
@@ -21,6 +24,9 @@ class LLMClientByModel:
             "api_format": llm_envs["api_format"],
             "stream": True,
             "init_messages": init_messages,
+            "verbose_content": verbose_content,
+            "verbose_usage": verbose_usage,
+            "verbose_finish": verbose_finish,
         }
         self.llm_envs = llm_envs
         self.init_messages = init_messages

@@ -16,6 +16,9 @@ class LLMClient:
         model: str = None,
         stream: bool = None,
         init_messages: str = None,
+        verbose_content: bool = True,
+        verbose_usage: bool = True,
+        verbose_finish: bool = True,
     ):
         self.endpoint = endpoint
         self.api_key = api_key
@@ -23,6 +26,9 @@ class LLMClient:
         self.model = model
         self.stream = stream
         self.init_messages = init_messages
+        self.verbose_content = verbose_content
+        self.verbose_usage = verbose_usage
+        self.verbose_finish = verbose_finish
 
     def get_stream_bool(self, stream: bool = None, default: bool = True) -> bool:
         if stream is None and self.stream is None:
@@ -79,9 +85,7 @@ class LLMClient:
         )
         return response
 
-    def parse_stream_response(
-        self, response: requests.Response, verbose: bool = True
-    ) -> tuple[str, dict]:
+    def parse_stream_response(self, response: requests.Response) -> tuple[str, dict]:
         response_content = ""
         usage = None
         for line in response.iter_lines():
@@ -114,20 +118,19 @@ class LLMClient:
                 if "content" in delta_data:
                     delta_content = delta_data["content"]
                     response_content += delta_content
-                    if verbose:
+                    if self.verbose_content:
                         logger.mesg(delta_content, end="")
                 if finish_reason == "stop":
                     if "usage" in line_data:
                         usage = line_data["usage"]
-                        if usage and verbose:
+                        if usage and self.verbose_usage:
                             logger.file("\n" + dict_to_str(usage))
-                    logger.success("\n[Finished]", end="")
+                    if self.verbose_finish:
+                        logger.success("\n[Finished]", end="")
 
         return response_content, usage
 
-    def parse_json_response(
-        self, response: requests.Response, verbose: bool = True
-    ) -> tuple[str, dict]:
+    def parse_json_response(self, response: requests.Response) -> tuple[str, dict]:
         response_content = ""
         usage = None
         try:
@@ -138,11 +141,12 @@ class LLMClient:
                 response_content = response_data["choices"][0]["message"]["content"]
             if "usage" in response_data:
                 usage = response_data["usage"]
-                if usage and verbose:
+                if usage and self.verbose_usage:
                     logger.file("\n" + dict_to_str(usage))
-            if verbose:
+            if self.verbose_content:
                 logger.mesg(response_content)
-            logger.success("[Finished]", end="")
+            if self.verbose_finish:
+                logger.success("[Finished]", end="")
         except Exception as e:
             logger.warn(f"× Error: {response.text}")
         return response_content, usage
@@ -167,11 +171,16 @@ class LLMClient:
             stream=stream,
         )
         if stream:
-            response_content = self.parse_stream_response(response)
+            response_content, usage = self.parse_stream_response(response)
         else:
-            response_content = self.parse_json_response(response)
+            response_content, usage = self.parse_json_response(response)
         timer.end_time()
-        elapsed_time = dt_to_str(timer.elapsed_time(), precision=1, str_format="unit")
-        model_name_str = "[" + model.split("/")[-1] + "]"
-        logger.note(f" ({elapsed_time}) {logstr.file(model_name_str)}")
+        if self.verbose_finish:
+            elapsed_time = dt_to_str(
+                timer.elapsed_time(), precision=1, str_format="unit"
+            )
+            model_name_str = "[" + model.split("/")[-1] + "]"
+            logger.note(f" ({elapsed_time}) {logstr.file(model_name_str)}")
+        else:
+            logger.note("")
         return response_content
