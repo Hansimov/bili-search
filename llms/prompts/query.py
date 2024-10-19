@@ -71,10 +71,10 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
         ```json
         {{
             "intension": "search_author",
-            "author": {{
+            "authors": [{{
                 "name": "影视飓风",
                 "uid": 946974
-            }}
+            }}]
         }}
         ```
     ASSISTANT:
@@ -119,10 +119,10 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
         ```json
         {{
             "intension": "search_author",
-            "author": {{
+            "authors": [{{
                 "name": "红警HBK08",
                 "uid": 1629347259
-            }}
+            }}]
         }}
         ```
     ASSISTANT:
@@ -135,15 +135,15 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
     USER: 我还想加上月亮3的视频
     ASSISTANT:
         [think] 用户还想搜索昵称和“月亮3”相关的作者的视频，所以需要调用 `check_author` 来判断完整的昵称 [/think]
-        [check_author] `月亮3` [/check]
+        [check_author] `月亮3` [/check_author]
     USER: `check_author` 的返回结果为：
         ```json
         {{
             "intension": "search_author",
-            "author": {{
+            "authors": [{{
                 "name": "红警月亮3",
                 "uid": 674510452
-            }}
+            }}]
         }}
         ```
     ASSISTANT:
