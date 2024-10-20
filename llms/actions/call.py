@@ -1,6 +1,6 @@
 import re
 
-from tclogger import logger, dict_to_str
+from tclogger import logger, logstr, dict_to_str, brk
 
 from llms.actions.author import AuthorChecker
 
@@ -10,27 +10,28 @@ class LLMActionsCaller:
         self.verbose = verbose
 
     def call(self, actions: list[dict] = []):
-        actions = [action for action in actions if action["type"] == "tool_call"]
+        actions = [action for action in actions if action["action_type"] == "tool_call"]
         results = []
         for action in actions:
-            call_name = action.get("call_name", "")
-            call_input = action.get("input", "")
+            tool_name = action.get("tool_name", "")
+            tool_input = action.get("tool_input", "")
             if self.verbose:
-                logger.note(f"> Calling tool: {call_name}")
+                logger.note(f"> Calling tool: {(logstr.file(brk(tool_name)))}")
 
-            if call_name == "check_author":
+            if tool_name == "check_author":
                 checker = AuthorChecker()
-                result = checker.check(call_input)
-            elif call_name == "query":
+                result = checker.check(tool_input)
+            elif tool_name == "query":
                 pass
             else:
-                logger.warn(f"× Unknown tool call: {call_name}")
+                logger.warn(f"× Unknown tool call: {tool_name}")
+                continue
 
             results.append(
                 {
-                    "call_name": call_name,
-                    "input": call_input,
-                    "result": result,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_result": result,
                 }
             )
         return results

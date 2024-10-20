@@ -1,6 +1,7 @@
 import re
 
 from tclogger import logger, dict_to_str
+from typing import Union
 
 
 class LLMActionsParser:
@@ -8,28 +9,28 @@ class LLMActionsParser:
     RE_RB = r"\s*[\)\]]\s*"
     RE_BQ = r"\s*`*\s*"
     RE_TEXT = r".*?"
-    RE_THINK_NAME = r"(think)"
+    RE_THINK_TYPE = r"(think)"
     RE_TOOL_NAME = r"(check_author|query)"
-    RE_RESULT_NAME = r"(output|result)"
+    RE_RESULT_TYPE = r"(output|result)"
     RE_COLON = r"\s*:\s*"
     REP_THINK = (
         rf"(?P<llm_think>"
-        rf"{RE_LB}(?P<think_name>{RE_THINK_NAME}){RE_RB}"
-        rf"(?P<thoughts>{RE_TEXT})"
-        rf"{RE_LB}/\s*(?P=think_name){RE_RB})"
+        rf"{RE_LB}(?P<think_type>{RE_THINK_TYPE}){RE_RB}"
+        rf"(?P<think_content>{RE_TEXT})"
+        rf"{RE_LB}/\s*(?P=think_type){RE_RB})"
     )
     REP_TOOL_CALL = (
         rf"(?P<tool_call>"
-        rf"{RE_LB}(?P<call_name>{RE_TOOL_NAME}){RE_RB}"
-        rf"(?P<input>{RE_TEXT})"
-        rf"{RE_LB}/\s*(?P=call_name){RE_RB})"
+        rf"{RE_LB}(?P<tool_name>{RE_TOOL_NAME}){RE_RB}"
+        rf"(?P<tool_input>{RE_TEXT})"
+        rf"{RE_LB}/\s*(?P=tool_name){RE_RB})"
     )
     REP_TOOL_RESULT = (
         rf"(?P<tool_result>"
-        rf"{RE_LB}(?:(?P<result_name>{RE_RESULT_NAME})"
+        rf"{RE_LB}(?:(?P<result_type>{RE_RESULT_TYPE})"
         rf"(?:{RE_COLON}(?P<from_tool>{RE_TOOL_NAME}))?){RE_RB}"
-        rf"(?P<output>{RE_TEXT})"
-        rf"{RE_LB}/\s*(?P=result_name){RE_RB})"
+        rf"(?P<tool_output>{RE_TEXT})"
+        rf"{RE_LB}/\s*(?P=result_type){RE_RB})"
     )
     REP_RESP = f"({REP_THINK}|{REP_TOOL_CALL}|{REP_TOOL_RESULT})"
 
@@ -41,24 +42,30 @@ class LLMActionsParser:
     def parse(self, content: str) -> list[dict]:
         # logger.note(self.REP_RESP)
         matches = re.finditer(self.REP_RESP, content, re.MULTILINE | re.DOTALL)
+        if self.verbose:
+            logger.note(f"> Parsing actions from content ...")
         actions = []
         for match in matches:
             action = match.groupdict()
             if action.get("llm_think"):
-                action["type"] = "llm_think"
+                action["action_type"] = "llm_think"
             elif action.get("tool_call"):
-                action["type"] = "tool_call"
+                action["action_type"] = "tool_call"
             elif action.get("tool_result"):
-                action["type"] = "tool_result"
+                action["action_type"] = "tool_result"
             else:
                 logger.warn(f"× Unknown action type: {action}")
             action = {
                 k: v for k, v in action.items() if k not in self.ACTION_TYPES and v
             }
             actions.append(action)
-        if self.verbose:
+        if self.verbose and actions:
             logger.success(dict_to_str(actions))
         return actions
+
+    def jsonize(self, result: Union[dict, list]):
+        result_str = dict_to_str(result, is_colored=False, add_quotes=True)
+        return f"```json\n{result_str}\n```"
 
 
 if __name__ == "__main__":
