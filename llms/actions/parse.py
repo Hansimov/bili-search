@@ -10,7 +10,7 @@ class LLMActionsParser:
     RE_BQ = r"\s*`*\s*"
     RE_TEXT = r".*?"
     RE_THINK_TYPE = r"(think)"
-    RE_TOOL_NAME = r"(check_author|query)"
+    RE_TOOL_NAME = r"(check_author|search)"
     RE_RESULT_TYPE = r"(output|result)"
     RE_COLON = r"\s*:\s*"
     REP_THINK = (

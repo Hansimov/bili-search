@@ -1,6 +1,6 @@
 from llms.prompts.intro import now_ymd, yesterday_ymd
 
-QUERY_SYNTAX = """[SYNTAX] 搜索引擎 query 的语法：
+SEARCH_SYNTAX = """[SYNTAX] 搜索引擎 search 的语法：
 - `(<关键词>)* (:<过滤器><操作符><值>)*`
 也就是说，关键词之间用空格分隔，过滤器以冒号`:`起始，后接操作符和值。
 - NOTE: `(...)*` 表示可以出现0次或多次，`(...)+` 表示至少出现1次，`(...)?` 表示不出现或出现1次。
@@ -91,15 +91,15 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = (
         ```
     ASSISTANT:
         [think] 可知用户想搜索是昵称为“影视飓风”的作者，因此需要使用昵称过滤器；同时用户强调了“最近”，所以需要加上日期过滤器，“最近”这个词比较模糊，暂时可以理解为最近15天 [/think]
-        [query] `:name=影视飓风 :date<=15d` [/query] (STOP)
+        [search] `:name=影视飓风 :date<=15d` [/search] (STOP)
     USER: 能不能再近一点？
     ASSISTANT:
         [think] 看样子用户认为15天内还不够近，所以需要再缩短时间范围，暂时理解为7天内 [/think]
-        [query] `:name=影视飓风 :date<=7d` [/query] (STOP)
+        [search] `:name=影视飓风 :date<=7d` [/search] (STOP)
     USER: 不必限定“影视飓风”是昵称
     ASSISTANT:
         [think] 好的，不用昵称过滤器，而是只作为普通关键词进行搜索 [/think]
-        [query] `影视飓风 :date<=7d` [/query] (STOP)
+        [search] `影视飓风 :date<=7d` [/search] (STOP)
 
 - Example 2:
     USER: 推荐一点黑神话的视频
@@ -129,15 +129,15 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = (
         ```
     ASSISTANT:
         [think] 可以看到虽然名为“黑神话悟空”的作者昵称确实命中了，但是一方面 ratio=0.2 并不高，另一方面用户的提问并没有明确指向具体的作者，所以我们需要搜索关键词 `黑神话`；同时，由于本搜索引擎的主体就是视频，所以这里不需要额外加上 `视频` 这个词 [/think]
-        [query] `黑神话` [/query] (STOP)
+        [search] `黑神话` [/search] (STOP)
     USER: 能不能来点热度高的
     ASSISTANT:
         [think] 用户想要热度高的视频，可以理解为播放量高，所以需要加上 `view` 过滤器 [/think]
-        [query] `黑神话 :view>=1w` [/query] (STOP)
+        [search] `黑神话 :view>=1w` [/search] (STOP)
     USER: 我希望质量和活跃度也高
     ASSISTANT:
         [think] 质量主要体现在 coin (投币数) 和 favorite (收藏数) 上，活跃度主要体现在 danmaku (弹幕数) 和 reply (评论数) 上，所以需要加上这些过滤器；考虑到不要太复杂，暂时只新增 coin 和 danmaku 的过滤器 [/think]
-        [query] `黑神话 :view>=1w :coin>=1k :danmaku>=100` [/query] (STOP)
+        [search] `黑神话 :view>=1w :coin>=1k :danmaku>=100` [/search] (STOP)
 
 - Example 3:
     USER: 08今天发了什么视频
@@ -169,11 +169,11 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = (
     f"""
     ASSISTANT:
         [think] 可知用户想搜索是昵称为`红警HBK08`的作者，因此需要使用昵称过滤器；同时用户强调了“今天”，所以需要加上日期过滤器，已知今天是 {now_ymd} [/think]
-        [query] `:name=红警HBK08 :date={now_ymd}` [/query] (STOP)
+        [search] `:name=红警HBK08 :date={now_ymd}` [/search] (STOP)
     USER: 那么昨天呢
     ASSISTANT:
         [think] 昨天的日期是 {yesterday_ymd} [/think]
-        [query] `:name=红警HBK08 :date={yesterday_ymd}` [/query] (STOP)
+        [search] `:name=红警HBK08 :date={yesterday_ymd}` [/search] (STOP)
     USER: 我还想加上月亮3的视频
     ASSISTANT:
         [think] 用户还想搜索昵称和“月亮3”相关的作者的视频，所以需要调用 `check_author` 来判断完整的昵称 [/think]
@@ -187,7 +187,7 @@ INSTRUCT_TO_QUERY_TOOL_EXAMPLE = (
         ```
     ASSISTANT:
         [think] 可知用户还想加上昵称为`红警月亮3`的作者的视频内容，故需要添加进昵称过滤器中 [/think]
-        [query] `:name=红警HBK08,红警月亮3 :date={yesterday_ymd}` [/query] (STOP)
+        [search] `:name=红警HBK08,红警月亮3 :date={yesterday_ymd}` [/search] (STOP)
 [/TOOL]
 """
 )

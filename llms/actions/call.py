@@ -25,8 +25,7 @@ class LLMActionsCaller:
             if tool_name == "check_author":
                 checker = AuthorChecker()
                 result = checker.check(tool_input)
-            elif tool_name == "query":
-                pass
+            elif tool_name == "search":
             else:
                 logger.warn(f"× Unknown tool call: {tool_name}")
                 continue
