@@ -38,8 +38,8 @@ class InstructToQueryAgent:
 
     def chat(self, messages: list):
         response_content = self.client.chat(messages)
-        actions = self.parser.parse(response_content)
-        if actions:
+        actions, has_tool_call = self.parser.parse(response_content)
+        while actions and has_tool_call:
             results = self.caller.call(actions)
             if self.verbose_action:
                 logger.success(dict_to_str(results))
@@ -49,12 +49,12 @@ class InstructToQueryAgent:
                 logger.note(results_str)
             messages.append(new_message)
             response_content = self.client.chat(messages)
-            actions = self.parser.parse(response_content)
+            actions, has_tool_call = self.parser.parse(response_content)
 
 
 if __name__ == "__main__":
-    agent = InstructToQueryAgent("deepseek")
-    user_prompt = "08最近有哪些热门视频？"
+    agent = InstructToQueryAgent("deepseek", verbose_action=False)
+    user_prompt = "08是谁？他最近发了什么作品？其中最高的是什么？"
     messages = [
         {"role": "user", "content": user_prompt},
     ]

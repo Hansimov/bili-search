@@ -39,18 +39,20 @@ class LLMActionsParser:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
 
-    def parse(self, content: str) -> list[dict]:
+    def parse(self, content: str) -> tuple[list[dict], bool]:
         # logger.note(self.REP_RESP)
-        matches = re.finditer(self.REP_RESP, content, re.MULTILINE | re.DOTALL)
         if self.verbose:
             logger.note(f"> Parsing actions from content ...")
+        matches = re.finditer(self.REP_RESP, content, re.MULTILINE | re.DOTALL)
         actions = []
+        has_tool_call = False
         for match in matches:
             action = match.groupdict()
             if action.get("llm_think"):
                 action["action_type"] = "llm_think"
             elif action.get("tool_call"):
                 action["action_type"] = "tool_call"
+                has_tool_call = True
             elif action.get("tool_result"):
                 action["action_type"] = "tool_result"
             else:
@@ -59,9 +61,12 @@ class LLMActionsParser:
                 k: v for k, v in action.items() if k not in self.ACTION_TYPES and v
             }
             actions.append(action)
-        if self.verbose and actions:
-            logger.success(dict_to_str(actions))
-        return actions
+        if self.verbose:
+            if actions:
+                logger.success(dict_to_str(actions))
+            else:
+                logger.warn("  × No actions found. Iteration Stopped.")
+        return actions, has_tool_call
 
     def jsonize(self, result: Union[dict, list]):
         result_str = dict_to_str(
