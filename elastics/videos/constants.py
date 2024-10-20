@@ -176,7 +176,7 @@ SUGGEST_LIMIT = 10
 
 # timeout
 SEARCH_TIMEOUT = 2
-SUGGEST_TIMEOUT = 1
+SUGGEST_TIMEOUT = 1.5
 
 # This constant is to contain more hits for redundance,
 # as drop_no_highlights would drop some hits

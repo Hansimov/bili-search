@@ -315,11 +315,11 @@ class VideoSearcher:
         boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
         use_script_score: bool = True,
-        use_pinyin: bool = False,
+        use_pinyin: bool = True,
         detail_level: int = -1,
         detail_levels: dict = SUGGEST_DETAIL_LEVELS,
         max_detail_level: int = MAX_SUGGEST_DETAIL_LEVEL,
-        limit: int = SEARCH_LIMIT,
+        limit: int = SUGGEST_LIMIT,
         timeout: Union[int, float, str] = SUGGEST_TIMEOUT,
         verbose: bool = False,
     ):
