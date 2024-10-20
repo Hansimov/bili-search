@@ -16,6 +16,8 @@ class LLMClient:
         model: str = None,
         stream: bool = None,
         init_messages: str = None,
+        verbose_user: bool = True,
+        verbose_assistant: bool = True,
         verbose_content: bool = True,
         verbose_usage: bool = True,
         verbose_finish: bool = True,
@@ -26,6 +28,8 @@ class LLMClient:
         self.model = model
         self.stream = stream
         self.init_messages = init_messages
+        self.verbose_user = verbose_user
+        self.verbose_assistant = verbose_assistant
         self.verbose_content = verbose_content
         self.verbose_usage = verbose_usage
         self.verbose_finish = verbose_finish
@@ -163,6 +167,11 @@ class LLMClient:
         timer.start_time()
         stream = self.get_stream_bool(stream)
         model = self.get_model_str(model)
+
+        if self.verbose_user:
+            user_prompt = messages[-1]["content"]
+            logger.note(f"USER: {user_prompt}")
+
         response = self.create_response(
             messages=messages,
             model=model,
@@ -170,6 +179,10 @@ class LLMClient:
             seed=seed,
             stream=stream,
         )
+
+        if self.verbose_assistant:
+            logger.mesg("ASSISTANT: ", end="")
+
         if stream:
             response_content, usage = self.parse_stream_response(response)
         else:
