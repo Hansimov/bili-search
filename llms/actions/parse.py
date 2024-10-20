@@ -64,7 +64,9 @@ class LLMActionsParser:
         return actions
 
     def jsonize(self, result: Union[dict, list]):
-        result_str = dict_to_str(result, is_colored=False, add_quotes=True)
+        result_str = dict_to_str(
+            result, align_colon=False, is_colored=False, add_quotes=True
+        )
         return f"```json\n{result_str}\n```"
 
 
