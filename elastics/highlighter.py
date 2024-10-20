@@ -148,7 +148,7 @@ class PinyinHighlighter:
         return res_text
 
 
-class HighlightedKeywordCounter:
+class HighlightsCounter:
     def __init__(self):
         self.puncter = Puncter()
 
@@ -164,11 +164,12 @@ class HighlightedKeywordCounter:
             highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
         return highlighted_keywords
 
-    def count(
+    def count_keywords(
         self,
         hits: list[dict],
         exclude_fields: list = ["pubdate_str"],
         use_score: bool = False,
+        threshold: int = 2,
     ) -> dict:
         res = {}
         for hit in hits:
@@ -193,9 +194,35 @@ class HighlightedKeywordCounter:
                             res[field].get(keyword, 0) + keyword_count * hit_score
                         )
         res = {
+            field: {k: v for k, v in keywords.items() if v >= threshold}
+            for field, keywords in res.items()
+        }
+        res = {
             field: dict(sorted(keywords.items(), key=lambda x: x[1], reverse=True))
             for field, keywords in res.items()
         }
+        return res
+
+    def count_authors(self, hits: list[dict], threshold: int = 2) -> dict:
+        res = {}
+        for hit in hits:
+            owner = hit.get("owner", {})
+            name = owner.get("name", None)
+            uid = owner.get("mid", None)
+            if name in res.keys():
+                res[name]["count"] += 1
+            else:
+                res[name] = {"uid": uid, "count": 1}
+                if "owner.name" in hit["merged_highlights"].keys():
+                    res[name]["highlighted"] = True
+        res = {name: info for name, info in res.items() if info["count"] >= threshold}
+        res = dict(
+            sorted(
+                res.items(),
+                key=lambda item: (item[1].get("highlighted", False), item[1]["count"]),
+                reverse=True,
+            )
+        )
         return res
 
 
@@ -210,7 +237,7 @@ if __name__ == "__main__":
     res_text = highlighter.highlight(query, text, tag="hit", verbose=True)
     logger.mesg(f"Merged highlighted text:", end=" ")
     logger.success(res_text)
-    counter = HighlightedKeywordCounter()
+    counter = HighlightsCounter()
     count_res = counter.extract_highlighted_keywords(res_text)
     logger.success(count_res)
 

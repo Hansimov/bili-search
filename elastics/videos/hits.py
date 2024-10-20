@@ -3,14 +3,14 @@ from tclogger import logger
 
 from elastics.structure import get_es_source_val
 from elastics.highlighter import PinyinHighlighter, HighlightMerger
-from elastics.highlighter import HighlightedKeywordCounter
+from elastics.highlighter import HighlightsCounter
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 
 
 class VideoHitsParser:
     def __init__(self):
         self.pinyin_highlighter = PinyinHighlighter()
-        self.highlighte_keyword_counter = HighlightedKeywordCounter()
+        self.highlighs_counter = HighlightsCounter()
 
     def get_pinyin_highlights(
         self, query: str, match_fields: list[str], _source: dict
@@ -112,7 +112,8 @@ class VideoHitsParser:
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
-            "highlighted_keywords": self.highlighte_keyword_counter.count(hits),
+            "highlighted_keywords": self.highlighs_counter.count_keywords(hits),
+            "related_authors": self.highlighs_counter.count_authors(hits),
         }
         logger.enter_quiet(not verbose)
         # logger.success(pformat(hits_info, indent=4, sort_dicts=False))
