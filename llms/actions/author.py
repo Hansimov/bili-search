@@ -1,14 +1,14 @@
 from copy import deepcopy
 from tclogger import logger, logstr, dict_to_str, brk
 
-from llms.actions.suggest import VideoSuggester
+from llms.actions.suggest import SuggestTool
 
 
 class AuthorChecker:
     def __init__(
         self, suggest_limit: int = 20, threshold: int = 2, verbose: bool = False
     ):
-        self.suggestor = VideoSuggester()
+        self.suggestor = SuggestTool()
         self.suggest_limit = suggest_limit
         self.threshold = threshold
         self.verbose = verbose
