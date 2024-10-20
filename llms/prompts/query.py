@@ -1,6 +1,6 @@
 from llms.prompts.intro import now_ymd, yesterday_ymd
 
-QUERY_SYNTAX = f"""[SYNTAX] 搜索引擎 query 的语法：
+QUERY_SYNTAX = """[SYNTAX] 搜索引擎 query 的语法：
 - `(<关键词>)* (:<过滤器><操作符><值>)*`
 也就是说，关键词之间用空格分隔，过滤器以冒号`:`起始，后接操作符和值。
 - NOTE: `(...)*` 表示可以出现0次或多次，`(...)+` 表示至少出现1次，`(...)?` 表示不出现或出现1次。
@@ -56,98 +56,138 @@ QUERY_SYNTAX = f"""[SYNTAX] 搜索引擎 query 的语法：
 [/SYNTAX]
 """
 
-INSTRUCT_TO_QUERY_TOOL_DESC = f"""[TOOL_DESC] `instruct_to_query`:
+INSTRUCT_TO_QUERY_TOOL_DESC = """[TOOL_DESC] `instruct_to_query`:
 - DESCRIPTION: 分析用户的提问或指令，识别和提取出用户意图，然后转换成符合本搜索引擎语法的语句。需结合搜索引擎的 SYNTAX 使用。
 [/TOOL_DESC]
 """
 
-INSTRUCT_TO_QUERY_TOOL_EXAMPLE = f"""[TOOL_EXAMPLE] `instruct_to_query`:
+INSTRUCT_TO_QUERY_TOOL_EXAMPLE = (
+    """[TOOL_EXAMPLE] `instruct_to_query`:
 - Example 1:
     USER: 影视飓风最近有什么新视频？
     ASSISTANT:
         [think] 影视飓风可能是一个视频作者昵称或者视频系列，应当调用工具 `check_author` 来确认用户的意图是是搜索对应的文本，还是视频作者。 [/think]
-        [check_author] `影视飓风` [/check_author]
-    USER: `chekc_author` 的返回结果为：
+        [check_author] `影视飓风` [/check_author] (STOP)
+    USER: `check_author` 的返回结果为：
         ```json
-        {{
-            "intension": "search_author",
-            "authors": [{{
-                "name": "影视飓风",
-                "uid": 946974
-            }}]
-        }}
+        {
+            "query" : "影视飓风",
+            "total_hits" : 25,
+            "highlighted_keywords" : {
+                "影视飓风" : 28
+            },
+            "related_authors" : {
+                "影视飓风" : {
+                    "uid" : 946974,
+                    "highlighted" : True,
+                    "ratio" : 0.88
+                },
+                    "飓多多StormCrew" : {
+                    "uid" : 1780480185,
+                    "ratio" : 0.12
+                }
+            }
+        }
         ```
     ASSISTANT:
         [think] 可知用户想搜索是昵称为“影视飓风”的作者，因此需要使用昵称过滤器；同时用户强调了“最近”，所以需要加上日期过滤器，“最近”这个词比较模糊，暂时可以理解为最近15天 [/think]
-        [query] `:name=影视飓风 :date<=15d` [/query]
+        [query] `:name=影视飓风 :date<=15d` [/query] (STOP)
     USER: 能不能再近一点？
     ASSISTANT:
         [think] 看样子用户认为15天内还不够近，所以需要再缩短时间范围，暂时理解为7天内 [/think]
-        [query] `:name=影视飓风 :date<=7d` [/query]
+        [query] `:name=影视飓风 :date<=7d` [/query] (STOP)
     USER: 不必限定“影视飓风”是昵称
     ASSISTANT:
         [think] 好的，不用昵称过滤器，而是只作为普通关键词进行搜索 [/think]
-        [query] `影视飓风 :date<=7d` [/query]
+        [query] `影视飓风 :date<=7d` [/query] (STOP)
 
 - Example 2:
     USER: 推荐一点黑神话的视频
     ASSISTANT:
         [think] 黑神话可能是一个视频作者昵称或者视频系列，应当调用工具 `check_author` 来确认用户的意图是是想搜索对应的文本，还是想搜索视频作者。 [/think]
-        [check_author] `影视飓风` [/check_author]
-    USER: `chekc_author` 的返回结果为：
+        [check_author] `黑神话` [/check_author] (STOP)
+    USER: `check_author` 的返回结果为：
         ```json
-        {{ "intension": "search_text" }}
+        {
+            "query" : "黑神话",
+            "total_hits" : 25,
+            "highlighted_keywords" : {
+                "黑神话" : 30
+            },
+            "related_authors" : {
+                "黑神话悟空" : {
+                    "uid" : 642389251,
+                    "highlighted" : true,
+                    "ratio" : 0.2
+                },
+                "-纯黑-" : {
+                    "uid" : 585267,
+                    "ratio" : 0.16
+                }
+            }
+        }
         ```
     ASSISTANT:
-        [think] 这里的关键词是 `黑神话`，因为本搜索引擎的主体就是视频，所以这里不需要额外加上 `视频` 这个词 [/think]
-        [query] `黑神话` [/query]
+        [think] 可以看到虽然名为“黑神话悟空”的作者昵称确实命中了，但是一方面 ratio=0.2 并不高，另一方面用户的提问并没有明确指向具体的作者，所以我们需要搜索关键词 `黑神话`；同时，由于本搜索引擎的主体就是视频，所以这里不需要额外加上 `视频` 这个词 [/think]
+        [query] `黑神话` [/query] (STOP)
     USER: 能不能来点热度高的
     ASSISTANT:
         [think] 用户想要热度高的视频，可以理解为播放量高，所以需要加上 `view` 过滤器 [/think]
-        [query] `黑神话 :view>=10w` [/query]
+        [query] `黑神话 :view>=1w` [/query] (STOP)
     USER: 我希望质量和活跃度也高
     ASSISTANT:
         [think] 质量主要体现在 coin (投币数) 和 favorite (收藏数) 上，活跃度主要体现在 danmaku (弹幕数) 和 reply (评论数) 上，所以需要加上这些过滤器；考虑到不要太复杂，暂时只新增 coin 和 danmaku 的过滤器 [/think]
-        [query] `黑神话 :view>=10w :coin>=1k :danmaku>=100` [/query]
+        [query] `黑神话 :view>=1w :coin>=1k :danmaku>=100` [/query] (STOP)
 
 - Example 3:
-    USER: 红警08今天发了什么视频
+    USER: 08今天发了什么视频
     ASSISTANT:
-        [think] 红警08可能是一个视频作者昵称或者视频系列，应当调用工具 `check_author` 来确认用户的意图是是想搜索对应的文本，还是想搜索视频作者。 [/think]
-        [check_author] `红警 08` [/check_author]
-    USER: `chekc_author` 的返回结果为：
+        [think] 08可能是一个视频作者昵称或者视频系列，应当调用工具 `check_author` 来确认用户的意图是是想搜索对应的文本，还是想搜索视频作者。 [/think]
+        [check_author] `08` [/check_author] (STOP)
+    USER: `check_author` 的返回结果为：
         ```json
-        {{
-            "intension": "search_author",
-            "authors": [{{
-                "name": "红警HBK08",
-                "uid": 1629347259
-            }}]
-        }}
+        {
+            "query" : "08",
+            "total_hits" : 25,
+            "highlighted_keywords" : {
+                "08" : 27
+            },
+            "related_authors" : {
+                "红警HBK08" : {
+                    "uid" : 1629347259, "highlighted" : True, "ratio" : 0.48
+                },
+                "哔哩哔哩番剧" : {
+                    "uid" : 928123, "ratio" : 0.2 
+                },
+                "怕上火暴王老菊" : {
+                    "uid" : 423895, "ratio" : 0.08
+                }
+            }
+        }
         ```
+"""
+    f"""
     ASSISTANT:
         [think] 可知用户想搜索是昵称为`红警HBK08`的作者，因此需要使用昵称过滤器；同时用户强调了“今天”，所以需要加上日期过滤器，已知今天是 {now_ymd} [/think]
-        [query] `:name=红警HBK08 :date={now_ymd}` [/query]
+        [query] `:name=红警HBK08 :date={now_ymd}` [/query] (STOP)
     USER: 那么昨天呢
     ASSISTANT:
         [think] 昨天的日期是 {yesterday_ymd} [/think]
-        [query] `:name=红警HBK08 :date={yesterday_ymd}` [/query]
+        [query] `:name=红警HBK08 :date={yesterday_ymd}` [/query] (STOP)
     USER: 我还想加上月亮3的视频
     ASSISTANT:
         [think] 用户还想搜索昵称和“月亮3”相关的作者的视频，所以需要调用 `check_author` 来判断完整的昵称 [/think]
-        [check_author] `月亮3` [/check_author]
+        [check_author] `月亮3` [/check_author] (STOP)
     USER: `check_author` 的返回结果为：
         ```json
         {{
             "intension": "search_author",
-            "authors": [{{
-                "name": "红警月亮3",
-                "uid": 674510452
-            }}]
+            "authors": [{{ "name": "红警月亮3", "uid": 674510452}}]
         }}
         ```
     ASSISTANT:
         [think] 可知用户还想加上昵称为`红警月亮3`的作者的视频内容，故需要添加进昵称过滤器中 [/think]
-        [query] `:name=红警HBK08,红警月亮3 :date={yesterday_ymd}` [/query]
+        [query] `:name=红警HBK08,红警月亮3 :date={yesterday_ymd}` [/query] (STOP)
 [/TOOL]
 """
+)
