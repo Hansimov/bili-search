@@ -9,7 +9,7 @@ class VideoSuggester:
     def __init__(
         self,
         mode: Literal["prod", "dev"] = "dev",
-        source_fields: list[str] = ["title", "bvid", "owner"],
+        source_fields: list[str] = ["title", "bvid", "owner", "pubdate_str"],
         limit: int = 10,
     ):
         index_name = SEARCH_APP_ENVS["bili_videos_index"][mode]
@@ -17,7 +17,7 @@ class VideoSuggester:
         self.source_fields = source_fields
         self.limit = limit
 
-    def reduce_hits_by_source_fields(
+    def shrink_hits_by_source_fields(
         self, hits: list[dict], source_fields: list[str] = []
     ) -> list[dict]:
         new_hits = [
@@ -25,17 +25,27 @@ class VideoSuggester:
         ]
         return new_hits
 
+    def shrink_results(self, results: dict) -> dict:
+        hits = results.get("hits", [])
+        hits = self.shrink_hits_by_source_fields(hits, source_fields=self.source_fields)
+        res = {"query": results.get("query", ""), "hits": hits}
+        return res
+
     def suggest(
-        self, query: str, source_fields: list[str] = [], limit: int = 10
+        self,
+        query: str,
+        source_fields: list[str] = [],
+        limit: int = 10,
+        is_shrink_results: bool = False,
     ) -> dict:
         source_fields = source_fields or self.source_fields
         limit = limit or self.limit
         res = self.searcher.multi_level_suggest(
             query, source_fields=source_fields, limit=limit
         )
-        hits = res.get("hits", [])
-        hits = self.reduce_hits_by_source_fields(hits, source_fields=source_fields)
-        res = {"query": query, "hits": hits}
+        if is_shrink_results:
+            res = self.shrink_results(res)
+
         return res
 
 
