@@ -3,11 +3,13 @@ import re
 from tclogger import logger, logstr, dict_to_str, brk
 
 from llms.actions.author import AuthorChecker
+from llms.actions.search import SearchTool
 
 
 class LLMActionsCaller:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
+        self.cleaner = InputCleaner()
 
     def call(self, actions: list[dict] = []):
         actions = [action for action in actions if action["action_type"] == "tool_call"]
@@ -15,6 +17,8 @@ class LLMActionsCaller:
         for action in actions:
             tool_name = action.get("tool_name", "")
             tool_input = action.get("tool_input", "")
+            tool_input = self.cleaner.clean(tool_input)
+
             if self.verbose:
                 logger.note(f"> Calling tool: {(logstr.file(brk(tool_name)))}")
 

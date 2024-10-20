@@ -13,9 +13,6 @@ class AuthorChecker:
         self.threshold = threshold
         self.verbose = verbose
 
-    def de_backtick(self, input: str):
-        return input.strip().strip("`").strip()
-
     def merge_keywords(self, keywords: dict):
         res = {}
         for field, item in keywords.items():
@@ -35,7 +32,6 @@ class AuthorChecker:
         return res
 
     def check(self, query: str):
-        query = self.de_backtick(query)
         suggestions = self.suggestor.suggest(query, limit=25)
         # logger.success(dict_to_str(suggestions))
         total_hits = len(suggestions.get("hits", []))
