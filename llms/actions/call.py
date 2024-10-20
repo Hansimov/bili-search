@@ -4,6 +4,7 @@ from tclogger import logger, logstr, dict_to_str, brk
 
 from llms.actions.author import AuthorChecker
 from llms.actions.search import SearchTool
+from llms.actions.input import InputCleaner
 
 
 class LLMActionsCaller:
@@ -26,6 +27,8 @@ class LLMActionsCaller:
                 checker = AuthorChecker()
                 result = checker.check(tool_input)
             elif tool_name == "search":
+                searcher = SearchTool()
+                result = searcher.search(tool_input, is_shrink_results=True)
             else:
                 logger.warn(f"× Unknown tool call: {tool_name}")
                 continue
