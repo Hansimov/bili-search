@@ -359,6 +359,9 @@ class VideoSearcher:
         now = datetime.now()
         now_ts = int(now.timestamp())
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        today = datetime(year=now.year, month=now.month, day=now.day)
+        today_ts = int(today.timestamp())
+
         if seed is None:
             if seed_update_seconds is None:
                 seed = now_ts
@@ -369,10 +372,11 @@ class VideoSearcher:
             seed = int(seed)
 
         if filters is None:
-            past_month_ts = now_ts = now_ts - 3600 * 24 * 30
+            past_month_day_ts = today_ts - 3600 * 24 * 30
             filters = [
-                {"range": {"stat.coin": {"gte": 1000}}},
-                {"range": {"pubdate": {"gte": past_month_ts}}},
+                {"range": {"stat.coin": {"gte": 100}}},
+                {"range": {"stat.danmaku": {"gte": 100}}},
+                {"range": {"pubdate": {"gte": past_month_day_ts}}},
             ]
 
         search_body = {
