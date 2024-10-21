@@ -5,13 +5,15 @@ from elastics.structure import get_es_source_val
 from converters.highlight.merge import HighlightMerger
 from converters.highlight.count import HighlightsCounter
 from converters.highlight.pinyin import PinyinHighlighter
+from converters.query.filter import QueryFilterExtractor
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 
 
 class VideoHitsParser:
     def __init__(self):
         self.pinyin_highlighter = PinyinHighlighter()
-        self.highlighs_counter = HighlightsCounter()
+        self.highlights_counter = HighlightsCounter()
+        self.split_query = QueryFilterExtractor().split_keyword_and_filter_expr
 
     def get_pinyin_highlights(
         self, query: str, match_fields: list[str], _source: dict
@@ -47,6 +49,8 @@ class VideoHitsParser:
         limit: int = -1,
         verbose: bool = False,
     ) -> list[dict]:
+        qwords = self.split_query(query)["keywords"]
+        qwords_str = " ".join(qwords)
         if not res_dict:
             hits_info = {
                 "query": query,
@@ -65,8 +69,9 @@ class VideoHitsParser:
             _source = hit["_source"]
             score = hit["_score"]
             common_highlights = hit.get("highlight", {})
-            pinyin_highlights = self.get_pinyin_highlights(query, match_fields, _source)
-
+            pinyin_highlights = self.get_pinyin_highlights(
+                qwords_str, match_fields, _source
+            )
             merged_highlights = {}
             merger = HighlightMerger()
 
@@ -115,8 +120,10 @@ class VideoHitsParser:
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
-            "highlighted_keywords": self.highlighs_counter.count_keywords(query, hits),
-            "related_authors": self.highlighs_counter.count_authors(hits),
+            "highlighted_keywords": self.highlights_counter.count_keywords(
+                qwords_str, hits
+            ),
+            "related_authors": self.highlights_counter.count_authors(hits),
         }
         logger.enter_quiet(not verbose)
         # logger.success(pformat(hits_info, indent=4, sort_dicts=False))

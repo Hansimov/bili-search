@@ -1,13 +1,11 @@
 import re
 
 from converters.query.punct import Puncter
-from converters.query.filter import QueryFilterExtractor
 
 
 class HighlightsCounter:
     def __init__(self):
         self.puncter = Puncter()
-        self.split_query = QueryFilterExtractor().split_keyword_and_filter_expr
 
     def extract_highlighted_keywords(
         self, htext: str, tag="hit", remove_puncts: bool = True
@@ -33,7 +31,7 @@ class HighlightsCounter:
         threshold: int = 2,
     ) -> dict:
         res = {}
-        qwords = self.split_query(query)["keywords"]
+        qwords = query.split()
         for hit in hits:
             merged_highlights = hit.get("merged_highlights", {})
             hit_score = hit.get("score", 1) if use_score else 1
