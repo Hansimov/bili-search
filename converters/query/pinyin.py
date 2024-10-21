@@ -1,7 +1,6 @@
 import pypinyin
 import zhconv
 
-from itertools import product
 from pypinyin.constants import RE_HANS
 
 
@@ -22,26 +21,17 @@ class ChinesePinyinizer:
         return segs
 
     def text_to_pinyin_choices(self, text: str) -> list[list[str]]:
+        text = self.text_to_simple(text)
         return pypinyin.pinyin(text, style=pypinyin.STYLE_NORMAL, heteronym=True)
 
-    def text_to_pinyin_combinations(self, text: str) -> list[list[str]]:
-        text = self.text_to_simple(text)
-        pinyin_choices = self.text_to_pinyin_choices(text)
-        pinyin_combinations = list(product(*pinyin_choices))
-        return pinyin_combinations
-
     def text_to_pinyin_segs(self, text: str) -> list[str]:
-        return self.text_to_pinyin_combinations(text)[0]
-
-    def pinyin_choices_to_str(
-        self, pinyin_choices: list[list[str]], sep: str = ""
-    ) -> str:
-        return sep.join([choice[0] for choice in pinyin_choices])
+        pinyin_choices = self.text_to_pinyin_choices(text)
+        pinyin_segs = [choice[0] for choice in pinyin_choices]
+        return pinyin_segs
 
     def text_to_pinyin_str(self, text: str, sep: str = "") -> str:
-        text = self.text_to_simple(text)
-        pinyin_choices = self.text_to_pinyin_choices(text)
-        pinyin_str = self.pinyin_choices_to_str(pinyin_choices, sep=sep)
+        pinyin_segs = self.text_to_pinyin_segs(text)
+        pinyin_str = sep.join(pinyin_segs)
         return pinyin_str
 
     def convert(self, text: str, sep: str = "") -> str:
@@ -61,9 +51,9 @@ if __name__ == "__main__":
     for text in texts:
         logger.note(f"> {logstr.mesg(text)}：", end=" ")
         pinyinizer = ChinesePinyinizer()
-        pinyin = pinyinizer.convert(text, sep=" ")
-        logger.success(f"{pinyin}")
-        pinyin_combinations = pinyinizer.text_to_pinyin_combinations(text)
-        logger.success(f"{pinyin_combinations}")
+        pinyin_str = pinyinizer.convert(text, sep=" ")
+        logger.success(f"{pinyin_str}")
+        pinyin_segs = pinyinizer.text_to_pinyin_segs(text)
+        logger.success(f"{pinyin_segs}")
 
     # python -m converters.query.pinyin
