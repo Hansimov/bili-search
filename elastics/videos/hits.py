@@ -72,23 +72,35 @@ class VideoHitsParser:
             pinyin_highlights = self.get_pinyin_highlights(
                 qwords_str, match_fields, _source
             )
+            all_fields = {**common_highlights, **pinyin_highlights}.keys()
+
             merged_highlights = {}
             merger = HighlightMerger()
 
-            pinyin_fields = [
+            pinyin_suffix_fields = [
                 field.replace(".pinyin", "") for field in pinyin_highlights.keys()
             ]
-            merged_fields = list(common_highlights.keys()) + pinyin_fields
+            words_suffix_fields = [
+                field.replace(".words", "") for field in common_highlights.keys()
+            ]
+            other_fields = [
+                field
+                for field in all_fields
+                if not any(field.endswith(suffix) for suffix in [".pinyin", ".words"])
+            ]
+            merged_fields = set(
+                other_fields + pinyin_suffix_fields + words_suffix_fields
+            )
 
-            for hit_field in merged_fields:
-                for suffix in [".pinyin", ".words"]:
-                    field = hit_field.removesuffix(suffix)
-                common_highlight = common_highlights.get(hit_field, [])
+            for field in merged_fields:
+                common_highlight = common_highlights.get(field, [])
+                words_highlight = common_highlights.get(field + ".words", [])
                 pinyin_highlight = pinyin_highlights.get(field + ".pinyin", [])
+                highlight_to_merge = (
+                    common_highlight + words_highlight + pinyin_highlight
+                )
                 merged_highlight = merger.merge(
-                    get_es_source_val(_source, field),
-                    common_highlight + pinyin_highlight,
-                    tag="hit",
+                    get_es_source_val(_source, field), highlight_to_merge, tag="hit"
                 )
                 if merged_highlight:
                     merged_highlights[field] = [merged_highlight]
