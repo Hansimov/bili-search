@@ -4,6 +4,7 @@ from pypinyin import lazy_pinyin
 from tclogger import logger
 from typing import Union
 from converters.query.punct import Puncter
+from converters.query.filter import QueryFilterExtractor
 
 
 class HighlightMerger:
@@ -151,6 +152,7 @@ class PinyinHighlighter:
 class HighlightsCounter:
     def __init__(self):
         self.puncter = Puncter()
+        self.split_query = QueryFilterExtractor().split_keyword_and_filter_expr
 
     def extract_highlighted_keywords(
         self, htext: str, tag="hit", remove_puncts: bool = True
@@ -164,42 +166,42 @@ class HighlightsCounter:
             highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
         return highlighted_keywords
 
+    def qword_match_hword(self, qword: str, hword: str):
+        return qword == hword
+
     def count_keywords(
         self,
+        query: str,
         hits: list[dict],
         exclude_fields: list = ["pubdate_str"],
         use_score: bool = False,
         threshold: int = 2,
     ) -> dict:
         res = {}
+        qwords = self.split_query(query)["keywords"]
         for hit in hits:
             merged_highlights = hit.get("merged_highlights", {})
-            if use_score:
-                hit_score = hit.get("score", 1)
-            else:
-                hit_score = 1
+            hit_score = hit.get("score", 1) if use_score else 1
             for field, text in merged_highlights.items():
-                if field in exclude_fields:
+                if field in exclude_fields or not text:
                     continue
-                if text:
-                    if isinstance(text, list):
-                        htext = text[0]
-                    else:
-                        htext = text
-                    highlighted_keywords = self.extract_highlighted_keywords(htext)
-                    res[field] = res.get(field, {})
-                    for keyword, keyword_count in highlighted_keywords.items():
-                        keyword = keyword.lower().replace(" ", "")
-                        res[field][keyword] = (
-                            res[field].get(keyword, 0) + keyword_count * hit_score
-                        )
+                htext = text[0] if isinstance(text, list) else text
+                hwords = self.extract_highlighted_keywords(htext)
+                for hword, hword_count in hwords.items():
+                    hword = hword.lower().replace(" ", "")
+                    for qword in qwords:
+                        if len(qwords) == 1 or self.qword_match_hword(qword, hword):
+                            res[qword] = res.get(qword, {})
+                            res[qword][hword] = (
+                                res[qword].get(hword, 0) + hword_count * hit_score
+                            )
         res = {
-            field: {k: v for k, v in keywords.items() if v >= threshold}
-            for field, keywords in res.items()
+            qword: {k: v for k, v in hwords.items() if v >= threshold}
+            for qword, hwords in res.items()
         }
         res = {
-            field: dict(sorted(keywords.items(), key=lambda x: x[1], reverse=True))
-            for field, keywords in res.items()
+            qword: dict(sorted(hwords.items(), key=lambda x: x[1], reverse=True))
+            for qword, hwords in res.items()
         }
         return res
 

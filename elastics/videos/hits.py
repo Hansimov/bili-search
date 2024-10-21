@@ -48,6 +48,7 @@ class VideoHitsParser:
     ) -> list[dict]:
         if not res_dict:
             hits_info = {
+                "query": query,
                 "request_type": request_type,
                 "detail_level": detail_level,
                 "took": -1,
@@ -105,6 +106,7 @@ class VideoHitsParser:
         if limit > 0:
             hits = hits[:limit]
         hits_info = {
+            "query": query,
             "request_type": request_type,
             "detail_level": detail_level,
             "took": res_dict["took"],
@@ -112,7 +114,7 @@ class VideoHitsParser:
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
-            "highlighted_keywords": self.highlighs_counter.count_keywords(hits),
+            "highlighted_keywords": self.highlighs_counter.count_keywords(query, hits),
             "related_authors": self.highlighs_counter.count_authors(hits),
         }
         logger.enter_quiet(not verbose)
