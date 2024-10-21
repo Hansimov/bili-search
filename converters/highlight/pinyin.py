@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from tclogger import logger
 from typing import Union
@@ -9,6 +10,7 @@ from converters.highlight.merge import HighlightMerger
 class PinyinHighlighter:
     def __init__(self):
         self.pinyinizer = ChinesePinyinizer()
+        self.letter_pattern = re.compile(r"[a-zA-Z]+")
 
     def calc_pinyin_offsets(self, pinyins: list[str]):
         # Example:
@@ -35,12 +37,21 @@ class PinyinHighlighter:
         istart, iend = None, None
         q_pinyin = query_pinyin
         for idx, text_pinyin in enumerate(text_pinyins):
-            if text_pinyin.startswith(q_pinyin) and iend is None:
+            is_prefix = q_pinyin.startswith(text_pinyin)
+            is_suffix = text_pinyin.startswith(q_pinyin)
+            if is_suffix and iend is None:
                 iend = idx
-            if q_pinyin.startswith(text_pinyin):
+            if is_prefix:
                 if istart is None:
                     istart = idx
                 q_pinyin = q_pinyin[len(text_pinyin) :]
+            if (
+                not is_prefix
+                and not is_suffix
+                and self.letter_pattern.match(text_pinyin)
+            ):
+                q_pinyin = query_pinyin
+                istart, iend = None, None
             if istart is not None and iend is not None:
                 matched_indices.append((istart, iend))
                 q_pinyin = query_pinyin
