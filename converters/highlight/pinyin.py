@@ -1,32 +1,13 @@
-import pypinyin
-
-from functools import partial
 from tclogger import logger
 from typing import Union
 
+from converters.query.pinyin import ChinesePinyinizer
 from converters.highlight.merge import HighlightMerger
 
 
 class PinyinHighlighter:
     def __init__(self):
-        self.pinyinize = partial(
-            pypinyin.pinyin, style=pypinyin.STYLE_NORMAL, heteronym=True
-        )
-
-    def filter_chars_from_pinyin(self, pinyins: list[str]) -> list[str]:
-        res = []
-        for pinyin in pinyins:
-            pinyin_chars = "".join([ch for ch in pinyin if ch.isalnum()]).lower()
-            res.append(pinyin_chars)
-        return res
-
-    def text_to_pinyins(self, text: str) -> list[str]:
-        pinyins = self.pinyinize(text)
-        pinyins = self.filter_chars_from_pinyin(pinyins)
-        return pinyins
-
-    def text_to_pinyin_str(self, text: str) -> str:
-        return "".join(self.text_to_pinyins(text))
+        self.pinyinizer = ChinesePinyinizer()
 
     def calc_pinyin_offsets(self, pinyins: list[str]):
         # Example:
@@ -82,11 +63,10 @@ class PinyinHighlighter:
             return None
 
         logger.enter_quiet(not verbose)
-        text_segs = list(text)
 
-        keyword_pinyin = self.text_to_pinyin_str(keyword)
-        text_pinyins = self.pinyinize(text_segs)
-        text_pinyins = self.filter_chars_from_pinyin(text_pinyins)
+        text_segs = self.pinyinizer.text_to_segs(text)
+        keyword_pinyin = self.pinyinizer.text_to_pinyin_str(keyword)
+        text_pinyins = self.pinyinizer.text_to_pinyin_segs(text)
 
         logger.mesg(f"Keyword : {keyword}")
         logger.mesg(f"Text    : {text}")
