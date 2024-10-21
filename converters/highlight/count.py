@@ -1,11 +1,13 @@
 import re
 
 from converters.query.punct import Puncter
+from converters.query.pinyin import ChinesePinyinizer
 
 
 class HighlightsCounter:
     def __init__(self):
         self.puncter = Puncter()
+        self.pinyinizer = ChinesePinyinizer()
 
     def extract_highlighted_keywords(
         self, htext: str, tag="hit", remove_puncts: bool = True
@@ -20,7 +22,12 @@ class HighlightsCounter:
         return highlighted_keywords
 
     def qword_match_hword(self, qword: str, hword: str):
-        return qword == hword
+        if qword.startswith(hword):
+            return True
+        qword_pinyin = self.pinyinizer.text_to_pinyin_str(qword)
+        hword_pinyin = self.pinyinizer.text_to_pinyin_str(hword)
+        if hword_pinyin.startswith(qword_pinyin):
+            return True
 
     def count_keywords(
         self,
