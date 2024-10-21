@@ -15,13 +15,15 @@ def test_random():
 
 
 def test_suggest():
-    query = "影视飓feng"
+    # query = "影视飓feng"
+    query = "影视ju :date<=7d"
+    # query = "changcheng"
     logger.note(f"> Query: [{logstr.mesg(query)}]")
     res = searcher.suggest(query, limit=50, verbose=True)
     hits = res.pop("hits")
     logger.success(f"✓ Suggest results:")
     logger.success(dict_to_str(res), indent=2)
-    # for idx, hit in enumerate(hits):
+    # for idx, hit in enumerate(hits[:3]):
     #     logger.note(f"* Hit {idx}:")
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
@@ -41,7 +43,7 @@ def test_multi_level_search():
 
 
 def test_search():
-    query = "影视飓feng"
+    query = "影视飓风"
     logger.note("> Searching results:", end=" ")
     logger.file(f"[{query}]")
     res = searcher.search(
