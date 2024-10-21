@@ -2,7 +2,7 @@ from copy import deepcopy
 from datetime import datetime
 from pprint import pformat
 from tclogger import logger, logstr, dict_to_str
-from typing import Union
+from typing import Union, Literal
 
 from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
@@ -65,6 +65,7 @@ class VideoSearcher:
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
+        request_type: Literal["search", "suggest"] = "search",
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -185,7 +186,7 @@ class VideoSearcher:
                 query,
                 match_fields,
                 res_dict,
-                request_type="search",
+                request_type=request_type,
                 drop_no_highlights=True,
                 match_type=match_type,
                 match_operator=match_operator,
@@ -207,6 +208,7 @@ class VideoSearcher:
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        request_type: Literal["search", "suggest"] = "search",
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -242,6 +244,7 @@ class VideoSearcher:
                 source_fields=source_fields,
                 match_type=match_type,
                 match_bool=match_bool,
+                request_type=request_type,
                 parse_hits=parse_hits,
                 is_explain=is_explain,
                 boost=boost,
@@ -288,6 +291,7 @@ class VideoSearcher:
             match_bool=match_bool,
             match_operator=match_operator,
             extra_filters=extra_filters,
+            request_type="suggest",
             parse_hits=parse_hits,
             is_explain=is_explain,
             boost=boost,
@@ -329,6 +333,7 @@ class VideoSearcher:
             source_fields=source_fields,
             match_type=match_type,
             match_bool=match_bool,
+            request_type="suggest",
             parse_hits=parse_hits,
             is_explain=is_explain,
             boost=boost,
