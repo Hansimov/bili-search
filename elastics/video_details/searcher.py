@@ -5,7 +5,8 @@ from tclogger import logger
 from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
-from elastics.highlighter import PinyinHighlighter, HighlightMerger
+from converters.highlight.merge import HighlightMerger
+from converters.highlight.pinyin import PinyinHighlighter
 from elastics.structure import get_es_source_val
 
 

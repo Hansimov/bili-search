@@ -2,8 +2,9 @@ from typing import Literal
 from tclogger import logger
 
 from elastics.structure import get_es_source_val
-from elastics.highlighter import PinyinHighlighter, HighlightMerger
-from elastics.highlighter import HighlightsCounter
+from converters.highlight.merge import HighlightMerger
+from converters.highlight.count import HighlightsCounter
+from converters.highlight.pinyin import PinyinHighlighter
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 
 
