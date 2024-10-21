@@ -18,7 +18,7 @@ def test_highlights_counter():
     # query = "ali"
     # text = "给百大UP主加上特效，这可太炸裂了！【百大UP主颁奖】"
     query = "影视飓风 xiangsu"
-    text = "【影视飓风】4万块的1亿像素中画幅？"
+    text = "【影 视 飓 风】4万块的1亿像素中画幅？"
     res_text = highlighter.highlight(query, text, tag="hit", verbose=True)
     logger.mesg(f"Merged highlighted text:", end=" ")
     logger.success(res_text)
@@ -29,9 +29,9 @@ def test_highlights_counter():
 
 def test_pinyin_highlighter():
     query_text_list = [
-        ("changcheng", "万里chang城永不倒"),
-        ("影视ju", "影视飓风"),
-        ("zhangcheng", "【熟肉】线性代数的本质 - 02 - 线性组合、张成的空间与基"),
+        ("changcheng", "万里长城永不倒"),
+        ("影视j", "影视飓风"),
+        ("线性", "【熟肉】线 性代数的本质 - 02 - 线性组合、张成的空间与基"),
     ]
     for query, text in query_text_list:
         highlighter = PinyinHighlighter()

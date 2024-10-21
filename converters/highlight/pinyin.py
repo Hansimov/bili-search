@@ -1,3 +1,4 @@
+from copy import deepcopy
 from tclogger import logger
 from typing import Union
 
@@ -31,28 +32,24 @@ class PinyinHighlighter:
         #   text_pinyins = ["zai", "a", "li", "ba", "ba"]
         # then matched indices are: [1, 2]
         matched_indices = []
-        text_pinyin_offsets = self.calc_pinyin_offsets(text_pinyins)
-        text_pinyin_start_offsets = [
-            start_offset for (start_offset, end_offset) in text_pinyin_offsets
-        ]
+        istart, iend = None, None
+        q_pinyin = query_pinyin
+        for idx, text_pinyin in enumerate(text_pinyins):
+            if text_pinyin.startswith(q_pinyin) and iend is None:
+                iend = idx
+            if q_pinyin.startswith(text_pinyin):
+                if istart is None:
+                    istart = idx
+                q_pinyin = q_pinyin[len(text_pinyin) :]
+            if istart is not None and iend is not None:
+                matched_indices.append((istart, iend))
+                q_pinyin = query_pinyin
+                istart, iend = None, None
 
-        text_pinyin_str = "".join(text_pinyins)
-        matched_start_index = text_pinyin_str.find(query_pinyin)
-        matched_end_index = matched_start_index + len(query_pinyin)
-
-        if (
-            matched_start_index >= 0
-            and matched_start_index in text_pinyin_start_offsets
-        ):
-            logger.mesg(f"Matched index: {matched_start_index}, {matched_end_index}")
-
-            for i, (start_offset, end_offset) in enumerate(text_pinyin_offsets):
-                if (
-                    start_offset >= matched_start_index
-                    and start_offset <= matched_end_index - 1
-                    and text_pinyins[i]
-                ):
-                    matched_indices.append(i)
+        if matched_indices:
+            logger.success(f"Matched indices: ({matched_indices})")
+        else:
+            logger.error("No matched index found!")
 
         return matched_indices
 
@@ -79,25 +76,16 @@ class PinyinHighlighter:
             logger.exit_quiet(not verbose)
             return None
 
-        matched_index_start = matched_indices[0]
-        matched_index_end = matched_indices[-1]
-        logger.mesg(f"Matched indices: {matched_indices}")
-
-        matched_segs = [text_segs[i] for i in matched_indices]
-        logger.mesg(f"Matched segs: {matched_segs}")
-
-        highlighted_text_segs = text_segs[matched_index_start : matched_index_end + 1]
-        highlighted_text = f"<{tag}>" + "".join(highlighted_text_segs) + f"</{tag}>"
-        combined_highlighted_text = (
-            "".join(text_segs[:matched_index_start])
-            + highlighted_text
-            + "".join(text_segs[matched_index_end + 1 :])
-        )
-        logger.mesg(f"Highlighted text: {combined_highlighted_text}")
+        htext_segs = deepcopy(text_segs)
+        for istart, iend in matched_indices:
+            htext_segs[istart] = f"<{tag}>" + htext_segs[istart]
+            htext_segs[iend] = htext_segs[iend] + f"</{tag}>"
+        htext_str = "".join(htext_segs)
+        logger.mesg(f"Highlighted text: {htext_str}")
 
         logger.exit_quiet(not verbose)
 
-        return combined_highlighted_text
+        return htext_str
 
     def highlight(self, query: str, text: str, tag: str = "em", verbose: bool = False):
         keywords = query.split()
