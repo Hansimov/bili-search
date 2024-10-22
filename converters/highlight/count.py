@@ -90,7 +90,12 @@ class HighlightsCounter:
                 res[name] = {"uid": uid, "count": 1}
                 if "owner.name" in hit["merged_highlights"].keys():
                     res[name]["highlighted"] = True
-        res = {name: info for name, info in res.items() if info["count"] >= threshold}
+        res = {
+            name: info
+            for name, info in res.items()
+            if info["count"] >= threshold
+            or (info.get("highlighted", False) and info["count"] >= threshold - 1)
+        }
         if not res and threshold_level == 0:
             res = self.count_authors(hits, threshold_level=1, top_k=top_k)
         else:
