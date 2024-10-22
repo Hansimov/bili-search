@@ -65,7 +65,15 @@ class HighlightsCounter:
         }
         return res
 
-    def count_authors(self, hits: list[dict], threshold: int = 2) -> dict:
+    def count_authors(
+        self, hits: list[dict], threshold: int = 2, top_k: int = 8
+    ) -> dict:
+        if len(hits) <= 20:
+            threshold = 2
+        elif len(hits) <= 100:
+            threshold = 3
+        else:
+            threshold = 4
         res = {}
         for hit in hits:
             owner = hit.get("owner", {})
@@ -85,4 +93,5 @@ class HighlightsCounter:
                 reverse=True,
             )
         )
+        res = dict(list(res.items())[:top_k])
         return res
