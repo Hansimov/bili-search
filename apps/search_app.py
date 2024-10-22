@@ -50,6 +50,7 @@ class SearchApp:
     def search(
         self,
         query: str = Body(...),
+        suggest_info: Optional[dict] = Body({}),
         match_fields: Optional[list[str]] = Body(SEARCH_MATCH_FIELDS),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
@@ -63,6 +64,7 @@ class SearchApp:
             match_fields=match_fields,
             source_fields=source_fields,
             match_type=match_type,
+            suggest_info=suggest_info,
             detail_level=detail_level,
             max_detail_level=max_detail_level,
             limit=limit,

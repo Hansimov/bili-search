@@ -7,6 +7,7 @@ from typing import Union, Literal
 from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
+from converters.query.rewrite import QueryRewriter
 from elastics.client import ElasticSearchClient
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
@@ -32,6 +33,7 @@ class VideoSearcher:
         self.es = ElasticSearchClient(verbose=elastic_verbose)
         self.es.connect()
         self.hit_parser = VideoHitsParser()
+        self.query_rewriter = QueryRewriter()
 
     def get_highlight_settings(self, match_fields: list[str], tag: str = "hit"):
         highlight_fields = [
@@ -65,6 +67,7 @@ class VideoSearcher:
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
+        suggest_info: dict = {},
         request_type: Literal["search", "suggest"] = "search",
         parse_hits: bool = True,
         is_explain: bool = False,
@@ -123,6 +126,8 @@ class VideoSearcher:
 
         filter_extractor = QueryFilterExtractor()
         query_keywords, filters = filter_extractor.construct(query)
+        if suggest_info:
+            query_keywords = self.query_rewriter.rewrite(query_keywords, suggest_info)
         query_without_filters = " ".join(query_keywords)
 
         query_constructor = MultiMatchQueryDSLConstructor()
@@ -208,6 +213,8 @@ class VideoSearcher:
         source_fields: list[str] = SOURCE_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
         request_type: Literal["search", "suggest"] = "search",
         parse_hits: bool = True,
         is_explain: bool = False,
@@ -244,6 +251,8 @@ class VideoSearcher:
                 source_fields=source_fields,
                 match_type=match_type,
                 match_bool=match_bool,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
                 request_type=request_type,
                 parse_hits=parse_hits,
                 is_explain=is_explain,
