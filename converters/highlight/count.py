@@ -66,7 +66,11 @@ class HighlightsCounter:
         return res
 
     def count_authors(
-        self, hits: list[dict], threshold: int = 2, top_k: int = 8
+        self,
+        hits: list[dict],
+        threshold: int = 2,
+        threshold_level: int = 0,
+        top_k: int = 8,
     ) -> dict:
         if len(hits) <= 20:
             threshold = 2
@@ -74,6 +78,7 @@ class HighlightsCounter:
             threshold = 3
         else:
             threshold = 4
+        threshold -= threshold_level
         res = {}
         for hit in hits:
             owner = hit.get("owner", {})
@@ -86,12 +91,18 @@ class HighlightsCounter:
                 if "owner.name" in hit["merged_highlights"].keys():
                     res[name]["highlighted"] = True
         res = {name: info for name, info in res.items() if info["count"] >= threshold}
-        res = dict(
-            sorted(
-                res.items(),
-                key=lambda item: (item[1].get("highlighted", False), item[1]["count"]),
-                reverse=True,
+        if not res and threshold_level == 0:
+            res = self.count_authors(hits, threshold_level=1, top_k=top_k)
+        else:
+            res = dict(
+                sorted(
+                    res.items(),
+                    key=lambda item: (
+                        item[1].get("highlighted", False),
+                        item[1]["count"],
+                    ),
+                    reverse=True,
+                )
             )
-        )
-        res = dict(list(res.items())[:top_k])
+            res = dict(list(res.items())[:top_k])
         return res
