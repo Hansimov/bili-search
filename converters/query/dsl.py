@@ -1,5 +1,4 @@
 import math
-import re
 
 from datetime import datetime
 from tclogger import get_now_ts
@@ -9,6 +8,9 @@ from converters.times import DateFormatChecker
 from converters.query.pinyin import ChinesePinyinizer
 from converters.field.date import DateFieldConverter
 from converters.query.punct import HansChecker
+from converters.query.field import is_pinyin_field, is_field_in_fields
+from converters.query.field import remove_fields_from_fields
+from converters.query.field import remove_suffixes_from_fields
 
 
 class MultiMatchQueryDSLConstructor:
@@ -16,55 +18,6 @@ class MultiMatchQueryDSLConstructor:
         self.pinyinizer = ChinesePinyinizer()
         self.date_field_converter = DateFieldConverter()
         self.hans_checker = HansChecker()
-
-    def remove_boost_from_fields(self, fields: list[str]) -> list[str]:
-        return [field.split("^", 1)[0] for field in fields]
-
-    def deboost_field(self, field: str):
-        return field.split("^", 1)[0]
-
-    def is_pinyin_field(self, field: str):
-        return self.deboost_field(field).endswith(".pinyin")
-
-    def remove_fields_from_fields(
-        self, fields_to_remove: Union[str, list], fields: list[str]
-    ) -> list[str]:
-        if isinstance(fields_to_remove, str):
-            fields_to_remove = [fields_to_remove]
-        clean_fields = []
-        for field in fields:
-            for field_to_remove in fields_to_remove:
-                if not field.startswith(field_to_remove):
-                    clean_fields.append(field)
-        return clean_fields
-
-    def is_field_in_fields(self, field_to_check: str, fields: list[str]) -> bool:
-        for field in fields:
-            if field.startswith(field_to_check):
-                return True
-        return False
-
-    def remove_fields_suffixes(
-        self,
-        fields: list[str],
-        suffixes: list[Literal[".words", ".pinyin"]] = [".words"],
-    ):
-        """Example: title.words^4 -> title^4"""
-        res = []
-        RE_SUFFIX = "|".join(suffixes)
-        pattern = rf"^(?P<field>.+?)((\{RE_SUFFIX}))(?P<boost>\^\d+(\.\d+)?)?$"
-        for field in fields:
-            logger.note(field)
-            match = re.match(pattern, field)
-            if match:
-                field_name = match.group("field")
-                field_boost = match.group("boost") or ""
-                field_without_suffix = f"{field_name}{field_boost}"
-                res.append(field_without_suffix)
-                logger.success(field_without_suffix)
-            else:
-                res.append(field)
-        return res
 
     def construct_match_clause(
         self,
@@ -103,7 +56,7 @@ class MultiMatchQueryDSLConstructor:
                 ]
             )
 
-        non_date_fields = self.remove_fields_from_fields(date_fields, date_match_fields)
+        non_date_fields = remove_fields_from_fields(date_fields, date_match_fields)
         if non_date_fields:
             clause["bool"]["should"].append(
                 self.construct_match_clause(
@@ -131,8 +84,7 @@ class MultiMatchQueryDSLConstructor:
         clauses = []
         for combined_fields in combined_fields_list:
             if all(
-                self.is_field_in_fields(cfield, match_fields)
-                for cfield in combined_fields
+                is_field_in_fields(cfield, match_fields) for cfield in combined_fields
             ):
                 combined_fields_fullnames = [
                     mfield
@@ -168,9 +120,7 @@ class MultiMatchQueryDSLConstructor:
             }
         }
 
-        fields_with_pinyin = [
-            field for field in match_fields if self.is_pinyin_field(field)
-        ]
+        fields_with_pinyin = [field for field in match_fields if is_pinyin_field(field)]
         if fields_with_pinyin:
             keyword_pinyin = self.pinyinizer.convert(keyword)
 
@@ -191,7 +141,7 @@ class MultiMatchQueryDSLConstructor:
             clause["bool"]["should"].append(match_clause)
 
         fields_without_pinyin = [
-            field for field in match_fields if not self.is_pinyin_field(field)
+            field for field in match_fields if not is_pinyin_field(field)
         ]
         if fields_without_pinyin:
             combined_fields_clauses = self.construct_combined_fields_clauses(
@@ -226,14 +176,12 @@ class MultiMatchQueryDSLConstructor:
         query_dsl_dict = {"bool": {match_bool: []}}
         query_keywords = query.split()
         checker = DateFormatChecker()
-        match_non_date_fields = self.remove_fields_from_fields(
-            date_fields, match_fields
+        match_non_date_fields = remove_fields_from_fields(date_fields, match_fields)
+        match_non_date_fields_without_suffix = remove_suffixes_from_fields(
+            match_non_date_fields, suffixes=[".words"]
         )
-        match_non_date_fields_without_suffix = self.remove_fields_suffixes(
-            match_non_date_fields
-        )
-        date_match_fields_without_suffix = self.remove_fields_suffixes(
-            date_match_fields
+        date_match_fields_without_suffix = remove_suffixes_from_fields(
+            date_match_fields, suffixes=[".words"]
         )
 
         for keyword in query_keywords:
