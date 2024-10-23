@@ -17,8 +17,11 @@ class HighlightMerger:
         # get indexes of highlighted segments in text
         hindexes = []
         for hseg in hsegs:
-            for match in re.finditer(hseg, text):
-                hindexes.append((match.start(), match.end()))
+            try:
+                for match in re.finditer(re.escape(hseg), text):
+                    hindexes.append((match.start(), match.end()))
+            except Exception as e:
+                pass
 
         # combine overlapping indexes
         hindexes.sort()
