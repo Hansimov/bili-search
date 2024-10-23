@@ -111,10 +111,10 @@ SUGGEST_MATCH_BOOL = SEARCH_MATCH_BOOL
 SUGGEST_MATCH_OPERATOR = SEARCH_MATCH_OPERATOR
 
 # search detail levels
-SEARCH_DETAIL_BASE = {"match_type": SEARCH_MATCH_TYPE, "bool": SEARCH_MATCH_BOOL}
 SEARCH_DETAIL_LEVELS = {
     1: {
-        **SEARCH_DETAIL_BASE,
+        "match_type": SEARCH_MATCH_TYPE,
+        "bool": SEARCH_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 100}}},
             {"range": {"stat.coin": {"gte": 1}}},
@@ -122,7 +122,8 @@ SEARCH_DETAIL_LEVELS = {
         "timeout": 2,
     },
     2: {
-        **SEARCH_DETAIL_BASE,
+        "match_type": SEARCH_MATCH_TYPE,
+        "bool": SEARCH_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 1000}}},
             {"range": {"stat.coin": {"gte": 10}}},
@@ -130,10 +131,11 @@ SEARCH_DETAIL_LEVELS = {
         "timeout": 3,
     },
     3: {
-        **SEARCH_DETAIL_BASE,
+        "match_type": "phrase",
+        "bool": SEARCH_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 10000}}},
-            {"range": {"stat.coin": {"gte": 25}}},
+            {"range": {"stat.coin": {"gte": 15}}},
         ],
         "timeout": 4,
     },
@@ -141,10 +143,10 @@ SEARCH_DETAIL_LEVELS = {
 MAX_SEARCH_DETAIL_LEVEL = 3
 
 # suggest detail levels
-SUGGEST_DETAIL_BASE = {"match_type": SUGGEST_MATCH_TYPE, "bool": SUGGEST_MATCH_BOOL}
 SUGGEST_DETAIL_LEVELS = {
     1: {
-        **SUGGEST_DETAIL_BASE,
+        "match_type": SUGGEST_MATCH_TYPE,
+        "bool": SUGGEST_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 200}}},
             {"range": {"stat.coin": {"gte": 5}}},
@@ -152,7 +154,8 @@ SUGGEST_DETAIL_LEVELS = {
         "timeout": 1.5,
     },
     2: {
-        **SUGGEST_DETAIL_BASE,
+        "match_type": SUGGEST_MATCH_TYPE,
+        "bool": SUGGEST_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 1000}}},
             {"range": {"stat.coin": {"gte": 10}}},
@@ -160,10 +163,11 @@ SUGGEST_DETAIL_LEVELS = {
         "timeout": 2,
     },
     3: {
-        **SUGGEST_DETAIL_BASE,
+        "match_type": SUGGEST_MATCH_TYPE,
+        "bool": SUGGEST_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gt": 10000}}},
-            {"range": {"stat.coin": {"gt": 25}}},
+            {"range": {"stat.coin": {"gt": 20}}},
         ],
         "timeout": 3,
     },
