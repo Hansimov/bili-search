@@ -8,6 +8,8 @@ from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.rewrite import QueryRewriter
+from converters.query.field import is_pinyin_field, deboost_field
+from converters.query.field import remove_suffixes_from_fields
 from elastics.client import ElasticSearchClient
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
@@ -35,12 +37,23 @@ class VideoSearcher:
         self.hit_parser = VideoHitsParser()
         self.query_rewriter = QueryRewriter()
 
-    def get_highlight_settings(self, match_fields: list[str], tag: str = "hit"):
+    def get_highlight_settings(
+        self,
+        match_fields: list[str],
+        removable_suffixes: list[str] = [".words"],
+        tag: str = "hit",
+    ):
         highlight_fields = [
-            field.split("^", 1)[0]
-            for field in match_fields
-            if not field.endswith(".pinyin")
+            deboost_field(field) for field in match_fields if not is_pinyin_field(field)
         ]
+        if removable_suffixes:
+            highlight_fields.extend(
+                remove_suffixes_from_fields(
+                    highlight_fields, suffixes=removable_suffixes
+                )
+            )
+
+        highlight_fields = sorted(list(set(highlight_fields)))
         highlight_fields_dict = {field: {} for field in highlight_fields}
 
         highlight_settings = {
