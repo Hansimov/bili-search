@@ -7,18 +7,21 @@ class QueryRewriter:
     ) -> list[str]:
         if not suggest_info:
             return query_keywords
-        query_keywords = deepcopy(query_keywords)
+        qwords = deepcopy(query_keywords)
         suggest_wordict = suggest_info.get("highlighted_keywords", {})
         if not suggest_wordict:
-            return query_keywords
-        for idx, qword in enumerate(query_keywords):
+            return qwords
+        for idx, qword in enumerate(qwords):
             choices = suggest_wordict.get(qword, {})
             if choices:
                 choices = dict(
                     sorted(choices.items(), key=lambda x: x[1], reverse=True)
                 )
-                new_qword, count = list(choices.items())[0]
-                if new_qword != qword and count >= threshold:
-                    query_keywords[idx] = new_qword
+                best_qword, count = list(choices.items())[0]
+                same_qword_count = choices.get(qword, 0)
+                if same_qword_count >= threshold:
+                    continue
+                if best_qword != qword and count >= threshold:
+                    qwords[idx] = best_qword
 
-        return query_keywords
+        return qwords
