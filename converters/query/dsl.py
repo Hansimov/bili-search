@@ -1,4 +1,5 @@
 import math
+import re
 
 from datetime import datetime
 from tclogger import get_now_ts
@@ -7,12 +8,14 @@ from typing import Literal, Union
 from converters.times import DateFormatChecker
 from converters.query.pinyin import ChinesePinyinizer
 from converters.field.date import DateFieldConverter
+from converters.query.punct import HansChecker
 
 
 class MultiMatchQueryDSLConstructor:
     def __init__(self) -> None:
         self.pinyinizer = ChinesePinyinizer()
         self.date_field_converter = DateFieldConverter()
+        self.hans_checker = HansChecker()
 
     def remove_boost_from_fields(self, fields: list[str]) -> list[str]:
         return [field.split("^", 1)[0] for field in fields]
@@ -40,6 +43,28 @@ class MultiMatchQueryDSLConstructor:
             if field.startswith(field_to_check):
                 return True
         return False
+
+    def remove_fields_suffixes(
+        self,
+        fields: list[str],
+        suffixes: list[Literal[".words", ".pinyin"]] = [".words"],
+    ):
+        """Example: title.words^4 -> title^4"""
+        res = []
+        RE_SUFFIX = "|".join(suffixes)
+        pattern = rf"^(?P<field>.+?)((\{RE_SUFFIX}))(?P<boost>\^\d+(\.\d+)?)?$"
+        for field in fields:
+            logger.note(field)
+            match = re.match(pattern, field)
+            if match:
+                field_name = match.group("field")
+                field_boost = match.group("boost") or ""
+                field_without_suffix = f"{field_name}{field_boost}"
+                res.append(field_without_suffix)
+                logger.success(field_without_suffix)
+            else:
+                res.append(field)
+        return res
 
     def construct_match_clause(
         self,
@@ -98,7 +123,8 @@ class MultiMatchQueryDSLConstructor:
         match_type: Literal["phrase_prefix", "bool_prefix"] = "phrase_prefix",
         combined_fields_list: list[list[str]] = [],
     ) -> list[dict]:
-        """NOTE: Only text fields are supported, and they must all have the same search analyzer.
+        """NOTE: Currently this method is not used indeed.
+        And only text fields are supported, and they must all have the same search analyzer.
         See also:
         - https://www.elastic.co/guide/en/elasticsearch/reference/8.14/query-dsl-combined-fields-query.html#combined-field-top-level-params
         """
@@ -203,8 +229,15 @@ class MultiMatchQueryDSLConstructor:
         match_non_date_fields = self.remove_fields_from_fields(
             date_fields, match_fields
         )
+        match_non_date_fields_without_suffix = self.remove_fields_suffixes(
+            match_non_date_fields
+        )
+        date_match_fields_without_suffix = self.remove_fields_suffixes(
+            date_match_fields
+        )
 
         for keyword in query_keywords:
+            is_keywod_no_hans = self.hans_checker.no_hans(keyword)
             checker.init_year_month_day()
             is_keyword_date_format = checker.is_in_date_range(
                 keyword, start="2009-09-09", end=datetime.now(), verbose=False
@@ -212,7 +245,11 @@ class MultiMatchQueryDSLConstructor:
             if is_keyword_date_format:
                 clause = self.construct_query_for_date_keyword(
                     keyword,
-                    date_match_fields,
+                    (
+                        date_match_fields_without_suffix
+                        if is_keywod_no_hans
+                        else date_match_fields
+                    ),
                     checker,
                     match_type=match_type,
                     match_operator=match_operator,
@@ -220,7 +257,11 @@ class MultiMatchQueryDSLConstructor:
             else:
                 clause = self.construct_query_for_text_keyword(
                     keyword,
-                    match_non_date_fields,
+                    (
+                        match_non_date_fields_without_suffix
+                        if is_keywod_no_hans
+                        else match_non_date_fields
+                    ),
                     match_type=match_type,
                     match_operator=match_operator,
                     combined_fields_list=combined_fields_list,
@@ -495,7 +536,8 @@ if __name__ == "__main__":
             boost = SEARCH_BOOSTED_FIELDS[mfield]
             match_fields[idx] = f"{mfield}^{boost}"
 
-    queries = ["秋葉aaaki 2024", "影视飓feng 2024-01"]
+    # queries = ["秋葉aaaki 2024", "影视飓feng 2024-01"]
+    queries = ["雷军 are you ok 2024"]
     constructor = MultiMatchQueryDSLConstructor()
     for query in queries:
         logger.note(f"> [{logstr.mesg(query)}]:")
