@@ -7,7 +7,7 @@ from converters.field.operators import OP_MAP, BRACKET_MAP
 
 
 class DateFieldConverter:
-    RE_DATE_FIELD = rf"(日期|rq|d|date|dt)"
+    RE_DATE_FIELD = rf"(?i:(日期|时间|rq|date|dt|d))"
     REP_DATE_FIELD = rf"(?P<date_field>{RE_DATE_FIELD})"
 
     # DATE: YMDH, YMD, YM, YYYY, MDH, MD
@@ -235,6 +235,8 @@ class DateFieldConverter:
                 month = int(match.group("md_mm"))
                 day = int(match.group("md_dd"))
                 start_dt = datetime(now.year, month, day)
+                if start_dt.timestamp() > now.timestamp():
+                    start_dt = datetime(now.year - 1, month, day)
                 end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
             else:
                 logger.warn(f"× No match for type <range_date>: {date_str}")

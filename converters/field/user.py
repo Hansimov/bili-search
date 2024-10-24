@@ -6,7 +6,7 @@ from converters.query.punct import Puncter
 
 
 class UserFieldConverter:
-    RE_USER_FIELD = r"(name|author|uploader|up|user|u)"
+    RE_USER_FIELD = r"(?i:(用户|昵称|作者|name|author|uploader|up|user|u))"
     REP_USER_FIELD = rf"(?P<user_field>{RE_USER_FIELD})"
     RE_USER_VAL = r"[^:：,，\[\]\(\)\n\s]+"
     # indeed, bilibili user names only support "-" and "_"

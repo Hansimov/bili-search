@@ -5,13 +5,13 @@ from converters.field.operators import OP_MAP, BRACKET_MAP
 
 
 class StatFieldConverter:
-    RE_VIEW = r"(播放|bofang|bof|bf|view|vw|v)"
-    RE_LIKE = r"(点赞|dianzan|dianz|dz|like|lk|l)"
-    RE_COIN = r"(投币|toubi|toub|tb|coin|cn|c)"
-    RE_FAVORITE = r"(收藏|shouchang|shouc|sc|favorite|fav|fv|star|f)"
-    RE_REPLY = r"(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp|r)"
-    RE_DANMAKU = r"(弹幕|danmu|danm|dm|danmaku|m)"
-    RE_SHARE = r"(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh|s)"
+    RE_VIEW = r"(?i:(播放|bofang|bof|bf|view|vw|v))"
+    RE_LIKE = r"(?i:(点赞|dianzan|dianz|dz|like|lk|l))"
+    RE_COIN = r"(?i:(投币|toubi|toub|tb|coin|cn|c))"
+    RE_FAVORITE = r"(?i:(收藏|shouchang|shouc|sc|favorite|fav|fv|star|f))"
+    RE_REPLY = r"(?i:(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp|r))"
+    RE_DANMAKU = r"(?i:(弹幕|danmu|danm|dm|danmaku|m))"
+    RE_SHARE = r"(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh|s))"
     RE_STAT_FIELD = rf"({RE_VIEW}|{RE_LIKE}|{RE_COIN}|{RE_FAVORITE}|{RE_REPLY}|{RE_DANMAKU}|{RE_SHARE})"
 
     REP_VIEW = rf"(?P<view>{RE_VIEW})"

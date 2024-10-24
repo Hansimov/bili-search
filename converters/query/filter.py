@@ -19,7 +19,7 @@ class QueryFilterExtractor:
     RE_RANGE_SEP = RE_COMMA
 
     RE_KEYWORD = r"[^:：\n\s\.]+"
-    RE_FILTER_SEP = r"[:：]+"
+    RE_FILTER_SEP = r"[:：]*"
 
     REP_DATE_FIELD = DateFieldConverter.REP_DATE_FIELD
     REP_STAT_FIELD = StatFieldConverter.REP_STAT_FIELD
