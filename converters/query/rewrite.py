@@ -1,7 +1,12 @@
 from copy import deepcopy
+from converters.times import DateFormatChecker
+from tclogger import get_now
 
 
 class QueryRewriter:
+    def __init__(self):
+        self.date_checker = DateFormatChecker()
+
     def rewrite(
         self, query_keywords: list[str], suggest_info: dict = {}, threshold: int = 2
     ) -> list[str]:
@@ -12,6 +17,10 @@ class QueryRewriter:
         if not suggest_wordict:
             return qwords
         for idx, qword in enumerate(qwords):
+            if self.date_checker.is_in_date_range(
+                qword, start="2009-09-09", end=get_now()
+            ):
+                continue
             choices = suggest_wordict.get(qword, {})
             if choices:
                 choices = dict(

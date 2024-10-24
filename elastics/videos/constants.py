@@ -76,14 +76,14 @@ SUGGEST_BOOSTED_FIELDS = {
     "owner.name.pinyin": 0.4,
 }
 DATE_BOOSTED_FIELDS = {
-    "title": 0.1,
-    "title.words": 0.1,
-    "owner.name": 0.1,
-    "owner.name.words": 0.1,
-    "desc": 0.03,
-    "desc.words": 0.03,
-    "tags": 0.08,
-    "tags.words": 0.08,
+    "title": 0.01,
+    "title.words": 0.01,
+    "owner.name": 0.01,
+    "owner.name.words": 0.01,
+    "desc": 0.003,
+    "desc.words": 0.003,
+    "tags": 0.008,
+    "tags.words": 0.008,
 }
 
 # combined fields
