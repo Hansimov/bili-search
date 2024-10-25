@@ -4,6 +4,7 @@ import uvicorn
 
 from copy import deepcopy
 from fastapi import FastAPI, Body
+from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pprint import pformat
 from pydantic import BaseModel
@@ -20,6 +21,8 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
 from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
+
+from llms.ws.route import WebsocketRouter
 
 
 class SearchApp:
@@ -133,6 +136,15 @@ class SearchApp:
         )
         return doc
 
+    async def websocket(self, ws: WebSocket):
+        try:
+            ws_router = WebsocketRouter(ws)
+            await ws_router.run()
+        # except WebSocketDisconnect:
+        #     logger.success("* ws client disconnected")
+        except Exception as e:
+            logger.warn(f"× ws error: {e}")
+
     def setup_routes(self):
         self.app.post(
             "/suggest",
@@ -158,6 +170,8 @@ class SearchApp:
             "/doc",
             summary="Get video details by bvid",
         )(self.doc)
+
+        self.app.websocket("/ws")(self.websocket)
 
 
 class ArgParser(argparse.ArgumentParser):
