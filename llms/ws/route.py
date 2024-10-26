@@ -1,8 +1,14 @@
+import asyncio
 import json
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+from tclogger import TCLogger
+from functools import partial
 
 from llms.agents.copilot import CopilotAgent
+
+
+logger = TCLogger()
 
 
 class WebsocketMessager:
@@ -14,9 +20,10 @@ class WebsocketMessager:
 
 
 class WebsocketRouter:
-    def __init__(self, ws: WebSocket):
+    def __init__(self, ws: WebSocket, verbose: bool = False):
         self.ws = ws
         self.messager = WebsocketMessager()
+        self.verbose = verbose
 
     async def run(self):
         await self.ws.accept()
@@ -25,8 +32,13 @@ class WebsocketRouter:
             try:
                 msg_type, msg_info = self.messager.parse(msg_str)
                 if msg_type == "chat":
-                    copilot = CopilotAgent()
-                    response = await copilot.chat(msg_info)
-                await self.ws.send_text(response)
-            except:
-                pass
+                    copilot = CopilotAgent(
+                        delta_func=self.ws.send_text, verbose_chat=False
+                    )
+                    await asyncio.to_thread(copilot.chat, msg_info)
+            except WebSocketDisconnect:
+                logger.success("* ws client disconnected")
+                break
+            except Exception as e:
+                logger.warn(f"× ws error: {e}")
+                break
