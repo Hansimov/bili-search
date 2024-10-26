@@ -1,3 +1,4 @@
+import re
 import string
 
 
@@ -46,10 +47,13 @@ class Puncter:
 
 
 class HansChecker:
-    def __init__(self):
+    def __init__(self, digits_is_hans: bool = True):
         self.puncter = Puncter(specials=string.printable)
+        self.digits_is_hans = digits_is_hans
 
     def no_hans(self, text: str) -> bool:
+        if self.digits_is_hans and re.match(r"^\d+$", text):
+            return False
         for ch in text:
             if not self.puncter.is_special_char(ch):
                 return False
