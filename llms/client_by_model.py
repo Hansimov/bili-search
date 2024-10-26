@@ -9,8 +9,9 @@ MODEL_CONFIG_TYPE = Literal["deepseek", "qwen2-72b"]
 class LLMClientByModel:
     def __init__(
         self,
-        model_config: MODEL_CONFIG_TYPE = "qwen2-72b",
+        model_config: MODEL_CONFIG_TYPE = "deepseek",
         system_prompts: list[str] = [],
+        delta_func: callable = None,
         verbose_user: bool = True,
         verbose_assistant: bool = True,
         verbose_content: bool = True,
@@ -26,6 +27,7 @@ class LLMClientByModel:
             "api_format": llm_envs["api_format"],
             "stream": True,
             "init_messages": init_messages,
+            "delta_func": delta_func,
             "verbose_user": verbose_user,
             "verbose_assistant": verbose_assistant,
             "verbose_content": verbose_content,

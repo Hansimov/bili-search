@@ -1,3 +1,4 @@
+import asyncio
 import ast
 import json
 import re
@@ -5,6 +6,7 @@ import requests
 
 from tclogger import logger, logstr, dict_to_str, dt_to_str, Runtimer
 from typing import Literal
+from functools import partial
 
 
 class LLMClient:
@@ -16,6 +18,7 @@ class LLMClient:
         model: str = None,
         stream: bool = None,
         init_messages: str = None,
+        delta_func: callable = None,
         verbose_user: bool = True,
         verbose_assistant: bool = True,
         verbose_content: bool = True,
@@ -28,6 +31,7 @@ class LLMClient:
         self.model = model
         self.stream = stream
         self.init_messages = init_messages
+        self.delta_func = delta_func
         self.verbose_user = verbose_user
         self.verbose_assistant = verbose_assistant
         self.verbose_content = verbose_content
@@ -122,8 +126,15 @@ class LLMClient:
                 if "content" in delta_data:
                     delta_content = delta_data["content"]
                     response_content += delta_content
-                    if self.verbose_content:
-                        logger.mesg(delta_content, end="")
+                    if self.delta_func is None:
+                        self.delta_func = partial(
+                            logger.mesg, end="", verbose=self.verbose_content
+                        )
+                    if self.delta_func:
+                        if asyncio.iscoroutinefunction(self.delta_func):
+                            asyncio.run(self.delta_func(delta_content))
+                        else:
+                            self.delta_func(delta_content)
                 if finish_reason == "stop":
                     if "usage" in line_data:
                         usage = line_data["usage"]

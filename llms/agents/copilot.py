@@ -13,7 +13,8 @@ from llms.actions.call import LLMActionsCaller
 class CopilotAgent:
     def __init__(
         self,
-        model_config: MODEL_CONFIG_TYPE = "qwen2-72b",
+        model_config: MODEL_CONFIG_TYPE = "deepseek",
+        delta_func: callable = None,
         verbose_action: bool = False,
         verbose_chat: bool = True,
     ):
@@ -28,6 +29,7 @@ class CopilotAgent:
         self.client = LLMClientByModel(
             model_config,
             system_prompts=self.system_prompts,
+            delta_func=delta_func,
             verbose_user=verbose_chat,
             verbose_assistant=verbose_chat,
             verbose_content=verbose_chat,
