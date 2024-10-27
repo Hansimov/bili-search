@@ -93,6 +93,14 @@ class LLMClient:
         )
         return response
 
+    def exec_delta_func(self, role: str, content: str):
+        if self.delta_func:
+            delta_func_args = {"role": role, "content": content}
+            if asyncio.iscoroutinefunction(self.delta_func):
+                asyncio.run(self.delta_func(**delta_func_args))
+            else:
+                self.delta_func(**delta_func_args)
+
     def parse_stream_response(self, response: requests.Response) -> tuple[str, dict]:
         response_content = ""
         usage = None
@@ -126,22 +134,16 @@ class LLMClient:
                 if "content" in delta_data:
                     delta_content = delta_data["content"]
                     response_content += delta_content
-                    if self.delta_func is None:
-                        self.delta_func = partial(
-                            logger.mesg, end="", verbose=self.verbose_content
-                        )
-                    if self.delta_func:
-                        if asyncio.iscoroutinefunction(self.delta_func):
-                            asyncio.run(self.delta_func(delta_content))
-                        else:
-                            self.delta_func(delta_content)
+                    logger.mesg(delta_content, end="", verbose=self.verbose_content)
+                    self.exec_delta_func(role, delta_content)
                 if finish_reason == "stop":
-                    if "usage" in line_data:
+                    if line_data.get("usage", {}):
                         usage = line_data["usage"]
-                        if usage and self.verbose_usage:
-                            logger.file("\n" + dict_to_str(usage))
-                    if self.verbose_finish:
-                        logger.success("\n[Finished]", end="")
+                        logger.file(
+                            "\n" + dict_to_str(usage), verbose=self.verbose_usage
+                        )
+                    logger.success("\n[Finished]", end="", verbose=self.verbose_finish)
+                    self.exec_delta_func("stop", "")
 
         return response_content, usage
 
