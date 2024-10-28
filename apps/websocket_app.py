@@ -45,6 +45,7 @@ class ArgParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_arguments()
+        self.app_envs = {}
 
     def add_arguments(self):
         self.add_argument(
@@ -66,6 +67,13 @@ class ArgParser(argparse.ArgumentParser):
             default="prod",
             help=f"Running mode of app",
         )
+        self.add_argument(
+            "-k",
+            "--ssl",
+            action="store_true",
+            default=False,
+            help=f"Use SSL",
+        )
         self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
 
     def update_app_envs(self, app_envs: dict):
@@ -80,26 +88,36 @@ class ArgParser(argparse.ArgumentParser):
             new_app_envs["host"] = self.args.host
         if self.args.port:
             new_app_envs["port"] = self.args.port
-        self.new_app_envs = new_app_envs
+        self.app_envs = new_app_envs
 
         logger.note(f"App Envs:")
-        logger.mesg(dict_to_str(new_app_envs))
+        logger.mesg(dict_to_str(new_app_envs), indent=2)
 
-        return new_app_envs
+        return self.app_envs
+
+    def get_app_args(self):
+        if self.app_envs:
+            app_args = {
+                "host": self.app_envs["host"],
+                "port": self.app_envs["port"],
+            }
+        else:
+            app_args = {}
+
+        if self.args.ssl:
+            app_args["ssl_keyfile"] = SECRETS["ssl_key_file"]
+            app_args["ssl_certfile"] = SECRETS["ssl_cert_file"]
+
+        self.app_args = app_args
+        return app_args
 
 
 if __name__ == "__main__":
     app_envs = WEBSOCKET_APP_ENVS
     arg_parser = ArgParser()
     new_app_envs = arg_parser.update_app_envs(app_envs)
+    app_args = arg_parser.get_app_args()
     app = WebsocketApp(new_app_envs).app
-    app_args = {
-        "host": new_app_envs["host"],
-        "port": new_app_envs["port"],
-    }
-    if arg_parser.args.mode == "prod":
-        app_args["ssl_keyfile"] = SECRETS["ssl_key_file"]
-        app_args["ssl_certfile"] = SECRETS["ssl_cert_file"]
     uvicorn.run("__main__:app", **app_args)
 
     # Production mode by default:
@@ -107,3 +125,4 @@ if __name__ == "__main__":
 
     # Development mode:
     # python -m apps.websocket_app -m dev
+    # python -m apps.websocket_app -m dev -k
