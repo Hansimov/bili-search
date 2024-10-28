@@ -10,7 +10,7 @@ from tclogger import TCLogger, dict_to_str
 
 logger = TCLogger()
 
-from configs.envs import WEBSOCKET_APP_ENVS
+from configs.envs import WEBSOCKET_APP_ENVS, SECRETS
 from llms.ws.route import WebsocketRouter
 
 
@@ -93,7 +93,14 @@ if __name__ == "__main__":
     arg_parser = ArgParser()
     new_app_envs = arg_parser.update_app_envs(app_envs)
     app = WebsocketApp(new_app_envs).app
-    uvicorn.run("__main__:app", host=new_app_envs["host"], port=new_app_envs["port"])
+    app_args = {
+        "host": new_app_envs["host"],
+        "port": new_app_envs["port"],
+    }
+    if arg_parser.args.mode == "prod":
+        app_args["ssl_keyfile"] = SECRETS["ssl_key_file"]
+        app_args["ssl_certfile"] = SECRETS["ssl_cert_file"]
+    uvicorn.run("__main__:app", **app_args)
 
     # Production mode by default:
     # python -m apps.websocket_app
