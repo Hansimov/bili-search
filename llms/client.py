@@ -208,5 +208,5 @@ class LLMClient:
             model_name_str = "[" + model.split("/")[-1] + "]"
             logger.note(f" ({elapsed_time}) {logstr.file(model_name_str)}")
         else:
-            logger.note("")
+            logger.note("", verbose=self.verbose_content)
         return response_content

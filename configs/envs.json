@@ -16,6 +16,19 @@
         },
         "version": "0.0.1"
     },
+    "websocket_app": {
+        "app_name": "Bili Websocket App",
+        "mode": "prod",
+        "host": {
+            "prod": "0.0.0.0",
+            "dev": "0.0.0.0"
+        },
+        "port": {
+            "prod": 20003,
+            "dev": 21003
+        },
+        "version": "0.0.1"
+    },
     "logs": {
         "video_indexer": "video_indexer.log"
     }
