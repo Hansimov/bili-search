@@ -8,4 +8,5 @@ tclogger>=1.1.8
 termcolor~=2.4.0
 tqdm~=4.66.4
 uvicorn~=0.31.0
+websockets~=11.0.3
 zhconv~=1.4.3
