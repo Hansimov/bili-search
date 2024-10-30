@@ -1,8 +1,8 @@
 import re
 
 from calendar import monthrange
-from datetime import datetime, timedelta
-from tclogger import logger, ts_to_str, get_now_ts
+from datetime import timedelta
+from tclogger import logger, ts_to_str, get_now_ts, get_now, tcdatetime
 from converters.field.operators import OP_MAP, BRACKET_MAP
 
 
@@ -197,7 +197,7 @@ class DateFieldConverter:
             return "", 0, 0
 
     def get_date_ts_range_of_date(self, date_str: str) -> tuple[int, int]:
-        now = datetime.now()
+        now = get_now()
         match = re.match(self.REP_RANGE_DATE, date_str)
         if match:
             if match.group("yyyy_mm_dd_hh"):
@@ -205,38 +205,38 @@ class DateFieldConverter:
                 month = int(match.group("ymdh_mm"))
                 day = int(match.group("ymdh_dd"))
                 hour = int(match.group("ymdh_hh"))
-                start_dt = datetime(year, month, day, hour)
+                start_dt = tcdatetime(year, month, day, hour)
                 end_dt = start_dt + timedelta(hours=1) - timedelta(milliseconds=1)
             elif match.group("yyyy_mm_dd"):
                 year = int(match.group("ymd_year"))
                 month = int(match.group("ymd_mm"))
                 day = int(match.group("ymd_dd"))
-                start_dt = datetime(year, month, day)
+                start_dt = tcdatetime(year, month, day)
                 end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
             elif match.group("yyyy_mm"):
                 year = int(match.group("ym_year"))
                 month = int(match.group("ym_mm"))
-                start_dt = datetime(year, month, 1)
+                start_dt = tcdatetime(year, month, 1)
                 month_days = monthrange(year, month)[1]
                 end_dt = (
                     start_dt + timedelta(days=month_days) - timedelta(milliseconds=1)
                 )
             elif match.group("yyyy"):
                 year = int(match.group("yyyy"))
-                start_dt = datetime(year, 1, 1)
-                end_dt = datetime(year, 12, 31, 23, 59, 59)
+                start_dt = tcdatetime(year, 1, 1)
+                end_dt = tcdatetime(year, 12, 31, 23, 59, 59)
             elif match.group("mm_dd_hh"):
                 month = int(match.group("mdh_mm"))
                 day = int(match.group("mdh_dd"))
                 hour = int(match.group("mdh_hh"))
-                start_dt = datetime(now.year, month, day, hour)
+                start_dt = tcdatetime(now.year, month, day, hour)
                 end_dt = start_dt + timedelta(hours=1) - timedelta(milliseconds=1)
             elif match.group("mm_dd"):
                 month = int(match.group("md_mm"))
                 day = int(match.group("md_dd"))
-                start_dt = datetime(now.year, month, day)
+                start_dt = tcdatetime(now.year, month, day)
                 if start_dt.timestamp() > now.timestamp():
-                    start_dt = datetime(now.year - 1, month, day)
+                    start_dt = tcdatetime(now.year - 1, month, day)
                 end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
             else:
                 logger.warn(f"× No match for type <range_date>: {date_str}")
@@ -253,20 +253,20 @@ class DateFieldConverter:
         return 0, 0
 
     def get_date_ts_range_of_this(self, date_str: str) -> tuple[int, int]:
-        now = datetime.now()
+        now = get_now()
         match = re.match(self.REP_RANGE_THIS, date_str)
         if match:
             if match.group("this_year"):
-                start_dt = datetime(now.year, 1, 1)
+                start_dt = tcdatetime(now.year, 1, 1)
             elif match.group("this_month"):
-                start_dt = datetime(now.year, now.month, 1)
+                start_dt = tcdatetime(now.year, now.month, 1)
             elif match.group("this_week"):
                 start_dt = now - timedelta(days=now.weekday())
                 start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             elif match.group("this_day"):
-                start_dt = datetime(now.year, now.month, now.day)
+                start_dt = tcdatetime(now.year, now.month, now.day)
             elif match.group("this_hour"):
-                start_dt = datetime(now.year, now.month, now.day, now.hour)
+                start_dt = tcdatetime(now.year, now.month, now.day, now.hour)
             else:
                 logger.warn(f"× No match for type <range_this>: {date_str}")
                 start_dt = None
@@ -281,17 +281,17 @@ class DateFieldConverter:
         return 0, 0
 
     def get_date_ts_range_of_last(self, date_str: str) -> tuple[int, int]:
-        now = datetime.now()
+        now = get_now()
         match = re.match(self.REP_RANGE_LAST, date_str)
         if match:
             if match.group("last_year"):
-                start_dt = datetime(now.year - 1, 1, 1)
-                end_dt = datetime(now.year - 1, 12, 31, 23, 59, 59)
+                start_dt = tcdatetime(now.year - 1, 1, 1)
+                end_dt = tcdatetime(now.year - 1, 12, 31, 23, 59, 59)
             elif match.group("last_month"):
                 if now.month == 1:
-                    start_dt = datetime(now.year - 1, 12, 1)
+                    start_dt = tcdatetime(now.year - 1, 12, 1)
                 else:
-                    start_dt = datetime(now.year, now.month - 1, 1)
+                    start_dt = tcdatetime(now.year, now.month - 1, 1)
                 month_days = monthrange(start_dt.year, start_dt.month)[1]
                 end_dt = (
                     start_dt + timedelta(days=month_days) - timedelta(milliseconds=1)
@@ -322,20 +322,20 @@ class DateFieldConverter:
         return 0, 0
 
     def get_date_ts_range_of_dist(self, date_str: str) -> tuple[int, int]:
-        now = datetime.now()
+        now = get_now()
 
         match = re.match(self.REP_RANGE_DIST, date_str)
         if match:
             if match.group("n_years"):
                 n = int(match.group("year_n"))
-                start_dt = datetime(
+                start_dt = tcdatetime(
                     now.year - n, now.month, now.day, now.hour, now.minute, now.second
                 )
             elif match.group("n_months"):
                 n = int(match.group("month_n"))
                 start_year = now.year - (n + 12 - now.month) // 12
                 start_month = ((now.month - n) % 12) or 12
-                start_dt = datetime(
+                start_dt = tcdatetime(
                     start_year, start_month, now.day, now.hour, now.minute, now.second
                 )
             elif match.group("n_weeks"):

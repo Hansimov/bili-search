@@ -1,12 +1,12 @@
 import re
 
-from datetime import datetime, timedelta
-from tclogger import logger
+from datetime import timedelta
+from tclogger import logger, get_now, tcdatetime
 from typing import Union
 
 
 def timestamp_to_datetime_str(timestamp: int) -> str:
-    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    return tcdatetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def seconds_to_duration(seconds: Union[int, str]) -> str:
@@ -61,7 +61,7 @@ class DateFormatChecker:
             match = re.match(date_pattern, input_str)
             if match:
                 try:
-                    date = datetime.strptime(input_str, date_format)
+                    date = tcdatetime.strptime(input_str, date_format)
                 except Exception as e:
                     logger.warn(f"× Error: {e}")
                     logger.exit_quiet(not verbose)
@@ -70,7 +70,7 @@ class DateFormatChecker:
                 self.matched_format = date_format
 
                 if date_format in ["%m-%d", "%m/%d"]:
-                    self.year = datetime.now().year
+                    self.year = get_now().year
                     self.real_year = None
                 else:
                     self.year = date.year
@@ -103,8 +103,8 @@ class DateFormatChecker:
     def is_in_date_range(
         self,
         input_str: str,
-        start: Union[str, datetime] = None,
-        end: Union[str, datetime] = None,
+        start: Union[str, tcdatetime] = None,
+        end: Union[str, tcdatetime] = None,
         check_format: bool = True,
         verbose: bool = False,
     ) -> bool:
@@ -121,21 +121,21 @@ class DateFormatChecker:
 
         if start:
             if isinstance(start, str):
-                start_date = datetime.fromisoformat(start)
+                start_date = tcdatetime.fromisoformat(start)
             else:
                 start_date = start
         else:
-            start_date = datetime.min
+            start_date = tcdatetime.min
 
         if end:
             if isinstance(end, str):
-                end_date = datetime.fromisoformat(end)
+                end_date = tcdatetime.fromisoformat(end)
             else:
                 end_date = end
         else:
-            end_date = datetime.max
+            end_date = tcdatetime.max
 
-        if start_date <= datetime(self.year, self.month, self.day) <= end_date:
+        if start_date <= tcdatetime(self.year, self.month, self.day) <= end_date:
             logger.success(f"✓ In date range")
             logger.exit_quiet(not verbose)
             return True
@@ -163,7 +163,7 @@ class DateFormatChecker:
             year_str = self.real_year
         else:
             if use_current_year and self.month:
-                year_str = datetime.now().year
+                year_str = get_now().year
             else:
                 year_str = ""
 
@@ -215,7 +215,7 @@ if __name__ == "__main__":
     for input_str in input_str_list:
         # checker.is_date_format(input_str, verbose=True)
         checker.is_in_date_range(
-            input_str, start="2009-09-09", end=datetime.now(), verbose=True
+            input_str, start="2009-09-09", end=get_now(), verbose=True
         )
         checker.rewrite(
             input_str, sep="-", use_current_year=True, check_format=True, verbose=True

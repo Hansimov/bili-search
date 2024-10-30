@@ -1,7 +1,6 @@
 from copy import deepcopy
-from datetime import datetime
 from pprint import pformat
-from tclogger import logger, logstr, dict_to_str
+from tclogger import logger, logstr, dict_to_str, get_now, tcdatetime
 from typing import Union, Literal
 
 from converters.query.filter import QueryFilterExtractor
@@ -383,10 +382,10 @@ class VideoSearcher:
         verbose: bool = False,
     ):
         logger.enter_quiet(not verbose)
-        now = datetime.now()
+        now = get_now()
         now_ts = int(now.timestamp())
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-        today = datetime(year=now.year, month=now.month, day=now.day)
+        today = tcdatetime(year=now.year, month=now.month, day=now.day)
         today_ts = int(today.timestamp())
 
         if seed is None:
@@ -475,7 +474,7 @@ class VideoSearcher:
         )
         res_dict = res.body["_source"]
 
-        pudate_str = datetime.fromtimestamp(res_dict.get("pubdate", 0)).strftime(
+        pudate_str = tcdatetime.fromtimestamp(res_dict.get("pubdate", 0)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         res_dict["pubdate_str"] = pudate_str

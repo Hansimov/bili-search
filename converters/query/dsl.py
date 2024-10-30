@@ -1,7 +1,6 @@
 import math
 
-from datetime import datetime
-from tclogger import get_now_ts
+from tclogger import get_now, get_now_ts
 from typing import Literal, Union
 
 from converters.times import DateFormatChecker
@@ -188,7 +187,7 @@ class MultiMatchQueryDSLConstructor:
             is_keywod_no_hans = self.hans_checker.no_hans(keyword)
             checker.init_year_month_day()
             is_keyword_date_format = checker.is_in_date_range(
-                keyword, start="2009-09-09", end=datetime.now(), verbose=False
+                keyword, start="2009-09-09", end=get_now(), verbose=False
             )
             if is_keyword_date_format:
                 clause = self.construct_query_for_date_keyword(

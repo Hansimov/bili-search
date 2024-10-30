@@ -1,7 +1,6 @@
 from copy import deepcopy
-from datetime import datetime
 from pprint import pformat
-from tclogger import logger
+from tclogger import logger, get_now, tcdatetime
 from typing import Literal, Union
 
 from elastics.client import ElasticSearchClient
@@ -316,7 +315,7 @@ class VideoDetailsSearcher:
         verbose: bool = False,
     ):
         logger.enter_quiet(not verbose)
-        now = datetime.now()
+        now = get_now()
         ts = round(now.timestamp())
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         if seed is None:
@@ -400,7 +399,7 @@ class VideoDetailsSearcher:
         )
         res_dict = res.body["_source"]
 
-        pudate_str = datetime.fromtimestamp(res_dict.get("pubdate", 0)).strftime(
+        pudate_str = tcdatetime.fromtimestamp(res_dict.get("pubdate", 0)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         res_dict["pubdate_str"] = pudate_str
