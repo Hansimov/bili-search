@@ -10,7 +10,7 @@ class LLMActionsParser:
     RE_BQ = r"\s*`*\s*"
     RE_TEXT = r".*?"
     RE_THINK_TYPE = r"(think)"
-    RE_TOOL_NAME = r"(check_author|search)"
+    RE_TOOL_NAME = r"(entity|search)"
     RE_RESULT_TYPE = r"(output|result)"
     RE_COLON = r"\s*:\s*"
     REP_THINK = (
@@ -78,9 +78,9 @@ class LLMActionsParser:
 if __name__ == "__main__":
     content = """
     [think] 影视飓风可能是一个视频作者昵称或者视频系列，
-    应当调用工具 `check_author` 来确认用户的意图是是搜索对应的文本，还是视频作者。 [/think]
-    [check_author] `影视飓风` [/check_author]
-    [output:check_author]
+    应当调用工具 `entity` 来确认用户的意图是是搜索对应的文本，还是视频作者。 [/think]
+    [entity] `影视飓风` [/entity]
+    [output:entity]
     ```json
     {"intension": "search_author", "name": "影视飓风"}
     ```

@@ -4,7 +4,7 @@ from llms.client_by_model import LLMClientByModel, MODEL_CONFIG_TYPE
 
 from llms.prompts.system import TODAY_PROMPT
 from llms.prompts.syntax import SEARCH_SYNTAX
-from llms.prompts.author import CHECK_AUTHOR_TOOL_DESC
+from llms.prompts.entity import ENTITY_CATEGORIZER_TOOL_DESC
 from llms.prompts.copilot import COPILOT_DESC, COPILOT_EXAMPLE
 from llms.actions.parse import LLMActionsParser
 from llms.actions.call import LLMActionsCaller
@@ -19,7 +19,7 @@ class CopilotAgent:
         verbose_chat: bool = True,
     ):
         self.system_prompts = [
-            *[COPILOT_DESC, CHECK_AUTHOR_TOOL_DESC, SEARCH_SYNTAX],
+            *[COPILOT_DESC, ENTITY_CATEGORIZER_TOOL_DESC, SEARCH_SYNTAX],
             *[COPILOT_EXAMPLE, TODAY_PROMPT],
         ]
         self.parser = LLMActionsParser(verbose=verbose_action)
@@ -55,7 +55,7 @@ class CopilotAgent:
 
 if __name__ == "__main__":
     agent = CopilotAgent("deepseek", verbose_action=False)
-    user_prompt = "李沐在2021年发了什么作品"
+    user_prompt = "李沐2021年发了什么"
     messages = [
         {"role": "user", "content": user_prompt},
     ]

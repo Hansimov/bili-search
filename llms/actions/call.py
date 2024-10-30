@@ -2,7 +2,7 @@ import re
 
 from tclogger import logger, logstr, dict_to_str, brk
 
-from llms.actions.author import AuthorChecker
+from llms.actions.entity import EntityCatogorizer
 from llms.actions.search import SearchTool
 from llms.actions.input import InputCleaner
 
@@ -23,9 +23,9 @@ class LLMActionsCaller:
             if self.verbose:
                 logger.note(f"> Calling tool: {(logstr.file(brk(tool_name)))}")
 
-            if tool_name == "check_author":
-                checker = AuthorChecker()
-                result = checker.check(tool_input)
+            if tool_name == "entity":
+                categorizer = EntityCatogorizer()
+                result = categorizer.categorize(tool_input)
             elif tool_name == "search":
                 searcher = SearchTool()
                 result = searcher.search(tool_input, is_shrink_results=True)

@@ -4,7 +4,7 @@ from tclogger import logger, logstr, dict_to_str, brk
 from llms.actions.suggest import SuggestTool
 
 
-class AuthorChecker:
+class EntityCatogorizer:
     def __init__(
         self, suggest_limit: int = 20, threshold: int = 2, verbose: bool = False
     ):
@@ -31,7 +31,7 @@ class AuthorChecker:
             res[name].pop("count")
         return res
 
-    def check(self, query: str):
+    def categorize(self, query: str):
         suggestions = self.suggestor.suggest(query, limit=25)
         # logger.success(dict_to_str(suggestions))
         total_hits = len(suggestions.get("hits", []))
@@ -58,9 +58,9 @@ if __name__ == "__main__":
         *["马鹿", "白鼠", "老e"],
         *["黑神话", "影视飓风", "lks", "yulijun"],
     ]
-    agent = AuthorChecker(verbose=True)
+    agent = EntityCatogorizer(verbose=True)
     for query in queries:
         logger.note(f"> Query: {logstr.mesg(brk(query))}")
-        res = agent.check(query)
+        res = agent.categorize(query)
 
     # python -m llms.actions.author
