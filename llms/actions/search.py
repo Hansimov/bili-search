@@ -39,7 +39,7 @@ class SearchTool:
         self,
         query: str,
         source_fields: list[str] = [],
-        limit: int = 10,
+        limit: int = 20,
         is_shrink_results: bool = False,
     ) -> dict:
         source_fields = source_fields or self.source_fields
