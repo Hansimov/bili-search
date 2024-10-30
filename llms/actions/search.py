@@ -3,6 +3,7 @@ from typing import Literal
 
 from elastics.videos.searcher import VideoSearcher
 from configs.envs import SEARCH_APP_ENVS
+from converters.query.field import is_field_in_fields
 
 
 class SearchTool:
@@ -11,8 +12,8 @@ class SearchTool:
         mode: Literal["prod", "dev"] = "dev",
         source_fields: list[str] = [
             *["title", "desc", "tags"],
-            *["bvid", "pic", "owner"],
-            *["stat", "pubdate_str"],
+            *["bvid", "pic", "owner", "pubdate_str"],
+            *["stat.view", "stat.coin", "stat.danmaku"],
         ],
         limit: int = 20,
     ):
@@ -21,19 +22,24 @@ class SearchTool:
         self.source_fields = source_fields
         self.limit = limit
 
-    def shrink_hits_by_source_fields(
-        self, hits: list[dict], source_fields: list[str] = []
-    ) -> list[dict]:
+    def shrink_hits_by_source_fields(self, hits: list[dict]) -> list[dict]:
         new_hits = [
-            {k: v for k, v in hit.items() if k in source_fields} for hit in hits
+            {k: v for k, v in hit.items() if is_field_in_fields(k, self.source_fields)}
+            for hit in hits
         ]
         return new_hits
 
     def shrink_results(self, results: dict) -> dict:
         hits = results.get("hits", [])
-        hits = self.shrink_hits_by_source_fields(hits, source_fields=self.source_fields)
+        hits = self.shrink_hits_by_source_fields(hits)
         res = {"query": results.get("query", ""), "hits": hits}
         return res
+
+    def add_links(self, results: dict) -> dict:
+        hits = results.get("hits", [])
+        for hit in hits:
+            hit["link"] = f"https://www.bilibili.com/video/{hit['bvid']}"
+        return results
 
     def search(
         self,
@@ -49,5 +55,6 @@ class SearchTool:
         )
         if is_shrink_results:
             res = self.shrink_results(res)
+        res = self.add_links(res)
 
         return res
