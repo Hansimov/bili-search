@@ -1,10 +1,11 @@
 import asyncio
 import json
 
+from collections import deque
 from fastapi import WebSocket, WebSocketDisconnect
 from functools import partial
 from tclogger import TCLogger
-from typing import Literal
+from typing import Literal, Any
 
 from llms.agents.copilot import CopilotAgent
 
@@ -36,22 +37,62 @@ class WebsocketRouter:
         self.ws = ws
         self.messager = WebsocketMessager()
         self.verbose = verbose
+        self.terminate_event = asyncio.Event()
+        self.message_event = asyncio.Event()
+        self.message_queue = deque()
 
-    async def chat_delta_func(self, role: str, content: str):
+    async def handle_recv_texts(self):
+        while True:
+            try:
+                msg_str = await self.ws.receive_text()
+                msg_type, msg_info = self.messager.parse(msg_str)
+                if msg_type == "terminate":
+                    self.terminate_event.set()
+                    continue
+                else:
+                    self.message_queue.append((msg_type, msg_info))
+                    self.message_event.set()
+                    self.terminate_event.clear()
+            except WebSocketDisconnect:
+                logger.success("* ws client disconnected")
+                break
+            except Exception as e:
+                logger.warn(f"× ws error: {e}")
+                break
+
+        self.terminate_event.set()
+
+    async def get_new_message(self) -> tuple[Literal["chat"], Any]:
+        await self.message_event.wait()
+        msg_type, msg_info = None, None
+        if self.message_queue:
+            msg_type, msg_info = self.message_queue.popleft()
+        if not self.message_queue:
+            self.message_event.clear()
+        return msg_type, msg_info
+
+    async def chat_delta_func(self, role: str, content: str, verbose: bool = False):
         msg = self.messager.construct_chat_resp_dict(role, content, msg_type="chat")
         await self.ws.send_text(json.dumps(msg))
+        logger.mesg(content, end="", verbose=verbose)
 
     async def run(self):
         await self.ws.accept()
+        asyncio.create_task(self.handle_recv_texts())
         while True:
-            msg_str = await self.ws.receive_text()
             try:
-                msg_type, msg_info = self.messager.parse(msg_str)
+                self.terminate_event.clear()
+                msg_type, msg_info = await self.get_new_message()
                 if msg_type == "chat":
                     copilot = CopilotAgent(
-                        delta_func=self.chat_delta_func, verbose_chat=False
+                        delta_func=self.chat_delta_func,
+                        terminate_event=self.terminate_event,
+                        verbose_chat=False,
                     )
                     await asyncio.to_thread(copilot.chat, msg_info)
+                    if self.terminate_event.is_set():
+                        logger.success("* chat terminated")
+                        continue
             except WebSocketDisconnect:
                 logger.success("* ws client disconnected")
                 break
