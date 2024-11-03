@@ -3,7 +3,6 @@ import json
 
 from collections import deque
 from fastapi import WebSocket, WebSocketDisconnect
-from functools import partial
 from tclogger import TCLogger
 from typing import Literal, Any
 
@@ -13,7 +12,7 @@ from llms.agents.copilot import CopilotAgent
 logger = TCLogger()
 
 RECV_MESSAGE_TYPE = Literal["chat"]
-SEND_MESSAGE_TYPE = Literal["chat"]
+SEND_MESSAGE_TYPE = Literal["chat", "tool"]
 
 
 class WebsocketMessager:
@@ -22,14 +21,6 @@ class WebsocketMessager:
         message_type = data.get("type", None)
         message_info = data.get("info", None)
         return message_type, message_info
-
-    def construct_chat_resp_dict(
-        self, role: str, content: str, msg_type: SEND_MESSAGE_TYPE
-    ):
-        return {
-            "type": msg_type,
-            "info": {"role": role, "content": content},
-        }
 
 
 class WebsocketRouter:
@@ -79,9 +70,13 @@ class WebsocketRouter:
         return msg_type, msg_info
 
     async def chat_delta_func(self, role: str, content: str, verbose: bool = False):
-        msg = self.messager.construct_chat_resp_dict(role, content, msg_type="chat")
+        msg = {"type": "chat", "info": {"role": role, "content": content}}
         await self.ws.send_text(json.dumps(msg))
         logger.mesg(content, end="", verbose=verbose)
+
+    async def tool_func(self, info: list[dict], verbose: bool = False):
+        msg = {"type": "tool", "info": info}
+        await self.ws.send_text(json.dumps(msg))
 
     async def run(self):
         await self.ws.accept()
@@ -93,6 +88,7 @@ class WebsocketRouter:
                 if msg_type == "chat":
                     copilot = CopilotAgent(
                         delta_func=self.chat_delta_func,
+                        tool_func=self.tool_func,
                         terminate_event=self.terminate_event,
                         verbose_chat=False,
                     )

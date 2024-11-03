@@ -16,6 +16,7 @@ class CopilotAgent:
         self,
         model_config: MODEL_CONFIG_TYPE = "deepseek",
         delta_func: callable = None,
+        tool_func: callable = None,
         terminate_event: asyncio.Event = None,
         verbose_action: bool = False,
         verbose_chat: bool = True,
@@ -39,18 +40,26 @@ class CopilotAgent:
             verbose_finish=False,
             verbose_usage=False,
         ).client
+        self.tool_func = tool_func
+
+    def exec_tool_func(self, results: list[dict]):
+        if self.tool_func:
+            tool_func_args = {"info": results}
+            if asyncio.iscoroutinefunction(self.tool_func):
+                asyncio.run(self.tool_func(**tool_func_args))
+            else:
+                self.tool_func(**tool_func_args)
 
     def chat(self, messages: list):
         response_content = self.client.chat(messages)
         actions, has_tool_call = self.parser.parse(response_content)
         while actions and has_tool_call:
             results = self.caller.call(actions)
-            if self.verbose_action:
-                logger.success(dict_to_str(results))
+            self.exec_tool_func(results)
+            logger.success(dict_to_str(results), verbose=self.verbose_action)
             results_str = self.parser.jsonize(results)
             new_message = {"role": "user", "content": results_str}
-            if self.verbose_action:
-                logger.note(results_str)
+            logger.note(results_str, verbose=self.verbose_action)
             messages.append(new_message)
             response_content = self.client.chat(messages)
             actions, has_tool_call = self.parser.parse(response_content)
