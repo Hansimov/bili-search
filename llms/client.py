@@ -6,7 +6,6 @@ import requests
 
 from tclogger import logger, logstr, dict_to_str, dt_to_str, Runtimer
 from typing import Literal
-from functools import partial
 
 
 class LLMClient:
@@ -19,6 +18,7 @@ class LLMClient:
         stream: bool = None,
         init_messages: str = None,
         delta_func: callable = None,
+        terminate_event: asyncio.Event = None,
         verbose_user: bool = True,
         verbose_assistant: bool = True,
         verbose_content: bool = True,
@@ -32,6 +32,7 @@ class LLMClient:
         self.stream = stream
         self.init_messages = init_messages
         self.delta_func = delta_func
+        self.terminate_event = terminate_event
         self.verbose_user = verbose_user
         self.verbose_assistant = verbose_assistant
         self.verbose_content = verbose_content
@@ -105,6 +106,9 @@ class LLMClient:
         response_content = ""
         usage = None
         for line in response.iter_lines():
+            if self.terminate_event and self.terminate_event.is_set():
+                break
+
             line = line.decode("utf-8")
             remove_patterns = [r"^\s*data:\s*", r"^\s*\[DONE\]\s*"]
             for pattern in remove_patterns:

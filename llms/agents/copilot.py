@@ -1,7 +1,8 @@
+import asyncio
+
 from tclogger import logger, dict_to_str
 
 from llms.client_by_model import LLMClientByModel, MODEL_CONFIG_TYPE
-
 from llms.prompts.system import TODAY_PROMPT
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.prompts.entity import ENTITY_CATEGORIZER_TOOL_DESC
@@ -15,6 +16,7 @@ class CopilotAgent:
         self,
         model_config: MODEL_CONFIG_TYPE = "deepseek",
         delta_func: callable = None,
+        terminate_event: asyncio.Event = None,
         verbose_action: bool = False,
         verbose_chat: bool = True,
     ):
@@ -30,6 +32,7 @@ class CopilotAgent:
             model_config,
             system_prompts=self.system_prompts,
             delta_func=delta_func,
+            terminate_event=terminate_event,
             verbose_user=verbose_chat,
             verbose_assistant=verbose_chat,
             verbose_content=verbose_chat,

@@ -1,3 +1,5 @@
+import asyncio
+
 from typing import Literal
 
 from configs.envs import LLMS_ENVS
@@ -12,6 +14,7 @@ class LLMClientByModel:
         model_config: MODEL_CONFIG_TYPE = "deepseek",
         system_prompts: list[str] = [],
         delta_func: callable = None,
+        terminate_event: asyncio.Event = None,
         verbose_user: bool = True,
         verbose_assistant: bool = True,
         verbose_content: bool = True,
@@ -28,6 +31,7 @@ class LLMClientByModel:
             "stream": True,
             "init_messages": init_messages,
             "delta_func": delta_func,
+            "terminate_event": terminate_event,
             "verbose_user": verbose_user,
             "verbose_assistant": verbose_assistant,
             "verbose_content": verbose_content,
