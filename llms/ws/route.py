@@ -38,6 +38,7 @@ class WebsocketRouter:
         self.messager = WebsocketMessager()
         self.verbose = verbose
         self.terminate_event = asyncio.Event()
+        self.disconnect_event = asyncio.Event()
         self.message_event = asyncio.Event()
         self.message_queue = deque()
 
@@ -49,18 +50,24 @@ class WebsocketRouter:
                 if msg_type == "terminate":
                     self.terminate_event.set()
                     continue
+                elif msg_type == "disconnect":
+                    self.terminate_event.set()
+                    self.disconnect_event.set()
+                    await self.ws.close()
+                    logger.success("* ws client disconnected", verbose=self.verbose)
+                    break
                 else:
                     self.message_queue.append((msg_type, msg_info))
                     self.message_event.set()
                     self.terminate_event.clear()
             except WebSocketDisconnect:
-                logger.success("* ws client disconnected")
+                logger.success("* ws client disconnected", verbose=self.verbose)
                 break
             except Exception as e:
                 logger.warn(f"× ws error: {e}")
                 break
-
         self.terminate_event.set()
+        self.disconnect_event.set()
 
     async def get_new_message(self) -> tuple[Literal["chat"], Any]:
         await self.message_event.wait()
@@ -91,11 +98,8 @@ class WebsocketRouter:
                     )
                     await asyncio.to_thread(copilot.chat, msg_info)
                     if self.terminate_event.is_set():
-                        logger.success("* chat terminated")
+                        logger.success("* chat terminated", verbose=self.verbose)
                         continue
-            except WebSocketDisconnect:
-                logger.success("* ws client disconnected")
-                break
             except Exception as e:
-                logger.warn(f"× ws error: {e}")
+                logger.warn(f"× run error: {e}")
                 break
