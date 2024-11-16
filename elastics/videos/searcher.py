@@ -137,14 +137,20 @@ class VideoSearcher:
             date_boosted_fields = date_fields
 
         filter_extractor = QueryFilterExtractor()
-        query_keywords, filters = filter_extractor.construct(query)
+        filters_str = filter_extractor.split_keyword_and_filter_expr(query)["filters"]
+        original_query_keywords, filters = filter_extractor.construct(query)
         if suggest_info:
-            query_keywords = self.query_rewriter.rewrite(query_keywords, suggest_info)
-        query_without_filters = " ".join(query_keywords)
+            rewrited_query_keywords = self.query_rewriter.rewrite(
+                original_query_keywords, suggest_info
+            )
+        else:
+            rewrited_query_keywords = original_query_keywords
+        original_query_keywords_str = " ".join(original_query_keywords)
+        rewrited_query_keywords_str = " ".join(rewrited_query_keywords)
 
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
-            query_without_filters,
+            rewrited_query_keywords_str,
             match_fields=boosted_fields,
             date_match_fields=date_boosted_fields,
             match_bool=match_bool,
@@ -214,6 +220,16 @@ class VideoSearcher:
         else:
             logger.mesg(dict_to_str(res_dict))
             return_res = res_dict
+
+        return_res["filters"] = filters_str
+        return_res["keywords_original"] = original_query_keywords_str
+        if request_type == "suggest":
+            rewrited_query_keywords = self.query_rewriter.rewrite(
+                original_query_keywords, return_res
+            )
+            rewrited_query_keywords_str = " ".join(rewrited_query_keywords).strip()
+        return_res["keywords_rewrited"] = rewrited_query_keywords_str
+
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
         return return_res

@@ -92,6 +92,7 @@ class QueryFilterExtractor:
         date_filter_exprs = []
         uid_filter_exprs = []
         user_filter_exprs = []
+        filters_str = ""
         for match in matches:
             keyword = match.group("keyword")
             stat_filter_expr = match.group("stat_filter")
@@ -102,18 +103,23 @@ class QueryFilterExtractor:
                 keywords.append(keyword.strip())
             if stat_filter_expr:
                 stat_filter_exprs.append(stat_filter_expr.strip())
+                filters_str += f" {stat_filter_expr.strip()}"
             if date_filter_expr:
                 date_filter_exprs.append(date_filter_expr.strip())
+                filters_str += f" {date_filter_expr.strip()}"
             if uid_filter_expr:
                 uid_filter_exprs.append(uid_filter_expr.strip())
+                filters_str += f" {uid_filter_expr.strip()}"
             if user_filter_expr:
                 user_filter_exprs.append(user_filter_expr.strip())
+                filters_str += f" {user_filter_expr.strip()}"
         res = {
             "keywords": keywords,
             "stat_filter_exprs": stat_filter_exprs,
             "date_filter_exprs": date_filter_exprs,
             "uid_filter_exprs": uid_filter_exprs,
             "user_filter_exprs": user_filter_exprs,
+            "filters": filters_str.strip(),
         }
         return res
 

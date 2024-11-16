@@ -48,7 +48,7 @@ class VideoHitsParser:
         detail_level: int = -1,
         limit: int = -1,
         verbose: bool = False,
-    ) -> list[dict]:
+    ) -> dict:
         qwords = self.split_query(query)["keywords"]
         qwords_str = " ".join(qwords)
         if not res_dict:
