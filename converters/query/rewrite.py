@@ -1,6 +1,5 @@
 from copy import deepcopy
-from datetime import datetime
-from tclogger import get_now
+from tclogger import get_now, tcdatetime
 
 from converters.times import DateFormatChecker
 
@@ -19,7 +18,7 @@ class QueryRewriter:
         if not suggest_wordict:
             return qwords
         now = get_now()
-        next_year_start_dt = datetime(year=now.year + 1, month=1, day=1)
+        next_year_start_dt = tcdatetime(year=now.year + 1, month=1, day=1)
         for idx, qword in enumerate(qwords):
             if self.date_checker.is_in_date_range(
                 qword, start="2009-09-09", end=next_year_start_dt

@@ -125,7 +125,7 @@ class DateFormatChecker:
             else:
                 start_date = start
         else:
-            start_date = tcdatetime.min
+            start_date = tcdatetime.min()
 
         if end:
             if isinstance(end, str):
@@ -133,9 +133,11 @@ class DateFormatChecker:
             else:
                 end_date = end
         else:
-            end_date = tcdatetime.max
+            end_date = tcdatetime.max()
 
-        if start_date <= tcdatetime(self.year, self.month, self.day) <= end_date:
+        self_date = tcdatetime(self.year, self.month, self.day)
+
+        if start_date <= self_date <= end_date:
             logger.success(f"✓ In date range")
             logger.exit_quiet(not verbose)
             return True
