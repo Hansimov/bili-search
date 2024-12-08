@@ -1,5 +1,7 @@
 import re
 
+from typing import Union
+
 from converters.query.punct import Puncter
 from converters.query.pinyin import ChinesePinyinizer
 
@@ -11,8 +13,8 @@ class HighlightsCounter:
 
     def extract_highlighted_keywords(
         self, htext: str, tag="hit", remove_puncts: bool = True
-    ) -> dict:
-        pattern = f"<{tag}>(.*?)</{tag}>"
+    ) -> dict[str, int]:
+        pattern = f"<{tag}>\s*([^\s]*?)\s*</{tag}>"
         highlighted_keywords = {}
         match = re.findall(pattern, htext)
         for m in match:
@@ -21,15 +23,30 @@ class HighlightsCounter:
             highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
         return highlighted_keywords
 
-    def qword_match_hword(self, qword: str, hword: str):
+    def qword_match_hword(self, qword: str, hword: str) -> bool:
         if qword.startswith(hword):
             return True
         qword_pinyin = self.pinyinizer.text_to_pinyin_str(qword)
         hword_pinyin = self.pinyinizer.text_to_pinyin_str(hword)
         if hword_pinyin.startswith(qword_pinyin):
             return True
+        return False
 
-    def count_keywords(
+    def sort_hwords_by_qwords(self, qwords: list[str], hwords: list[str]) -> list[str]:
+        hword_with_qword_idx: list[tuple] = []
+        for hword in hwords:
+            is_hword_matched = False
+            for idx, qword in enumerate(qwords):
+                if self.qword_match_hword(qword, hword):
+                    hword_with_qword_idx.append((hword, idx))
+                    is_hword_matched = True
+                    break
+            if not is_hword_matched:
+                hword_with_qword_idx.append((hword, len(qwords)))
+        sorted_hwords = [
+            hword for hword, _ in sorted(hword_with_qword_idx, key=lambda x: x[1])
+        ]
+        return sorted_hwords
         self,
         query: str,
         hits: list[dict],
