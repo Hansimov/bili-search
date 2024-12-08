@@ -47,31 +47,27 @@ class HighlightsCounter:
             hword for hword, _ in sorted(hword_with_qword_idx, key=lambda x: x[1])
         ]
         return sorted_hwords
+
+    def count_hword_by_qword(
         self,
-        query: str,
-        hits: list[dict],
-        exclude_fields: list = ["pubdate_str"],
-        use_score: bool = False,
+        qwords: list[str],
+        hword_count_of_hits: list[dict[str, int]],
+        hit_scores: list[int] = [],
         threshold: int = 2,
-    ) -> dict:
-        res = {}
-        qwords = query.split()
-        for hit in hits:
-            merged_highlights = hit.get("merged_highlights", {})
-            hit_score = hit.get("score", 1) if use_score else 1
-            for field, text in merged_highlights.items():
-                if field in exclude_fields or not text:
-                    continue
-                htext = text[0] if isinstance(text, list) else text
-                hwords = self.extract_highlighted_keywords(htext)
-                for hword, hword_count in hwords.items():
-                    hword = hword.lower().replace(" ", "")
-                    for qword in qwords:
-                        if len(qwords) == 1 or self.qword_match_hword(qword, hword):
-                            res[qword] = res.get(qword, {})
-                            res[qword][hword] = (
-                                res[qword].get(hword, 0) + hword_count * hit_score
-                            )
+    ) -> dict[str, dict[str, int]]:
+        """return: `{<qword>: {<hword>: <count>}, ...}`"""
+        res: dict[str, dict[str, int]] = {}
+        if not hit_scores:
+            hit_scores = [1] * len(hword_count_of_hits)
+        for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
+            for hword, hword_count in hword_count_dict.items():
+                hword = hword.lower().replace(" ", "")
+                for qword in qwords:
+                    if len(qwords) == 1 or self.qword_match_hword(qword, hword):
+                        res[qword] = res.get(qword, {})
+                        res[qword][hword] = (
+                            res[qword].get(hword, 0) + hword_count * hit_score
+                        )
         res = {
             qword: {k: v for k, v in hwords.items() if v >= threshold}
             for qword, hwords in res.items()
@@ -81,6 +77,61 @@ class HighlightsCounter:
             for qword, hwords in res.items()
         }
         return res
+
+    def count_hwords_str_by_hit(
+        self,
+        qwords: list[str],
+        hword_count_of_hits: list[dict[str, int]],
+        hit_scores: list[int] = [],
+        threshold: int = 2,
+    ) -> dict[str, int]:
+        """return: `{<sorted_hwords_str_of_hit>: <count>, ...}`"""
+        res = {}
+        if not hit_scores:
+            hit_scores = [1] * len(hword_count_of_hits)
+        for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
+            hwords_of_hit = list(hword_count_dict.keys())
+            sorted_hwords = self.sort_hwords_by_qwords(qwords, hwords_of_hit)
+            sorted_hwords_str = " ".join(sorted_hwords)
+            res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
+        res = {k: v for k, v in res.items() if v >= threshold}
+        res = dict(sorted(res.items(), key=lambda x: x[1], reverse=True))
+        return res
+
+    def count_keywords(
+        self,
+        query: str,
+        hits: list[dict],
+        exclude_fields: list = ["pubdate_str"],
+        use_score: bool = False,
+        threshold: int = 2,
+    ) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+        qwords = query.split()
+        hword_count_of_hits: list[dict[str, int]] = []
+        hit_scores: list[Union[int, float]] = []
+        for hit in hits:
+            merged_highlights = hit.get("merged_highlights", {})
+            hit_score = hit.get("score", 1) if use_score else 1
+            hit_scores.append(hit_score)
+            hword_count_of_hit: dict[str, int] = {}
+            for field, text in merged_highlights.items():
+                if field in exclude_fields or not text:
+                    continue
+                htext = text[0] if isinstance(text, list) else text
+                hword_count_of_field = self.extract_highlighted_keywords(htext)
+                for field_hword, field_hword_count in hword_count_of_field.items():
+                    hword_count_of_hit[field_hword] = (
+                        hword_count_of_hit.get(field_hword, 0) + field_hword_count
+                    )
+            hword_count_of_hits.append(hword_count_of_hit)
+
+        res_by_qword = self.count_hword_by_qword(
+            qwords, hword_count_of_hits, hit_scores, threshold
+        )
+        res_by_hit = self.count_hwords_str_by_hit(
+            qwords, hword_count_of_hits, hit_scores, threshold
+        )
+        return res_by_qword, res_by_hit
 
     def count_authors(
         self,
