@@ -53,6 +53,22 @@ class HighlightsCounter:
         ]
         return sorted_hwords
 
+    def extract_hwords_containing_all_qwords(
+        self, qword_hword_count: dict[str, dict[str, int]]
+    ) -> dict[str, int]:
+        qwords = list(qword_hword_count.keys())
+        hwords_containing_all_qwords: dict[str, int] = {}
+        for hword_count_dict in qword_hword_count.values():
+            for hword, hword_count in hword_count_dict.items():
+                is_hword_containing_all_qwords = True
+                for qword in qwords:
+                    if not self.qword_match_hword(qword, hword)["middle"]:
+                        is_hword_containing_all_qwords = False
+                        break
+                if is_hword_containing_all_qwords:
+                    hwords_containing_all_qwords[hword] = hword_count
+        return hwords_containing_all_qwords
+
     def count_hword_by_qword(
         self,
         qwords: list[str],
@@ -134,7 +150,10 @@ class HighlightsCounter:
             hword_count_of_hits.append(hword_count_of_hit)
 
         res_by_qword = self.count_hword_by_qword(
-            qwords, hword_count_of_hits, hit_scores, threshold
+            qwords, hword_count_of_hits, hit_scores=hit_scores, threshold=threshold
+        )
+        hwords_containing_all_qwords = self.extract_hwords_containing_all_qwords(
+            res_by_qword
         )
         res_by_hit = self.count_hwords_str_by_hit(
             qwords, hword_count_of_hits, hit_scores, threshold
