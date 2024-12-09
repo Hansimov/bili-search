@@ -23,21 +23,26 @@ class HighlightsCounter:
             highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
         return highlighted_keywords
 
-    def qword_match_hword(self, qword: str, hword: str) -> bool:
-        if qword.startswith(hword):
-            return True
+    def qword_match_hword(self, qword: str, hword: str) -> dict[str, bool]:
+        is_match = {"prefix": False, "full": False, "middle": False}
+        qword_str = qword.lower().strip()
+        hword_str = hword.lower().strip()
         qword_pinyin = self.pinyinizer.text_to_pinyin_str(qword)
         hword_pinyin = self.pinyinizer.text_to_pinyin_str(hword)
-        if hword_pinyin.startswith(qword_pinyin):
-            return True
-        return False
+        is_match = {
+            "prefix": qword_str.startswith(hword_str)
+            or hword_pinyin.startswith(qword_pinyin),
+            "full": (qword_str == hword_str) or (hword_pinyin == qword_pinyin),
+            "middle": (qword_str in hword_str) or (qword_pinyin in hword_pinyin),
+        }
+        return is_match
 
     def sort_hwords_by_qwords(self, qwords: list[str], hwords: list[str]) -> list[str]:
         hword_with_qword_idx: list[tuple] = []
         for hword in hwords:
             is_hword_matched = False
             for idx, qword in enumerate(qwords):
-                if self.qword_match_hword(qword, hword):
+                if self.qword_match_hword(qword, hword)["prefix"]:
                     hword_with_qword_idx.append((hword, idx))
                     is_hword_matched = True
                     break
@@ -63,7 +68,10 @@ class HighlightsCounter:
             for hword, hword_count in hword_count_dict.items():
                 hword = hword.lower().replace(" ", "")
                 for qword in qwords:
-                    if len(qwords) == 1 or self.qword_match_hword(qword, hword):
+                    if (
+                        len(qwords) == 1
+                        or self.qword_match_hword(qword, hword)["prefix"]
+                    ):
                         res[qword] = res.get(qword, {})
                         res[qword][hword] = (
                             res[qword].get(hword, 0) + hword_count * hit_score
