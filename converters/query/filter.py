@@ -1,12 +1,13 @@
 import re
 
 from pprint import pformat
-from tclogger import logger
+from tclogger import logger, get_now, tcdatetime
 
 from converters.field.date import DateFieldConverter
 from converters.field.stat import StatFieldConverter
 from converters.field.user import UserFieldConverter, UidFieldConverter
 from converters.field.operators import RE_COMMA
+from converters.times import DateFormatChecker
 
 
 class QueryFilterExtractor:
@@ -56,6 +57,29 @@ class QueryFilterExtractor:
     REP_KEYWORD = rf"(?P<keyword>{RE_KEYWORD})"
 
     QUERY_PATTERN = rf"({REP_DATE_FILTER}|{REP_STAT_FILTER}|{REP_UID_FILTER}|{REP_USER_FILTER}|{REP_KEYWORD})"
+
+    def __init__(self):
+        self.date_checker = DateFormatChecker()
+        now = get_now()
+        self.next_year_start_dt = tcdatetime(year=now.year + 1, month=1, day=1)
+
+    def split_date_keywords(self, keywords: list[str]) -> dict:
+        date_keywords = []
+        body_keywords = []
+        for keyword in keywords:
+            keyword = keyword.strip()
+            if self.date_checker.is_in_date_range(
+                keyword, start="2009-09-09", end=self.next_year_start_dt
+            ):
+                date_keywords.append(keyword)
+            else:
+                body_keywords.append(keyword)
+        res = {
+            "keywords": keywords,
+            "keywords_body": body_keywords,
+            "keywords_date": date_keywords,
+        }
+        return res
 
     def split_keyword_and_filter_expr(self, query: str) -> dict:
         """use regex to split keywords and filter exprs, which allows spaces in filter exprs
