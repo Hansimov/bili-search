@@ -137,20 +137,18 @@ class VideoSearcher:
             date_boosted_fields = date_fields
 
         filter_extractor = QueryFilterExtractor()
-        filters_str = filter_extractor.split_keyword_and_filter_expr(query)["filters"]
-        original_query_keywords, filters = filter_extractor.construct(query)
+        query_info = filter_extractor.split_keyword_and_filter_expr(query)
+        _, filter_dicts = filter_extractor.construct(query)
         if suggest_info:
-            rewrited_query_keywords = self.query_rewriter.rewrite(
-                original_query_keywords, suggest_info
-            )
+            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
+            keywords_rewrited = rewrite_info.get("list", [])[0]
         else:
-            rewrited_query_keywords = original_query_keywords
-        original_query_keywords_str = " ".join(original_query_keywords)
-        rewrited_query_keywords_str = " ".join(rewrited_query_keywords)
+            rewrite_info = {}
+            keywords_rewrited = " ".join(query_info["keywords"])
 
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
-            rewrited_query_keywords_str,
+            keywords_rewrited,
             match_fields=boosted_fields,
             date_match_fields=date_boosted_fields,
             match_bool=match_bool,
@@ -159,8 +157,8 @@ class VideoSearcher:
             combined_fields_list=combined_fields_list,
         )
 
-        if filters or extra_filters:
-            query_dsl_dict["bool"]["filter"] = filters + extra_filters
+        if filter_dicts or extra_filters:
+            query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
 
         script_score_constructor = ScriptScoreQueryDSLConstructor()
 
@@ -221,14 +219,15 @@ class VideoSearcher:
             logger.mesg(dict_to_str(res_dict))
             return_res = res_dict
 
-        return_res["filters"] = filters_str
-        return_res["keywords_original"] = original_query_keywords_str
         if request_type == "suggest":
-            rewrited_query_keywords = self.query_rewriter.rewrite(
-                original_query_keywords, return_res
+            rewrite_info = self.query_rewriter.rewrite(
+                query_info, return_res.get("suggest_info", {})
             )
-            rewrited_query_keywords_str = " ".join(rewrited_query_keywords).strip()
-        return_res["keywords_rewrited"] = rewrited_query_keywords_str
+        else:
+            keywords_rewrited = [" ".join(query_info["keywords"])]
+            rewrite_info = rewrite_info or {}
+
+        return_res["rewrite_info"] = rewrite_info
 
         # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         logger.exit_quiet(not verbose)
