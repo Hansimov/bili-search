@@ -181,7 +181,11 @@ class HighlightsCounter:
             hit_scores=hit_scores,
             threshold=threshold,
         )
-        return res_by_qword, res_by_hit
+        res = {
+            "qword_hword_count": res_by_qword,
+            "hwords_str_count": res_by_hit,
+        }
+        return res
 
     def count_authors(
         self,

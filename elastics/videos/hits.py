@@ -49,7 +49,8 @@ class VideoHitsParser:
         limit: int = -1,
         verbose: bool = False,
     ) -> dict:
-        qwords = self.split_query(query)["keywords"]
+        query_info = self.split_query(query)
+        qwords = query_info["keywords_body"]
         qwords_str = " ".join(qwords)
         if not res_dict:
             hits_info = {
@@ -61,7 +62,8 @@ class VideoHitsParser:
                 "total_hits": 0,
                 "return_hits": 0,
                 "hits": [],
-                "highlighted_keywords": {},
+                "suggest_info": {},
+                "query_info": query_info,
             }
             return hits_info
         hits = []
@@ -123,6 +125,7 @@ class VideoHitsParser:
             hits.append(hit_info)
         if limit > 0:
             hits = hits[:limit]
+        count_res = self.highlights_counter.count_keywords(qwords, hits)
         hits_info = {
             "query": query,
             "request_type": request_type,
@@ -132,10 +135,12 @@ class VideoHitsParser:
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
-            "highlighted_keywords": self.highlights_counter.count_keywords(
-                qwords_str, hits
-            ),
-            "related_authors": self.highlights_counter.count_authors(hits),
+            "suggest_info": {
+                "qword_hword_count": count_res["qword_hword_count"],
+                "hwords_str_count": count_res["hwords_str_count"],
+                "related_authors": self.highlights_counter.count_authors(hits),
+            },
+            "query_info": query_info,
         }
         logger.enter_quiet(not verbose)
         # logger.success(pformat(hits_info, indent=4, sort_dicts=False))
