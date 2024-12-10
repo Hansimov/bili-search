@@ -116,7 +116,7 @@ class QueryFilterExtractor:
         date_filter_exprs = []
         uid_filter_exprs = []
         user_filter_exprs = []
-        filters_str = ""
+        filters_list = []
         for match in matches:
             keyword = match.group("keyword")
             stat_filter_expr = match.group("stat_filter")
@@ -126,24 +126,32 @@ class QueryFilterExtractor:
             if keyword:
                 keywords.append(keyword.strip())
             if stat_filter_expr:
-                stat_filter_exprs.append(stat_filter_expr.strip())
-                filters_str += f" {stat_filter_expr.strip()}"
+                expr = stat_filter_expr.strip()
+                stat_filter_exprs.append(expr)
+                filters_list.append(expr)
             if date_filter_expr:
-                date_filter_exprs.append(date_filter_expr.strip())
-                filters_str += f" {date_filter_expr.strip()}"
+                expr = date_filter_expr.strip()
+                date_filter_exprs.append(expr)
+                filters_list.append(expr)
             if uid_filter_expr:
-                uid_filter_exprs.append(uid_filter_expr.strip())
-                filters_str += f" {uid_filter_expr.strip()}"
+                expr = uid_filter_expr.strip()
+                uid_filter_exprs.append(expr)
+                filters_list.append(expr)
             if user_filter_expr:
-                user_filter_exprs.append(user_filter_expr.strip())
-                filters_str += f" {user_filter_expr.strip()}"
+                expr = user_filter_expr.strip()
+                user_filter_exprs.append(expr)
+                filters_list.append(expr)
+        split_date_res = self.split_date_keywords(keywords)
         res = {
+            "query": query,
             "keywords": keywords,
-            "stat_filter_exprs": stat_filter_exprs,
-            "date_filter_exprs": date_filter_exprs,
-            "uid_filter_exprs": uid_filter_exprs,
-            "user_filter_exprs": user_filter_exprs,
-            "filters": filters_str.strip(),
+            "keywords_body": split_date_res["keywords_body"],
+            "keywords_date": split_date_res["keywords_date"],
+            "filters": filters_list,
+            "filters_stat": stat_filter_exprs,
+            "filters_date": date_filter_exprs,
+            "filters_uid": uid_filter_exprs,
+            "filters_user": user_filter_exprs,
         }
         return res
 
@@ -377,9 +385,7 @@ class QueryFilterExtractor:
         range_filters = {}
         split_res = self.split_keyword_and_filter_expr(query)
         keywords = split_res["keywords"]
-        range_filter_exprs = (
-            split_res["stat_filter_exprs"] + split_res["date_filter_exprs"]
-        )
+        range_filter_exprs = split_res["filters_stat"] + split_res["filters_date"]
         for filter_expr in range_filter_exprs:
             filter_item = self.filter_expr_to_dict(
                 filter_expr, use_date_str=use_date_str
@@ -387,9 +393,7 @@ class QueryFilterExtractor:
             self.merge_range_filter(filter_item=filter_item, filters=range_filters)
 
         term_filters = {}
-        term_filter_exprs = (
-            split_res["uid_filter_exprs"] + split_res["user_filter_exprs"]
-        )
+        term_filter_exprs = split_res["filters_uid"] + split_res["filters_user"]
         for filter_expr in term_filter_exprs:
             filter_item = self.filter_expr_to_dict(filter_expr)
             self.merge_term_filter(filter_item=filter_item, filters=term_filters)
@@ -398,21 +402,21 @@ class QueryFilterExtractor:
 
     def construct(
         self, query: str, use_date_str: bool = False
-    ) -> tuple[list, list[str]]:
+    ) -> tuple[list, list[dict[str]]]:
         keywords, range_filters, term_filters = self.extract(
             query, use_date_str=use_date_str
         )
-        filters = []
+        filter_dicts = []
         if range_filters:
             for k, v in range_filters.items():
-                filters.append({"range": {k: v}})
+                filter_dicts.append({"range": {k: v}})
         if term_filters:
             for k, v in term_filters.items():
                 if isinstance(v, list):
-                    filters.append({"terms": {k: v}})
+                    filter_dicts.append({"terms": {k: v}})
                 else:
-                    filters.append({"term": {k: v}})
-        return keywords, filters
+                    filter_dicts.append({"term": {k: v}})
+        return keywords, filter_dicts
 
 
 if __name__ == "__main__":
