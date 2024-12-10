@@ -9,31 +9,44 @@ class QueryRewriter:
         self.date_checker = DateFormatChecker()
 
     def rewrite(
-        self, query_keywords: list[str], suggest_info: dict = {}, threshold: int = 2
-    ) -> list[str]:
+        self,
+        query_info: dict = {},
+        suggest_info: dict = {},
+        threshold: int = 2,
+        append_date: bool = True,
+    ) -> dict:
+        query = query_info.get("query", "")
         if not suggest_info:
-            return query_keywords
-        qwords = deepcopy(query_keywords)
-        suggest_wordict = suggest_info.get("highlighted_keywords", {})
-        if not suggest_wordict:
-            return qwords
-        now = get_now()
-        next_year_start_dt = tcdatetime(year=now.year + 1, month=1, day=1)
-        for idx, qword in enumerate(qwords):
-            if self.date_checker.is_in_date_range(
-                qword, start="2009-09-09", end=next_year_start_dt
-            ):
-                continue
-            choices = suggest_wordict.get(qword, {})
-            if choices:
-                choices = dict(
-                    sorted(choices.items(), key=lambda x: x[1], reverse=True)
-                )
-                best_qword, count = list(choices.items())[0]
-                same_qword_count = choices.get(qword, 0)
-                if same_qword_count >= threshold:
-                    continue
-                if best_qword != qword and count >= threshold:
-                    qwords[idx] = best_qword
-
-        return qwords
+            return query
+        hwords_str_count = suggest_info.get("hwords_str_count", {})
+        if not hwords_str_count:
+            return query
+        keywords_date = query_info.get("keywords_date", [])
+        keywords_date_str = " ".join(keywords_date)
+        hwords_str_count_tuples = [
+            (k, v) for k, v in hwords_str_count.items() if v >= threshold
+        ]
+        rewrite_hwords_str_list = []
+        if hwords_str_count_tuples:
+            rewrite_hwords_str_tuples = sorted(
+                hwords_str_count_tuples, key=lambda x: x[1], reverse=True
+            )
+            for hwords_str, count in hwords_str_count_tuples:
+                rewrite_hwords_str_list.append(hwords_str)
+        else:
+            rewrite_hwords_str_tuples = []
+            rewrite_hwords_str_list = [" ".join(query_info.get("keywords_body"))]
+        if append_date and keywords_date:
+            rewrite_hwords_str_tuples = [
+                (f"{hwords_str} {keywords_date_str}", count)
+                for hwords_str, count in hwords_str_count_tuples
+            ]
+            rewrite_hwords_str_list = [
+                f"{hwords_str} {keywords_date_str}"
+                for hwords_str in rewrite_hwords_str_list
+            ]
+        res = {
+            "list": rewrite_hwords_str_list,
+            "tuples": rewrite_hwords_str_tuples,
+        }
+        return res
