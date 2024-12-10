@@ -1,15 +1,29 @@
 import re
 
 from typing import Union
+from tclogger import get_now, tcdatetime
 
 from converters.query.punct import Puncter
 from converters.query.pinyin import ChinesePinyinizer
+from converters.times import DateFormatChecker
 
 
 class HighlightsCounter:
     def __init__(self):
         self.puncter = Puncter()
         self.pinyinizer = ChinesePinyinizer()
+        self.date_checker = DateFormatChecker()
+        now = get_now()
+        self.next_year_start_dt = tcdatetime(year=now.year + 1, month=1, day=1)
+
+    def remove_date_qwords(self, qwords: list[str]) -> list[str]:
+        return [
+            qword
+            for qword in qwords
+            if not self.date_checker.is_in_date_range(
+                qword, start="2009-09-09", end=self.next_year_start_dt
+            )
+        ]
 
     def extract_highlighted_keywords(
         self, htext: str, tag="hit", remove_puncts: bool = True
@@ -130,7 +144,7 @@ class HighlightsCounter:
         use_score: bool = False,
         threshold: int = 2,
     ) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
-        qwords = query.split()
+        qwords = self.remove_date_qwords(query.split())
         hword_count_of_hits: list[dict[str, int]] = []
         hit_scores: list[Union[int, float]] = []
         for hit in hits:
