@@ -51,21 +51,31 @@ class HighlightsCounter:
         }
         return is_match
 
-    def sort_hwords_by_qwords(self, qwords: list[str], hwords: list[str]) -> list[str]:
+    def sort_hwords_by_qwords(self, qwords: list[str], hwords: list[str]) -> dict:
         hword_with_qword_idx: list[tuple] = []
+        qword_hword_dict: dict[str, dict[str, int]] = {}
         for hword in hwords:
             is_hword_matched = False
             for idx, qword in enumerate(qwords):
                 if self.qword_match_hword(qword, hword)["prefix"]:
                     hword_with_qword_idx.append((hword, idx))
+                    qword_hword_dict[qword] = qword_hword_dict.get(qword, {})
+                    qword_hword_dict[qword][hword] = (
+                        qword_hword_dict[qword].get(hword, 0) + 1
+                    )
                     is_hword_matched = True
                     break
             if not is_hword_matched:
                 hword_with_qword_idx.append((hword, len(qwords)))
-        sorted_hwords = [
+        sorted_hwords: list[str] = [
             hword for hword, _ in sorted(hword_with_qword_idx, key=lambda x: x[1])
         ]
-        return sorted_hwords
+        res = {
+            "dict": qword_hword_dict,
+            "list": sorted_hwords,
+            "str": " ".join(sorted_hwords),
+        }
+        return res
 
     def extract_hwords_containing_all_qwords(
         self, qword_hword_count: dict[str, dict[str, int]]
