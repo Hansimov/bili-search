@@ -130,6 +130,7 @@ class HighlightsCounter:
         self,
         qwords: list[str],
         hword_count_of_hits: list[dict[str, int]],
+        hwords_containing_all_qwords: dict[str, int] = {},
         hit_scores: list[int] = [],
         threshold: int = 2,
     ) -> dict[str, int]:
@@ -138,10 +139,19 @@ class HighlightsCounter:
         if not hit_scores:
             hit_scores = [1] * len(hword_count_of_hits)
         for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
-            hwords_of_hit = list(hword_count_dict.keys())
-            sorted_hwords = self.sort_hwords_by_qwords(qwords, hwords_of_hit)
-            sorted_hwords_str = " ".join(sorted_hwords)
-            res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
+            hwords_of_hit = [
+                hword
+                for hword in hword_count_dict.keys()
+                if hword not in hwords_containing_all_qwords
+            ]
+            hwords_sort_res = self.sort_hwords_by_qwords(qwords, hwords_of_hit)
+            sorted_hwords_str = hwords_sort_res["str"]
+            qword_hword_dict = hwords_sort_res["dict"]
+            if len(list(qword_hword_dict.keys())) >= len(qwords):
+                res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
+            for word in hwords_containing_all_qwords.keys():
+                if word in hword_count_dict:
+                    res[word] = res.get(word, 0) + hit_score
         res = {k: v for k, v in res.items() if v >= threshold}
         res = dict(sorted(res.items(), key=lambda x: x[1], reverse=True))
         return res
@@ -180,7 +190,11 @@ class HighlightsCounter:
             res_by_qword
         )
         res_by_hit = self.count_hwords_str_by_hit(
-            qwords, hword_count_of_hits, hit_scores, threshold
+            qwords,
+            hword_count_of_hits,
+            hwords_containing_all_qwords=hwords_containing_all_qwords,
+            hit_scores=hit_scores,
+            threshold=threshold,
         )
         return res_by_qword, res_by_hit
 
