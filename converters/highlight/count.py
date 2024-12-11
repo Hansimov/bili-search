@@ -37,14 +37,43 @@ class HighlightsCounter:
         }
         return is_match
 
-    def sort_hwords_by_qwords(self, qwords: list[str], hwords: list[str]) -> dict:
-        hword_with_qword_idx: list[tuple] = []
+    def filter_hword_qword_tuples(
+        self,
+        hword_qword_tuples: list[tuple[str, str, int]],
+        qword_hword_count: dict[str, dict[str, int]],
+    ) -> list[tuple[str, str, int]]:
+        qword_hword_dict: dict[str, tuple[str, int, int]] = {}
+        for hword, qword, qword_idx in hword_qword_tuples:
+            if not qword:
+                continue
+            hword_count = qword_hword_count[qword].get(hword, 0)
+            if qword not in qword_hword_dict:
+                qword_hword_dict[qword] = (hword, hword_count, qword_idx)
+            else:
+                _, old_hword_count, _ = qword_hword_dict[qword]
+                if hword_count > old_hword_count:
+                    qword_hword_dict[qword] = (hword, hword_count, qword_idx)
+        new_hword_qword_tuples = [
+            (hword, qword, qword_idx)
+            for hword, qword, qword_idx in qword_hword_dict.values()
+        ]
+        new_hword_qword_tuples = sorted(new_hword_qword_tuples, key=lambda x: x[-1])
+        return new_hword_qword_tuples
+
+    def filter_hwords_by_qwords(
+        self,
+        qwords: list[str],
+        hwords: list[str],
+        qword_hword_count: dict[str, dict[str, int]],
+    ) -> dict:
+
+        hword_qword_tuples: list[tuple[str, str, int]] = []
         qword_hword_dict: dict[str, dict[str, int]] = {}
         for hword in hwords:
             is_hword_matched = False
-            for idx, qword in enumerate(qwords):
+            for qword_idx, qword in enumerate(qwords):
                 if self.qword_match_hword(qword, hword)["prefix"]:
-                    hword_with_qword_idx.append((hword, idx))
+                    hword_qword_tuples.append((hword, qword, qword_idx))
                     qword_hword_dict[qword] = qword_hword_dict.get(qword, {})
                     qword_hword_dict[qword][hword] = (
                         qword_hword_dict[qword].get(hword, 0) + 1
@@ -52,14 +81,16 @@ class HighlightsCounter:
                     is_hword_matched = True
                     break
             if not is_hword_matched:
-                hword_with_qword_idx.append((hword, len(qwords)))
-        sorted_hwords: list[str] = [
-            hword for hword, _ in sorted(hword_with_qword_idx, key=lambda x: x[1])
-        ]
+                hword_qword_tuples.append((hword, None, len(qwords)))
+        hword_qword_tuples = self.filter_hword_qword_tuples(
+            hword_qword_tuples, qword_hword_count
+        )
+        hwords_list = [hword for hword, _, _ in hword_qword_tuples]
         res = {
             "dict": qword_hword_dict,
-            "list": sorted_hwords,
-            "str": " ".join(sorted_hwords),
+            "tuple": hword_qword_tuples,
+            "list": hwords_list,
+            "str": " ".join(hwords_list),
         }
         return res
 
@@ -116,7 +147,7 @@ class HighlightsCounter:
         self,
         qwords: list[str],
         hword_count_of_hits: list[dict[str, int]],
-        hwords_containing_all_qwords: dict[str, int] = {},
+        qword_hword_count: dict[str, dict[str, int]] = {},
         hit_scores: list[int] = [],
         threshold: int = 2,
     ) -> dict[str, int]:
@@ -124,15 +155,20 @@ class HighlightsCounter:
         res = {}
         if not hit_scores:
             hit_scores = [1] * len(hword_count_of_hits)
+        hwords_containing_all_qwords = self.extract_hwords_containing_all_qwords(
+            qword_hword_count
+        )
         for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
             hwords_of_hit = [
                 hword
                 for hword in hword_count_dict.keys()
                 if hword not in hwords_containing_all_qwords
             ]
-            hwords_sort_res = self.sort_hwords_by_qwords(qwords, hwords_of_hit)
-            sorted_hwords_str = hwords_sort_res["str"]
-            qword_hword_dict = hwords_sort_res["dict"]
+            filter_hwords_res = self.filter_hwords_by_qwords(
+                qwords, hwords_of_hit, qword_hword_count
+            )
+            sorted_hwords_str = filter_hwords_res["str"]
+            qword_hword_dict = filter_hwords_res["dict"]
             if len(list(qword_hword_dict.keys())) >= len(qwords):
                 res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
             for word in hwords_containing_all_qwords.keys():
@@ -171,13 +207,10 @@ class HighlightsCounter:
         res_by_qword = self.count_hword_by_qword(
             qwords, hword_count_of_hits, hit_scores=hit_scores, threshold=threshold
         )
-        hwords_containing_all_qwords = self.extract_hwords_containing_all_qwords(
-            res_by_qword
-        )
         res_by_hit = self.count_hwords_str_by_hit(
             qwords,
             hword_count_of_hits,
-            hwords_containing_all_qwords=hwords_containing_all_qwords,
+            qword_hword_count=res_by_qword,
             hit_scores=hit_scores,
             threshold=threshold,
         )
