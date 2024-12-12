@@ -8,7 +8,7 @@ from converters.query.pinyin import ChinesePinyinizer
 
 class HighlightsCounter:
     def __init__(self):
-        self.puncter = Puncter()
+        self.puncter = Puncter(non_specials="-")
         self.pinyinizer = ChinesePinyinizer()
 
     def extract_highlighted_keywords(
