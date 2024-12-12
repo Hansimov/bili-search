@@ -30,9 +30,9 @@ class HighlightsCounter:
         qword_pinyin = self.pinyinizer.text_to_pinyin_str(qword)
         hword_pinyin = self.pinyinizer.text_to_pinyin_str(hword)
         is_match = {
-            "prefix": qword_str.startswith(hword_str)
+            "prefix": hword_str.startswith(qword_str)
             or hword_pinyin.startswith(qword_pinyin),
-            "full": (qword_str == hword_str) or (hword_pinyin == qword_pinyin),
+            "full": (hword_str == qword_str) or (hword_pinyin == qword_pinyin),
             "middle": (qword_str in hword_str) or (qword_pinyin in hword_pinyin),
         }
         return is_match
@@ -66,7 +66,6 @@ class HighlightsCounter:
         hwords: list[str],
         qword_hword_count: dict[str, dict[str, int]],
     ) -> dict:
-
         hword_qword_tuples: list[tuple[str, str, int]] = []
         qword_hword_dict: dict[str, dict[str, int]] = {}
         for hword in hwords:
