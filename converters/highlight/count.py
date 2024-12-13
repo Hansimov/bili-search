@@ -27,8 +27,8 @@ class HighlightsCounter:
         is_match = {"prefix": False, "full": False, "middle": False}
         qword_str = qword.lower().strip()
         hword_str = hword.lower().strip()
-        qword_pinyin = self.pinyinizer.text_to_pinyin_str(qword)
-        hword_pinyin = self.pinyinizer.text_to_pinyin_str(hword)
+        qword_pinyin = self.pinyinizer.text_to_pinyin_str(qword).lower().strip()
+        hword_pinyin = self.pinyinizer.text_to_pinyin_str(hword).lower().strip()
         is_match = {
             "prefix": hword_str.startswith(qword_str)
             or hword_pinyin.startswith(qword_pinyin),
@@ -158,20 +158,21 @@ class HighlightsCounter:
             qword_hword_count
         )
         for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
-            hwords_of_hit = [
+            hwords_of_hit = hword_count_dict.keys()
+            separated_hwords_of_hit = [
                 hword
-                for hword in hword_count_dict.keys()
+                for hword in hwords_of_hit
                 if hword not in hwords_containing_all_qwords
             ]
             filter_hwords_res = self.filter_hwords_by_qwords(
-                qwords, hwords_of_hit, qword_hword_count
+                qwords, separated_hwords_of_hit, qword_hword_count
             )
             sorted_hwords_str = filter_hwords_res["str"]
             qword_hword_dict = filter_hwords_res["dict"]
             if len(list(qword_hword_dict.keys())) >= len(qwords):
                 res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
             for word in hwords_containing_all_qwords.keys():
-                if word in hword_count_dict:
+                if word in hwords_of_hit:
                     res[word] = res.get(word, 0) + hit_score
         res = {k: v for k, v in res.items() if v >= threshold}
         res = dict(sorted(res.items(), key=lambda x: x[1], reverse=True))
@@ -184,9 +185,12 @@ class HighlightsCounter:
         exclude_fields: list = ["pubdate_str"],
         use_score: bool = False,
         threshold: int = 2,
+        ignore_case: bool = True,
     ) -> dict:
         hword_count_of_hits: list[dict[str, int]] = []
         hit_scores: list[Union[int, float]] = []
+        if ignore_case:
+            qwords = [qword.lower() for qword in qwords]
         for hit in hits:
             merged_highlights = hit.get("merged_highlights", {})
             hit_score = hit.get("score", 1) if use_score else 1
@@ -196,6 +200,8 @@ class HighlightsCounter:
                 if field in exclude_fields or not text:
                     continue
                 htext = text[0] if isinstance(text, list) else text
+                if ignore_case:
+                    htext = htext.lower()
                 hword_count_of_field = self.extract_highlighted_keywords(htext)
                 for field_hword, field_hword_count in hword_count_of_field.items():
                     hword_count_of_hit[field_hword] = (

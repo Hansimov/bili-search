@@ -99,7 +99,7 @@ class PinyinHighlighter:
         return htext_str
 
     def highlight(self, query: str, text: str, tag: str = "em", verbose: bool = False):
-        keywords = query.split()
+        keywords = [keyword.lower() for keyword in query.split()]
         highlighted_texts = []
         for keyword in keywords:
             highlighted_text = self.highlight_keyword(
