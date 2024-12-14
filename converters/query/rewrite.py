@@ -16,11 +16,18 @@ class QueryRewriter:
         append_date: bool = True,
     ) -> dict:
         query = query_info.get("query", "")
+        res = {
+            "query": query,
+            "list": [],
+            "tuples": [],
+            "dict": {},
+            "rewrited": False,
+        }
         if not suggest_info:
-            return query
+            return res
         hwords_str_count = suggest_info.get("hwords_str_count", {})
         if not hwords_str_count:
-            return query
+            return res
         keywords_date = query_info.get("keywords_date", [])
         keywords_date_str = " ".join(keywords_date)
         hwords_str_count_tuples = [
@@ -45,8 +52,11 @@ class QueryRewriter:
                 f"{hwords_str} {keywords_date_str}"
                 for hwords_str in rewrite_hwords_str_list
             ]
-        res = {
-            "list": rewrite_hwords_str_list,
-            "tuples": rewrite_hwords_str_tuples,
-        }
+        res.update(
+            {
+                "list": rewrite_hwords_str_list,
+                "tuples": rewrite_hwords_str_tuples,
+                "rewrited": True,
+            }
+        )
         return res
