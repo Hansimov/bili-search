@@ -169,7 +169,9 @@ class HighlightsCounter:
             )
             sorted_hwords_str = filter_hwords_res["str"]
             qword_hword_dict = filter_hwords_res["dict"]
-            if len(list(qword_hword_dict.keys())) >= len(qwords):
+            if sorted_hwords_str.strip() and len(list(qword_hword_dict.keys())) >= len(
+                qwords
+            ):
                 res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
             for word in hwords_containing_all_qwords.keys():
                 if word in hwords_of_hit:

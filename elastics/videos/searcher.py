@@ -141,7 +141,11 @@ class VideoSearcher:
         _, filter_dicts = filter_extractor.construct(query)
         if suggest_info:
             rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
-            keywords_rewrited = rewrite_info.get("list", [])[0]
+            rewrite_list = rewrite_info.get("list", [])
+            if rewrite_list:
+                keywords_rewrited = rewrite_list[0]
+            else:
+                keywords_rewrited = " ".join(query_info["keywords"])
         else:
             rewrite_info = {}
             keywords_rewrited = " ".join(query_info["keywords"])
