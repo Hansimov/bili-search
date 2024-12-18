@@ -11,18 +11,6 @@ class HighlightsCounter:
         self.puncter = Puncter(non_specials="-")
         self.pinyinizer = ChinesePinyinizer()
 
-    def extract_highlighted_keywords(
-        self, htext: str, tag="hit", remove_puncts: bool = True
-    ) -> dict[str, int]:
-        pattern = f"<{tag}>\s*([^\s]*?)\s*</{tag}>"
-        highlighted_keywords = {}
-        match = re.findall(pattern, htext)
-        for m in match:
-            if remove_puncts:
-                m = self.puncter.remove(m)
-            highlighted_keywords[m] = highlighted_keywords.get(m, 0) + 1
-        return highlighted_keywords
-
     def qword_match_hword(self, qword: str, hword: str) -> dict[str, bool]:
         is_match = {"prefix": False, "full": False, "middle": False}
         qword_str = qword.lower().strip()
@@ -188,27 +176,26 @@ class HighlightsCounter:
         use_score: bool = False,
         threshold: int = 2,
         ignore_case: bool = True,
+        remove_punct: bool = True,
     ) -> dict:
         hword_count_of_hits: list[dict[str, int]] = []
         hit_scores: list[Union[int, float]] = []
         if ignore_case:
             qwords = [qword.lower() for qword in qwords]
         for hit in hits:
-            merged_highlights = hit.get("merged_highlights", {})
+            segged_highlights = hit.get("highlights", {}).get("segged", {})
             hit_score = hit.get("score", 1) if use_score else 1
             hit_scores.append(hit_score)
             hword_count_of_hit: dict[str, int] = {}
-            for field, text in merged_highlights.items():
-                if field in exclude_fields or not text:
+            for field, segs in segged_highlights.items():
+                if field in exclude_fields or not segs:
                     continue
-                htext = text[0] if isinstance(text, list) else text
                 if ignore_case:
-                    htext = htext.lower()
-                hword_count_of_field = self.extract_highlighted_keywords(htext)
-                for field_hword, field_hword_count in hword_count_of_field.items():
-                    hword_count_of_hit[field_hword] = (
-                        hword_count_of_hit.get(field_hword, 0) + field_hword_count
-                    )
+                    segs = [seg.lower() for seg in segs]
+                if remove_punct:
+                    segs = [self.puncter.remove(seg) for seg in segs]
+                for seg in segs:
+                    hword_count_of_hit[seg] = hword_count_of_hit.get(seg, 0) + 1
             hword_count_of_hits.append(hword_count_of_hit)
 
         res_by_qword = self.count_hword_by_qword(
@@ -250,7 +237,7 @@ class HighlightsCounter:
                 res[name]["count"] += 1
             else:
                 res[name] = {"uid": uid, "count": 1}
-                if "owner.name" in hit["merged_highlights"].keys():
+                if "owner.name" in hit["highlights"]["merged"].keys():
                     res[name]["highlighted"] = True
         res = {
             name: info

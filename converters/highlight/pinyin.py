@@ -109,7 +109,9 @@ class PinyinHighlighter:
                 highlighted_texts.append(highlighted_text)
         if highlighted_texts:
             merger = HighlightMerger()
-            res_text = merger.merge(text, highlighted_texts, tag=tag)
+            res_text = merger.extract_and_merge(text, highlighted_texts, tag=tag)[
+                "merged"
+            ]
         else:
             res_text = None
         return res_text
