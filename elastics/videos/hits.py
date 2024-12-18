@@ -76,8 +76,9 @@ class VideoHitsParser:
             )
             all_fields = {**common_highlights, **pinyin_highlights}.keys()
 
-            merged_highlights = {}
             merger = HighlightMerger()
+            segged_highlights = {}
+            merged_highlights = {}
 
             pinyin_suffix_fields = [
                 field.replace(".pinyin", "") for field in pinyin_highlights.keys()
@@ -101,11 +102,15 @@ class VideoHitsParser:
                 highlight_to_merge = (
                     common_highlight + words_highlight + pinyin_highlight
                 )
-                merged_highlight = merger.merge(
+                merged_res = merger.extract_and_merge(
                     get_es_source_val(_source, field), highlight_to_merge, tag="hit"
                 )
+                merged_highlight = merged_res["merged"]
+                segged_highlight = merged_res["segged"]
                 if merged_highlight:
                     merged_highlights[field] = [merged_highlight]
+                if segged_highlight:
+                    segged_highlights[field] = segged_highlight
 
             if (
                 drop_no_highlights
@@ -118,9 +123,12 @@ class VideoHitsParser:
             hit_info = {
                 **_source,
                 "score": score,
-                "common_highlights": common_highlights,
-                "pinyin_highlights": pinyin_highlights,
-                "merged_highlights": merged_highlights,
+                "highlights": {
+                    "common": common_highlights,
+                    "pinyin": pinyin_highlights,
+                    "merged": merged_highlights,
+                    "segged": segged_highlights,
+                },
             }
             hits.append(hit_info)
         if limit > 0:
