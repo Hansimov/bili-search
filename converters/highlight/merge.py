@@ -1,11 +1,15 @@
 import re
 
+from typing import Union
+
 
 class HighlightMerger:
-    def merge(self, text: str, htexts: list[str], tag: str = "em"):
-        """Merge all highlighted text segments into one."""
+    def extract_and_merge(
+        self, text: str, htexts: list[str], tag: str = "hit"
+    ) -> dict[str, Union[str, list[str]]]:
+        """Extract all highlighted segments, and merge into one."""
         if not text or not htexts:
-            return None
+            return {"segged": [], "merged": ""}
 
         # get all highlighted segments
         hpattern = f"<{tag}>(.*?)</{tag}>"
@@ -36,19 +40,20 @@ class HighlightMerger:
                 merged_indexes.append((start, end))
 
         # insert tags by indexes
-        res_text = ""
+        merged_text = ""
         last_index = 0
         for start, end in merged_indexes:
-            res_text += text[last_index:start]
-            res_text += f"<{tag}>{text[start:end]}</{tag}>"
+            merged_text += text[last_index:start]
+            merged_text += f"<{tag}>{text[start:end]}</{tag}>"
             last_index = end
-        res_text += text[last_index:]
+        merged_text += text[last_index:]
 
-        return res_text
+        res = {"segged": list(hsegs), "merged": merged_text}
+        return res
 
 
 if __name__ == "__main__":
-    from tclogger import logger
+    from tclogger import logger, dict_to_str
 
     text = "影、视业的发展"
     htexts = [
@@ -59,7 +64,7 @@ if __name__ == "__main__":
     ]
 
     merger = HighlightMerger()
-    merged_text = merger.merge(text, htexts, tag="hit")
-    logger.success(merged_text)
+    merged_res = merger.extract_and_merge(text, htexts, tag="hit")
+    logger.success(dict_to_str(merged_res))
 
     # python -m converters.highlight.merge
