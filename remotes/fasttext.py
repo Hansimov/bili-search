@@ -6,6 +6,9 @@ from tclogger import logger, logstr, dict_to_str
 from typing import Literal, Union
 
 from configs.envs import PYRO_ENVS
+from remotes.register import register_pyro_apis
+
+register_pyro_apis()
 
 PYRO_NS = {
     "word": "fasttext_model_runner_word",
@@ -44,6 +47,9 @@ def test_fasttext_model_runner_client():
         sent, max_char_len=3
     )
     logger.mesg(dict_to_str(sentence_info), indent=2)
+
+    vector = client.runner.calc_stretch_query_vector(sent)
+    logger.mesg(f"vector: {vector.shape}")
 
 
 if __name__ == "__main__":
