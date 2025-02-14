@@ -1,4 +1,4 @@
-from tclogger import logger, logstr, dict_to_str
+from tclogger import logger, logstr, dict_to_str, brk
 
 from elastics.videos.searcher import VideoSearcher
 from converters.query.dsl import MultiMatchQueryDSLConstructor
@@ -16,20 +16,42 @@ def test_random():
 
 def test_suggest():
     # query = "影视飓feng"
-    query = "影视ju :date<=7d"
+    # query = "yingshi ju"
+    # query = "yingshiju"
+    # query = "影视ju"
+    # query = "hongjing 08"
+    # query = "hongjing 08 2024"
+    # query = "影视 ju :date<=7d 2024"
+    # query = "edmundd"
+    query = "gpt-sovits huaer"
+    # query = "XIAOMI su7"
+    # query = "Niko"
+    # query = "shanghai major hanlengde"
+    # query = "after effects jiaocheng"
+    # query = "damoxing weitiao"
+    # query = "大模型 微调"
+    # query = "d=1d"
+    # query = "llm 大模型"
+    # query = "are you ok"
     # query = "changcheng"
-    logger.note(f"> Query: [{logstr.mesg(query)}]")
-    res = searcher.suggest(query, limit=50, verbose=True)
+    # query = "10-22"
+    # query = "Python 教程"
+    # query = ":date=2024-10-31 :view>=1w"
+    query_str = logstr.mesg(brk(query))
+    logger.note(f"> Query: {query_str}")
+    res = searcher.multi_level_suggest(query, limit=20, verbose=True)
     hits = res.pop("hits")
+    for idx, hit in enumerate(hits[:3]):
+        logger.note(f"* Hit {idx}:")
+        logger.file(dict_to_str(hit, align_list=False), indent=4)
     logger.success(f"✓ Suggest results:")
-    logger.success(dict_to_str(res), indent=2)
-    # for idx, hit in enumerate(hits[:3]):
-    #     logger.note(f"* Hit {idx}:")
-    #     logger.file(dict_to_str(hit, align_list=False), indent=4)
+    logger.success(dict_to_str(res, align_list=False), indent=2)
 
 
 def test_multi_level_search():
-    query = "影视"
+    query = "are you ok"
+    query = "游戏星"
+    query = "10-22"
     logger.note("> Searching results:", end=" ")
     logger.file(f"[{query}]")
     res = searcher.multi_level_search(
@@ -37,7 +59,7 @@ def test_multi_level_search():
     )
     hits = res.pop("hits")
     logger.success(dict_to_str(res))
-    # for idx, hit in enumerate(hits):
+    # for idx, hit in enumerate(hits[:3]):
     #     logger.note(f"* Hit {idx}:")
     #     logger.file(dict_to_str(hit, align_list=False), indent=4)
 
@@ -97,10 +119,10 @@ def test_filter():
 
 
 if __name__ == "__main__":
-    test_random()
+    # test_random()
     test_suggest()
-    test_multi_level_search()
-    test_search()
-    test_filter()
+    # test_multi_level_search()
+    # test_search()
+    # test_filter()
 
     # python -m elastics.videos.tests
