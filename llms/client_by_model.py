@@ -5,13 +5,13 @@ from typing import Literal
 from configs.envs import LLMS_ENVS
 from llms.client import LLMClient
 
-MODEL_CONFIG_TYPE = Literal["deepseek", "qwen2-72b"]
+MODEL_CONFIG_TYPE = Literal["deepseek", "qwen2-72b", "volcengine"]
 
 
 class LLMClientByModel:
     def __init__(
         self,
-        model_config: MODEL_CONFIG_TYPE = "deepseek",
+        model_config: MODEL_CONFIG_TYPE = "volcengine",
         system_prompts: list[str] = [],
         delta_func: callable = None,
         terminate_event: asyncio.Event = None,

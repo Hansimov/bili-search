@@ -131,7 +131,7 @@ class LLMClient:
                 else:
                     # https://platform.openai.com/docs/api-reference/chat/streaming
                     delta_data = line_data["choices"][0]["delta"]
-                    finish_reason = line_data["choices"][0]["finish_reason"]
+                    finish_reason = line_data["choices"][0].get("finish_reason", None)
 
                 if "role" in delta_data:
                     role = delta_data["role"]

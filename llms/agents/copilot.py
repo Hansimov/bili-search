@@ -14,7 +14,7 @@ from llms.actions.call import LLMActionsCaller
 class CopilotAgent:
     def __init__(
         self,
-        model_config: MODEL_CONFIG_TYPE = "deepseek",
+        model_config: MODEL_CONFIG_TYPE = "volcengine",
         delta_func: callable = None,
         tool_func: callable = None,
         terminate_event: asyncio.Event = None,
@@ -66,7 +66,7 @@ class CopilotAgent:
 
 
 if __name__ == "__main__":
-    agent = CopilotAgent("deepseek", verbose_action=False)
+    agent = CopilotAgent("volcengine", verbose_action=False)
     user_prompt = "李沐2021年发了什么"
     messages = [
         {"role": "user", "content": user_prompt},
