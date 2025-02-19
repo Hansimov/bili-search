@@ -2,17 +2,10 @@ from typing import Literal
 
 # source fields
 SOURCE_FIELDS = [
-    "title",
-    "bvid",
-    "owner",
-    "pic",
-    "duration",
-    "desc",
-    "stat",
-    "tname",
-    "tags",
-    "pubdate_str",
-    "insert_at_str",
+    *["bvid", "title", "desc"],
+    *["tid", "ptid", "tname", "rtags", "tags"],
+    *["owner", "pic"],
+    *["duration", "stat", "pubdate_str", "insert_at_str"],
 ]
 DOC_EXCLUDED_SOURCE_FIELDS = []
 
