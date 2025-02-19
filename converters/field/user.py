@@ -9,10 +9,10 @@ class UserFieldConverter:
     RE_USER_FIELD = r"(?i:(用户|昵称|作者|name|author|uploader|up|user|u))"
     REP_USER_FIELD = rf"(?P<user_field>{RE_USER_FIELD})"
     RE_USER_VAL = r"[^:：,，\[\]\(\)\n\s]+"
-    # indeed, bilibili user names only support "-" and "_"
 
     def __init__(self):
-        self.puncter = Puncter(non_specials="-_")
+        # bilibili allows some special chars in user names: ["-", "_", "="]
+        self.puncter = Puncter(non_specials="-_=")
         self.field = "owner.name.keyword"
 
     def validate_val(self, val: str) -> str:
