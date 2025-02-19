@@ -1,0 +1,83 @@
+// This file defines grammar for the DSL used by blbl.top search engine
+// author: @Hansimov
+
+// Terms:
+//  - expr: key + op + value
+//  - key: key
+//  - val: val
+//  - op: operator
+//  - lp/rp: left/right parenthesis ()
+//  - lk/rk: left/right bracket     []
+//  - lc/rc: left/right curly brace {}
+//  - bles: blbl.top expression syntax
+
+bles: expr+
+    expr: date_expr
+
+// ---------- basic operators ---------- //
+ws: " "
+eq: "="
+eqs: eq+
+nq: "!" | "！"
+lt: "<" | "《"
+gt: ">" | "》"
+
+ne: nq eqs
+le: lt eqs
+ge: gt eqs
+
+op_rel: eqs | lt | gt | ne | le | ge
+op_list: eqs | ne
+
+comma: "," | "，"
+colon: ":" | "："
+lb: "(" | "（" | "[" | "【"
+rb: ")" | "）" | "]" | "】"
+
+lb_comma: lb comma*
+comma_rb: comma* rb
+
+digits: /[0-9]+/
+
+
+// ---------- date exprs ---------- //
+date_expr: date_key date_op_val
+    date_key: /(?i:(日期|时间|rq|date|dt|d))/
+    date_op_val: date_op_val_single | date_op_val_list
+        date_op_val_single: date_op_single date_val_single
+            date_op_single: op_rel
+            date_val_single: date_num_unit | date_iso | date_recent
+                date_num_unit: date_num date_unit
+                    date_num: digits
+                    date_unit: date_unit_year | date_unit_month | date_unit_week | date_unit_day | date_unit_hour
+                date_iso: yyyymmddhh | yyyymmdd | yyyymm | yyyy | mmddhh | mmdd
+                    yyyymmddhh: yyyy sep_ymd mm sep_ymd dd sep_ymd hh
+                    yyyymmdd: yyyy sep_ymd mm sep_ymd dd
+                    yyyymm: yyyy sep_ymd mm
+                    mmddhh: mm sep_ymd sep_dh hh
+                    mmdd: mm sep_ymd dd
+                date_recent: date_this | date_last | date_past
+                    date_this: "this" sep_en date_unit
+                    date_last: "last" sep_en date_unit
+                    date_past: "past" sep_en date_num_unit
+        date_op_val_list: date_op_list date_val_list
+            date_op_list: op_list
+            date_val_list: lb_comma (date_val_single)? (comma date_val_single) comma_rb
+
+yyyy: /\d{4}/
+mm: /\d{1,2}/
+dd: /\d{1,2}/
+hh: /\d{1,2}/
+sep_ymd: /[-\/\.]+/
+sep_hms: /[_\.]+/
+sep_dh: /[\s\.]+/
+sep_en: /[\_\.\s\-]+/
+
+date_unit_year: /(?i:(年|years?|yr|y))/
+date_unit_month: /(?i:(个?月|months?|mon|m))/
+date_unit_week: /(?i:(周|weeks?|wk|w))/
+date_unit_day: /(?i:(日|天|days?|d))/
+date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
+
+%import common.WS
+%ignore WS

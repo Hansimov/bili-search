@@ -1,6 +1,7 @@
 elasticsearch~=8.14.0
 fastapi~=0.115.0
 jieba~=0.42.1
+lark~=1.2.2
 pydantic~=2.9.2
 pypinyin~=0.51.0
 Requests~=2.32.3
