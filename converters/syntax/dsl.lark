@@ -1,21 +1,13 @@
 // This file defines grammar for the DSL used by blbl.top search engine
 // author: @Hansimov
 
-// Terms:
-//  - expr: key + op + value
-//  - key: key
-//  - val: val
-//  - op: operator
-//  - lp/rp: left/right parenthesis ()
-//  - lk/rk: left/right bracket     []
-//  - lc/rc: left/right curly brace {}
-
-start: expr | text_catch expr | expr text_catch | text_catch
+start: expr | expr_with_error
     expr: and_expr+ | or_expr
-    or_expr: and_expr (ORS and_expr)+
-    and_expr: paren_expr | and_expr (ANDS and_expr)+ | atom_expr
-        paren_expr: LP expr? RP
-        atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_plain
+        or_expr: and_expr (ORS and_expr)+
+        and_expr: paren_expr | and_expr (ANDS and_expr)+ | atom_expr
+            paren_expr: LP expr? RP
+            atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_plain
+    expr_with_error: (expr | text_catch)+
 
 // ---------- basic operators ---------- //
 WT: " "
