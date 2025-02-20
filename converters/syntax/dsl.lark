@@ -3,8 +3,8 @@
 
 start: expr | expr_with_error
     expr: and_expr+ | or_expr
-        or_expr: and_expr (ors and_expr)+
-        and_expr: paren_expr | and_expr (ands and_expr)+ | atom_expr
+        or_expr: and_expr (or and_expr)+
+        and_expr: paren_expr | and_expr (and and_expr)+ | atom_expr
             paren_expr: LP expr? RP
             atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
     expr_with_error: (expr | text_catch)+
@@ -12,8 +12,8 @@ start: expr | expr_with_error
 // ---------- basic operators ---------- //
 WT: " "
 EQ: "="
-MI: "-"
 EQS: (WT* EQ)+
+MI: "-"
 NQ: "!" | "！"
 LT: "<" | "《"
 GT: ">" | "》"
@@ -21,8 +21,10 @@ AT: "@"
 
 AND: "&"
 OR: "|"
-ands: /(\s*&\s*)+/
-ors: /(\s*\|\s*)+/
+ANDS: (WT* AND)+
+ORS: (WT* OR)+
+and: ANDS
+or: ORS
 
 NEQ: (NQ | MI) EQ
 LEQ: LT EQ
@@ -62,12 +64,6 @@ rb: rp | rk
 lb_comma: lb COMMA* | COMMA*
 comma_rb: COMMA* rb | COMMA*
 
-digits: /[0-9]+/
-text_strict: /[^\s\n:：!！,，（）【】<>《》\(\)\[\]]+/
-text_quoted: /"[^"]+"/
-text_plain:  /[^\s\n（）\|\&【】\(\)\[\]]+/
-text_catch:  /[\s\n（）\|\&【】\(\)\[\]]+/
-
 // ---------- date exprs ---------- //
 date_expr: COLON? date_key date_op_val
     date_key: /(?i:(日期|时间|rq|date|dt|d))/
@@ -92,10 +88,12 @@ date_expr: COLON? date_key date_op_val
             date_op_list: op_list
             date_val_list: lb_comma (date_val_single)? (COMMA date_val_single)* comma_rb
 
+digits: /[0-9]+/
 yyyy: /\d{4}/
 mm: /\d{1,2}/
 dd: /\d{1,2}/
 hh: /\d{1,2}/
+
 sep_ymd: /[-\/\.]+/
 sep_hms: /[_\.]+/
 sep_dh: /[\s\.]+/
@@ -167,6 +165,10 @@ word_expr: colons? word_key word_op word_val
 
 text_expr: text_quoted | text_strict | text_plain
 
+text_quoted: /[“][^“”]+[”]/ | /["][^"]+["]/
+text_strict: /[^\s\n"“”\|\&:：!！,，（）【】<>《》\(\)\[\]]+/
+text_plain:  /[^\s\n"“”\|\&"（）【】\(\)\[\]]+/
+text_catch:  /[\s\n"“”\|\&（）【】\(\)\[\]]+/
 
 %import common.WS
 %ignore WS
