@@ -33,8 +33,7 @@ def test_syntax_checker():
     checker = DslSyntaxChecker(verbose=True)
     for query in queries:
         res = checker.check(query)
-        if res:
-            logger.mesg(res)
+        logger.mesg(res, verbose=bool(res))
 
 
 if __name__ == "__main__":

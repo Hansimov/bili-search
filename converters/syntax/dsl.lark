@@ -12,7 +12,7 @@
 //  - bles: blbl.top expression syntax
 
 bles: expr+
-    expr: date_expr
+    expr: date_expr | user_expr | uid_expr
 
 // ---------- basic operators ---------- //
 ws: " "
@@ -22,22 +22,24 @@ nq: "!" | "！"
 lt: "<" | "《"
 gt: ">" | "》"
 
-ne: nq eqs
-le: lt eqs
-ge: gt eqs
+neq: nq eq
+neqs: nq eqs
+leqs: lt eqs
+geqs: gt eqs
 
-op_rel: eqs | lt | gt | ne | le | ge
-op_list: eqs | ne
+op_rel: eqs | lt | gt | neqs | leqs | geqs
+op_list: eqs | neqs
 
 comma: "," | "，"
 colon: ":" | "："
 lb: "(" | "（" | "[" | "【"
 rb: ")" | "）" | "]" | "】"
 
-lb_comma: lb comma*
-comma_rb: comma* rb
+lb_comma: lb comma* | comma*
+comma_rb: comma* rb | comma*
 
 digits: /[0-9]+/
+text: /[^:：,，\[\]\(\)\n\s]+/
 
 
 // ---------- date exprs ---------- //
@@ -62,7 +64,7 @@ date_expr: date_key date_op_val
                     date_past: "past" sep_en date_num_unit
         date_op_val_list: date_op_list date_val_list
             date_op_list: op_list
-            date_val_list: lb_comma (date_val_single)? (comma date_val_single) comma_rb
+            date_val_list: lb_comma (date_val_single)? (comma date_val_single)* comma_rb
 
 yyyy: /\d{4}/
 mm: /\d{1,2}/
@@ -78,6 +80,27 @@ date_unit_month: /(?i:(个?月|months?|mon|m))/
 date_unit_week: /(?i:(周|weeks?|wk|w))/
 date_unit_day: /(?i:(日|天|days?|d))/
 date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
+
+
+// ---------- user exprs ---------- //
+user_expr: user_key user_op user_val | user_key_op user_val
+    user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
+    user_op: eq | neq
+    user_key_op: "@" | "@!"
+    user_val: user_val_single | user_val_list
+        user_val_single: /[^:：,，\[\]\(\)\n\s]+/
+        user_val_list: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
+
+uid_expr: uid_key uid_op_val
+    uid_key: /(?i:(uid|mid))/
+    uid_op_val: uid_op_val_single | uid_op_val_list
+        uid_op_val_single: op_rel uid_val_single
+            uid_val_single: digits
+        uid_op_val_list: op_list uid_val_list
+            uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
+
+// ---------- region exprs ---------- //
+// ---------- stat exprs ---------- //
 
 %import common.WS
 %ignore WS
