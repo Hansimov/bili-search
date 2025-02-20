@@ -12,7 +12,7 @@
 //  - bles: blbl.top expression syntax
 
 bles: expr+
-    expr: date_expr | user_expr | uid_expr | stat_expr | region_expr
+    expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr
 
 // ---------- basic operators ---------- //
 ws: " "
@@ -22,9 +22,10 @@ eqs: eq+
 nq: "!" | "！"
 lt: "<" | "《"
 gt: ">" | "》"
+at: "@"
 
 neq: nq eq | mi eq
-neqs: nq eqs
+neqs: nq eqs | mi eqs
 leqs: lt eqs
 geqs: gt eqs
 
@@ -44,7 +45,7 @@ lb_comma: lb comma* | comma*
 comma_rb: comma* rb | comma*
 
 digits: /[0-9]+/
-text: /[^:：,，\[\]\(\)\n\s]+/
+text: /[^:：!！,，（）【】《》\[\]\(\)\n\s]+/
 
 
 // ---------- date exprs ---------- //
@@ -91,9 +92,11 @@ date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
 user_expr: colon? user_key user_op user_val | user_key_op user_val
     user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
     user_op: eq | neq
-    user_key_op: "@" | "@!"
+    user_key_op: user_eq | user_neq
+        user_eq: at
+        user_neq: at nq
     user_val: user_val_single | user_val_list
-        user_val_single: /[^:：,，\[\]\(\)\n\s]+/
+        user_val_single: text
         user_val_list: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
 
 uid_expr: colon? uid_key uid_op_val
@@ -103,6 +106,7 @@ uid_expr: colon? uid_key uid_op_val
             uid_val_single: digits
         uid_op_val_list: op_list uid_val_list
             uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
+
 
 // ---------- stat exprs ---------- //
 stat_expr: colon? stat_key stat_op_val
@@ -126,11 +130,21 @@ stat_expr: colon? stat_key stat_op_val
 // ---------- region exprs ---------- //
 region_expr: colon? region_key region_op region_val
     region_key: /(?i:(分区|fenqu|fq|region|rid|r))/
-    region_op: eq | neq
+    region_op: eqs | neqs
     region_val: region_val_single | region_val_list
-        region_val_single: digits | /[^:：,，\[\]\(\)\n\s]+/
+        region_val_single: digits | text
         region_val_list: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
 
+
+// ---------- word exprs ---------- //
+word_expr: colon? word_key word_op word_val
+    word_key: /(?i:(关键词|keyword|key|k))/
+    word_op: eqs | neqs
+    word_val: word_val_single | word_val_list
+        word_val_single: word_quoted | word
+            word_quoted: /"[^"]+"/
+            word: text
+        word_val_list: lb_comma (word_val_single)? (comma word_val_single)* comma_rb
 
 %import common.WS
 %ignore WS
