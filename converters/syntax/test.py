@@ -25,8 +25,15 @@ uid_queries = [
     "mid! =[123,456]",
 ]
 
+stat_queries = [
+    "view<1000",
+    "v>10k",
+    ":播放=[1万,10w)",
+]
+
 queries = [
     # *date_queries,
     # *user_queries,
-    *uid_queries,
+    # *uid_queries,
+    *stat_queries,
 ]

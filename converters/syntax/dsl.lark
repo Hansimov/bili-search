@@ -12,7 +12,7 @@
 //  - bles: blbl.top expression syntax
 
 bles: expr+
-    expr: date_expr | user_expr | uid_expr
+    expr: date_expr | user_expr | uid_expr | stat_expr
 
 // ---------- basic operators ---------- //
 ws: " "
@@ -32,8 +32,12 @@ op_list: eqs | neqs
 
 comma: "," | "，"
 colon: ":" | "："
-lb: "(" | "（" | "[" | "【"
-rb: ")" | "）" | "]" | "】"
+lp: "(" | "（"
+rp: ")" | "）"
+lk: "[" | "【"
+rk: "]" | "】"
+lb: lp | lk
+rb: rp | rk
 
 lb_comma: lb comma* | comma*
 comma_rb: comma* rb | comma*
@@ -43,7 +47,7 @@ text: /[^:：,，\[\]\(\)\n\s]+/
 
 
 // ---------- date exprs ---------- //
-date_expr: date_key date_op_val
+date_expr: colon? date_key date_op_val
     date_key: /(?i:(日期|时间|rq|date|dt|d))/
     date_op_val: date_op_val_single | date_op_val_list
         date_op_val_single: date_op_single date_val_single
@@ -83,7 +87,7 @@ date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
 
 
 // ---------- user exprs ---------- //
-user_expr: user_key user_op user_val | user_key_op user_val
+user_expr: colon? user_key user_op user_val | user_key_op user_val
     user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
     user_op: eq | neq
     user_key_op: "@" | "@!"
@@ -91,7 +95,7 @@ user_expr: user_key user_op user_val | user_key_op user_val
         user_val_single: /[^:：,，\[\]\(\)\n\s]+/
         user_val_list: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
 
-uid_expr: uid_key uid_op_val
+uid_expr: colon? uid_key uid_op_val
     uid_key: /(?i:(uid|mid))/
     uid_op_val: uid_op_val_single | uid_op_val_list
         uid_op_val_single: op_rel uid_val_single
@@ -99,8 +103,26 @@ uid_expr: uid_key uid_op_val
         uid_op_val_list: op_list uid_val_list
             uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
 
-// ---------- region exprs ---------- //
 // ---------- stat exprs ---------- //
+stat_expr: colon? stat_key stat_op_val
+    stat_key: view_key | like_key | coin_key | favorite_key | reply_key | danmaku_key | share_key
+        view_key: /(?i:(播放|bofang|bof|bf|view|vw|v))/
+        like_key: /(?i:(点赞|dianzan|dianz|dz|like|lk|l))/
+        coin_key: /(?i:(投币|toubi|toub|tb|coin|cn|c))/
+        favorite_key: /(?i:(收藏|shouchang|shouc|sc|favorite|fav|fv|star|f))/
+        reply_key: /(?i:(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp|r))/
+        danmaku_key: /(?i:(弹幕|danmu|danm|dm|danmaku|m))/
+        share_key: /(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh|s))/
+    stat_op_val: stat_op_val_single | stat_op_val_list
+        stat_op_val_single: op_rel stat_val_single
+            stat_val_single: stat_num | stat_num stat_unit
+                stat_num: digits
+                stat_unit: /[百千kK万wWmM亿]+/
+        stat_op_val_list: op_list stat_val_list
+            stat_val_list: lb_comma (stat_val_single)? (comma stat_val_single)* comma_rb
+
+
+// ---------- region exprs ---------- //
 
 %import common.WS
 %ignore WS
