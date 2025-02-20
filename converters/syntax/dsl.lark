@@ -11,45 +11,62 @@
 //  - lc/rc: left/right curly brace {}
 //  - bles: blbl.top expression syntax
 
-bles: expr+
-    expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr
+bles: or_expr
+    or_expr: and_expr (ORS and_expr)*
+        and_expr: atom_expr (ANDS? atom_expr)*
+            atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | LP or_expr RP | plain_text | catch_text
 
 // ---------- basic operators ---------- //
-ws: " "
-eq: "="
-mi: "-"
-eqs: eq+
-nq: "!" | "！"
-lt: "<" | "《"
-gt: ">" | "》"
-at: "@"
+WT: " "
+EQ: "="
+MI: "-"
+EQS: EQ+
+NQ: "!" | "！"
+LT: "<" | "《"
+GT: ">" | "》"
+AT: "@"
 
-neq: nq eq | mi eq
-neqs: nq eqs | mi eqs
-leqs: lt eqs
-geqs: gt eqs
+AND: "&"
+OR: "|"
+ANDS: AND+
+ORS: OR+
 
-op_rel: eqs | lt | gt | neqs | leqs | geqs
-op_list: eqs | neqs
+NEQ: NQ EQ | MI EQ
+NEQS: NQ EQS | MI EQS
+LEQS: LT EQS
+GEQS: GT EQS
 
-comma: "," | "，"
-colon: ":" | "："
-lp: "(" | "（"
-rp: ")" | "）"
-lk: "[" | "【"
-rk: "]" | "】"
-lb: lp | lk
-rb: rp | rk
+op_rel: rel_eq | rel_lt | rel_gt | rel_neq | rel_leq | rel_geq
+    rel_eq: EQS
+    rel_lt: LT
+    rel_gt: GT
+    rel_neq: NEQS
+    rel_leq: LEQS
+    rel_geq: GEQS
 
-lb_comma: lb comma* | comma*
-comma_rb: comma* rb | comma*
+op_list: list_eq | list_neq
+    list_eq: EQS
+    list_neq: NEQS
+
+COMMA: "," | "，"
+COLON: ":" | "："
+LP: "(" | "（"
+RP: ")" | "）"
+LK: "[" | "【"
+RK: "]" | "】"
+lb: LP | LK
+rb: RP | RK
+
+lb_comma: lb COMMA* | COMMA*
+comma_rb: COMMA* rb | COMMA*
 
 digits: /[0-9]+/
-text: /[^:：!！,，（）【】《》\[\]\(\)\n\s]+/
-
+text: /[^:：!！,，（）【】《》\(\)\[\]\n\s]+/
+plain_text: /[^\s\n（）\|\&【】\(\)\[\]]+/
+catch_text: /[^\s\n]+/
 
 // ---------- date exprs ---------- //
-date_expr: colon? date_key date_op_val
+date_expr: COLON? date_key date_op_val
     date_key: /(?i:(日期|时间|rq|date|dt|d))/
     date_op_val: date_op_val_single | date_op_val_list
         date_op_val_single: date_op_single date_val_single
@@ -70,7 +87,7 @@ date_expr: colon? date_key date_op_val
                     date_past: "past" sep_en date_num_unit
         date_op_val_list: date_op_list date_val_list
             date_op_list: op_list
-            date_val_list: lb_comma (date_val_single)? (comma date_val_single)* comma_rb
+            date_val_list: lb_comma (date_val_single)? (COMMA date_val_single)* comma_rb
 
 yyyy: /\d{4}/
 mm: /\d{1,2}/
@@ -89,27 +106,27 @@ date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
 
 
 // ---------- user exprs ---------- //
-user_expr: colon? user_key user_op user_val | user_key_op user_val
+user_expr: COLON? user_key user_op user_val | user_key_op user_val
     user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
-    user_op: eq | neq
+    user_op: EQ | NEQ
     user_key_op: user_eq | user_neq
-        user_eq: at
-        user_neq: at nq
+        user_eq: AT
+        user_neq: AT NQ
     user_val: user_val_single | user_val_list
         user_val_single: text
-        user_val_list: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
+        user_val_list: lb_comma (user_val_single)? (COMMA user_val_single)* comma_rb
 
-uid_expr: colon? uid_key uid_op_val
+uid_expr: COLON? uid_key uid_op_val
     uid_key: /(?i:(uid|mid))/
     uid_op_val: uid_op_val_single | uid_op_val_list
         uid_op_val_single: op_rel uid_val_single
             uid_val_single: digits
         uid_op_val_list: op_list uid_val_list
-            uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
+            uid_val_list: lb_comma (uid_val_single)? (COMMA uid_val_single)* comma_rb
 
 
 // ---------- stat exprs ---------- //
-stat_expr: colon? stat_key stat_op_val
+stat_expr: COLON? stat_key stat_op_val
     stat_key: view_key | like_key | coin_key | favorite_key | reply_key | danmaku_key | share_key
         view_key: /(?i:(播放|bofang|bof|bf|view|vw|v))/
         like_key: /(?i:(点赞|dianzan|dianz|dz|like|lk|l))/
@@ -123,28 +140,32 @@ stat_expr: colon? stat_key stat_op_val
             stat_val_single: stat_num | stat_num stat_unit
                 stat_num: digits
                 stat_unit: /[百千kK万wWmM亿]+/
-        stat_op_val_list: op_list stat_val_list
-            stat_val_list: lb_comma (stat_val_single)? (comma stat_val_single)* comma_rb
+        stat_op_val_list: list_eq stat_val_list
+            stat_val_list: lb_comma (stat_val_single)? (COMMA stat_val_single)* comma_rb
 
 
 // ---------- region exprs ---------- //
-region_expr: colon? region_key region_op region_val
+region_expr: COLON? region_key region_op region_val
     region_key: /(?i:(分区|fenqu|fq|region|rid|r))/
-    region_op: eqs | neqs
+    region_op: region_eq | region_neq
+        region_eq: EQS
+        region_neq: NEQS
     region_val: region_val_single | region_val_list
         region_val_single: digits | text
-        region_val_list: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
+        region_val_list: lb_comma (region_val_single)? (COMMA region_val_single)* comma_rb
 
 
 // ---------- word exprs ---------- //
-word_expr: colon? word_key word_op word_val
+word_expr: COLON? word_key word_op word_val
     word_key: /(?i:(关键词|keyword|key|k))/
-    word_op: eqs | neqs
+    word_op: word_eq | word_neq
+        word_eq: EQS
+        word_neq: NEQS
     word_val: word_val_single | word_val_list
         word_val_single: word_quoted | word
             word_quoted: /"[^"]+"/
             word: text
-        word_val_list: lb_comma (word_val_single)? (comma word_val_single)* comma_rb
+        word_val_list: lb_comma (word_val_single)? (COMMA word_val_single)* comma_rb
 
 %import common.WS
 %ignore WS

@@ -41,6 +41,18 @@ word_queries = [
     'k=["你好,世界","再见，故乡"]',
     "k=3-0",
 ]
+bool_queries = [
+    "hello && world",
+    "hello || world && nothing",
+    "(hello || world) && nothing",
+    "nothing && ((hello | world) && anything)",
+    "你好 这是 世界",
+    "你好 这是 世界 ()",
+    "你好 这是 世界 (",
+]
+
+comp_queries = []
+
 
 queries = [
     # *date_queries,
@@ -48,5 +60,6 @@ queries = [
     # *uid_queries,
     # *stat_queries,
     # *region_queries,
-    *word_queries,
+    # *word_queries,
+    *bool_queries,
 ]
