@@ -11,29 +11,33 @@ date_queries = [
     "d=this_h",
     "d=[last_d,]",
 ]
-
 user_queries = [
     "u=影视飓风",
     "u==咬人猫=",
     "用户!==飓多多StormCrew",
     "@-LKs-,红警HBK08，",
 ]
-
 uid_queries = [
     "uid>1234",
     "uid=123,456,789",
     "mid! =[123,456]",
 ]
-
 stat_queries = [
     "view<1000",
     "v>10k",
     ":播放=[1万,10w)",
+]
+region_queries = [
+    "r=动画",
+    "fenqu=影视,动画,音乐",
+    "rid=1,24,153",
+    "r- =影视,动画,153",
 ]
 
 queries = [
     # *date_queries,
     # *user_queries,
     # *uid_queries,
-    *stat_queries,
+    # *stat_queries,
+    *region_queries,
 ]

@@ -12,17 +12,18 @@
 //  - bles: blbl.top expression syntax
 
 bles: expr+
-    expr: date_expr | user_expr | uid_expr | stat_expr
+    expr: date_expr | user_expr | uid_expr | stat_expr | region_expr
 
 // ---------- basic operators ---------- //
 ws: " "
 eq: "="
+mi: "-"
 eqs: eq+
 nq: "!" | "！"
 lt: "<" | "《"
 gt: ">" | "》"
 
-neq: nq eq
+neq: nq eq | mi eq
 neqs: nq eqs
 leqs: lt eqs
 geqs: gt eqs
@@ -123,6 +124,13 @@ stat_expr: colon? stat_key stat_op_val
 
 
 // ---------- region exprs ---------- //
+region_expr: colon? region_key region_op region_val
+    region_key: /(?i:(分区|fenqu|fq|region|rid|r))/
+    region_op: eq | neq
+    region_val: region_val_single | region_val_list
+        region_val_single: digits | /[^:：,，\[\]\(\)\n\s]+/
+        region_val_list: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
+
 
 %import common.WS
 %ignore WS
