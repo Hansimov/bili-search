@@ -9,12 +9,13 @@
 //  - lp/rp: left/right parenthesis ()
 //  - lk/rk: left/right bracket     []
 //  - lc/rc: left/right curly brace {}
-//  - bles: blbl.top expression syntax
 
-bles: or_expr
-    or_expr: and_expr (ORS and_expr)*
-        and_expr: atom_expr (ANDS? atom_expr)*
-            atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | LP or_expr RP | plain_text | catch_text
+start: expr | text_catch expr | expr text_catch | text_catch
+    expr: and_expr+ | or_expr
+    or_expr: and_expr (ORS and_expr)+
+    and_expr: paren_expr | and_expr (ANDS and_expr)+ | atom_expr
+        paren_expr: LP expr? RP
+        atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_plain
 
 // ---------- basic operators ---------- //
 WT: " "
@@ -61,9 +62,9 @@ lb_comma: lb COMMA* | COMMA*
 comma_rb: COMMA* rb | COMMA*
 
 digits: /[0-9]+/
-text: /[^:：!！,，（）【】《》\(\)\[\]\n\s]+/
-plain_text: /[^\s\n（）\|\&【】\(\)\[\]]+/
-catch_text: /[^\s\n]+/
+text_strict: /[^\s\n:：!！,，（）【】《》\(\)\[\]]+/
+text_plain:  /[^\s\n（）\|\&【】\(\)\[\]]+/
+text_catch:  /[\s\n（）\|\&【】\(\)\[\]]+/
 
 // ---------- date exprs ---------- //
 date_expr: COLON? date_key date_op_val
@@ -113,7 +114,7 @@ user_expr: COLON? user_key user_op user_val | user_key_op user_val
         user_eq: AT
         user_neq: AT NQ
     user_val: user_val_single | user_val_list
-        user_val_single: text
+        user_val_single: text_strict
         user_val_list: lb_comma (user_val_single)? (COMMA user_val_single)* comma_rb
 
 uid_expr: COLON? uid_key uid_op_val
@@ -151,7 +152,7 @@ region_expr: COLON? region_key region_op region_val
         region_eq: EQS
         region_neq: NEQS
     region_val: region_val_single | region_val_list
-        region_val_single: digits | text
+        region_val_single: digits | text_strict
         region_val_list: lb_comma (region_val_single)? (COMMA region_val_single)* comma_rb
 
 
@@ -163,8 +164,8 @@ word_expr: COLON? word_key word_op word_val
         word_neq: NEQS
     word_val: word_val_single | word_val_list
         word_val_single: word_quoted | word
-            word_quoted: /"[^"]+"/
-            word: text
+            word_quoted: /\"[^"]+\"/
+            word: text_strict
         word_val_list: lb_comma (word_val_single)? (COMMA word_val_single)* comma_rb
 
 %import common.WS

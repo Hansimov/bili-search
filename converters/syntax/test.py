@@ -42,13 +42,21 @@ word_queries = [
     "k=3-0",
 ]
 bool_queries = [
+    "你好 这是 世界",
     "hello && world",
     "hello || world && nothing",
+    "(hello || world)",
+    "(hello || world) 你好",
     "(hello || world) && nothing",
-    "nothing && ((hello | world) && anything)",
-    "你好 这是 世界",
+    "find nothing && ((hello | world) && anything)",
+    "(find nothing) || ((hello | world) && anything)",
+    "(hello world) (find nothing) (((",
+    "hello || world || boy",
+    "( ( find nothing ) )",
+    "( ( find nothing",
     "你好 这是 世界 ()",
     "你好 这是 世界 (",
+    "( ( (",
 ]
 
 comp_queries = []
