@@ -12,7 +12,7 @@ class DslSyntaxChecker:
     def init_parser(self):
         with open(self.dsl_lark, "r") as rf:
             syntax = rf.read()
-        self.parser = Lark(syntax, start="bles", parser="earley")
+        self.parser = Lark(syntax, parser="earley")
 
     def check(self, expr: str) -> tuple[bool, any]:
         try:
@@ -22,8 +22,8 @@ class DslSyntaxChecker:
             return res
         except Exception as e:
             if self.verbose:
-                print(e)
                 logger.warn(f"× {expr}")
+                raise e
             return None
 
 
@@ -33,7 +33,7 @@ def test_syntax_checker():
     checker = DslSyntaxChecker(verbose=True)
     for query in queries:
         res = checker.check(query)
-        logger.mesg(res, verbose=bool(res))
+        logger.mesg(res.pretty(), verbose=bool(res))
 
 
 if __name__ == "__main__":

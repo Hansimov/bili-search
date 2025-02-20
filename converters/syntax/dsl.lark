@@ -3,17 +3,17 @@
 
 start: expr | expr_with_error
     expr: and_expr+ | or_expr
-        or_expr: and_expr (ORS and_expr)+
-        and_expr: paren_expr | and_expr (ANDS and_expr)+ | atom_expr
+        or_expr: and_expr (ors and_expr)+
+        and_expr: paren_expr | and_expr (ands and_expr)+ | atom_expr
             paren_expr: LP expr? RP
-            atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_plain
+            atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
     expr_with_error: (expr | text_catch)+
 
 // ---------- basic operators ---------- //
 WT: " "
 EQ: "="
 MI: "-"
-EQS: EQ+
+EQS: (WT* EQ)+
 NQ: "!" | "！"
 LT: "<" | "《"
 GT: ">" | "》"
@@ -21,25 +21,28 @@ AT: "@"
 
 AND: "&"
 OR: "|"
-ANDS: AND+
-ORS: OR+
+ands: /(\s*&\s*)+/
+ors: /(\s*\|\s*)+/
 
-NEQ: NQ EQ | MI EQ
-NEQS: NQ EQS | MI EQS
+NEQ: (NQ | MI) EQ
+LEQ: LT EQ
+GEQ: GT EQ
+NEQS: (NQ | MI) EQS
 LEQS: LT EQS
 GEQS: GT EQS
 
-op_rel: rel_eq | rel_lt | rel_gt | rel_neq | rel_leq | rel_geq
-    rel_eq: EQS
-    rel_lt: LT
-    rel_gt: GT
-    rel_neq: NEQS
-    rel_leq: LEQS
-    rel_geq: GEQS
 
-op_list: list_eq | list_neq
-    list_eq: EQS
-    list_neq: NEQS
+eq: EQS
+lt: LT
+gt: GT
+neq: NEQS
+leq: LEQS
+geq: GEQS
+eq_list: EQS
+neq_list: NEQS
+
+op_rel: eq | lt | gt | neq | leq | geq
+op_list: eq_list | neq_list
 
 COMMA: "," | "，"
 COLON: ":" | "："
@@ -47,14 +50,21 @@ LP: "(" | "（"
 RP: ")" | "）"
 LK: "[" | "【"
 RK: "]" | "】"
-lb: LP | LK
-rb: RP | RK
+
+colons: COLON+
+lb: lp | lk
+    lp: LP
+    lk: LK
+rb: rp | rk
+    rp: RP
+    rk: RK
 
 lb_comma: lb COMMA* | COMMA*
 comma_rb: COMMA* rb | COMMA*
 
 digits: /[0-9]+/
-text_strict: /[^\s\n:：!！,，（）【】《》\(\)\[\]]+/
+text_strict: /[^\s\n:：!！,，（）【】<>《》\(\)\[\]]+/
+text_quoted: /"[^"]+"/
 text_plain:  /[^\s\n（）\|\&【】\(\)\[\]]+/
 text_catch:  /[\s\n（）\|\&【】\(\)\[\]]+/
 
@@ -119,7 +129,7 @@ uid_expr: COLON? uid_key uid_op_val
 
 
 // ---------- stat exprs ---------- //
-stat_expr: COLON? stat_key stat_op_val
+stat_expr: colons? stat_key stat_op_val
     stat_key: view_key | like_key | coin_key | favorite_key | reply_key | danmaku_key | share_key
         view_key: /(?i:(播放|bofang|bof|bf|view|vw|v))/
         like_key: /(?i:(点赞|dianzan|dianz|dz|like|lk|l))/
@@ -129,36 +139,34 @@ stat_expr: COLON? stat_key stat_op_val
         danmaku_key: /(?i:(弹幕|danmu|danm|dm|danmaku|m))/
         share_key: /(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh|s))/
     stat_op_val: stat_op_val_single | stat_op_val_list
-        stat_op_val_single: op_rel stat_val_single
+        stat_op_val_single: stat_op stat_val_single
+            stat_op: op_rel
             stat_val_single: stat_num | stat_num stat_unit
                 stat_num: digits
                 stat_unit: /[百千kK万wWmM亿]+/
-        stat_op_val_list: list_eq stat_val_list
+        stat_op_val_list: op_rel stat_val_list
             stat_val_list: lb_comma (stat_val_single)? (COMMA stat_val_single)* comma_rb
 
 
 // ---------- region exprs ---------- //
-region_expr: COLON? region_key region_op region_val
+region_expr: colons? region_key region_op region_val
     region_key: /(?i:(分区|fenqu|fq|region|rid|r))/
-    region_op: region_eq | region_neq
-        region_eq: EQS
-        region_neq: NEQS
+    region_op: op_list
     region_val: region_val_single | region_val_list
         region_val_single: digits | text_strict
         region_val_list: lb_comma (region_val_single)? (COMMA region_val_single)* comma_rb
 
 
 // ---------- word exprs ---------- //
-word_expr: COLON? word_key word_op word_val
+word_expr: colons? word_key word_op word_val
     word_key: /(?i:(关键词|keyword|key|k))/
-    word_op: word_eq | word_neq
-        word_eq: EQS
-        word_neq: NEQS
+    word_op: op_list
     word_val: word_val_single | word_val_list
-        word_val_single: word_quoted | word
-            word_quoted: /\"[^"]+\"/
-            word: text_strict
+        word_val_single: text_expr
         word_val_list: lb_comma (word_val_single)? (COMMA word_val_single)* comma_rb
+
+text_expr: text_quoted | text_strict | text_plain
+
 
 %import common.WS
 %ignore WS

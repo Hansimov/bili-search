@@ -24,14 +24,16 @@ uid_queries = [
 ]
 stat_queries = [
     "view<1000",
-    "v>10k",
-    ":播放=[1万,10w)",
+    ":v>=10k",
+    ":点赞 = = 【1k,10k]",
+    "： 播放 <= [ 1万,10w )",
+    ": dz 》 = = [ 1万,10w ）",
 ]
 region_queries = [
-    "r=动画",
+    "r = 动画",
     "fenqu=影视,动画,音乐",
-    "rid=1,24,153",
-    "r- =影视,动画,153",
+    "rid ! = 1,24, 153",
+    "r- = =影视,动画,153",
 ]
 word_queries = [
     "k=你好",
@@ -40,6 +42,7 @@ word_queries = [
     "k-=[你好,世界]",
     'k=["你好,世界","再见，故乡"]',
     "k=3-0",
+    '你好 世界 "再见,故乡"',
 ]
 bool_queries = [
     "你好 这是 世界",
@@ -55,19 +58,19 @@ bool_queries = [
     "( ( find nothing ) )",
     "( ( find nothing",
     "你好 这是 世界 ()",
-    "你好 这是 世界 (",
     "( ( (",
+    "你好 这是 (( 世界 (",
 ]
 
 comp_queries = []
 
 
 queries = [
-    # *date_queries,
-    # *user_queries,
-    # *uid_queries,
-    # *stat_queries,
-    # *region_queries,
-    # *word_queries,
-    *bool_queries,
+    *date_queries,
+    *user_queries,
+    *uid_queries,
+    *stat_queries,
+    *region_queries,
+    *word_queries,
+    # *bool_queries,
 ]
