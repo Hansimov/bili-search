@@ -11,9 +11,10 @@ start: expr | expr_with_error
 
 // ---------- basic operators ---------- //
 WT: " "
-EQ: "="
+EQ: WT* "="
 EQS: (WT* EQ)+
 MI: "-"
+PL: "+"
 NQ: "!" | "！"
 LT: "<" | "《"
 GT: ">" | "》"
@@ -21,29 +22,38 @@ AT: "@"
 
 AND: "&"
 OR: "|"
-ANDS: (WT* AND)+
-ORS: (WT* OR)+
+ANDS: (WT* AND WT*)+
+ORS: (WT* OR WT*)+
 and: ANDS
 or: ORS
 
 NEQ: (NQ | MI) EQ
+PEQ: PL EQ
 LEQ: LT EQ
 GEQ: GT EQ
 NEQS: (NQ | MI) EQS
+PEQS: PL EQS
 LEQS: LT EQS
 GEQS: GT EQS
 
-
-eq: EQS
+eq: EQ
 lt: LT
 gt: GT
-neq: NEQS
-leq: LEQS
-geq: GEQS
+neq: NEQ
+peq: PEQ
+leq: LEQ
+geq: GEQ
+
+eqs: EQS
+neqs: NEQS
+peqs: PEQS
+leqs: LEQS
+geqs: GEQS
+
 eq_list: EQS
 neq_list: NEQS
 
-op_rel: eq | lt | gt | neq | leq | geq
+op_rel: eqs | lt | gt | neqs | leqs | geqs
 op_list: eq_list | neq_list
 
 COMMA: "," | "，"
@@ -53,7 +63,10 @@ RP: ")" | "）"
 LK: "[" | "【"
 RK: "]" | "】"
 
-colons: COLON+
+COLONS: (WT* COLON WT*)+
+COMMAS: (WT* COMMA WT*)+
+colon: COLONS
+comma: COMMAS
 lb: lp | lk
     lp: LP
     lk: LK
@@ -61,8 +74,8 @@ rb: rp | rk
     rp: RP
     rk: RK
 
-lb_comma: lb COMMA* | COMMA*
-comma_rb: COMMA* rb | COMMA*
+lb_comma: lb comma?
+comma_rb: comma? rb
 
 // ---------- date exprs ---------- //
 date_expr: COLON? date_key date_op_val
@@ -86,7 +99,9 @@ date_expr: COLON? date_key date_op_val
                     date_past: "past" sep_en date_num_unit
         date_op_val_list: date_op_list date_val_list
             date_op_list: op_list
-            date_val_list: lb_comma (date_val_single)? (COMMA date_val_single)* comma_rb
+            date_val_list: date_val_list_lr | date_val_list_no_lr
+                date_val_list_lr: lb_comma (date_val_single)? (comma date_val_single)* comma_rb
+                date_val_list_no_lr: comma? date_val_single (comma date_val_single)*
 
 digits: /[0-9]+/
 yyyy: /\d{4}/
@@ -107,61 +122,72 @@ date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
 
 
 // ---------- user exprs ---------- //
-user_expr: COLON? user_key user_op user_val | user_key_op user_val
-    user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
-    user_op: EQ | NEQ
-    user_key_op: user_eq | user_neq
-        user_eq: AT
-        user_neq: AT NQ
+user_expr: colon? user_key_op user_val
+    user_key_op: user_key user_op | user_at
+        user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
+        user_op: eq | neq
+        user_at: user_eq | user_neq
+            user_eq: AT
+            user_neq: AT NQ
     user_val: user_val_single | user_val_list
         user_val_single: text_strict
-        user_val_list: lb_comma (user_val_single)? (COMMA user_val_single)* comma_rb
+        user_val_list: user_val_list_lr | user_val_list_no_lr
+            user_val_list_lr: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
+            user_val_list_no_lr: comma? user_val_single (comma user_val_single)*
 
-uid_expr: COLON? uid_key uid_op_val
+uid_expr: colon? uid_key uid_op_val
     uid_key: /(?i:(uid|mid))/
     uid_op_val: uid_op_val_single | uid_op_val_list
         uid_op_val_single: op_rel uid_val_single
             uid_val_single: digits
-        uid_op_val_list: op_list uid_val_list
-            uid_val_list: lb_comma (uid_val_single)? (COMMA uid_val_single)* comma_rb
+        uid_op_val_list: op_rel uid_val_list
+            uid_val_list: uid_val_list_lr | uid_val_list_no_lr
+                uid_val_list_lr: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
+                uid_val_list_no_lr: comma? uid_val_single (comma uid_val_single)*
 
 
 // ---------- stat exprs ---------- //
-stat_expr: colons? stat_key stat_op_val
+stat_expr: colon? stat_key stat_op_val
     stat_key: view_key | like_key | coin_key | favorite_key | reply_key | danmaku_key | share_key
         view_key: /(?i:(播放|bofang|bof|bf|view|vw|v))/
         like_key: /(?i:(点赞|dianzan|dianz|dz|like|lk|l))/
         coin_key: /(?i:(投币|toubi|toub|tb|coin|cn|c))/
-        favorite_key: /(?i:(收藏|shouchang|shouc|sc|favorite|fav|fv|star|f))/
-        reply_key: /(?i:(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp|r))/
-        danmaku_key: /(?i:(弹幕|danmu|danm|dm|danmaku|m))/
-        share_key: /(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh|s))/
+        favorite_key: /(?i:(收藏|shouchang|shouc|sc|star|favorite|fav|fv))/
+        reply_key: /(?i:(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp))/
+        danmaku_key: /(?i:(弹幕|danmu|danm|danmaku|dm))/
+        share_key: /(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh))/
     stat_op_val: stat_op_val_single | stat_op_val_list
         stat_op_val_single: stat_op stat_val_single
             stat_op: op_rel
-            stat_val_single: stat_num | stat_num stat_unit
+            stat_val_single: stat_num stat_unit?
                 stat_num: digits
                 stat_unit: /[百千kK万wWmM亿]+/
         stat_op_val_list: op_rel stat_val_list
-            stat_val_list: lb_comma (stat_val_single)? (COMMA stat_val_single)* comma_rb
+            stat_val_list: stat_val_list_lr | stat_val_list_no_lr
+                stat_val_list_lr: lb_comma (stat_val_single)? (comma stat_val_single)* comma_rb
+                stat_val_list_no_lr: comma? stat_val_single (comma stat_val_single)*
 
 
 // ---------- region exprs ---------- //
-region_expr: colons? region_key region_op region_val
+region_expr: colon? region_key region_op region_val
     region_key: /(?i:(分区|fenqu|fq|region|rid|r))/
     region_op: op_list
     region_val: region_val_single | region_val_list
         region_val_single: digits | text_strict
-        region_val_list: lb_comma (region_val_single)? (COMMA region_val_single)* comma_rb
+        region_val_list: region_val_list_lr | region_val_list_no_lr
+            region_val_list_lr: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
+            region_val_list_no_lr: comma? region_val_single (comma region_val_single)*
 
 
 // ---------- word exprs ---------- //
-word_expr: colons? word_key word_op word_val
-    word_key: /(?i:(关键词|keyword|key|k))/
+word_expr: colon? word_key word_op word_val
+    word_key: /(?i:(关键字|keyword|key|k))/
     word_op: op_list
     word_val: word_val_single | word_val_list
         word_val_single: text_expr
-        word_val_list: lb_comma (word_val_single)? (COMMA word_val_single)* comma_rb
+        word_val_list: word_val_list_lr | word_val_list_no_lr
+            word_val_list_lr: lb_comma (word_val_single)? (comma word_val_single)* comma_rb
+            word_val_list_no_lr: comma? word_val_single (comma word_val_single)*
 
 text_expr: text_quoted | text_strict | text_plain
 

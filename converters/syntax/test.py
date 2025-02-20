@@ -14,8 +14,8 @@ date_queries = [
 user_queries = [
     "u=影视飓风",
     "u==咬人猫=",
-    "用户!==飓多多StormCrew",
-    "@！-LKs-,红警HBK08，",
+    "用户 ! = ,飓多多StormCrew,何同学，影视飓风",
+    "@！-LKs-,  ，红警HBK08，，红警月亮3,,",
 ]
 uid_queries = [
     "uid>1234",
@@ -64,15 +64,20 @@ bool_queries = [
     "你好 这是 (( 世界 (",
 ]
 
-comp_queries = []
+comp_queries = [
+    "影视飓风 v>10k :coin>=25 u=,飓多多 StormCrew, 亿点点不一样 ,, 影视飓风",
+    "影视飓风 v>10k :coin>=25 u=,飓多多StormCrew, 亿点点不一样 风光摄影",
+    "影视飓风 v>10k :coin>=25 u=[,) , 何同学",
+]
 
 
 queries = [
-    # *date_queries,
-    # *user_queries,
-    # *uid_queries,
-    # *stat_queries,
-    # *region_queries,
+    *date_queries,
+    *user_queries,
+    *uid_queries,
+    *stat_queries,
+    *region_queries,
     *word_queries,
-    # *bool_queries,
+    *bool_queries,
+    *comp_queries,
 ]
