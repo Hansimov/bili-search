@@ -2,12 +2,13 @@
 // author: @Hansimov
 
 start: expr | expr_with_error
-    expr: and_expr+ | or_expr
+    expr: or_expr | and_expr
         or_expr: and_expr (or and_expr)+
-        and_expr: paren_expr | and_expr (and and_expr)+ | atom_expr
-            paren_expr: LP expr? RP
+        and_expr: paren_expr | atom_expr | and_expr (and and_expr)+ | and_expr+ 
+            paren_expr: lp expr? rp
             atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
-    expr_with_error: (expr | text_catch)+
+    expr_with_error: (expr | expr_error)+
+        expr_error: text_catch
 
 // ---------- basic operators ---------- //
 WT: " "
