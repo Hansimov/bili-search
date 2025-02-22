@@ -2,11 +2,11 @@
 // author: @Hansimov
 
 start: expr | expr_with_error
-    ?expr: atom_expr | paren_expr | or_expr | co_expr | and_expr
+    ?expr: atom_expr | pa_expr | or_expr | co_expr | and_expr
         or_expr: expr (or expr)+
         co_expr: expr expr+
         and_expr: expr (and expr)+
-        paren_expr: lp expr? rp
+        pa_expr: lp expr? rp
         atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
     ?expr_with_error: (expr | expr_error)+
         expr_error: text_catch
