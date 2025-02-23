@@ -80,7 +80,7 @@ lb_comma: lb comma?
 comma_rb: comma? rb
 
 // ---------- date exprs ---------- //
-date_expr: COLON? date_key date_op_val
+date_expr: colon? date_key date_op_val
     date_key: /(?i:(日期|时间|rq|date|dt|d))/
     date_op_val: date_op_val_single | date_op_val_list
         date_op_val_single: date_op_single date_val_single

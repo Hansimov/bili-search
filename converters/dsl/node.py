@@ -3,10 +3,17 @@ import re
 from copy import deepcopy
 from lark import Token, Tree
 from tclogger import logger, logstr
-from typing import Union, Literal
+from typing import Union, Literal, Any
 
 
 class DslNode:
+    KEY_LOGSTRS = {
+        0: logstr.hint,
+        1: logstr.note,
+        2: logstr.mesg,
+        3: logstr.file,
+    }
+
     def __init__(
         self,
         key: str = "",
@@ -21,11 +28,18 @@ class DslNode:
         self.parent = parent
         self.children = children or []
 
+    def get_key_logstr(self, level: int = 0):
+        return self.KEY_LOGSTRS.get(level % len(self.KEY_LOGSTRS), logstr.note)
+
     def log_node(self, node: "DslNode", level: int = 0):
         indent_str = " " * 2 * level
         if level > 0:
             indent_str += "- "
-        node_str = f"{indent_str}{logstr.file(node.key)}: {logstr.line(node.value)}"
+
+        node_key_str = self.get_key_logstr(level)(node.key)
+        node_val_str = logstr.line(node.value)
+
+        node_str = f"{indent_str}{node_key_str}: {node_val_str}"
         # logger.mesg(node_str)
         self.node_str += f"{node_str}\n"
 
@@ -41,6 +55,45 @@ class DslNode:
 
     def __repr__(self):
         return self.__str__()
+
+    def find_child_with_key(
+        self, key: Union[str, list[str]], raise_error: bool = True
+    ) -> Union["DslExprNode", None]:
+        queue = [self]
+        while queue:
+            current = queue.pop(0)
+            if isinstance(key, str):
+                if current.key == key:
+                    return current
+            else:
+                if current.key in key:
+                    return current
+            queue.extend(current.children)
+        if raise_error:
+            err_mesg = logstr.warn(f"× Not found: <{logstr.file(key)}>")
+            raise ValueError(err_mesg)
+        else:
+            return None
+
+    def get_value_by_key(self, key: str, raise_error: bool = True) -> Union[Any, None]:
+        child = self.find_child_with_key(key, raise_error=raise_error)
+        if child:
+            return child.value
+        else:
+            return None
+
+    def get_value_dict_by_keys(
+        self, keys: list[str], raise_error: bool = False
+    ) -> dict[str, Any]:
+        return {
+            key: self.get_value_by_key(key, raise_error=raise_error) for key in keys
+        }
+
+    def get_deepest_node_key(self) -> str:
+        if not self.children:
+            return self.key
+        else:
+            return self.children[0].get_deepest_node_key()
 
 
 class DslTreeProcessor:
@@ -105,8 +158,7 @@ class DslTreeBuilder(DslTreeProcessor):
             for child in node.children:
                 self.recursive_build_tree(child, dsl_node)
         elif node_type == "token":
-            dsl_node = DslNode(key=node.type, value=node.value, parent=parent)
-            parent.children.append(dsl_node)
+            parent.value = node.value
         else:
             logger.warn(f"× Unknown node type: {node_type}")
 
