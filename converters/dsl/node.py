@@ -5,6 +5,9 @@ from lark import Token, Tree
 from tclogger import logger, logstr
 from typing import Union, Literal, Any
 
+from converters.dsl.constants import START_EXPR, ATOM_EXPRS, ATOMS
+from converters.dsl.constants import PA_EXPRS, BOOL_OPS, BOOL_EXPRS
+
 
 class DslNode:
     KEY_LOGSTRS = {
@@ -95,6 +98,33 @@ class DslNode:
         else:
             return self.children[0].get_deepest_node_key()
 
+    def is_start(self):
+        return self.key == START_EXPR
+
+    def is_atom_expr(self):
+        return self.key in ATOM_EXPRS
+
+    def is_atom(self):
+        return self.key in ATOMS
+
+    def is_pa_expr(self):
+        return self.key in PA_EXPRS
+
+    def is_lp(self):
+        return self.key == "lp"
+
+    def is_rp(self):
+        return self.key == "rp"
+
+    def is_bool_op(self):
+        return self.key in BOOL_OPS
+
+    def is_bool_expr(self):
+        return self.key in BOOL_EXPRS
+
+    def get_key(self):
+        return self.key
+
 
 class DslTreeProcessor:
     @staticmethod
@@ -172,18 +202,6 @@ class DslExprNode(DslNode):
     pass
 
 
-START_EXPR = "start"
-MAIN_EXPRS = ["expr", "expr_error"]
-ATOM_EXPRS = ["atom_expr"]
-PA_EXPRS = ["pa_expr"]
-BOOL_EXPRS = ["and_expr", "or_expr", "co_expr"]
-BOOL_OPS = ["or", "and"]
-ATOMS = [
-    *["date_expr", "user_expr", "uid_expr", "stat_expr"],
-    *["region_expr", "word_expr", "text_expr"],
-]
-
-
 class DslTreeExprGrouper(DslTreeProcessor):
     """Group nodes in DslTree to DslExprNode.
 
@@ -192,76 +210,38 @@ class DslTreeExprGrouper(DslTreeProcessor):
     """
 
     @staticmethod
-    def is_start(node: DslNode):
-        return node.key == START_EXPR
-
-    @staticmethod
-    def is_atom_expr(node: DslNode):
-        return node.key in ATOM_EXPRS
-
-    @staticmethod
-    def is_atom(node: DslNode):
-        return node.key in ATOMS
-
-    @staticmethod
-    def is_pa_expr(node: DslNode):
-        return node.key in PA_EXPRS
-
-    @staticmethod
-    def is_lp(node: DslNode):
-        return node.key == "lp"
-
-    @staticmethod
-    def is_rp(node: DslNode):
-        return node.key == "rp"
-
-    @staticmethod
-    def is_bool_op(node: DslNode):
-        return node.key in BOOL_OPS
-
-    @staticmethod
-    def is_bool_expr(node: DslNode):
-        return node.key in BOOL_EXPRS
-
-    @staticmethod
-    def get_key(node: DslNode):
-        return node.key
-
-    @staticmethod
     def construct_expr_node_from_dsl_node(node: DslNode):
         return DslExprNode(node.key, node.value, node.parent, node.children)
 
     def group(self, node: DslNode) -> DslExprNode:
         children = node.children
 
-        if self.is_start(node):
+        if node.is_start():
             expr_node = DslExprNode("start")
             for child in children:
                 self.connect_node_to_parent(self.group(child), expr_node)
             return expr_node
-        elif self.is_pa_expr(node):
+        elif node.is_pa_expr():
             expr_node = DslExprNode("pa")
             for child in children:
-                if self.is_lp(child) or self.is_rp(child):
+                if child.is_lp() or child.is_rp():
                     pass
-                elif self.is_bool_expr(child) or self.is_bool_expr(child):
+                elif child.is_bool_expr() or child.is_bool_expr():
                     self.connect_node_to_parent(self.group(child), expr_node)
                 else:
                     raise ValueError(f"Invalid pa_expr: {child.key}")
             return expr_node
-        elif self.is_bool_expr(node):
-            expr_key = re.sub("_expr$", "", self.get_key(node))
+        elif node.is_bool_expr():
+            expr_key = re.sub("_expr$", "", node.key)
             expr_node = DslExprNode(expr_key)
-            non_op_children = [
-                child for child in children if not self.is_bool_op(child)
-            ]
+            non_op_children = [child for child in children if not child.is_bool_op()]
             for child in non_op_children:
                 self.connect_node_to_parent(self.group(child), expr_node)
             return expr_node
-        elif self.is_atom_expr(node):
+        elif node.is_atom_expr():
             expr_node = DslExprNode("atom")
             for child in children:
-                if self.is_atom(child):
+                if child.is_atom():
                     self.connect_node_to_parent(self.group(child), expr_node)
                 else:
                     raise ValueError(f"Invalid atom_expr: {child.key}")
