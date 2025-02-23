@@ -5,7 +5,7 @@ from tclogger import logger
 
 class DslSyntaxChecker:
     def __init__(self, verbose: bool = False):
-        self.dsl_lark = Path(__file__).parent / "dsl.lark"
+        self.dsl_lark = Path(__file__).parent / "syntax.lark"
         self.verbose = verbose
         self.init_parser()
 
@@ -28,7 +28,7 @@ class DslSyntaxChecker:
 
 
 def test_syntax_checker():
-    from converters.syntax.test import queries
+    from converters.dsl.test import queries
 
     checker = DslSyntaxChecker(verbose=True)
     for query in queries:
@@ -39,4 +39,4 @@ def test_syntax_checker():
 if __name__ == "__main__":
     test_syntax_checker()
 
-    # python -m converters.syntax.check
+    # python -m converters.dsl.check

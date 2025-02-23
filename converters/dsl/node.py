@@ -2,7 +2,7 @@ import re
 
 from copy import deepcopy
 from lark import Token, Tree
-from tclogger import logger, logstr, dict_to_str
+from tclogger import logger, logstr
 from typing import Union, Literal
 
 
@@ -52,6 +52,10 @@ class DslTreeProcessor:
             return "token"
         else:
             return "unknown"
+
+    @staticmethod
+    def has_only_one_child(node: DslNode) -> bool:
+        return len(node.children) == 1
 
     @staticmethod
     def get_siblings(node: DslNode) -> list[DslNode]:
@@ -211,11 +215,7 @@ class DslTreeExprGrouper(DslTreeProcessor):
                     raise ValueError(f"Invalid atom_expr: {child.key}")
             return expr_node
         else:
-            print(node.key)
-        return self.construct_expr_node_from_dsl_node(node)
+            return self.construct_expr_node_from_dsl_node(node)
 
     def group_dsl_tree_to_expr_tree(self, node: DslNode) -> DslExprNode:
-        root = DslExprNode("root")
-        expr_tree = self.group(node)
-        self.connect_node_to_parent(expr_tree, root)
-        return root
+        return self.group(node)

@@ -65,19 +65,21 @@ bool_queries = [
 ]
 
 comp_queries = [
-    "影视飓风 v>10k :coin>=25 u=,飓多多 StormCrew, 亿点点不一样 ,, 影视飓风",
     "影视飓风 v>10k :coin>=25 u=,飓多多StormCrew, 亿点点不一样 风光摄影",
-    "影视飓风 v>10k :coin>=25 u=[,) , 何同学",
+    "影视飓风 v>10k :coin>=25 u=,飓多多 StormCrew, 亿点点不一样 ,, 影视飓风",
+    # "影视飓风 v>10k :coin>=25 u=[,) , 何同学",
+    "(影视飓风 || 飓多多 || TIM 李四维 && 青青 && k-=LKS) (v>=1w || :coin>=25)",
+    # "(影视飓风 || 飓多多 || TIM )",
 ]
 
 
 queries = [
-    *date_queries,
-    *user_queries,
-    *uid_queries,
-    *stat_queries,
-    *region_queries,
-    *word_queries,
-    *bool_queries,
+    # *date_queries,
+    # *user_queries,
+    # *uid_queries,
+    # *stat_queries,
+    # *region_queries,
+    # *word_queries,
+    # *bool_queries,
     *comp_queries,
 ]

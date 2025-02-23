@@ -6,7 +6,7 @@ from typing import Union, Literal
 
 class DslLarkParser:
     def __init__(self, verbose: bool = False):
-        self.dsl_lark = Path(__file__).parent / "dsl.lark"
+        self.dsl_lark = Path(__file__).parent / "syntax.lark"
         self.verbose = verbose
         self.init_parser()
 
