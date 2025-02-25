@@ -40,7 +40,7 @@ class DslNode:
             indent_str += "- "
 
         node_key_str = self.get_key_logstr(level)(node.key)
-        node_val_str = logstr.line(node.value)
+        node_val_str = logstr.glow(node.value)
 
         node_str = f"{indent_str}{node_key_str}: {node_val_str}"
         # logger.mesg(node_str)
@@ -60,17 +60,16 @@ class DslNode:
         return self.__str__()
 
     def find_child_with_key(
-        self, key: Union[str, list[str]], raise_error: bool = True
-    ) -> Union["DslExprNode", None]:
+        self,
+        key: Union[str, list[str]],
+        raise_error: bool = True,
+        use_re: bool = False,
+    ) -> Union["DslNode", None]:
         queue = [self]
         while queue:
             current = queue.pop(0)
-            if isinstance(key, str):
-                if current.key == key:
-                    return current
-            else:
-                if current.key in key:
-                    return current
+            if current.is_key(key, use_re=use_re):
+                return current
             queue.extend(current.children)
         if raise_error:
             err_mesg = logstr.warn(f"× Not found: <{logstr.file(key)}>")
@@ -91,6 +90,12 @@ class DslNode:
         return {
             key: self.get_value_by_key(key, raise_error=raise_error) for key in keys
         }
+
+    def get_deepest_node_value(self) -> str:
+        if not self.children:
+            return self.value
+        else:
+            return self.children[0].get_deepest_node_value()
 
     def get_deepest_node_key(self) -> str:
         if not self.children:
@@ -124,6 +129,21 @@ class DslNode:
 
     def get_key(self):
         return self.key
+
+    def is_key(self, key: Union[str, list[str]], use_re: bool = False) -> bool:
+        if isinstance(key, list):
+            if use_re:
+                for k in key:
+                    if re.match(k, self.key):
+                        return True
+                return False
+            else:
+                return self.key in key
+        else:
+            if use_re:
+                return bool(re.match(key, self.key))
+            else:
+                return self.key == key
 
 
 class DslTreeProcessor:
