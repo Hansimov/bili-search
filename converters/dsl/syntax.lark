@@ -93,12 +93,11 @@ date_expr: colon? date_key date_op_val
                     yyyymmddhh: yyyy sep_ymd mm sep_ymd dd sep_ymd hh
                     yyyymmdd: yyyy sep_ymd mm sep_ymd dd
                     yyyymm: yyyy sep_ymd mm
-                    mmddhh: mm sep_ymd sep_dh hh
+                    mmddhh: mm sep_ymd dd sep_dh hh
                     mmdd: mm sep_ymd dd
-                date_recent: date_this | date_last | date_past
+                date_recent: date_this | date_last
                     date_this: "this" sep_en date_unit
                     date_last: "last" sep_en date_unit
-                    date_past: "past" sep_en date_num_unit
         date_op_val_list: date_op_list date_val_list
             date_op_list: op_list
             date_val_list: date_val_list_lr | date_val_list_no_lr
