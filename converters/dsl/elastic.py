@@ -3,12 +3,11 @@ from tclogger import logger, dict_to_str
 from converters.dsl.parse import DslLarkParser
 from converters.dsl.node import DslExprNode, DslTreeBuilder, DslTreeExprGrouper
 from converters.dsl.fields.date import DateExprElasticConverter
+from converters.dsl.node import ATOMS
 
 
 class DslExprToElasticConverter(DslTreeExprGrouper):
     def convert(self, expr: str) -> dict:
-        self.tree_dict = {}
-
         parser = DslLarkParser()
         lark_tree = parser.parse(expr)
         # logger.mesg(parser.str(lark_tree), verbose=lark_tree)
@@ -20,28 +19,18 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         grouper = DslTreeExprGrouper()
         expr_tree = grouper.group_dsl_tree_to_expr_tree(dsl_tree)
         logger.mesg(str(expr_tree), verbose=expr_tree)
-        return self.tree_dict
+
+        elastic_dict = self.expr_node_to_elastic_dict(expr_tree)
+        logger.mesg(dict_to_str(elastic_dict), indent=2)
+        if not elastic_dict:
+            raise NotImplementedError(f"× Not implemented: {expr}")
+
+        return elastic_dict
 
     def expr_node_to_elastic_dict(self, node: DslExprNode) -> dict:
-        children = node.children
-        if self.is_start(node):
-            return self.expr_node_to_elastic_dict(children[0])
-        elif self.is_atom(node):
-            return self.expr_node_to_elastic_dict(children[0])
-        elif node.key == "date_expr":
+        expr_node = node.find_child_with_key(ATOMS)
+        if expr_node.key == "date_expr":
             return DateExprElasticConverter().convert(node)
-        else:
-            return None
-
-
-def test_dsl_to_elastic_converter():
-    from converters.dsl.test import queries
-
-    converter = DslExprToElasticConverter(verbose=True)
-
-    for query in queries[-1:]:
-        tree_dict = converter.convert(query)
-        # logger.mesg(dict_to_str(tree_dict))
 
 
 def test_date_field():
@@ -50,15 +39,13 @@ def test_date_field():
 
     field_converter = DateFieldConverter()
     elastic_converter = DslExprToElasticConverter()
-    for date_str in test_date_strs[:3]:
+    for date_str in test_date_strs[:]:
         logger.note(f"{date_str}")
         date_expr = f"date={date_str}"
         elastic_dict = elastic_converter.convert(date_expr)
-        logger.mesg(dict_to_str(elastic_dict))
 
 
 if __name__ == "__main__":
-    # test_dsl_to_elastic_converter()
     test_date_field()
 
     # python -m converters.dsl.elastic

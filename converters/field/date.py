@@ -230,6 +230,8 @@ class DateFieldConverter:
                 day = int(match.group("mdh_dd"))
                 hour = int(match.group("mdh_hh"))
                 start_dt = tcdatetime(now.year, month, day, hour)
+                if start_dt.timestamp() > now.timestamp():
+                    start_dt = tcdatetime(now.year - 1, month, day, hour)
                 end_dt = start_dt + timedelta(hours=1) - timedelta(milliseconds=1)
             elif match.group("mm_dd"):
                 month = int(match.group("md_mm"))
