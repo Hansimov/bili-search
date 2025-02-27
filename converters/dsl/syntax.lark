@@ -127,11 +127,9 @@ user_expr: colon? user_key_op user_val
     user_key_op: user_key user_op | user_at
         user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
         user_op: eq | neq
-        user_at: user_eq | user_neq
-            user_eq: AT
-            user_neq: AT NQ
+        user_at: at_neq | at_eq
     user_val: user_val_single | user_val_list
-        user_val_single: text_strict
+        user_val_single: text_quoted | text_strict
         user_val_list: user_val_list_lr | user_val_list_no_lr
             user_val_list_lr: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
             user_val_list_no_lr: comma? user_val_single (comma user_val_single)*
@@ -146,6 +144,8 @@ uid_expr: colon? uid_key uid_op_val
                 uid_val_list_lr: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
                 uid_val_list_no_lr: comma? uid_val_single (comma uid_val_single)*
 
+at_eq: AT
+at_neq: AT NQ
 
 // ---------- stat exprs ---------- //
 stat_expr: colon? stat_key stat_op_val

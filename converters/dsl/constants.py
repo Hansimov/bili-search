@@ -2,6 +2,8 @@ from typing import Literal
 
 OP_REL_TYPE = Literal["eqs", "neqs", "lt", "gt", "leqs", "geqs"]
 
+USER_OPS = ["eq", "neq", "at_eq", "at_neq"]
+
 START_EXPR = "start"
 MAIN_EXPRS = ["expr", "expr_error"]
 ATOM_EXPRS = ["atom_expr"]
