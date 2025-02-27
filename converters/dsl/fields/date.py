@@ -15,11 +15,10 @@ class ExprElasticConverter:
 
 
 class DateExprElasticConverter(ExprElasticConverter):
-    def is_single(self, node: DslExprNode) -> bool:
-        return node.key == "date_op_val_single"
+    DATE_FIELD = "pubdate"
 
-    def is_list(self, node: DslExprNode) -> bool:
-        return node.key == "date_op_val_list"
+    def __init__(self, verbose: bool = False) -> None:
+        self.verbose = verbose
 
     def calc_ts_range_of_ymdh_dict(self, expr_key: str, ymdh_dict: dict) -> dict:
         now = tcdatetime.now()
@@ -350,8 +349,19 @@ class DateExprElasticConverter(ExprElasticConverter):
             info = None
         return info
 
-    def convert_list(self, node: DslExprNode) -> dict:
-        pass
+    def convert_list(self, node: DslExprNode) -> list[dict]:
+        val_list = node.find_child_with_key("date_val_list")
+        val_left_node = val_list.find_child_with_key("date_val_left")
+        val_right_node = val_list.find_child_with_key("date_val_right")
+        if val_left_node:
+            info_left = self.convert_single(val_left_node)
+        else:
+            info_left = None
+        if val_right_node:
+            info_right = self.convert_single(val_right_node)
+        else:
+            info_right = None
+        return [info_left, info_right]
 
     def convert(self, node: DslExprNode) -> dict:
         """node key is `date_expr`"""
@@ -360,7 +370,32 @@ class DateExprElasticConverter(ExprElasticConverter):
         )
         if not op_val_node:
             return None
-        if self.is_single(op_val_node):
-            return self.convert_single(op_val_node)
-        elif self.is_list(op_val_node):
-            return self.convert_list(op_val_node)
+        if op_val_node.is_key("date_op_val_single"):
+            info = self.convert_single(op_val_node)
+            op_key = op_val_node.find_child_with_key(
+                "date_op_single"
+            ).get_deepest_node_key()
+            elatic_dict = self.convert_single_info_to_elastic_dict(op_key, info)
+            return elatic_dict
+        elif op_val_node.is_key("date_op_val_list"):
+            info_list = self.convert_list(op_val_node)
+            op_key = op_val_node.find_child_with_key(
+                "date_op_list"
+            ).get_deepest_node_key()
+            lb_node = op_val_node.find_child_with_key("lb")
+            if lb_node:
+                lb_key = lb_node.get_deepest_node_key()
+            else:
+                lb_key = None
+            rb_node = op_val_node.find_child_with_key("rb")
+            if rb_node:
+                rb_key = rb_node.get_deepest_node_key()
+            else:
+                rb_key = None
+            elastic_dict = self.convert_list_info_to_elastic_dict(
+                op_key, info_list, lb_key, rb_key
+            )
+            return elastic_dict
+        else:
+            logger.warn(f"× Invalid date_op_val key: {op_val_node.key}")
+            return None

@@ -34,12 +34,12 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
 
 
 def test_date_field():
-    from converters.field.test import test_date_strs
+    from converters.field.test import test_date_strs, test_date_list_strs
     from converters.field.date import DateFieldConverter
 
     field_converter = DateFieldConverter()
     elastic_converter = DslExprToElasticConverter()
-    for date_str in test_date_strs[:]:
+    for date_str in test_date_list_strs[:]:
         logger.note(f"{date_str}")
         date_expr = f"date={date_str}"
         elastic_dict = elastic_converter.convert(date_expr)
