@@ -262,7 +262,9 @@ class DateExprElasticConverter(ExprElasticConverter):
                 "leqs": {"lte": end_ts},
             }
         elastic_dict = {
-            self.DATE_FIELD: op_range.get(op_key, {}),
+            "range": {
+                self.DATE_FIELD: op_range.get(op_key, {}),
+            }
         }
         return elastic_dict
 
@@ -328,7 +330,9 @@ class DateExprElasticConverter(ExprElasticConverter):
                     es_op_val["lt"] = r_ts_beg
 
         elastic_dict = {
-            self.DATE_FIELD: es_op_val,
+            "range": {
+                self.DATE_FIELD: es_op_val,
+            }
         }
 
         return elastic_dict
