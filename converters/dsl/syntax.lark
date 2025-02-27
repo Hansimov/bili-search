@@ -100,9 +100,9 @@ date_expr: colon? date_key date_op_val
                     date_last: "last" sep_en date_unit
         date_op_val_list: date_op_list date_val_list
             date_op_list: op_list
-            date_val_list: date_val_list_lr | date_val_list_no_lr
-                date_val_list_lr: lb_comma (date_val_single)? (comma date_val_single)* comma_rb
-                date_val_list_no_lr: comma? date_val_single (comma date_val_single)*
+            date_val_list: lb_comma date_val_left? comma? date_val_right? comma_rb
+                date_val_left: date_val_single
+                date_val_right: date_val_single
 
 digits: /[0-9]+/
 yyyy: /\d{4}/

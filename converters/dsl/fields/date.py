@@ -243,10 +243,99 @@ class DateExprElasticConverter(ExprElasticConverter):
             **range_dict,
         }
 
+    def convert_single_info_to_elastic_dict(self, op_key: str, info: dict):
+        date_type = info["date_type"]
+        start_ts, end_ts = info["range_ts"]
+        if date_type == "date_num_unit":
+            op_range = {
+                "eqs": {"gte": start_ts},
+                "gt": {"lt": start_ts},
+                "lt": {"gt": end_ts},
+                "geqs": {"lte": start_ts},
+                "leqs": {"gte": end_ts},
+            }
+        else:
+            op_range = {
+                "eqs": {"gte": start_ts, "lte": end_ts},
+                "gt": {"gt": end_ts},
+                "lt": {"lt": start_ts},
+                "geqs": {"gte": start_ts},
+                "leqs": {"lte": end_ts},
+            }
+        elastic_dict = {
+            self.DATE_FIELD: op_range.get(op_key, {}),
+        }
+        return elastic_dict
+
+    def convert_list_info_to_elastic_dict(
+        self,
+        op_key: str,
+        info_list: list[dict],
+        lb_key: Literal["lk", "lp"] = None,
+        rb_key: Literal["rk", "rp"] = None,
+    ):
+        info_l, info_r = info_list
+        if info_l:
+            l_date_type = info_l["date_type"]
+            l_ts_beg, l_ts_end = info_l["range_str"]
+        else:
+            l_date_type = None
+            l_ts_beg, l_ts_end = None, None
+
+        if info_r:
+            r_date_type = info_r["date_type"]
+            r_ts_beg, r_ts_end = info_r["range_str"]
+        else:
+            r_date_type = None
+            r_ts_beg, r_ts_end = None, None
+
+        if l_date_type == "date_num_unit" and r_date_type == "date_num_unit":
+            # swap l_ts and r_ts for date_num_unit
+            # for example, [3d,1d) should be (1d,3d]
+            if l_ts_beg < r_ts_beg:
+                l_ts_beg, r_ts_beg = r_ts_beg, l_ts_beg
+                l_ts_end, r_ts_end = r_ts_end, l_ts_end
+                lb_key = "l" + rb_key[-1]
+                rb_key = "r" + lb_key[-1]
+
+        es_op_val = {}
+
+        if l_ts_beg:
+            if l_date_type == "date_num_unit":
+                if lb_key == "lk":
+                    # e.g.: "[1d" means "<= end of 1d", which contains 1d itself
+                    es_op_val["lte"] = l_ts_end
+                else:  # lb_key == "lp"
+                    # e.g.: "(1d" means "< beg of 1d", which does not contain 1d itself
+                    es_op_val["lt"] = l_ts_beg
+            else:
+                if lb_key == "lk":
+                    es_op_val["gte"] = l_ts_beg
+                else:  # lb_key == "lp"
+                    es_op_val["gt"] = l_ts_end
+
+        if r_ts_beg:
+            if r_date_type == "date_num_unit":
+                if rb_key == "rk":
+                    # e.g.: "3d]" means ">= beg of 3d", which contains 3d itself
+                    es_op_val["gte"] = r_ts_beg
+                else:
+                    # e.g.: "3d)" means "> end of 3d", which does not contain 3d itself
+                    es_op_val["gt"] = r_ts_end
+            else:
+                if rb_key == "rk":
+                    es_op_val["lte"] = r_ts_end
+                else:
+                    es_op_val["lt"] = r_ts_beg
+
+        elastic_dict = {
+            self.DATE_FIELD: es_op_val,
+        }
+
+        return elastic_dict
+
     def convert_single(self, node: DslExprNode) -> dict:
-        op_single = node.find_child_with_key("date_op_single")
         val_single = node.find_child_with_key("date_val_single")
-        op_key = op_single.get_deepest_node_key()
         val_node = val_single.find_child_with_key(
             ["date_num_unit", "date_iso", "date_recent"]
         )
@@ -259,7 +348,6 @@ class DateExprElasticConverter(ExprElasticConverter):
         else:
             logger.warn(f"× Invalid date_val_single key: {val_node.key}")
             info = None
-
         return info
 
     def convert_list(self, node: DslExprNode) -> dict:
