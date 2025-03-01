@@ -3,6 +3,7 @@ from typing import Literal
 OP_REL_TYPE = Literal["eqs", "neqs", "lt", "gt", "leqs", "geqs"]
 
 USER_OPS = ["eq", "neq", "at_eq", "at_neq"]
+WORD_OPS = ["eq", "neq", "qs"]
 
 START_EXPR = "start"
 MAIN_EXPRS = ["expr", "expr_error"]
@@ -12,5 +13,6 @@ BOOL_EXPRS = ["and_expr", "or_expr", "co_expr"]
 BOOL_OPS = ["or", "and"]
 ATOMS = [
     *["date_expr", "user_expr", "uid_expr", "stat_expr"],
-    *["region_expr", "word_expr", "text_expr"],
+    *["region_expr", "word_expr"],
 ]
+TEXT_TYPES = ["text_quoted", "text_strict", "text_plain"]
