@@ -264,7 +264,7 @@ class DslTreeExprGrouper(DslTreeProcessor):
             for child in children:
                 if child.is_lp() or child.is_rp():
                     pass
-                elif child.is_bool_expr() or child.is_bool_expr():
+                elif child.is_bool_expr() or child.is_atom_expr():
                     self.connect_node_to_parent(self.group(child), expr_node)
                 else:
                     raise ValueError(f"Invalid pa_expr: {child.key}")

@@ -10,7 +10,7 @@ MAIN_EXPRS = ["expr", "expr_error"]
 ATOM_EXPRS = ["atom_expr"]
 PA_EXPRS = ["pa_expr"]
 BOOL_EXPRS = ["and_expr", "or_expr", "co_expr"]
-BOOL_OPS = ["or", "and"]
+BOOL_OPS = ["or", "and", "co", "pa"]
 ATOMS = [
     *["date_expr", "user_expr", "uid_expr", "stat_expr"],
     *["region_expr", "word_expr"],
