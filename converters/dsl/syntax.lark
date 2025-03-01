@@ -64,6 +64,7 @@ LP: "(" | "（"
 RP: ")" | "）"
 LK: "[" | "【"
 RK: "]" | "】"
+QS: "?" | "？"
 
 COLONS: (WT* COLON WT*)+
 COMMAS: (WT* COMMA WT*)+
@@ -75,6 +76,7 @@ lb: lp | lk
 rb: rp | rk
     rp: RP
     rk: RK
+qs: QS
 
 lb_comma: lb comma?
 comma_rb: comma? rb
@@ -181,9 +183,11 @@ region_expr: colon? region_key region_op region_val
 
 
 // ---------- word exprs ---------- //
-word_expr: colon? word_key word_op word_val
-    word_key: /(?i:(关键字|keyword|key|k))/
-    word_op: op_list
+word_expr: colon? word_key_op? word_val word_sp?
+    word_key_op: word_key? word_op
+        word_key: /(?i:(关键字|keyword|key|k))/
+        word_op: eq | neq
+    word_sp: qs
     word_val: word_val_single | word_val_list
         word_val_single: text_expr
         word_val_list: word_val_list_lr | word_val_list_no_lr
@@ -193,9 +197,9 @@ word_expr: colon? word_key word_op word_val
 text_expr: text_quoted | text_strict | text_plain
 
 text_quoted: /[“][^“”]+[”]/ | /["][^"]+["]/
-text_strict: /[^\s\n"“”\|\&:：!！,，（）【】<>《》\(\)\[\]]+/
-text_plain:  /[^\s\n"“”\|\&"（）【】\(\)\[\]]+/
-text_catch:  /[\s\n"“”\|\&（）【】\(\)\[\]]+/
+text_strict: /[^\s\n"“”\|\&（）【】\?？\(\)\[\]:：!！,，<>《》]+/
+text_plain:  /[^\s\n"“”\|\&（）【】\?？\(\)\[\]]+/
+text_catch:   /[\s\n"“”\|\&（）【】\?？\(\)\[\]]+/
 
 %import common.WS
 %ignore WS
