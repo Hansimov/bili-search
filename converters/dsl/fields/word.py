@@ -1,4 +1,3 @@
-from converters.dsl.constants import TEXT_TYPES
 from converters.dsl.node import DslExprNode
 from converters.dsl.constants import WORD_OPS
 
@@ -38,21 +37,24 @@ class WordExprElasticConverter:
         match_dict = self.convert_multi(single_nodes)
 
         key_op_node = node.find_child_with_key(["word_key_op", "word_sp"])
+        op = "eq"
         if key_op_node:
             op_node = key_op_node.find_child_with_key(WORD_OPS)
             op = op_node.find_child_with_key(WORD_OPS).get_deepest_node_key()
-            if op == "neq":
-                bool_key = "must_not"
-            elif op == "qs":
-                bool_key = "should"
-            else:
-                bool_key = "must"
-        else:
-            bool_key = "must"
 
-        if len(match_dict) == 1 and bool_key == "must":
+        if len(match_dict) == 1 and op == "eq":
             elastic_dict = match_dict
         else:
-            elastic_dict = {"bool": {bool_key: match_dict}}
+            if op == "neq":
+                elastic_dict = {"bool": {"must_not": match_dict}}
+            elif op == "qs":
+                elastic_dict = {
+                    "bool": {
+                        "should": match_dict,
+                        "minimum_should_match": 0,
+                    }
+                }
+            else:
+                elastic_dict = {"bool": {"must": match_dict}}
 
         return elastic_dict
