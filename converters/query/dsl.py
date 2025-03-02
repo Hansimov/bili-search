@@ -220,7 +220,7 @@ class MultiMatchQueryDSLConstructor:
 
 class ScriptScoreQueryDSLConstructor:
     def log_func(
-        self, field: str, min_input: float = 2, min_output: float = 0.0
+        self, field: str, min_input: float = 10, min_output: float = 0.0
     ) -> str:
         func_str = f"(Math.log10(Math.max({field}, {min_input})) + {min_output})"
         return func_str
@@ -353,10 +353,11 @@ class ScriptScoreQueryDSLConstructor:
         return func_str
 
     def assign_var_of_relevance_score(
-        self, min_relevance_score: float = 0.01, down_scale: float = 100
+        self, power: float = 2, min_value: float = 0.01, down_scale: float = 100
     ):
-        score_str = f"Math.max(_score, {min_relevance_score}) / {down_scale}"
-        assign_str = f"\ndouble r_score = {score_str};\n"
+        dow_score_str = f"(_score / {down_scale})"
+        pow_score_str = self.pow_func(dow_score_str, power=power, min_value=min_value)
+        assign_str = f"\ndouble r_score = {pow_score_str};\n"
         return assign_str
 
     def get_script_source_by_powers(self):
@@ -405,9 +406,7 @@ class ScriptScoreQueryDSLConstructor:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
         assign_vars_str += self.assign_var_of_pubdate_decay_by_interpolation()
-        assign_vars_str += self.assign_var_of_relevance_score(
-            min_relevance_score=0.01, down_scale=100
-        )
+        assign_vars_str += self.assign_var_of_relevance_score()
         stat_func_str = " * ".join(
             f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
         )

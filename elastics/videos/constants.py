@@ -10,6 +10,7 @@ SOURCE_FIELDS = [
 DOC_EXCLUDED_SOURCE_FIELDS = []
 
 # search match fields
+# SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags"]
 # SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name"]
 SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name", "desc"]
 SEARCH_MATCH_FIELDS_WORDS = [f"{field}.words" for field in SEARCH_MATCH_FIELDS_DEFAULT]
@@ -43,29 +44,33 @@ DATE_MATCH_FIELDS = [
 ]
 
 # boosted fields
-SEARCH_BOOSTED_FIELDS = {
-    "title": 2.5,
-    "title.words": 2.5,
-    "title.pinyin": 0.25,
-    "tags": 3.5,
-    "tags.words": 3.5,
-    "tags.pinyin": 0.35,
+SHARED_BOOSTED_FIELDS = {
+    # "title": 2.5,
+    # "title.words": 2.5,
+    "title": 3,
+    "title.words": 3,
+    # "tags": 3.5,
+    # "tags.words": 3.5,
+    "tags": 2.5,
+    "tags.words": 2.5,
+    # "owner.name": 2,
+    # "owner.name.words": 2,
     "owner.name": 2,
     "owner.name.words": 2,
+}
+SEARCH_BOOSTED_FIELDS = {
+    **SHARED_BOOSTED_FIELDS,
+    "title.pinyin": 0.25,
+    "tags.pinyin": 0.2,
     "owner.name.pinyin": 0.2,
     "desc": 0.1,
     "desc.words": 0.1,
     "desc.pinyin": 0.01,
 }
 SUGGEST_BOOSTED_FIELDS = {
-    "title": 2.5,
-    "title.words": 2.5,
+    **SHARED_BOOSTED_FIELDS,
     "title.pinyin": 0.5,
-    "tags": 3.5,
-    "tags.words": 3.5,
-    "tags.pinyin": 0.7,
-    "owner.name": 2,
-    "owner.name.words": 2,
+    "tags.pinyin": 0.4,
     "owner.name.pinyin": 0.4,
 }
 DATE_BOOSTED_FIELDS = {
@@ -96,6 +101,7 @@ MATCH_BOOL = Literal["must", "should", "must_not", "filter"]
 MATCH_OPERATOR = Literal["or", "and"]
 
 # match type, bool and operator
+# SEARCH_MATCH_TYPE = "phrase"
 SEARCH_MATCH_TYPE = "phrase_prefix"
 SEARCH_MATCH_BOOL = "must"
 SEARCH_MATCH_OPERATOR = "or"
