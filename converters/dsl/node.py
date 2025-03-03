@@ -1,6 +1,7 @@
 import re
 
 from copy import deepcopy
+from collections import defaultdict
 from lark import Token, Tree
 from tclogger import logger, logstr
 from typing import Union, Literal, Any
@@ -83,14 +84,32 @@ class DslNode:
         key: Union[str, list[str]],
         raise_error: bool = False,
         use_re: bool = False,
+        max_level: int = None,
     ) -> list["DslNode"]:
+        """max_level:
+        - None: no limit
+        - 0: only check current node
+        - 1: only check children of current node
+        - etc."""
         res = []
         queue = [self]
+        current_level = 0
+        level_counts = defaultdict(int)
+        level_counts[0] = 1
+
         while queue:
             current = queue.pop(0)
             if current.is_key(key, use_re=use_re):
                 res.append(current)
             queue.extend(current.children)
+            if max_level is not None:
+                level_counts[current_level + 1] += len(current.children)
+                level_counts[current_level] -= 1
+                if level_counts[current_level] <= 0:
+                    current_level += 1
+                if current_level > max_level:
+                    break
+
         if not res and raise_error:
             err_mesg = logstr.warn(f"× Not found: <{logstr.file(key)}>")
             raise ValueError(err_mesg)
