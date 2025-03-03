@@ -11,6 +11,17 @@ from converters.query.field import is_pinyin_field, is_field_in_fields
 from converters.query.field import remove_fields_from_fields
 from converters.query.field import remove_suffixes_from_fields
 
+STAT_FIELD_TYPE = Literal[
+    "stat.view",
+    "stat.like",
+    "stat.coin",
+    "stat.favorite",
+    "stat.danmaku",
+    "stat.reply",
+    "stat.share",
+]
+SCORED_STAT_FIELDS = ["stat.like", "stat.coin", "stat.danmaku", "stat.reply"]
+
 
 class MultiMatchQueryDSLConstructor:
     def __init__(self) -> None:
@@ -251,6 +262,7 @@ class ScriptScoreQueryDSLConstructor:
             get_value_func = f"doc['{field}'].value"
         new_var = ""
         if field == "pubdate":
+            # 2010-01-01 00:00:00, the beginning of most videos in Bilibili
             default_value = 1262275200
             get_value_func = "doc['pubdate'].value"
             new_var = f"\ndouble pubdate_decay;\n"
@@ -309,6 +321,7 @@ class ScriptScoreQueryDSLConstructor:
             *[(30, 0.6), (365, 0.3)],
         ],
         inf_value: float = 0.25,
+        # power: float = 1,
     ) -> str:
         """
         Creates a decay function that fits the provided points using linear interpolation.
@@ -350,6 +363,12 @@ class ScriptScoreQueryDSLConstructor:
 
         # Combine conditions
         func_str += " else ".join(conditions)
+
+        # # Apply power function to finetune the weight of pubdate_decay
+        # pow_pubdate_decay_str = self.pow_func(
+        #     "pubdate_decay", power=power, min_value=inf_value
+        # )
+        # func_str += f"\npubdate_decay = {pow_pubdate_decay_str};\n"
         return func_str
 
     def assign_var_of_relevance_score(
@@ -357,7 +376,22 @@ class ScriptScoreQueryDSLConstructor:
     ):
         dow_score_str = f"(_score / {down_scale})"
         pow_score_str = self.pow_func(dow_score_str, power=power, min_value=min_value)
-        assign_str = f"\ndouble r_score = {pow_score_str};\n"
+        assign_str = f"\ndouble relevance_score = {pow_score_str};\n"
+        return assign_str
+
+    def assign_var_of_stats_score(
+        self,
+        stat_fields: list[STAT_FIELD_TYPE] = SCORED_STAT_FIELDS,
+        power: float = 2,
+        min_value: float = 1,
+    ):
+        stats_score_str = " * ".join(
+            f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
+        )
+        stats_score_str = self.pow_func(
+            stats_score_str, power=power, min_value=min_value
+        )
+        assign_str = f"\ndouble stats_score = {stats_score_str};\n"
         return assign_str
 
     def get_script_source_by_powers(self):
@@ -389,17 +423,7 @@ class ScriptScoreQueryDSLConstructor:
 
     def get_script_source_by_stats(
         self,
-        stat_fields: list[
-            Literal[
-                "stat.view",
-                "stat.like",
-                "stat.coin",
-                "stat.favorite",
-                "stat.danmaku",
-                "stat.reply",
-                "stat.share",
-            ]
-        ] = ["stat.like", "stat.coin", "stat.danmaku", "stat.reply"],
+        stat_fields: list[STAT_FIELD_TYPE] = SCORED_STAT_FIELDS,
     ):
         assign_vars = []
         for field in stat_fields + ["pubdate"]:
@@ -407,10 +431,8 @@ class ScriptScoreQueryDSLConstructor:
         assign_vars_str = "\n".join(assign_vars)
         assign_vars_str += self.assign_var_of_pubdate_decay_by_interpolation()
         assign_vars_str += self.assign_var_of_relevance_score()
-        stat_func_str = " * ".join(
-            f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
-        )
-        func_str = f"return {stat_func_str} * pubdate_decay * r_score;"
+        assign_vars_str += self.assign_var_of_stats_score(stat_fields=stat_fields)
+        func_str = f"return stats_score * pubdate_decay * relevance_score;"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 

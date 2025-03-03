@@ -10,7 +10,7 @@ SOURCE_FIELDS = [
 DOC_EXCLUDED_SOURCE_FIELDS = []
 
 # search match fields
-# SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags"]
+# SEARCH_MATCH_FIELDS_DEFAULT = ["title"]
 # SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name"]
 SEARCH_MATCH_FIELDS_DEFAULT = ["title", "tags", "owner.name", "desc"]
 SEARCH_MATCH_FIELDS_WORDS = [f"{field}.words" for field in SEARCH_MATCH_FIELDS_DEFAULT]
