@@ -30,6 +30,7 @@ class DslNode:
         self.value = value
         self.parent = parent
         self.children = children or []
+        self.extras = {}
 
     def get_key_logstr(self, level: int = 0):
         return self.KEY_LOGSTRS.get(level % len(self.KEY_LOGSTRS), logstr.note)
@@ -163,6 +164,19 @@ class DslNode:
             else:
                 return self.key == key
 
+    def disconnect_from_parent(self):
+        if self.parent:
+            self.parent.children.remove(self)
+            self.parent = None
+
+    def connect_to_parent(self, parent: "DslNode"):
+        self.parent = parent
+        parent.children.append(self)
+
+    def graft_to_new_parent(self, parent: "DslNode"):
+        self.disconnect_from_parent()
+        self.connect_to_parent(parent)
+
 
 class DslTreeProcessor:
     @staticmethod
@@ -201,7 +215,7 @@ class DslTreeProcessor:
             node.parent = None
 
     @staticmethod
-    def graft_node_to_parent(node: DslNode, parent: DslNode):
+    def graft_node_to_parent(node: DslNode, parent: DslNode) -> DslNode:
         """Remove current node from its parent's children, and append it to the new parent"""
         DslTreeProcessor.disconnect_from_parent(node)
         DslTreeProcessor.connect_node_to_parent(node, parent)
@@ -253,7 +267,6 @@ class DslTreeExprGrouper(DslTreeProcessor):
 
     def group(self, node: DslNode) -> DslExprNode:
         children = node.children
-
         if node.is_start():
             expr_node = DslExprNode("start")
             for child in children:
@@ -289,3 +302,51 @@ class DslTreeExprGrouper(DslTreeProcessor):
 
     def group_dsl_tree_to_expr_tree(self, node: DslNode) -> DslExprNode:
         return self.group(node)
+
+
+class DslExprTreeFlatter(DslTreeProcessor):
+    def all_atom_leaf_is_same_level_word_expr(self, bool_node: DslExprNode) -> bool:
+        """node key is `co` or `and`.
+        Only when all bool expr children are `co` or `and`, and all atom expr children are `word_expr`, return True, otherwise return False.
+        """
+        child_bool_nodes = bool_node.find_all_child_with_key(BOOL_OPS)
+        for child_bool_node in child_bool_nodes:
+            if not child_bool_node.is_key(["co", "and"]):
+                return False
+        atom_nodes = bool_node.find_all_child_with_key("atom")
+        for atom_node in atom_nodes:
+            if atom_node and atom_node.children:
+                child = atom_node.children[0]
+                if not child.is_key("word_expr"):
+                    return False
+        return True
+
+    def flatten_word_nodes_under_bool_node(self, bool_node: DslExprNode) -> DslExprNode:
+        """node key is `co` or `and`.
+        Flatten its word_expr_nodes to same level, and connect to a new single node.
+        Then replace original node with this new node.
+        """
+        if not self.all_atom_leaf_is_same_level_word_expr(bool_node):
+            return bool_node
+        new_bool_node = DslExprNode(bool_node.key)
+        atom_nodes = bool_node.find_all_child_with_key("atom")
+        for atom_node in atom_nodes:
+            atom_node.graft_to_new_parent(new_bool_node)
+        new_bool_node.extras["atoms_type"] = "word_expr"
+        parent = bool_node.parent
+        bool_node.disconnect_from_parent()
+        new_bool_node.connect_to_parent(parent)
+        return new_bool_node
+
+    def flatten(self, node: DslExprNode) -> DslExprNode:
+        top_bool_nodes = node.find_all_child_with_key(BOOL_OPS, max_level=1)
+        queue = [*top_bool_nodes]
+        while queue:
+            current = queue.pop(0)
+            if current.is_key("atom"):
+                continue
+            if current.is_key(["co", "and"]):
+                self.flatten_word_nodes_under_bool_node(current)
+            if current.children:
+                queue.extend(current.children)
+        return node
