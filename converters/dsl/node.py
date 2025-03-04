@@ -61,6 +61,17 @@ class DslNode:
     def __repr__(self):
         return self.__str__()
 
+    @property
+    def first_child(self) -> Union["DslNode", None]:
+        return self.children[0]
+
+    @property
+    def first_child_key(self) -> str:
+        if self.children:
+            return self.first_child.key
+        else:
+            return ""
+
     def find_child_with_key(
         self,
         key: Union[str, list[str]],
@@ -79,7 +90,7 @@ class DslNode:
         else:
             return None
 
-    def find_all_child_with_key(
+    def find_all_childs_with_key(
         self,
         key: Union[str, list[str]],
         raise_error: bool = False,
@@ -133,13 +144,13 @@ class DslNode:
         if not self.children:
             return self.value
         else:
-            return self.children[0].get_deepest_node_value()
+            return self.first_child.get_deepest_node_value()
 
     def get_deepest_node_key(self) -> str:
         if not self.children:
             return self.key
         else:
-            return self.children[0].get_deepest_node_key()
+            return self.first_child.get_deepest_node_key()
 
     def is_start(self):
         return self.key == START_EXPR
@@ -270,7 +281,36 @@ class DslTreeBuilder(DslTreeProcessor):
 
 
 class DslExprNode(DslNode):
-    pass
+    def get_atom_child_expr_key(self) -> str:
+        atom_node = self.find_child_with_key("atom")
+        if atom_node:
+            return atom_node.first_child_key
+        else:
+            return ""
+
+    def get_all_atom_childs_expr_keys(self) -> list[str]:
+        atom_nodes = self.find_all_childs_with_key("atom")
+        return [atom_node.first_child_key for atom_node in atom_nodes]
+
+    def is_all_atom_childs_are_word_expr(self) -> bool:
+        atom_nodes = self.find_all_childs_with_key("atom")
+        if not atom_nodes:
+            return False
+        for atom_node in atom_nodes:
+            if not atom_node.first_child.is_key("word_expr"):
+                return False
+        return True
+
+    def get_all_bool_childs_keys(self) -> list[str]:
+        bool_nodes = self.find_all_childs_with_key(BOOL_OPS)
+        return [bool_node.key for bool_node in bool_nodes]
+
+    def is_all_bool_childs_are_co_and(self) -> bool:
+        bool_nodes = self.find_all_childs_with_key(BOOL_OPS)
+        for bool_node in bool_nodes:
+            if not bool_node.is_key(["co", "and"]):
+                return False
+        return True
 
 
 class DslTreeExprGrouper(DslTreeProcessor):
@@ -328,11 +368,11 @@ class DslExprTreeFlatter(DslTreeProcessor):
         """node key is `co` or `and`.
         Only when all bool expr children are `co` or `and`, and all atom expr children are `word_expr`, return True, otherwise return False.
         """
-        child_bool_nodes = bool_node.find_all_child_with_key(BOOL_OPS)
+        child_bool_nodes = bool_node.find_all_childs_with_key(BOOL_OPS)
         for child_bool_node in child_bool_nodes:
             if not child_bool_node.is_key(["co", "and"]):
                 return False
-        atom_nodes = bool_node.find_all_child_with_key("atom")
+        atom_nodes = bool_node.find_all_childs_with_key("atom")
         for atom_node in atom_nodes:
             if atom_node and atom_node.children:
                 child = atom_node.children[0]
@@ -348,7 +388,7 @@ class DslExprTreeFlatter(DslTreeProcessor):
         if not self.all_atom_leaf_is_same_level_word_expr(bool_node):
             return bool_node
         new_bool_node = DslExprNode(bool_node.key)
-        atom_nodes = bool_node.find_all_child_with_key("atom")
+        atom_nodes = bool_node.find_all_childs_with_key("atom")
         for atom_node in atom_nodes:
             atom_node.graft_to_new_parent(new_bool_node)
         new_bool_node.extras["atoms_type"] = "word_expr"
@@ -358,7 +398,7 @@ class DslExprTreeFlatter(DslTreeProcessor):
         return new_bool_node
 
     def flatten(self, node: DslExprNode) -> DslExprNode:
-        top_bool_nodes = node.find_all_child_with_key(BOOL_OPS, max_level=1)
+        top_bool_nodes = node.find_all_childs_with_key(BOOL_OPS, max_level=1)
         queue = [*top_bool_nodes]
         while queue:
             current = queue.pop(0)
