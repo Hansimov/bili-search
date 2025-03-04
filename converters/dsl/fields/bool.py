@@ -1,18 +1,21 @@
 from collections import defaultdict
 
-from converters.dsl.constants import ES_BOOL_OPS, ES_BOOL_OP_TYPE
-
-MSM = "minimum_should_match"
+from converters.dsl.constants import ES_BOOL_OPS, ES_BOOL_OP_TYPE, MSM
 
 
 class BoolElasticReducer:
     def get_bool_op(self, bool_clause: dict) -> ES_BOOL_OP_TYPE:
-        """Get bool key of bool_clause,
+        """Get bool key of bool_clause, which is one of:
         - {"bool": {<bool_op>: <bool_dict>}}
-        which is one of:
-        - "must", "should", "must_not", "filter"
+            - "must", "should", "must_not"
+        - {"filter": <filter_dict>}
+            - "filter"
         """
-        return list(bool_clause.get("bool", {}).keys())[0]
+        if "bool" in bool_clause:
+            return next(iter(bool_clause["bool"]))
+        if "filter" in bool_clause:
+            return "filter"
+        return None
 
     def get_bool_dict(
         self,
@@ -24,13 +27,31 @@ class BoolElasticReducer:
         """
         if not bool_op:
             bool_op = self.get_bool_op(bool_clause)
-        return bool_clause.get("bool", {}).get(bool_op, {})
+        if bool_op:
+            if bool_op == "filter":
+                return bool_clause.get(bool_op, {})
+            else:
+                return bool_clause.get("bool", {}).get(bool_op, {})
 
     def get_bool_op_and_dict(self, bool_clause: dict) -> tuple[ES_BOOL_OP_TYPE, dict]:
         """Get bool op and dict of bool_clause"""
         bool_op = self.get_bool_op(bool_clause)
         bool_dict = self.get_bool_dict(bool_clause, bool_op)
         return bool_op, bool_dict
+
+    def get_bool_ops_and_dicts(
+        self, bool_clause: dict
+    ) -> list[tuple[ES_BOOL_OP_TYPE, dict]]:
+        """Get list of bool ops and dicts of bool_clause"""
+        bool_ops_and_dicts = []
+        bool_items = bool_clause.get("bool", {})
+        for bool_op, bool_dict in bool_items.items():
+            if bool_dict:
+                bool_ops_and_dicts.append((bool_op, bool_dict))
+        filter_dict = bool_clause.get("filter", {})
+        if filter_dict:
+            bool_ops_and_dicts.append(("filter", filter_dict))
+        return bool_ops_and_dicts
 
     def get_minimum_should_match(self, bool_clause: dict) -> int:
         if bool_clause.get("bool", {}).get("should"):
@@ -51,18 +72,21 @@ class BoolElasticReducer:
         return op_list_dict
 
     def reduce_bool_clauses(self, bool_clauses: list[dict], sort: bool = True) -> dict:
-        """Reduce list of bool clauses to single"""
+        """Reduce list of bool clauses to single bool clause"""
+        if not bool_clauses:
+            return {}
         if len(bool_clauses) == 1:
             return bool_clauses[0]
         op_list_dict = defaultdict(list)
         for bool_clause in bool_clauses:
-            bool_op, bool_dict = self.get_bool_op_and_dict(bool_clause)
-            if bool_dict:
-                op_list_dict[bool_op].append(bool_dict)
-                if bool_op == "should":
-                    min_should = self.get_minimum_should_match(bool_clause)
-                    if min_should is not None:
-                        op_list_dict[MSM].append(min_should)
+            bool_ops_and_dict = self.get_bool_ops_and_dicts(bool_clause)
+            if bool_ops_and_dict:
+                for bool_op, bool_dict in bool_ops_and_dict:
+                    op_list_dict[bool_op].append(bool_dict)
+                    if bool_op == "should":
+                        min_should = self.get_minimum_should_match(bool_clause)
+                        if min_should is not None:
+                            op_list_dict[MSM].append(min_should)
         for bool_op, bool_dict_list in op_list_dict.items():
             if bool_op == MSM:
                 op_list_dict[MSM] = min(bool_dict_list)
