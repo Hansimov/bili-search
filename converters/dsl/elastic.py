@@ -1,6 +1,6 @@
 from tclogger import logger, dict_to_str
 
-from converters.dsl.constants import BOOL_OPS, ATOMS
+from converters.dsl.constants import BOOL_OPS, ATOMS, MSM
 from converters.dsl.parse import DslLarkParser
 from converters.dsl.node import DslExprNode, DslTreeBuilder, DslTreeExprGrouper
 from converters.dsl.node import DslExprTreeFlatter
@@ -33,34 +33,33 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
             logger.warn(f"× Unknown atom_node: <{expr_node.key}>")
             return {}
 
-    def word_cluster_to_elastic_dict(self, node: DslExprNode) -> dict:
+    def word_cluster_to_bool_clauses(self, node: DslExprNode) -> list[dict]:
         word_expr_nodes = node.find_all_childs_with_key("word_expr")
-        word_expr_dicts = [
+        bool_clauses = [
             self.word_converter.convert(word_expr_node)
             for word_expr_node in word_expr_nodes
         ]
-        elatic_dict = self.reducer.reduce_bool_clauses(word_expr_dicts)
-        return elatic_dict
+        return bool_clauses
 
     def bool_node_to_elastic_dict(self, node: DslExprNode) -> dict:
         if node.is_key("pa"):
             return self.node_to_elastic_dict(node.children[0])
         elif node.is_key(["and", "co"]):
+            bool_clauses = []
             if (
                 node.is_all_bool_childs_are_co_and()
                 and node.is_all_atom_childs_are_word_expr()
             ):
-                return self.word_cluster_to_elastic_dict(node)
+                bool_clauses = self.word_cluster_to_bool_clauses(node)
             else:
-                musts = []
                 for child in node.children:
-                    musts.append(self.node_to_elastic_dict(child))
-                return {"bool": {"must": musts}}
+                    bool_clauses.append(self.node_to_elastic_dict(child))
+            return self.reducer.reduce_bool_clauses(bool_clauses)
         elif node.is_key("or"):
             shoulds = []
             for child in node.children:
                 shoulds.append(self.node_to_elastic_dict(child))
-            return {"bool": {"should": shoulds}}
+            return {"bool": {"should": shoulds, MSM: 1}}
         else:
             logger.warn(f"× Unknown bool_node: <{node.key}>")
             return {}
