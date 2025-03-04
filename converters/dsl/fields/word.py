@@ -33,7 +33,7 @@ class WordExprElasticConverter:
         val_node = node.find_child_with_key("word_val")
         if not val_node:
             return {}
-        single_nodes = val_node.find_all_child_with_key("word_val_single")
+        single_nodes = val_node.find_all_childs_with_key("word_val_single")
         match_dict = self.convert_multi(single_nodes)
 
         key_op_node = node.find_child_with_key(["word_key_op", "word_sp"])
@@ -42,19 +42,18 @@ class WordExprElasticConverter:
             op_node = key_op_node.find_child_with_key(WORD_OPS)
             op = op_node.find_child_with_key(WORD_OPS).get_deepest_node_key()
 
-        if len(match_dict) == 1 and op == "eq":
-            elastic_dict = match_dict
-        else:
-            if op == "neq":
-                elastic_dict = {"bool": {"must_not": match_dict}}
-            elif op == "qs":
-                elastic_dict = {
-                    "bool": {
-                        "should": match_dict,
-                        "minimum_should_match": 0,
-                    }
+        if op == "eq":
+            elastic_dict = {"bool": {"must": match_dict}}
+        elif op == "neq":
+            elastic_dict = {"bool": {"must_not": match_dict}}
+        elif op == "qs":
+            elastic_dict = {
+                "bool": {
+                    "should": match_dict,
+                    "minimum_should_match": 0,
                 }
-            else:
-                elastic_dict = {"bool": {"must": match_dict}}
+            }
+        else:
+            elastic_dict = {"bool": {"must": match_dict}}
 
         return elastic_dict

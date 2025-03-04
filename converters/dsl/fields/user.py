@@ -27,7 +27,7 @@ class UserExprElasticConverter:
         if not val_node:
             return {}
         key_op_node = node.find_child_with_key("user_key_op")
-        single_nodes = val_node.find_all_child_with_key("user_val_single")
+        single_nodes = val_node.find_all_childs_with_key("user_val_single")
         elastic_dict = self.convert_multi(single_nodes)
 
         op_node = key_op_node.find_child_with_key(USER_OPS)

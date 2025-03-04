@@ -1,20 +1,14 @@
 from calendar import monthrange
-from typing import Union, Literal
 from datetime import timedelta
 from tclogger import logger, tcdatetime, ts_to_str
+from typing import Union, Literal
 
-from converters.dsl.constants import OP_REL_TYPE
 from converters.dsl.node import DslExprNode
-
 
 TIME_DELTA_1US = timedelta(microseconds=1)
 
 
-class ExprElasticConverter:
-    pass
-
-
-class DateExprElasticConverter(ExprElasticConverter):
+class DateExprElasticConverter:
     DATE_FIELD = "pubdate"
 
     def __init__(self, verbose: bool = False) -> None:
@@ -261,12 +255,8 @@ class DateExprElasticConverter(ExprElasticConverter):
                 "geqs": {"gte": start_ts},
                 "leqs": {"lte": end_ts},
             }
-        elastic_dict = {
-            "range": {
-                self.DATE_FIELD: op_range.get(op_key, {}),
-            }
-        }
-        return elastic_dict
+
+        return {"filter": {"range": {self.DATE_FIELD: op_range.get(op_key, {})}}}
 
     def convert_list_info_to_elastic_dict(
         self,
@@ -329,13 +319,7 @@ class DateExprElasticConverter(ExprElasticConverter):
                 else:
                     es_op_val["lt"] = r_ts_beg
 
-        elastic_dict = {
-            "range": {
-                self.DATE_FIELD: es_op_val,
-            }
-        }
-
-        return elastic_dict
+        return {"filter": {"range": {self.DATE_FIELD: es_op_val}}}
 
     def convert_single(self, node: DslExprNode) -> dict:
         val_single = node.find_child_with_key("date_val_single")
