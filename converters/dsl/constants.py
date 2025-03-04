@@ -16,3 +16,6 @@ ATOMS = [
     *["region_expr", "word_expr"],
 ]
 TEXT_TYPES = ["text_quoted", "text_strict", "text_plain"]
+
+ES_BOOL_OPS = ["must", "filter", "must_not", "should"]
+ES_BOOL_OP_TYPE = Literal["must", "should", "must_not", "filter"]
