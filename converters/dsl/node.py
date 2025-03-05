@@ -359,7 +359,13 @@ class DslTreeExprGrouper(DslTreeProcessor):
 
 
 class DslExprTreeFlatter(DslTreeProcessor):
-    def all_atom_leaf_is_same_level_word_expr(self, co_node: DslExprNode) -> bool:
+    def all_childs_are_atom(self, node: DslExprNode) -> bool:
+        for child in node.children:
+            if not child.is_atom():
+                return False
+        return True
+
+    def all_childs_are_atom_co(self, co_node: DslExprNode) -> bool:
         """node key is `co` or `and`.
         Only when all bool expr children are `co` or `and`, and all atom expr children are `word_expr`, return True, otherwise return False.
         """
@@ -367,11 +373,10 @@ class DslExprTreeFlatter(DslTreeProcessor):
         for child_bool_node in child_bool_nodes:
             if not child_bool_node.is_key(["co", "and"]):
                 return False
-        atom_nodes = co_node.find_all_childs_with_key("atom")
-        for atom_node in atom_nodes:
-            if atom_node and atom_node.children:
-                if not atom_node.first_child.is_key("word_expr"):
-                    return False
+        child_atom_nodes = co_node.find_all_childs_with_key(ATOMS)
+        for child_atom_node in child_atom_nodes:
+            if not child_atom_node.is_key("word_expr"):
+                return False
         return True
 
     def flatten_word_nodes_under_co_node(self, co_node: DslExprNode) -> DslExprNode:
@@ -379,8 +384,6 @@ class DslExprTreeFlatter(DslTreeProcessor):
         Flatten its word_expr_nodes to same level, and connect to a new single node.
         Then replace original node with this new node.
         """
-        if not self.all_atom_leaf_is_same_level_word_expr(co_node):
-            return co_node
         new_co_node = DslExprNode(co_node.key)
         atom_nodes = co_node.find_all_childs_with_key("atom")
         for atom_node in atom_nodes:
@@ -409,9 +412,14 @@ class DslExprTreeFlatter(DslTreeProcessor):
         else:
             return or_node
 
-    def flatten_co_node(self, co_node: DslExprNode) -> DslExprNode:
+    def flatten_co_node(self, co_node: DslExprNode, queue: list[DslExprNode]):
         """node key is `co` or `and`."""
-        return self.flatten_word_nodes_under_co_node(co_node)
+        if self.all_childs_are_atom(co_node):
+            return
+        if self.all_childs_are_atom_co(co_node):
+            self.flatten_word_nodes_under_co_node(co_node)
+        else:
+            queue.extend(co_node.children)
 
     def flatten(self, node: DslExprNode) -> DslExprNode:
         top_bool_nodes = node.find_all_childs_with_key(BOOL_OPS, max_level=1)
