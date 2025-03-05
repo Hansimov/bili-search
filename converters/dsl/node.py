@@ -368,7 +368,25 @@ class DslExprTreeFlatter(DslTreeProcessor):
                     return False
         return True
 
-    def flatten_word_nodes_under_bool_node(self, bool_node: DslExprNode) -> DslExprNode:
+    def all_childs_is_atom_or(self, bool_node: DslExprNode) -> bool:
+        """node key is `or`.
+        Only when all children are `atom` or `or`, return True, otherwise return False.
+        """
+        for child in bool_node.children:
+            if not child.is_key(["atom", "or"]):
+                return False
+        return True
+
+    def flatten_pa_node(self, node: DslExprNode) -> DslExprNode:
+        """node key is `pa`.
+        If it has only one child, replace it with its child.
+        """
+        if node.has_only_one_child():
+            return node.graft_children_to_parent()
+        else:
+            return node
+
+    def flatten_word_nodes_under_co_node(self, bool_node: DslExprNode) -> DslExprNode:
         """node key is `co` or `and`.
         Flatten its word_expr_nodes to same level, and connect to a new single node.
         Then replace original node with this new node.
@@ -385,6 +403,15 @@ class DslExprTreeFlatter(DslTreeProcessor):
         new_bool_node.connect_to_parent(parent)
         return new_bool_node
 
+    def flatten_or_node(self, bool_node: DslExprNode) -> DslExprNode:
+        """node key is `or`.
+        Flatten its atom_nodes and or_nodes to same level, and connect to a new single `or` node.
+        """
+        if bool_node.parent.is_key("or"):
+            bool_node.graft_children_to_parent()
+        else:
+            return bool_node
+
     def flatten(self, node: DslExprNode) -> DslExprNode:
         top_bool_nodes = node.find_all_childs_with_key(BOOL_OPS, max_level=1)
         queue = [*top_bool_nodes]
@@ -392,8 +419,12 @@ class DslExprTreeFlatter(DslTreeProcessor):
             current = queue.pop(0)
             if current.is_key("atom"):
                 continue
+            if current.is_key("pa"):
+                self.flatten_pa_node(current)
             if current.is_key(["co", "and"]):
-                self.flatten_word_nodes_under_bool_node(current)
+                self.flatten_word_nodes_under_co_node(current)
+            if current.is_key("or"):
+                self.flatten_or_node(current)
             if current.children:
                 queue.extend(current.children)
         return node
