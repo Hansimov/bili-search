@@ -40,10 +40,8 @@ class DslNode:
         indent_str = " " * 2 * level
         if level > 0:
             indent_str += "- "
-
         node_key_str = self.get_key_logstr(level)(node.key)
-        node_val_str = logstr.glow(node.value)
-
+        node_val_str = logstr.okay(node.value)
         node_str = f"{indent_str}{node_key_str}: {node_val_str}"
         # logger.mesg(node_str)
         self.node_str += f"{node_str}\n"
@@ -99,6 +97,7 @@ class DslNode:
         raise_error: bool = False,
         use_re: bool = False,
         max_level: int = None,
+        exclude_self: bool = False,
     ) -> list["DslNode"]:
         """max_level:
         - None: no limit
@@ -106,10 +105,16 @@ class DslNode:
         - 1: only check children of current node
         - etc."""
         res = []
-        queue = [self]
-        current_level = 0
         level_counts = defaultdict(int)
-        level_counts[0] = 1
+
+        if exclude_self:
+            queue = self.children
+            current_level = 1
+            level_counts[1] = len(queue)
+        else:
+            queue = [self]
+            current_level = 0
+            level_counts[0] = 1
 
         while queue:
             current = queue.pop(0)

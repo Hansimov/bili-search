@@ -66,7 +66,9 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
 
     def node_to_elastic_dict(self, node: DslExprNode) -> dict:
         expr_node = node.find_child_with_key([*BOOL_OPS, "atom"])
-        if expr_node.is_key(BOOL_OPS):
+        if not expr_node:
+            return {}
+        elif expr_node.is_key(BOOL_OPS):
             res = self.bool_node_to_elastic_dict(expr_node)
             return self.reducer.reduce(res)
         elif expr_node.is_key("atom"):
