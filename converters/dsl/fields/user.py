@@ -29,10 +29,11 @@ class UserExprElasticConverter:
         key_op_node = node.find_child_with_key("user_key_op")
         single_nodes = val_node.find_all_childs_with_key("user_val_single")
         elastic_dict = self.convert_multi(single_nodes)
-
         op_node = key_op_node.find_child_with_key(USER_OPS)
-        op = op_node.find_child_with_key(USER_OPS).get_deepest_node_key()
+        op = op_node.get_deepest_node_key()
         if op in ["at_neq", "neq"]:
-            elastic_dict = {"must_not": elastic_dict}
+            elastic_dict = {"bool": {"must_not": elastic_dict}}
+        else:
+            elastic_dict = {"filter": elastic_dict}
 
         return elastic_dict
