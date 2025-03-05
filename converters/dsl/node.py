@@ -394,23 +394,27 @@ class DslExprTreeFlatter(DslTreeProcessor):
         new_co_node.connect_to_parent(parent)
         return new_co_node
 
-    def flatten_pa_node(self, pa_node: DslExprNode) -> DslExprNode:
+    def flatten_pa_node(self, pa_node: DslExprNode, queue: list[DslExprNode]):
         """node key is `pa`.
         If it has only one child, replace it with its child.
         """
         if pa_node.has_only_one_child():
-            return pa_node.graft_children_to_parent()
+            first_child = pa_node.first_child
+            pa_node.graft_children_to_parent()
+            queue.append(first_child)
         else:
-            return pa_node
+            queue.extend(pa_node.children)
 
-    def flatten_or_node(self, or_node: DslExprNode) -> DslExprNode:
+    def flatten_or_node(self, or_node: DslExprNode, queue: list[DslExprNode]):
         """node key is `or`.
         Flatten its atom_nodes and or_nodes to same level, and connect to a new single `or` node.
         """
         if or_node.parent.is_key("or"):
-            return or_node.graft_children_to_parent()
+            childs = list(or_node.children)
+            or_node.graft_children_to_parent()
+            queue.extend(childs)
         else:
-            return or_node
+            queue.extend(or_node.children)
 
     def flatten_co_node(self, co_node: DslExprNode, queue: list[DslExprNode]):
         """node key is `co` or `and`."""
@@ -422,18 +426,17 @@ class DslExprTreeFlatter(DslTreeProcessor):
             queue.extend(co_node.children)
 
     def flatten(self, node: DslExprNode) -> DslExprNode:
-        top_bool_nodes = node.find_all_childs_with_key(BOOL_OPS, max_level=1)
-        queue = [*top_bool_nodes]
+        queue = node.find_all_childs_with_key(BOOL_OPS, max_level=1)
         while queue:
             current = queue.pop(0)
             if current.is_key("atom"):
                 continue
-            if current.is_key("pa"):
-                self.flatten_pa_node(current)
-            if current.is_key(["co", "and"]):
-                self.flatten_co_node(current)
-            if current.is_key("or"):
-                self.flatten_or_node(current)
-            if current.children:
-                queue.extend(current.children)
+            elif current.is_key("pa"):
+                self.flatten_pa_node(current, queue)
+            elif current.is_key(["co", "and"]):
+                self.flatten_co_node(current, queue)
+            elif current.is_key("or"):
+                self.flatten_or_node(current, queue)
+            else:
+                logger.warn(f"× Unknown current.key: <{current.key}>")
         return node
