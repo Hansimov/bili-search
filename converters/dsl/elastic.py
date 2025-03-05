@@ -1,6 +1,6 @@
 from tclogger import logger, dict_to_str
 
-from converters.dsl.constants import BOOL_OPS, ATOMS, MSM
+from converters.dsl.constants import BOOL_OPS, ITEM_EXPRS, MSM
 from converters.dsl.parse import DslLarkParser
 from converters.dsl.node import DslExprNode, DslTreeBuilder, DslTreeExprGrouper
 from converters.dsl.node import DslExprTreeFlatter
@@ -22,7 +22,7 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         self.word_converter = WordExprElasticConverter()
 
     def atom_node_to_elastic_dict(self, node: DslExprNode) -> dict:
-        expr_node = node.find_child_with_key(ATOMS)
+        expr_node = node.find_child_with_key(ITEM_EXPRS)
         if expr_node.is_key("date_expr"):
             return self.date_converter.convert(node)
         elif expr_node.is_key("user_expr"):
@@ -47,8 +47,8 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         elif node.is_key(["and", "co"]):
             bool_clauses = []
             if (
-                node.is_all_bool_childs_are_co_and()
-                and node.is_all_atom_childs_are_word_expr()
+                node.all_bool_childs_are_co_and()
+                and node.all_atom_childs_are_word_expr()
             ):
                 bool_clauses = self.word_cluster_to_bool_clauses(node)
             else:

@@ -6,7 +6,7 @@ from lark import Token, Tree
 from tclogger import logger, logstr
 from typing import Union, Literal, Any
 
-from converters.dsl.constants import START_EXPR, ATOM_EXPRS, ATOMS
+from converters.dsl.constants import START_EXPR, ATOM_EXPRS, ITEM_EXPRS
 from converters.dsl.constants import PA_EXPRS, BOOL_OPS, BOOL_EXPRS
 
 
@@ -166,8 +166,8 @@ class DslNode:
     def is_atom_expr(self):
         return self.key in ATOM_EXPRS
 
-    def is_atom(self):
-        return self.key in ATOMS
+    def is_item_expr(self):
+        return self.key in ITEM_EXPRS
 
     def is_pa_expr(self):
         return self.key in PA_EXPRS
@@ -287,7 +287,7 @@ class DslExprNode(DslNode):
         atom_nodes = self.find_all_childs_with_key("atom")
         return [atom_node.first_child_key for atom_node in atom_nodes]
 
-    def is_all_atom_childs_are_word_expr(self) -> bool:
+    def all_atom_childs_are_word_expr(self) -> bool:
         atom_nodes = self.find_all_childs_with_key("atom")
         if not atom_nodes:
             return False
@@ -300,7 +300,7 @@ class DslExprNode(DslNode):
         bool_nodes = self.find_all_childs_with_key(BOOL_OPS)
         return [bool_node.key for bool_node in bool_nodes]
 
-    def is_all_bool_childs_are_co_and(self) -> bool:
+    def all_bool_childs_are_co_and(self) -> bool:
         bool_nodes = self.find_all_childs_with_key(BOOL_OPS)
         for bool_node in bool_nodes:
             if not bool_node.is_key(["co", "and"]):
@@ -346,7 +346,7 @@ class DslTreeExprGrouper(DslTreeProcessor):
         elif node.is_atom_expr():
             expr_node = DslExprNode("atom")
             for child in children:
-                if child.is_atom():
+                if child.is_item_expr():
                     self.group(child).connect_to_parent(expr_node)
                 else:
                     raise ValueError(f"Invalid atom_expr: {child.key}")
@@ -361,7 +361,7 @@ class DslTreeExprGrouper(DslTreeProcessor):
 class DslExprTreeFlatter(DslTreeProcessor):
     def all_childs_are_atom(self, node: DslExprNode) -> bool:
         for child in node.children:
-            if not child.is_atom():
+            if not child.is_atom_expr():
                 return False
         return True
 
@@ -369,13 +369,13 @@ class DslExprTreeFlatter(DslTreeProcessor):
         """node key is `co` or `and`.
         Only when all bool expr children are `co` or `and`, and all atom expr children are `word_expr`, return True, otherwise return False.
         """
-        child_bool_nodes = co_node.find_all_childs_with_key(BOOL_OPS)
-        for child_bool_node in child_bool_nodes:
-            if not child_bool_node.is_key(["co", "and"]):
+        bool_childs = co_node.find_all_childs_with_key(BOOL_OPS)
+        for bool_child in bool_childs:
+            if not bool_child.is_key(["co", "and"]):
                 return False
-        child_atom_nodes = co_node.find_all_childs_with_key(ATOMS)
-        for child_atom_node in child_atom_nodes:
-            if not child_atom_node.is_key("word_expr"):
+        item_childs = co_node.find_all_childs_with_key(ITEM_EXPRS)
+        for item_child in item_childs:
+            if not item_child.is_key("word_expr"):
                 return False
         return True
 
