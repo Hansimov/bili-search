@@ -30,7 +30,7 @@ from elastics.videos.hits import VideoHitsParser
 
 class VideoSearcher:
     def __init__(
-        self, index_name: str = "bili_videos_dev3", elastic_verbose: bool = True
+        self, index_name: str = VIDEOS_INDEX_DEFAULT, elastic_verbose: bool = True
     ):
         self.index_name = index_name
         self.es = ElasticSearchClient(verbose=elastic_verbose)
@@ -72,6 +72,31 @@ class VideoSearcher:
                 boosted_match_fields[key_index] += f"^{boosted_fields[key]}"
         return boosted_match_fields
 
+    def construct_boosted_fields(
+        self,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        boost: bool = True,
+        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
+        use_pinyin: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        if not use_pinyin:
+            match_fields = [
+                field for field in match_fields if not field.endswith(".pinyin")
+            ]
+        date_fields = [
+            field
+            for field in match_fields
+            if not field.endswith(".pinyin")
+            and any(field.startswith(date_field) for date_field in DATE_MATCH_FIELDS)
+        ]
+        if boost:
+            boosted_match_fields = self.boost_fields(match_fields, boosted_fields)
+            boosted_date_fields = self.boost_fields(date_fields, DATE_BOOSTED_FIELDS)
+        else:
+            boosted_match_fields = match_fields
+            boosted_date_fields = date_fields
+        return boosted_match_fields, boosted_date_fields
+
     def submit_and_parse(
         self,
         query: str,
@@ -80,7 +105,7 @@ class VideoSearcher:
         rewrite_info: dict = {},
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         parse_hits: bool = True,
-        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         detail_level: int = -1,
@@ -188,23 +213,12 @@ class VideoSearcher:
             extra_filters = match_detail.get("filters", extra_filters)
             timeout = match_detail.get("timeout", timeout)
 
-        if not use_pinyin:
-            match_fields = [
-                field for field in match_fields if not field.endswith(".pinyin")
-            ]
-
-        date_fields = [
-            field
-            for field in match_fields
-            if not field.endswith(".pinyin")
-            and any(field.startswith(date_field) for date_field in DATE_MATCH_FIELDS)
-        ]
-        if boost:
-            boosted_fields = self.boost_fields(match_fields, boosted_fields)
-            date_boosted_fields = self.boost_fields(date_fields, DATE_BOOSTED_FIELDS)
-        else:
-            boosted_fields = match_fields
-            date_boosted_fields = date_fields
+        boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
+            match_fields=match_fields,
+            boost=boost,
+            boosted_fields=boosted_fields,
+            use_pinyin=use_pinyin,
+        )
 
         filter_extractor = QueryFilterExtractor()
         query_info = filter_extractor.split_keyword_and_filter_expr(query)
@@ -223,8 +237,8 @@ class VideoSearcher:
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
             keywords_rewrited,
-            match_fields=boosted_fields,
-            date_match_fields=date_boosted_fields,
+            match_fields=boosted_match_fields,
+            date_match_fields=boosted_date_fields,
             match_bool=match_bool,
             match_type=match_type,
             match_operator=match_operator,
@@ -235,7 +249,6 @@ class VideoSearcher:
             query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
 
         script_score_constructor = ScriptScoreQueryDSLConstructor()
-
         if use_script_score:
             query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
             search_body = {
@@ -253,7 +266,7 @@ class VideoSearcher:
                 "explain": is_explain,
                 "track_total_hits": True,
             }
-        submit_and_parse_args = {
+        submit_and_parse_params = {
             "query": query,
             "search_body": search_body,
             "query_info": query_info,
@@ -267,7 +280,7 @@ class VideoSearcher:
             "timeout": timeout,
             "verbose": verbose,
         }
-        return_res = self.submit_and_parse(**submit_and_parse_args)
+        return_res = self.submit_and_parse(**submit_and_parse_params)
         logger.exit_quiet(not verbose)
         return return_res
 
