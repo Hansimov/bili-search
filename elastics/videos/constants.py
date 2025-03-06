@@ -1,5 +1,9 @@
 from typing import Literal
 
+SEARCH_REQUEST_TYPE = Literal["search", "suggest"]
+API_REQUEST_TYPE = Literal["search", "suggest", "random", "latest", "doc"]
+DEFAULT_SEARCH_REQUEST_TYPE = "search"
+
 # source fields
 SOURCE_FIELDS = [
     *["bvid", "title", "desc"],

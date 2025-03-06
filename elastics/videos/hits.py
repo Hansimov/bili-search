@@ -7,6 +7,8 @@ from converters.highlight.count import HighlightsCounter
 from converters.highlight.pinyin import PinyinHighlighter
 from converters.query.filter import QueryFilterExtractor
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
+from elastics.videos.constants import SEARCH_MATCH_TYPE, SEARCH_MATCH_OPERATOR
+from elastics.videos.constants import SEARCH_REQUEST_TYPE, DEFAULT_SEARCH_REQUEST_TYPE
 
 
 class VideoHitsParser:
@@ -39,12 +41,10 @@ class VideoHitsParser:
         query: str,
         match_fields: list[str],
         res_dict: dict,
-        request_type: Literal[
-            "suggest", "search", "random", "latest", "doc"
-        ] = "search",
+        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
         drop_no_highlights: bool = False,
-        match_type: MATCH_TYPE = "most_fields",
-        match_operator: MATCH_OPERATOR = "or",
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         detail_level: int = -1,
         limit: int = -1,
         verbose: bool = False,

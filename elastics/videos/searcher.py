@@ -10,6 +10,7 @@ from converters.query.rewrite import QueryRewriter
 from converters.query.field import is_pinyin_field, deboost_field
 from converters.query.field import remove_suffixes_from_fields
 from elastics.client import ElasticSearchClient
+from elastics.videos.constants import SEARCH_REQUEST_TYPE, DEFAULT_SEARCH_REQUEST_TYPE
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
@@ -70,6 +71,72 @@ class VideoSearcher:
                 boosted_match_fields[key_index] += f"^{boosted_fields[key]}"
         return boosted_match_fields
 
+    def submit_and_parse(
+        self,
+        query: str,
+        search_body: dict,
+        query_info: dict = {},
+        rewrite_info: dict = {},
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        parse_hits: bool = True,
+        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        detail_level: int = -1,
+        limit: int = SEARCH_LIMIT,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
+        verbose: bool = False,
+    ) -> dict:
+        if timeout:
+            if isinstance(timeout, str):
+                search_body["timeout"] = timeout
+            elif isinstance(timeout, int) or isinstance(timeout, float):
+                timeout_str = round(timeout * 1000)
+                search_body["timeout"] = f"{timeout_str}ms"
+            else:
+                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
+        logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
+        if limit and limit > 0:
+            search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
+
+        logger.note(f"> Get search results by query:", end=" ")
+        logger.mesg(f"[{query}]")
+        try:
+            res = self.es.client.search(index=self.index_name, body=search_body)
+            res_dict = res.body
+        except Exception as e:
+            logger.warn(f"× Error: {e}")
+            res_dict = {}
+
+        if parse_hits:
+            return_res = self.hit_parser.parse(
+                query,
+                match_fields,
+                res_dict,
+                request_type=request_type,
+                drop_no_highlights=True,
+                match_type=match_type,
+                match_operator=match_operator,
+                detail_level=detail_level,
+                limit=limit,
+                verbose=verbose,
+            )
+        else:
+            logger.mesg(dict_to_str(res_dict))
+            return_res = res_dict
+
+        if request_type == "suggest":
+            rewrite_info = self.query_rewriter.rewrite(
+                query_info, return_res.get("suggest_info", {})
+            )
+        else:
+            # keywords_rewrited = [" ".join(query_info["keywords"])]
+            rewrite_info = rewrite_info or {}
+
+        return_res["rewrite_info"] = rewrite_info
+        # logger.success(pformat(return_res, sort_dicts=False, indent=4))
+        return return_res
+
     def search(
         self,
         query: str,
@@ -80,7 +147,7 @@ class VideoSearcher:
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
-        request_type: Literal["search", "suggest"] = "search",
+        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -94,7 +161,9 @@ class VideoSearcher:
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
-        """
+        """This is 1st version of `search`, which uses regex to parse query dsl and construct elastic dict.
+        This version would be deprecated in the future. Use latest `search` instead.
+
         The main difference between `search` and `suggest` is that:
         - `search` has are more fuzzy (loose) and compositive match rules than `suggest`,
         and has more match fields.
@@ -183,57 +252,21 @@ class VideoSearcher:
                 "explain": is_explain,
                 "track_total_hits": True,
             }
-
-        if timeout:
-            if isinstance(timeout, str):
-                search_body["timeout"] = timeout
-            elif isinstance(timeout, int) or isinstance(timeout, float):
-                timeout_str = round(timeout * 1000)
-                search_body["timeout"] = f"{timeout_str}ms"
-            else:
-                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
-
-        logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
-        if limit and limit > 0:
-            search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
-        logger.note(f"> Get search results by query:", end=" ")
-        logger.mesg(f"[{query}]")
-
-        try:
-            res = self.es.client.search(index=self.index_name, body=search_body)
-            res_dict = res.body
-        except Exception as e:
-            logger.warn(f"× Error: {e}")
-            res_dict = {}
-
-        if parse_hits:
-            return_res = self.hit_parser.parse(
-                query,
-                match_fields,
-                res_dict,
-                request_type=request_type,
-                drop_no_highlights=True,
-                match_type=match_type,
-                match_operator=match_operator,
-                detail_level=detail_level,
-                limit=limit,
-                verbose=verbose,
-            )
-        else:
-            logger.mesg(dict_to_str(res_dict))
-            return_res = res_dict
-
-        if request_type == "suggest":
-            rewrite_info = self.query_rewriter.rewrite(
-                query_info, return_res.get("suggest_info", {})
-            )
-        else:
-            keywords_rewrited = [" ".join(query_info["keywords"])]
-            rewrite_info = rewrite_info or {}
-
-        return_res["rewrite_info"] = rewrite_info
-
-        # logger.success(pformat(return_res, sort_dicts=False, indent=4))
+        submit_and_parse_args = {
+            "query": query,
+            "search_body": search_body,
+            "query_info": query_info,
+            "match_fields": match_fields,
+            "match_type": match_type,
+            "match_operator": match_operator,
+            "request_type": request_type,
+            "parse_hits": parse_hits,
+            "detail_level": detail_level,
+            "limit": limit,
+            "timeout": timeout,
+            "verbose": verbose,
+        }
+        return_res = self.submit_and_parse(**submit_and_parse_args)
         logger.exit_quiet(not verbose)
         return return_res
 
@@ -246,7 +279,7 @@ class VideoSearcher:
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
-        request_type: Literal["search", "suggest"] = "search",
+        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
