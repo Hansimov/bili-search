@@ -1,15 +1,16 @@
 from copy import deepcopy
 from pprint import pformat
-from tclogger import logger, logstr, dict_to_str, get_now, tcdatetime
+from sedb import ElasticOperator
+from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
 from typing import Union, Literal
 
+from configs.envs import ELASTIC_ENVS
 from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.rewrite import QueryRewriter
 from converters.query.field import is_pinyin_field, deboost_field
 from converters.query.field import remove_suffixes_from_fields
-from elastics.client import ElasticSearchClient
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -28,13 +29,16 @@ from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.hits import VideoHitsParser
 
 
-class VideoSearcher:
-    def __init__(
-        self, index_name: str = VIDEOS_INDEX_DEFAULT, elastic_verbose: bool = True
-    ):
+class VideoSearcherV1:
+    def __init__(self, index_name: str = VIDEOS_INDEX_DEFAULT):
         self.index_name = index_name
-        self.es = ElasticSearchClient(verbose=elastic_verbose)
-        self.es.connect()
+        self.es = ElasticOperator(
+            ELASTIC_ENVS,
+            connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('elastic'))}",
+        )
+        self.init_processors()
+
+    def init_processors(self):
         self.hit_parser = VideoHitsParser()
         self.query_rewriter = QueryRewriter()
 
@@ -553,3 +557,4 @@ class VideoSearcher:
         logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
         logger.exit_quiet(not verbose)
         return res_dict
+VideoSearcher = VideoSearcherV1
