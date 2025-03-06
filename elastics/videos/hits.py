@@ -8,7 +8,7 @@ from converters.highlight.pinyin import PinyinHighlighter
 from converters.query.filter import QueryFilterExtractor
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SEARCH_MATCH_OPERATOR
-from elastics.videos.constants import SEARCH_REQUEST_TYPE, DEFAULT_SEARCH_REQUEST_TYPE
+from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 
 
 class VideoHitsParser:
@@ -41,7 +41,7 @@ class VideoHitsParser:
         query: str,
         match_fields: list[str],
         res_dict: dict,
-        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         drop_no_highlights: bool = False,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,

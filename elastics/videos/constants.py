@@ -1,15 +1,17 @@
 from typing import Literal
 
+VIDEOS_INDEX_DEFAULT = "bili_videos_dev3"
+
 SEARCH_REQUEST_TYPE = Literal["search", "suggest"]
+SEARCH_REQUEST_TYPE_DEFAULT = "search"
 API_REQUEST_TYPE = Literal["search", "suggest", "random", "latest", "doc"]
-DEFAULT_SEARCH_REQUEST_TYPE = "search"
 
 # source fields
 SOURCE_FIELDS = [
     *["bvid", "title", "desc"],
     *["tid", "ptid", "tname", "rtags", "tags"],
-    *["owner", "pic"],
-    *["duration", "stat", "pubdate_str", "insert_at_str"],
+    *["owner", "pic", "duration", "stat"],
+    *["pubdate", "insert_at", "pubdate_str", "insert_at_str"],
 ]
 DOC_EXCLUDED_SOURCE_FIELDS = []
 
@@ -91,6 +93,10 @@ DATE_BOOSTED_FIELDS = {
 # combined fields
 SEARCH_COMBINED_FIELDS_LIST = [["title", "tags"]]
 SUGGEST_COMBINED_FIELDS_LIST = [["title", "tags"]]
+
+# query type
+QUERY_TYPE = Literal["multi_match", "combined_fields"]
+QUERY_TYPE_DEFAULT = "multi_match"
 
 # match type, bool and operator
 MATCH_TYPE = Literal[

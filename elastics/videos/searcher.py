@@ -10,7 +10,8 @@ from converters.query.rewrite import QueryRewriter
 from converters.query.field import is_pinyin_field, deboost_field
 from converters.query.field import remove_suffixes_from_fields
 from elastics.client import ElasticSearchClient
-from elastics.videos.constants import SEARCH_REQUEST_TYPE, DEFAULT_SEARCH_REQUEST_TYPE
+from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
+from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
@@ -147,7 +148,7 @@ class VideoSearcher:
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
-        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
@@ -279,7 +280,7 @@ class VideoSearcher:
         match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
-        request_type: SEARCH_REQUEST_TYPE = DEFAULT_SEARCH_REQUEST_TYPE,
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         parse_hits: bool = True,
         is_explain: bool = False,
         boost: bool = True,
