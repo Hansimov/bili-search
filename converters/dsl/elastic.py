@@ -7,6 +7,7 @@ from converters.dsl.node import DslExprTreeFlatter
 from converters.dsl.fields.date import DateExprElasticConverter
 from converters.dsl.fields.user import UserExprElasticConverter
 from converters.dsl.fields.word import WordExprElasticConverter
+from converters.dsl.fields.word import WordNodeToExprConstructor
 from converters.dsl.fields.bool import BoolElasticReducer
 
 
@@ -91,6 +92,49 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         return elastic_dict
 
 
+class DslTreeToExprConstructor(DslExprToElasticConverter):
+    def __init__(self):
+        super().__init__()
+        self.word_constructor = WordNodeToExprConstructor()
+
+    def co_node_to_expr(self, node: DslExprNode) -> str:
+        return " ".join([self.construct(child) for child in node.children])
+
+    def pa_node_to_expr(self, node: DslExprNode) -> str:
+        return f"({self.construct(node.first_child)})"
+
+    def or_node_to_expr(self, node: DslExprNode) -> str:
+        return " || ".join([self.construct(child) for child in node.children])
+
+    def and_node_to_expr(self, node: DslExprNode) -> str:
+        return " && ".join([self.construct(child) for child in node.children])
+
+    def atom_node_to_expr(self, node: DslExprNode) -> str:
+        """node key is `atom`."""
+        child = node.first_child
+        if child.is_key("word_expr"):
+            return self.word_constructor.construct(child)
+
+    def construct(self, node: DslExprNode) -> str:
+        """Construct expr from DslExprNode."""
+        if node.is_key("co"):
+            return self.co_node_to_expr(node)
+        elif node.is_key("pa"):
+            return self.pa_node_to_expr(node)
+        elif node.is_key("or"):
+            return self.or_node_to_expr(node)
+        elif node.is_key("and"):
+            return self.and_node_to_expr(node)
+        elif node.is_key("atom"):
+            return self.atom_node_to_expr(node)
+        else:
+            if node.children:
+                return self.construct(node.first_child)
+            else:
+                logger.warn(f"× Unknown expr_tree: <{node.key}>")
+                return ""
+
+
 class DslExprKeywordsFilterSplitter(DslExprToElasticConverter):
     def __init__(self):
         super().__init__()
@@ -116,11 +160,14 @@ def test_converter():
     from converters.field.test import test_comb_strs
 
     elastic_converter = DslExprToElasticConverter()
+    keyword_splitter = DslExprKeywordsFilterSplitter()
     test_strs = test_text_strs
     for test_str in test_strs:
         logger.note(f"{test_str}")
-        elastic_dict = elastic_converter.convert(test_str)
-        logger.mesg(dict_to_str(elastic_dict, add_quotes=True), indent=2)
+        # elastic_dict = elastic_converter.convert(test_str)
+        # logger.mesg(dict_to_str(elastic_dict, add_quotes=True), indent=2)
+        split_dict = keyword_splitter.split_expr_to_keywords_and_filters(test_str)
+        logger.mesg(dict_to_str(split_dict, add_quotes=True), indent=2)
 
 
 if __name__ == "__main__":
