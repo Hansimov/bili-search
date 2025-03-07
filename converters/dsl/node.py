@@ -307,6 +307,19 @@ class DslExprNode(DslNode):
                 return False
         return True
 
+    def filter_atoms_by_keys(
+        self, include_keys: list[str] = [], exclude_keys: list[str] = []
+    ) -> "DslExprNode":
+        new_node = deepcopy(self)
+        atom_nodes = new_node.find_all_childs_with_key("atom")
+        for atom_node in atom_nodes:
+            atom_key = atom_node.first_child_key
+            if include_keys and atom_key not in include_keys:
+                atom_node.disconnect_from_parent()
+            elif exclude_keys and atom_key in exclude_keys:
+                atom_node.disconnect_from_parent()
+        return new_node
+
 
 class DslTreeExprGrouper(DslTreeProcessor):
     """Group nodes in DslTree to DslExprNode.

@@ -77,17 +77,36 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
             logger.warn(f"× Unknown node: <{expr_node.key}>")
             return {}
 
-    def convert(self, expr: str) -> dict:
+    def construct_expr_tree(self, expr: str) -> DslExprNode:
         lark_tree = self.parser.parse(expr)
-        # logger.mesg(parser.str(lark_tree), verbose=lark_tree)
         dsl_tree = self.builder.build_dsl_tree_from_lark_tree(lark_tree)
-        # logger.mesg(str(dsl_tree), verbose=dsl_tree)
         expr_tree = self.grouper.group_dsl_tree_to_expr_tree(dsl_tree)
-        # logger.mesg(str(expr_tree), verbose=expr_tree)
+        return expr_tree
+
+    def convert(self, expr: str) -> dict:
+        expr_tree = self.construct_expr_tree(expr)
         expr_tree = self.flatter.flatten(expr_tree)
         logger.mesg(str(expr_tree), verbose=expr_tree)
         elastic_dict = {"query": self.node_to_elastic_dict(expr_tree)}
         return elastic_dict
+
+
+class DslExprKeywordsFilterSplitter(DslExprToElasticConverter):
+    def __init__(self):
+        super().__init__()
+        self.expr_constructor = DslTreeToExprConstructor()
+
+    def get_keywords_info(self, expr_tree: DslExprNode) -> dict[str, list[str]]:
+        keywords_expr_tree = expr_tree.filter_atoms_by_keys(["word_expr"])
+        keywords_only_expr = self.expr_constructor.construct(keywords_expr_tree)
+        return {"keywords": keywords_only_expr}
+
+    def split_expr_to_keywords_and_filters(self, expr: str) -> dict:
+        expr_tree = self.construct_expr_tree(expr)
+        keywords_info = self.get_keywords_info(expr_tree)
+        return {
+            **keywords_info,
+        }
 
 
 def test_converter():
