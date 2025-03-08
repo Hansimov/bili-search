@@ -85,6 +85,16 @@ class VideoHitsParserV1:
                 segged_highlights[field] = segged_highlight
         return merged_highlights, segged_highlights
 
+    def get_suggest_info(self, qwords: list[str], hits: list[dict]) -> dict:
+        suggest_info_counts = self.highlights_counter.count_keywords(qwords, hits)
+        related_authors = self.highlights_counter.count_authors(hits)
+        suggest_info = {
+            "qword_hword_count": suggest_info_counts["qword_hword_count"],
+            "hwords_str_count": suggest_info_counts["hwords_str_count"],
+            "related_authors": related_authors,
+        }
+        return suggest_info
+
     def parse(
         self,
         query: str,
@@ -98,6 +108,41 @@ class VideoHitsParserV1:
         limit: int = -1,
         verbose: bool = False,
     ) -> dict:
+        """Example of output:
+        ```json
+        {
+            "bvid": "BV19LqeYnEyv",
+            "tid": 17,
+            "title": "红警08！深夜高歌一曲！",
+            "tname": "单机游戏",
+            "ptid": 4,
+            "rtags": "游戏, 单机游戏",
+            "tags": "红色警戒, 唱歌, 演唱, 08",
+            "score": 2644.0063,
+            "highlights": {
+                "common": {
+                    "owner.name.words: ["红警HBK<hit>08</hit>"],
+                    "title.words": ["红警<hit>08</hit>！深夜高歌一曲！"],
+                    "tags.words": ["红色警戒, 唱歌, 演唱, <hit>08</hit>"]
+                },
+                "pinyin": {
+                    "title.pinyin": ["<hit>红警</hit>08！深夜高歌一曲！"],
+                    "owner.name.pinyin": ["<hit>红警</hit>HBK08"]
+                },
+                "merged": {
+                    "title": ["<hit>红警08</hit>！深夜高歌一曲！"],
+                    "owner.name": ["<hit>红警</hit>HBK<hit>08</hit>"],
+                    "tags": ["红色警戒, 唱歌, 演唱, <hit>08</hit>"]
+                },
+                "segged": {
+                    "title": ["08", "红警"],
+                    "owner.name": ["08", "红警"],
+                    "tags": ["08"]
+                }
+            }
+        }
+        ```
+        """
         query_info = self.split_query_to_keywords_and_filters(query)
         qwords = query_info["keywords_body"]
         if not res_dict:
@@ -131,10 +176,8 @@ class VideoHitsParserV1:
             )
             is_hit_ignored = (
                 drop_no_highlights
-                and match_type == "most_fields"
-                and match_operator == "or"
-                and (not common_highlights)
-                and (not pinyin_highlights)
+                and (match_type == "most_fields" and match_operator == "or")
+                and ((not common_highlights) and (not pinyin_highlights))
             )
             if is_hit_ignored:
                 continue
@@ -151,7 +194,7 @@ class VideoHitsParserV1:
             hits.append(hit_info)
         if limit > 0:
             hits = hits[:limit]
-        count_res = self.highlights_counter.count_keywords(qwords, hits)
+        suggest_info = self.get_suggest_info(qwords, hits)
         hits_info = {
             "query": query,
             "request_type": request_type,
@@ -161,11 +204,7 @@ class VideoHitsParserV1:
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
-            "suggest_info": {
-                "qword_hword_count": count_res["qword_hword_count"],
-                "hwords_str_count": count_res["hwords_str_count"],
-                "related_authors": self.highlights_counter.count_authors(hits),
-            },
+            "suggest_info": suggest_info,
             "query_info": query_info,
         }
         if verbose:
