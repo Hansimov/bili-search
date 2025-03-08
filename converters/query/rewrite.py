@@ -1,13 +1,4 @@
-from copy import deepcopy
-from tclogger import get_now, tcdatetime
-
-from converters.times import DateFormatChecker
-
-
 class QueryRewriter:
-    def __init__(self):
-        self.date_checker = DateFormatChecker()
-
     def rewrite(
         self,
         query_info: dict = {},
@@ -15,9 +6,19 @@ class QueryRewriter:
         threshold: int = 2,
         append_date: bool = True,
     ) -> dict:
-        query = query_info.get("query", "")
+        """Exampe of output:
+        ```json
+        {
+            "query": "hongjing 08 2024",
+            "list": ["红警 08 2024", "红警08 2024"],
+            "tuples": [("红警 08 2024", 20), ("红警08 2024", 3)],
+            "dict": {},
+            "rewrited: True
+        }
+        ```
+        """
         res = {
-            "query": query,
+            "query": query_info.get("query", ""),
             "list": [],
             "tuples": [],
             "dict": {},
