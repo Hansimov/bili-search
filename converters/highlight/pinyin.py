@@ -98,8 +98,17 @@ class PinyinHighlighter:
 
         return htext_str
 
-    def highlight(self, query: str, text: str, tag: str = "em", verbose: bool = False):
-        keywords = [keyword.lower() for keyword in query.split()]
+    def highlight(
+        self,
+        keywords: Union[str, list[str]],
+        text: str,
+        tag: str = "em",
+        verbose: bool = False,
+    ):
+        if isinstance(keywords, str):
+            keywords = [keyword.lower() for keyword in keywords.split()]
+        else:
+            keywords = [keyword.lower() for keyword in keywords]
         highlighted_texts = []
         for keyword in keywords:
             highlighted_text = self.highlight_keyword(

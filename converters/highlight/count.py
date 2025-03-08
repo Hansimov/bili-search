@@ -97,7 +97,7 @@ class HighlightsCounter:
                     hwords_containing_all_qwords[hword] = hword_count
         return hwords_containing_all_qwords
 
-    def count_hword_by_qword(
+    def calc_qword_hword_count(
         self,
         qwords: list[str],
         hword_count_of_hits: list[dict[str, int]],
@@ -130,7 +130,7 @@ class HighlightsCounter:
         }
         return res
 
-    def count_hwords_str_by_hit(
+    def calc_hwords_str_count(
         self,
         qwords: list[str],
         hword_count_of_hits: list[dict[str, int]],
@@ -178,6 +178,25 @@ class HighlightsCounter:
         ignore_case: bool = True,
         remove_punct: bool = True,
     ) -> dict:
+        """Example of output:
+        ```json
+        {
+            "qword_hword_count": {
+                "08": {
+                    "08": 33
+                },
+                "hongjing": {
+                    "红警"   : 52,
+                    "红警08" : 4
+                }
+            },
+            "hwords_str_count": {
+                "红警 08" : 20,
+                "红警08"  : 3
+            }
+        }
+        ```
+        """
         hword_count_of_hits: list[dict[str, int]] = []
         hit_scores: list[Union[int, float]] = []
         if ignore_case:
@@ -198,19 +217,19 @@ class HighlightsCounter:
                     hword_count_of_hit[seg] = hword_count_of_hit.get(seg, 0) + 1
             hword_count_of_hits.append(hword_count_of_hit)
 
-        res_by_qword = self.count_hword_by_qword(
+        qword_hword_count = self.calc_qword_hword_count(
             qwords, hword_count_of_hits, hit_scores=hit_scores, threshold=threshold
         )
-        res_by_hit = self.count_hwords_str_by_hit(
+        hwords_str_count = self.calc_hwords_str_count(
             qwords,
             hword_count_of_hits,
-            qword_hword_count=res_by_qword,
+            qword_hword_count=qword_hword_count,
             hit_scores=hit_scores,
             threshold=threshold,
         )
         res = {
-            "qword_hword_count": res_by_qword,
-            "hwords_str_count": res_by_hit,
+            "qword_hword_count": qword_hword_count,
+            "hwords_str_count": hwords_str_count,
         }
         return res
 
@@ -221,6 +240,17 @@ class HighlightsCounter:
         threshold_level: int = 0,
         top_k: int = 8,
     ) -> dict:
+        """Example of output:
+        ```json
+        {
+            "红警HBK08": {
+                "uid"         : 1629347259,
+                "count"       : 20,
+                "highlighted" : True
+            }
+        }
+        ```
+        """
         if len(hits) <= 20:
             threshold = 2
         elif len(hits) <= 100:
