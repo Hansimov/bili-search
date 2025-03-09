@@ -30,6 +30,9 @@ class HighlightsCounter:
         hword_qword_tuples: list[tuple[str, str, int]],
         qword_hword_count: dict[str, dict[str, int]],
     ) -> list[tuple[str, str, int]]:
+        """This function takes input of `hword_qword_tuples` (list[tuple[str,str,int]]) and `qword_hword_count` (dict[str,dict[str,int]]).
+        It filters the most-related hword with highest count for each qword.
+        """
         qword_hword_dict: dict[str, tuple[str, int, int]] = {}
         for hword, qword, qword_idx in hword_qword_tuples:
             if not qword:
@@ -54,6 +57,14 @@ class HighlightsCounter:
         hwords: list[str],
         qword_hword_count: dict[str, dict[str, int]],
     ) -> dict:
+        """This function takes input of `qwords` (list), `hwords` (list), and `qword_hword_count` (dict[str,dict[str,int]]).
+        It returns dict with keys:
+        - `qword_hword_dict`(dict): `{<qword>: {<hword>: <count>}, ...}`
+        - `hword_qword_tuples`(list[tuple]): `[(<hword>, <qword>, <qword_idx>), ...]`
+        - `hwords_list`(list): `[<hword>, ...]`
+        - `hwords_str`(str): `"hword1 hword2 ..."`
+        This is used to find the related qword of each given hword, and record qword index in original qwords list.
+        """
         hword_qword_tuples: list[tuple[str, str, int]] = []
         qword_hword_dict: dict[str, dict[str, int]] = {}
         for hword in hwords:
@@ -84,6 +95,10 @@ class HighlightsCounter:
     def extract_hwords_containing_all_qwords(
         self, qword_hword_count: dict[str, dict[str, int]]
     ) -> dict[str, int]:
+        """This function takes input of `qword_hword_count` (dict[str,dict[str,int]]).
+        It returns `hwords_containing_all_qwords` (dict[str,int]), and the hwords are the ones that match all qwords in different parts.
+        This is used to exclude the hwords that not contain all qwords, to reduce redundancy of overlapped text parts among the rewrited query keywords.
+        """
         qwords = list(qword_hword_count.keys())
         hwords_containing_all_qwords: dict[str, int] = {}
         for hword_count_dict in qword_hword_count.values():
@@ -104,7 +119,10 @@ class HighlightsCounter:
         hit_scores: list[int] = [],
         threshold: int = 2,
     ) -> dict[str, dict[str, int]]:
-        """return: `{<qword>: {<hword>: <count>}, ...}`"""
+        """This function takes input of `qwords` (list) and `hword_count_of_hits` (list of dict[str,int]).
+        Each item in `hword_count_of_hits` is a dict that stores appeared hwords and their counts in each hit.
+        It returns `qword_hword_count` (dict[str,dict[str,int]]), which stores the total hwords and counts that match each qword.
+        """
         res: dict[str, dict[str, int]] = {}
         if not hit_scores:
             hit_scores = [1] * len(hword_count_of_hits)
@@ -138,7 +156,10 @@ class HighlightsCounter:
         hit_scores: list[int] = [],
         threshold: int = 2,
     ) -> dict[str, int]:
-        """return: `{<sorted_hwords_str_of_hit>: <count>, ...}`"""
+        """This function takes input of `qwords` (list), `hword_count_of_hits` (list of dict[str,int]), and `qword_hword_count` (dict[str,dict[str,int]]).
+        It returns `hwords_str_count` (dict[str,int]) which stores the count of hwords_str (joined by space), and each hwords_str is a group of hwords that appear simultaneously at same hit.
+        This is for replacing qwords with (fixed or corrected) hwords, that also considers that the different hword groups should appear at same hit, which avoids incorrect mixing of hwords in different contexts.
+        """
         res = {}
         if not hit_scores:
             hit_scores = [1] * len(hword_count_of_hits)
@@ -157,8 +178,8 @@ class HighlightsCounter:
             )
             sorted_hwords_str = filter_hwords_res["str"]
             qword_hword_dict = filter_hwords_res["dict"]
-            if sorted_hwords_str.strip() and len(list(qword_hword_dict.keys())) >= len(
-                qwords
+            if sorted_hwords_str.strip() and (
+                len(list(qword_hword_dict.keys())) >= len(qwords)
             ):
                 res[sorted_hwords_str] = res.get(sorted_hwords_str, 0) + hit_score
             for word in hwords_containing_all_qwords.keys():
