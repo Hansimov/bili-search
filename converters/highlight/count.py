@@ -86,7 +86,7 @@ class HighlightsCounter:
         hwords_list = [hword for hword, _, _ in hword_qword_tuples]
         res = {
             "dict": qword_hword_dict,
-            "tuple": hword_qword_tuples,
+            "tuples": hword_qword_tuples,
             "list": hwords_list,
             "str": " ".join(hwords_list),
         }
@@ -112,6 +112,48 @@ class HighlightsCounter:
                     hwords_containing_all_qwords[hword] = hword_count
         return hwords_containing_all_qwords
 
+    def get_hword_count_of_hits(
+        self,
+        hits: list[dict],
+        exclude_fields: list = [],
+        ignore_case: bool = True,
+        remove_punct: bool = True,
+    ) -> list[dict[str, int]]:
+        """Example of output:
+        ```json
+        [
+            { "红警": 2, "08": 2 },
+            { "红警": 1, "08": 1 },
+            { "红警08": 1, "红警": 1, "08": 2 },
+            ...
+        ]
+        ```
+        """
+        hword_count_of_hits: list[dict[str, int]] = []
+        for hit in hits:
+            segged_highlights = hit.get("highlights", {}).get("segged", {})
+            hword_count_of_hit: dict[str, int] = {}
+            for field, segs in segged_highlights.items():
+                if field in exclude_fields or not segs:
+                    continue
+                if ignore_case:
+                    segs = [seg.lower() for seg in segs]
+                if remove_punct:
+                    segs = [self.puncter.remove(seg) for seg in segs]
+                for seg in segs:
+                    hword_count_of_hit[seg] = hword_count_of_hit.get(seg, 0) + 1
+            hword_count_of_hits.append(hword_count_of_hit)
+        return hword_count_of_hits
+
+    def get_hit_scores(
+        self, hits: list[dict], use_score: bool = False
+    ) -> list[Union[int, float]]:
+        hit_scores: list[Union[int, float]] = []
+        for hit in hits:
+            hit_score = hit.get("score", 1) if use_score else 1
+            hit_scores.append(hit_score)
+        return hit_scores
+
     def calc_qword_hword_count(
         self,
         qwords: list[str],
@@ -122,10 +164,20 @@ class HighlightsCounter:
         """This function takes input of `qwords` (list) and `hword_count_of_hits` (list of dict[str,int]).
         Each item in `hword_count_of_hits` is a dict that stores appeared hwords and their counts in each hit.
         It returns `qword_hword_count` (dict[str,dict[str,int]]), which stores the total hwords and counts that match each qword.
+        Example of `qword_hword_count`:
+        ```json
+        {
+            "hongjing": {
+                "红警"   : 52,
+                "红警08" : 4
+            },
+            "08": {
+                "08": 33
+            }
+        }
+        ```
         """
         res: dict[str, dict[str, int]] = {}
-        if not hit_scores:
-            hit_scores = [1] * len(hword_count_of_hits)
         for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
             for hword, hword_count in hword_count_dict.items():
                 hword = hword.lower().replace(" ", "")
@@ -159,10 +211,14 @@ class HighlightsCounter:
         """This function takes input of `qwords` (list), `hword_count_of_hits` (list of dict[str,int]), and `qword_hword_count` (dict[str,dict[str,int]]).
         It returns `hwords_str_count` (dict[str,int]) which stores the count of hwords_str (joined by space), and each hwords_str is a group of hwords that appear simultaneously at same hit.
         This is for replacing qwords with (fixed or corrected) hwords, that also considers that the different hword groups should appear at same hit, which avoids incorrect mixing of hwords in different contexts.
+        Example of `hwords_str_count`:
+        ```json
+        {
+            "红警 08": 20,
+            "红警08": 3
+        }
         """
         res = {}
-        if not hit_scores:
-            hit_scores = [1] * len(hword_count_of_hits)
         hwords_containing_all_qwords = self.extract_hwords_containing_all_qwords(
             qword_hword_count
         )
@@ -218,26 +274,15 @@ class HighlightsCounter:
         }
         ```
         """
-        hword_count_of_hits: list[dict[str, int]] = []
-        hit_scores: list[Union[int, float]] = []
         if ignore_case:
             qwords = [qword.lower() for qword in qwords]
-        for hit in hits:
-            segged_highlights = hit.get("highlights", {}).get("segged", {})
-            hit_score = hit.get("score", 1) if use_score else 1
-            hit_scores.append(hit_score)
-            hword_count_of_hit: dict[str, int] = {}
-            for field, segs in segged_highlights.items():
-                if field in exclude_fields or not segs:
-                    continue
-                if ignore_case:
-                    segs = [seg.lower() for seg in segs]
-                if remove_punct:
-                    segs = [self.puncter.remove(seg) for seg in segs]
-                for seg in segs:
-                    hword_count_of_hit[seg] = hword_count_of_hit.get(seg, 0) + 1
-            hword_count_of_hits.append(hword_count_of_hit)
-
+        hword_count_of_hits = self.get_hword_count_of_hits(
+            hits,
+            exclude_fields=exclude_fields,
+            ignore_case=ignore_case,
+            remove_punct=remove_punct,
+        )
+        hit_scores = self.get_hit_scores(hits, use_score=use_score)
         qword_hword_count = self.calc_qword_hword_count(
             qwords, hword_count_of_hits, hit_scores=hit_scores, threshold=threshold
         )
