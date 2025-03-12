@@ -1,6 +1,5 @@
-import re
-
-from typing import Union
+from collections import defaultdict
+from typing import Union, Literal
 
 from converters.query.punct import Puncter
 from converters.query.pinyin import ChinesePinyinizer
@@ -24,6 +23,19 @@ class HighlightsCounter:
             "middle": (qword_str in hword_str) or (qword_pinyin in hword_pinyin),
         }
         return is_match
+
+    def get_matched_qwords_with_hword(
+        self,
+        hword: str,
+        qwords: list[str],
+        match_part: Literal["prefix", "full", "middle"] = "middle",
+    ) -> list[str]:
+        """get all matched qwords with hword"""
+        matched_qwords = []
+        for qword in qwords:
+            if self.qword_match_hword(qword, hword)[match_part]:
+                matched_qwords.append(qword)
+        return matched_qwords
 
     def filter_hword_qword_tuples(
         self,
@@ -154,6 +166,34 @@ class HighlightsCounter:
             hit_scores.append(hit_score)
         return hit_scores
 
+    def calc_qword_hword_count_of_hit(
+        self,
+        qwords: list[str],
+        hword_count_of_hit: dict[str, int],
+        hit_score: Union[int, float] = 1,
+        match_part: Literal["prefix", "full", "middle"] = "prefix",
+        res: dict[str, dict[str, int]] = None,
+    ) -> dict[str, dict[str, int]]:
+        """Example of output:
+        ```json
+        {
+            "hongjing": { "红警": 1, "红警08": 1 },
+            "08": { "08": 2 }
+        }
+        ```
+        """
+        if res is None:
+            res = {}
+        for hword, hword_count in hword_count_of_hit.items():
+            hword = hword.lower().replace(" ", "")
+            for qword in qwords:
+                if len(qwords) == 1 or self.qword_match_hword(qword, hword)[match_part]:
+                    res[qword] = res.get(qword, {})
+                    res[qword][hword] = (
+                        res[qword].get(hword, 0) + hword_count * hit_score
+                    )
+        return res
+
     def calc_qword_hword_count(
         self,
         qwords: list[str],
@@ -178,18 +218,13 @@ class HighlightsCounter:
         ```
         """
         res: dict[str, dict[str, int]] = {}
-        for hword_count_dict, hit_score in zip(hword_count_of_hits, hit_scores):
-            for hword, hword_count in hword_count_dict.items():
-                hword = hword.lower().replace(" ", "")
-                for qword in qwords:
-                    if (
-                        len(qwords) == 1
-                        or self.qword_match_hword(qword, hword)["prefix"]
-                    ):
-                        res[qword] = res.get(qword, {})
-                        res[qword][hword] = (
-                            res[qword].get(hword, 0) + hword_count * hit_score
-                        )
+        for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
+            res = self.calc_qword_hword_count_of_hit(
+                qwords,
+                hword_count_of_hit=hword_count_of_hit,
+                hit_score=hit_score,
+                res=res,
+            )
         res = {
             qword: {k: v for k, v in hwords.items() if v >= threshold}
             for qword, hwords in res.items()
