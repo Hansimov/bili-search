@@ -86,11 +86,10 @@ class VideoHitsParserV1:
         return merged_highlights, segged_highlights
 
     def get_suggest_info(self, qwords: list[str], hits: list[dict]) -> dict:
-        suggest_info_counts = self.highlights_counter.count_keywords(qwords, hits)
+        keywords_info = self.highlights_counter.count_keywords(qwords, hits)
         related_authors = self.highlights_counter.count_authors(hits)
         suggest_info = {
-            "qword_hword_count": suggest_info_counts["qword_hword_count"],
-            "hwords_str_count": suggest_info_counts["hwords_str_count"],
+            **keywords_info,
             "related_authors": related_authors,
         }
         return suggest_info
