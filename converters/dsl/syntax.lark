@@ -4,7 +4,7 @@
 start: expr | expr_with_error
     ?expr: atom_expr | pa_expr | or_expr | co_expr | and_expr
         or_expr: expr (or expr)+
-        co_expr: expr expr+
+        co_expr: expr+
         and_expr: expr (and expr)+
         pa_expr: lp expr? rp
         atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
@@ -112,8 +112,8 @@ mm: /\d{1,2}/
 dd: /\d{1,2}/
 hh: /\d{1,2}/
 
-sep_ymd: /[-\/\.]+/
-sep_hms: /[_\.]+/
+sep_ymd: /[\-\/\.]+/
+sep_hms: /[\_\.]+/
 sep_dh: /[\s\.]+/
 sep_en: /[\_\.\s\-]+/
 
@@ -197,9 +197,9 @@ word_expr: colon? word_key_op? word_val word_sp?
 text_expr: text_quoted | text_strict | text_plain
 
 text_quoted: /[“][^“”]+[”]/ | /["][^"]+["]/
-text_strict: /[^\s\n"“”\|\&（）【】\?？\(\)\[\]:：!！,，<>《》]+/
-text_plain:  /[^\s\n"“”\|\&（）【】\?？\(\)\[\]]+/
-text_catch:   /[\s\n"“”\|\&（）【】\?？\(\)\[\]]+/
+text_strict: /[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
+text_plain:  /[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
+text_catch:   /[\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
 
 %import common.WS
 %ignore WS
