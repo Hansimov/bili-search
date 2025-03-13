@@ -26,7 +26,7 @@ from elastics.videos.constants import SUGGEST_DETAIL_LEVELS, MAX_SUGGEST_DETAIL_
 from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
-from elastics.videos.hits import VideoHitsParserV1, VideoHitsParserV2, SuggestInfoParser
+from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 
 
 class VideoSearcherV1:
@@ -39,7 +39,7 @@ class VideoSearcherV1:
         self.init_processors()
 
     def init_processors(self):
-        self.hit_parser = VideoHitsParserV1()
+        self.hit_parser = VideoHitsParser()
         self.suggest_parser = SuggestInfoParser()
         self.query_rewriter = QueryRewriter()
 
@@ -176,7 +176,7 @@ class VideoSearcherV1:
     def suggest_and_rewrite(
         self,
         query_info: dict,
-        suggest_info: dict,
+        suggest_info: dict = {},
         rewrite_info: dict = {},
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         return_res: dict = {},
@@ -196,6 +196,7 @@ class VideoSearcherV1:
                 query_info=query_info, suggest_info=suggest_info
             )
         else:
+            suggest_info = suggest_info or {}
             rewrite_info = rewrite_info or {}
         return_res["suggest_info"] = suggest_info
         return_res["rewrite_info"] = rewrite_info
@@ -212,7 +213,7 @@ class VideoSearcherV1:
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
         combined_fields_list: list[list[str]] = [],
-        **kwargs,
+        **kwargs,  # for compatibility with different input params
     ) -> tuple[dict, dict, dict]:
         """This is version v1, which uses regex to extract query_info, convert rewrite_info, and construct query_dsl_dict."""
         # get query_info and rewrite_info
@@ -248,23 +249,21 @@ class VideoSearcherV1:
     ) -> dict:
         """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
         script_score_constructor = ScriptScoreQueryDSLConstructor()
+        common_params = {
+            "_source": source_fields,
+            "explain": is_explain,
+            "track_total_hits": True,
+        }
         if use_script_score:
             scripted_query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
             search_body = {
                 "query": scripted_query_dsl_dict,
-                "_source": source_fields,
-                "explain": is_explain,
                 "highlight": self.get_highlight_settings(match_fields),
-                "track_total_hits": True,
+                **common_params,
             }
         else:
             rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
-            search_body = {
-                **rrf_dsl_dict,
-                "_source": source_fields,
-                "explain": is_explain,
-                "track_total_hits": True,
-            }
+            search_body = {**rrf_dsl_dict, **common_params}
         return search_body
 
     def search(

@@ -5,21 +5,15 @@ from elastics.structure import get_es_source_val
 from converters.highlight.merge import HighlightMerger
 from converters.highlight.count import HighlightsCounter
 from converters.highlight.pinyin import PinyinHighlighter
-from converters.query.filter import QueryFilterExtractor
-from converters.dsl.elastic import DslExprKeywordsFilterSplitter
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 
 
-class VideoHitsParserV1:
+class VideoHitsParser:
     def __init__(self):
         self.pinyin_highlighter = PinyinHighlighter()
-        self.highlights_counter = HighlightsCounter()
         self.highlight_merger = HighlightMerger()
-
-    def split_query_to_keywords_and_filters(self, query: str) -> dict:
-        return QueryFilterExtractor().split_keyword_and_filter_expr(query)
 
     def get_pinyin_highlights(
         self, keywords: Union[str, list[str]], match_fields: list[str], source: dict
@@ -218,4 +212,3 @@ class SuggestInfoParser:
             "related_authors": related_authors,
         }
         return suggest_info
-
