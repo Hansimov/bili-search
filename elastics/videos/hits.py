@@ -85,15 +85,6 @@ class VideoHitsParserV1:
                 segged_highlights[field] = segged_highlight
         return merged_highlights, segged_highlights
 
-    def get_suggest_info(self, qwords: list[str], hits: list[dict]) -> dict:
-        keywords_info = self.highlights_counter.count_keywords(qwords, hits)
-        related_authors = self.highlights_counter.count_authors(hits)
-        suggest_info = {
-            **keywords_info,
-            "related_authors": related_authors,
-        }
-        return suggest_info
-
     def parse(
         self,
         query: str,
@@ -193,7 +184,6 @@ class VideoHitsParserV1:
             hits.append(hit_info)
         if limit > 0:
             hits = hits[:limit]
-        suggest_info = self.get_suggest_info(qwords, hits)
         hits_info = {
             "query": query,
             "request_type": request_type,
@@ -203,7 +193,6 @@ class VideoHitsParserV1:
             "total_hits": res_dict["hits"]["total"]["value"],
             "return_hits": len(hits),
             "hits": hits,
-            "suggest_info": suggest_info,
             "query_info": query_info,
         }
         if verbose:
@@ -217,4 +206,16 @@ class VideoHitsParserV1:
         return hits_info
 
 
-VideoHitsParser = VideoHitsParserV1
+class SuggestInfoParser:
+    def __init__(self):
+        self.highlights_counter = HighlightsCounter()
+
+    def parse(self, qwords: list[str], hits: list[dict]) -> dict:
+        keywords_info = self.highlights_counter.count_keywords(qwords, hits)
+        related_authors = self.highlights_counter.count_authors(hits)
+        suggest_info = {
+            **keywords_info,
+            "related_authors": related_authors,
+        }
+        return suggest_info
+

@@ -26,7 +26,7 @@ from elastics.videos.constants import SUGGEST_DETAIL_LEVELS, MAX_SUGGEST_DETAIL_
 from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
-from elastics.videos.hits import VideoHitsParserV1, VideoHitsParserV2
+from elastics.videos.hits import VideoHitsParserV1, VideoHitsParserV2, SuggestInfoParser
 
 
 class VideoSearcherV1:
@@ -40,6 +40,7 @@ class VideoSearcherV1:
 
     def init_processors(self):
         self.hit_parser = VideoHitsParserV1()
+        self.suggest_parser = SuggestInfoParser()
         self.query_rewriter = QueryRewriter()
 
     def get_highlight_settings(
@@ -153,6 +154,23 @@ class VideoSearcherV1:
             logger.mesg(dict_to_str(res_dict))
             return_res = res_dict
         return return_res
+
+    def suggest_and_rewrite(
+        self,
+        query_info: dict,
+        suggest_info: dict,
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
+        hits: list[dict] = [],
+    ) -> tuple[dict, dict]:
+        if request_type == "suggest":
+            qwords = query_info["keywords_body"]
+            suggest_info = self.suggest_parser.parse(qwords=qwords, hits=hits)
+            rewrite_info = self.query_rewriter.rewrite(
+                query_info=query_info, suggest_info=suggest_info
+            )
+        else:
+            rewrite_info = rewrite_info or {}
+        return suggest_info, rewrite_info
 
     def search(
         self,
@@ -274,12 +292,15 @@ class VideoSearcherV1:
             "verbose": verbose,
         }
         return_res = self.submit_and_parse(**submit_and_parse_params)
-        # if request_type is "suggest", rewrite query_info to get rewrite_info
-        if request_type == "suggest":
-            suggest_info = return_res.get("suggest_info", {})
-            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
-        else:
-            rewrite_info = rewrite_info or {}
+        # if request_type is "suggest", parse suggest_info, and get rewrite_info
+        # as in most cases, when request_type is "suggest", suggest_info is not provided
+        suggest_info, rewrite_info = self.suggest_and_rewrite(
+            query_info,
+            suggest_info=suggest_info,
+            request_type=request_type,
+            hits=return_res["hits"],
+        )
+        return_res["suggest_info"] = suggest_info
         return_res["rewrite_info"] = rewrite_info
         # exit quiet
         logger.exit_quiet(not verbose)
