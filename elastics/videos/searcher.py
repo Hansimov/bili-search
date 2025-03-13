@@ -104,7 +104,7 @@ class VideoSearcherV1:
 
     def submit_and_parse(
         self,
-        query: str,
+        query_info: dict,
         search_body: dict,
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         parse_hits: bool = True,
@@ -129,7 +129,7 @@ class VideoSearcherV1:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
 
         logger.note(f"> Get search results by query:", end=" ")
-        logger.mesg(f"[{query}]")
+        logger.mesg(f"[{query_info['query']}]")
         try:
             res = self.es.client.search(index=self.index_name, body=search_body)
             res_dict = res.body
@@ -139,7 +139,7 @@ class VideoSearcherV1:
 
         if parse_hits:
             return_res = self.hit_parser.parse(
-                query,
+                query_info,
                 match_fields,
                 res_dict,
                 request_type=request_type,
@@ -155,22 +155,51 @@ class VideoSearcherV1:
             return_res = res_dict
         return return_res
 
+    def rewrite_with_suggest(
+        self, query_info: dict, suggest_info: dict
+    ) -> tuple[dict, str]:
+        """if suggest_info is provided, get rewrite_info and keywords_rewrited, which is used in construct query_dsl_dict;
+        and if suggest_info is not provided, return empty rewrite_info and original keywords in query_info.
+        """
+        if suggest_info:
+            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
+            rewrite_list = rewrite_info.get("list", [])
+            if rewrite_list:
+                keywords_rewrited = rewrite_list[0]
+            else:
+                keywords_rewrited = " ".join(query_info["keywords"])
+        else:
+            rewrite_info = {}
+            keywords_rewrited = " ".join(query_info["keywords"])
+        return rewrite_info, keywords_rewrited
+
     def suggest_and_rewrite(
         self,
         query_info: dict,
         suggest_info: dict,
+        rewrite_info: dict = {},
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
-        hits: list[dict] = [],
-    ) -> tuple[dict, dict]:
+        return_res: dict = {},
+    ) -> dict:
+        """if request_type is "suggest", parse suggest_info, and get rewrite_info:
+        - as in most cases, when request_type is "suggest", suggest_info is not provided,
+        - so in order to provide suggest_info for next search, we need to add this info
+        And if reqeust_type is "search" and the rewrite_info is provided, reuse it.
+        Then add suggest_info and rewrite_info to return_res.
+        """
         if request_type == "suggest":
             qwords = query_info["keywords_body"]
-            suggest_info = self.suggest_parser.parse(qwords=qwords, hits=hits)
+            suggest_info = self.suggest_parser.parse(
+                qwords=qwords, hits=return_res["hits"]
+            )
             rewrite_info = self.query_rewriter.rewrite(
                 query_info=query_info, suggest_info=suggest_info
             )
         else:
             rewrite_info = rewrite_info or {}
-        return suggest_info, rewrite_info
+        return_res["suggest_info"] = suggest_info
+        return_res["rewrite_info"] = rewrite_info
+        return return_res
 
     def search(
         self,
@@ -229,21 +258,12 @@ class VideoSearcherV1:
             boosted_fields=boosted_fields,
             use_pinyin=use_pinyin,
         )
-        # split query into keywords and filter expressions, which are used to construct query_dsl_dict
+        # get query_info and rewrite_info
         query_info_extractor = QueryFilterExtractor()
         query_info = query_info_extractor.split_keyword_and_filter_expr(query)
-        _, filter_dicts = query_info_extractor.construct(query)
-        # if suggest_info is provided, rewrite query_info to get rewrite_info
-        if suggest_info:
-            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
-            rewrite_list = rewrite_info.get("list", [])
-            if rewrite_list:
-                keywords_rewrited = rewrite_list[0]
-            else:
-                keywords_rewrited = " ".join(query_info["keywords"])
-        else:
-            rewrite_info = {}
-            keywords_rewrited = " ".join(query_info["keywords"])
+        rewrite_info, keywords_rewrited = self.rewrite_with_suggest(
+            query_info=query_info, suggest_info=suggest_info
+        )
         # construct query_dsl_dict from keywords_rewrited
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
@@ -256,6 +276,7 @@ class VideoSearcherV1:
             combined_fields_list=combined_fields_list,
         )
         # add filter_dicts and extra_filters to query_dsl_dict
+        _, filter_dicts = query_info_extractor.construct(query)
         if filter_dicts or extra_filters:
             query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
         # construct script_score or rrf from query_dsl_dict
@@ -277,9 +298,9 @@ class VideoSearcherV1:
                 "explain": is_explain,
                 "track_total_hits": True,
             }
-        # submit search_body and parse results
+        # submit search_body, parse results, and suggest and rewrite
         submit_and_parse_params = {
-            "query": query,
+            "query_info": query_info,
             "search_body": search_body,
             "match_fields": match_fields,
             "match_type": match_type,
@@ -292,16 +313,13 @@ class VideoSearcherV1:
             "verbose": verbose,
         }
         return_res = self.submit_and_parse(**submit_and_parse_params)
-        # if request_type is "suggest", parse suggest_info, and get rewrite_info
-        # as in most cases, when request_type is "suggest", suggest_info is not provided
-        suggest_info, rewrite_info = self.suggest_and_rewrite(
+        return_res = self.suggest_and_rewrite(
             query_info,
             suggest_info=suggest_info,
+            rewrite_info=rewrite_info,
             request_type=request_type,
-            hits=return_res["hits"],
+            return_res=return_res,
         )
-        return_res["suggest_info"] = suggest_info
-        return_res["rewrite_info"] = rewrite_info
         # exit quiet
         logger.exit_quiet(not verbose)
         return return_res

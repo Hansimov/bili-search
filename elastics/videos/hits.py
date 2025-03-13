@@ -87,7 +87,7 @@ class VideoHitsParserV1:
 
     def parse(
         self,
-        query: str,
+        query_info: dict,
         match_fields: list[str],
         res_dict: dict,
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
@@ -133,8 +133,8 @@ class VideoHitsParserV1:
         }
         ```
         """
-        query_info = self.split_query_to_keywords_and_filters(query)
         qwords = query_info["keywords_body"]
+        query = query_info["query"]
         if not res_dict:
             hits_info = {
                 "query": query,
