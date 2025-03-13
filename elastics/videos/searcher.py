@@ -201,6 +201,72 @@ class VideoSearcherV1:
         return_res["rewrite_info"] = rewrite_info
         return return_res
 
+    def get_info_of_query_rewrite_dsl(
+        self,
+        query: str,
+        suggest_info: dict = {},
+        boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        extra_filters: list[dict] = [],
+        combined_fields_list: list[list[str]] = [],
+        **kwargs,
+    ) -> tuple[dict, dict, dict]:
+        """This is version v1, which uses regex to extract query_info, convert rewrite_info, and construct query_dsl_dict."""
+        # get query_info and rewrite_info
+        query_info_extractor = QueryFilterExtractor()
+        query_info = query_info_extractor.split_keyword_and_filter_expr(query)
+        rewrite_info, keywords_rewrited = self.rewrite_with_suggest(
+            query_info=query_info, suggest_info=suggest_info
+        )
+        # construct query_dsl_dict from keywords_rewrited
+        query_constructor = MultiMatchQueryDSLConstructor()
+        query_dsl_dict = query_constructor.construct(
+            keywords_rewrited,
+            match_fields=boosted_match_fields,
+            date_match_fields=boosted_date_fields,
+            match_bool=match_bool,
+            match_type=match_type,
+            match_operator=match_operator,
+            combined_fields_list=combined_fields_list,
+        )
+        # add filter_dicts and extra_filters to query_dsl_dict
+        _, filter_dicts = query_info_extractor.construct(query)
+        if filter_dicts or extra_filters:
+            query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
+        return query_info, rewrite_info, query_dsl_dict
+
+    def construct_search_body(
+        self,
+        query_dsl_dict: dict,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        source_fields: list[str] = SOURCE_FIELDS,
+        is_explain: bool = False,
+        use_script_score: bool = True,
+    ) -> dict:
+        """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
+        script_score_constructor = ScriptScoreQueryDSLConstructor()
+        if use_script_score:
+            scripted_query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
+            search_body = {
+                "query": scripted_query_dsl_dict,
+                "_source": source_fields,
+                "explain": is_explain,
+                "highlight": self.get_highlight_settings(match_fields),
+                "track_total_hits": True,
+            }
+        else:
+            rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
+            search_body = {
+                **rrf_dsl_dict,
+                "_source": source_fields,
+                "explain": is_explain,
+                "track_total_hits": True,
+            }
+        return search_body
+
     def search(
         self,
         query: str,
@@ -258,46 +324,32 @@ class VideoSearcherV1:
             boosted_fields=boosted_fields,
             use_pinyin=use_pinyin,
         )
-        # get query_info and rewrite_info
-        query_info_extractor = QueryFilterExtractor()
-        query_info = query_info_extractor.split_keyword_and_filter_expr(query)
-        rewrite_info, keywords_rewrited = self.rewrite_with_suggest(
-            query_info=query_info, suggest_info=suggest_info
+        # this part is implemented with different versions:
+        # - developer could customize `get_info_of_query_rewrite_dsl`
+        # - v1 use regex, v2 use lark
+        query_rewrite_dsl_params = {
+            "query": query,
+            "suggest_info": suggest_info,
+            "boosted_match_fields": boosted_match_fields,
+            "boosted_date_fields": boosted_date_fields,
+            "match_bool": match_bool,
+            "match_type": match_type,
+            "match_operator": match_operator,
+            "extra_filters": extra_filters,
+            "combined_fields_list": combined_fields_list,
+        }
+        query_info, rewrite_info, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
+            **query_rewrite_dsl_params
         )
-        # construct query_dsl_dict from keywords_rewrited
-        query_constructor = MultiMatchQueryDSLConstructor()
-        query_dsl_dict = query_constructor.construct(
-            keywords_rewrited,
-            match_fields=boosted_match_fields,
-            date_match_fields=boosted_date_fields,
-            match_bool=match_bool,
-            match_type=match_type,
-            match_operator=match_operator,
-            combined_fields_list=combined_fields_list,
-        )
-        # add filter_dicts and extra_filters to query_dsl_dict
-        _, filter_dicts = query_info_extractor.construct(query)
-        if filter_dicts or extra_filters:
-            query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
-        # construct script_score or rrf from query_dsl_dict
-        script_score_constructor = ScriptScoreQueryDSLConstructor()
-        if use_script_score:
-            query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
-            search_body = {
-                "query": query_dsl_dict,
-                "_source": source_fields,
-                "explain": is_explain,
-                "highlight": self.get_highlight_settings(match_fields),
-                "track_total_hits": True,
-            }
-        else:
-            rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
-            search_body = {
-                **rrf_dsl_dict,
-                "_source": source_fields,
-                "explain": is_explain,
-                "track_total_hits": True,
-            }
+        # construct search_body
+        search_body_params = {
+            "query_dsl_dict": query_dsl_dict,
+            "match_fields": boosted_match_fields,
+            "source_fields": source_fields,
+            "is_explain": is_explain,
+            "use_script_score": use_script_score,
+        }
+        search_body = self.construct_search_body(**search_body_params)
         # submit search_body, parse results, and suggest and rewrite
         submit_and_parse_params = {
             "query_info": query_info,
