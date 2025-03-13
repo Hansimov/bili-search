@@ -1,11 +1,12 @@
 from tclogger import logger, logstr, dict_to_str, brk
 
 from elastics.videos.searcher import VideoSearcher
+from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.filter import QueryFilterExtractor
 
-searcher = VideoSearcher("bili_videos_dev3")
+searcher = VideoSearcher(VIDEOS_INDEX_DEFAULT)
 
 
 def test_random():
@@ -19,11 +20,12 @@ def test_suggest():
     # query = "yingshi ju"
     # query = "yingshiju"
     # query = "影视ju"
-    # query = "hongjing 08"
-    # query = "hongjing 08 2024"
+    query = "hongjing 08"
+    # query = "Hongjing 08 2024"
+    # query = "Hongjing 08 2024 xiaokuaidi"
     # query = "影视 ju :date<=7d 2024"
     # query = "edmundd"
-    query = "gpt-sovits huaer"
+    # query = "gpt-sovits huaer"
     # query = "XIAOMI su7"
     # query = "Niko"
     # query = "shanghai major hanlengde"

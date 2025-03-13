@@ -26,7 +26,7 @@ from elastics.videos.constants import SUGGEST_DETAIL_LEVELS, MAX_SUGGEST_DETAIL_
 from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
-from elastics.videos.hits import VideoHitsParser
+from elastics.videos.hits import VideoHitsParserV1, VideoHitsParserV2
 
 
 class VideoSearcherV1:
@@ -39,7 +39,7 @@ class VideoSearcherV1:
         self.init_processors()
 
     def init_processors(self):
-        self.hit_parser = VideoHitsParser()
+        self.hit_parser = VideoHitsParserV1()
         self.query_rewriter = QueryRewriter()
 
     def get_highlight_settings(
@@ -105,8 +105,6 @@ class VideoSearcherV1:
         self,
         query: str,
         search_body: dict,
-        query_info: dict = {},
-        rewrite_info: dict = {},
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         parse_hits: bool = True,
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
@@ -154,17 +152,6 @@ class VideoSearcherV1:
         else:
             logger.mesg(dict_to_str(res_dict))
             return_res = res_dict
-
-        if request_type == "suggest":
-            rewrite_info = self.query_rewriter.rewrite(
-                query_info, return_res.get("suggest_info", {})
-            )
-        else:
-            # keywords_rewrited = [" ".join(query_info["keywords"])]
-            rewrite_info = rewrite_info or {}
-
-        return_res["rewrite_info"] = rewrite_info
-        # logger.success(pformat(return_res, sort_dicts=False, indent=4))
         return return_res
 
     def search(
@@ -206,8 +193,9 @@ class VideoSearcherV1:
         - `multi matches in must` requires all keywords to be matched
         - `multi_match` only requires any keyword to be matched in any field.
         """
+        # enter quiet
         logger.enter_quiet(not verbose)
-
+        # init params by detail_level
         if detail_level in detail_levels:
             match_detail = detail_levels[detail_level]
             match_type = match_detail["match_type"]
@@ -216,17 +204,18 @@ class VideoSearcherV1:
             use_pinyin = match_detail.get("pinyin", use_pinyin)
             extra_filters = match_detail.get("filters", extra_filters)
             timeout = match_detail.get("timeout", timeout)
-
+        # construct boosted fields
         boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
             match_fields=match_fields,
             boost=boost,
             boosted_fields=boosted_fields,
             use_pinyin=use_pinyin,
         )
-
-        filter_extractor = QueryFilterExtractor()
-        query_info = filter_extractor.split_keyword_and_filter_expr(query)
-        _, filter_dicts = filter_extractor.construct(query)
+        # split query into keywords and filter expressions, which are used to construct query_dsl_dict
+        query_info_extractor = QueryFilterExtractor()
+        query_info = query_info_extractor.split_keyword_and_filter_expr(query)
+        _, filter_dicts = query_info_extractor.construct(query)
+        # if suggest_info is provided, rewrite query_info to get rewrite_info
         if suggest_info:
             rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
             rewrite_list = rewrite_info.get("list", [])
@@ -237,7 +226,7 @@ class VideoSearcherV1:
         else:
             rewrite_info = {}
             keywords_rewrited = " ".join(query_info["keywords"])
-
+        # construct query_dsl_dict from keywords_rewrited
         query_constructor = MultiMatchQueryDSLConstructor()
         query_dsl_dict = query_constructor.construct(
             keywords_rewrited,
@@ -248,10 +237,10 @@ class VideoSearcherV1:
             match_operator=match_operator,
             combined_fields_list=combined_fields_list,
         )
-
+        # add filter_dicts and extra_filters to query_dsl_dict
         if filter_dicts or extra_filters:
             query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
-
+        # construct script_score or rrf from query_dsl_dict
         script_score_constructor = ScriptScoreQueryDSLConstructor()
         if use_script_score:
             query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
@@ -270,10 +259,10 @@ class VideoSearcherV1:
                 "explain": is_explain,
                 "track_total_hits": True,
             }
+        # submit search_body and parse results
         submit_and_parse_params = {
             "query": query,
             "search_body": search_body,
-            "query_info": query_info,
             "match_fields": match_fields,
             "match_type": match_type,
             "match_operator": match_operator,
@@ -285,6 +274,14 @@ class VideoSearcherV1:
             "verbose": verbose,
         }
         return_res = self.submit_and_parse(**submit_and_parse_params)
+        # if request_type is "suggest", rewrite query_info to get rewrite_info
+        if request_type == "suggest":
+            suggest_info = return_res.get("suggest_info", {})
+            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
+        else:
+            rewrite_info = rewrite_info or {}
+        return_res["rewrite_info"] = rewrite_info
+        # exit quiet
         logger.exit_quiet(not verbose)
         return return_res
 

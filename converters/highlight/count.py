@@ -350,7 +350,6 @@ class HighlightsCounter:
             "group_hwords": group_hwords,
             "count": group_hwords_count,
         }
-        print(group_hwords, group_hwords_count)
         return group_hword_qword_count_of_hit
 
     def calc_group_hwords_count(
