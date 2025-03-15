@@ -1,0 +1,112 @@
+from tclogger import logger, dict_to_str, tcdatetime, get_now
+
+from converters.dsl.node import DslExprNode
+from converters.dsl.elastic import DslExprToElasticConverter, DslTreeToExprConstructor
+from converters.times import DateFormatChecker
+
+
+class WordNodeExpander:
+    def __init__(self):
+        self.elastic_converter = DslExprToElasticConverter()
+        self.date_checker = DateFormatChecker()
+        self.next_year_start_dt = tcdatetime(year=get_now().year + 1, month=1, day=1)
+
+    def replace_word_node(self, word_node: DslExprNode) -> DslExprNode:
+        """word_node key is `word_expr`. Add a `date_expr` node as its sibling, create a new `or` node as its parent, and connect `word_expr` and `date_expr` nodes to `or` node, and graft `or` node to the original parent of `word_expr` node."""
+        word_atom = word_node.find_parent_with_key("atom")
+        word_atom_parent = word_atom.parent
+        word_atom.disconnect_from_parent()
+
+        text = word_node.get_deepest_node_value()
+        date_expr = f"d={text}"
+        date_atom_root = self.elastic_converter.construct_expr_tree(date_expr)
+        date_atom = date_atom_root.find_child_with_key("atom")
+        date_atom.disconnect_from_parent()
+
+        or_node = DslExprNode("or")
+        word_atom.connect_to_parent(or_node)
+        date_atom.connect_to_parent(or_node)
+        or_node.connect_to_parent(word_atom_parent)
+
+        return or_node
+
+    def expand_date_formatted_word_node(self, node: DslExprNode) -> DslExprNode:
+        """node key is `word_expr`. Expand a data-formated `word_expr` node to a `or` node with atom nodes with `word_expr` and `date_expr`."""
+        word_val_nodes = node.find_all_childs_with_key("word_val_single")
+        # Do not expand list of word_val_single nodes or non-word nodes
+        if len(word_val_nodes) != 1:
+            return node
+        word_val_node = word_val_nodes[0]
+        text = word_val_node.get_deepest_node_value()
+        if text and self.date_checker.is_in_date_range(
+            text, start="2009-09-09", end=self.next_year_start_dt
+        ):
+            word_val_node.extras["is_date_format"] = True
+            return self.replace_word_node(node)
+        else:
+            return node
+
+    def expand_expr_tree(self, node: DslExprNode) -> DslExprNode:
+        """Expand all `word_expr` nodes that have date format in the expr tree."""
+        word_expr_nodes = node.find_all_childs_with_key("word_expr")
+        for word_expr_node in word_expr_nodes:
+            self.expand_date_formatted_word_node(word_expr_node)
+        return node
+
+
+class DslExprRewriter:
+    def __init__(self):
+        self.elastic_converter = DslExprToElasticConverter()
+        self.expr_constructor = DslTreeToExprConstructor()
+        self.word_expander = WordNodeExpander()
+
+    def get_keywords_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
+        word_nodes = expr_tree.find_all_childs_with_key("word_val_single")
+        keywords_body = []
+        keywords_date = []
+        for word_node in word_nodes:
+            keyword = word_node.get_deepest_node_value()
+            if word_node.extras.get("is_date_format", False):
+                keywords_date.append(keyword)
+            else:
+                keywords_body.append(keyword)
+        return {
+            "keywords_body": keywords_body,
+            "keywords_date": keywords_date,
+        }
+
+    def get_query_info(self, expr: str) -> dict[str, list[str]]:
+        expr_tree = self.elastic_converter.construct_expr_tree(expr)
+        expr_tree = self.word_expander.expand_expr_tree(expr_tree)
+        keywords_expr_tree = expr_tree.filter_atoms_by_keys(include_keys=["word_expr"])
+        keywords_dict = self.get_keywords_from_expr_tree(keywords_expr_tree)
+        keywords_expr = self.expr_constructor.construct(keywords_expr_tree)
+        return {
+            "query": expr,
+            "keywords_expr": keywords_expr,
+            **keywords_dict,
+            "query_expr_tree": expr_tree,
+        }
+
+    def rewrite(
+        self, query_info: dict = {}, suggest_info: dict = {}, threshold: int = 2
+    ) -> dict:
+        rewrite_info = {
+            "rewrited": False,
+        }
+        return rewrite_info
+
+
+def test_rewriter():
+    from converters.dsl.test import rewrite_queries
+
+    rewriter = DslExprRewriter()
+    for query in rewrite_queries:
+        query_info = rewriter.get_query_info(query)
+        logger.mesg(dict_to_str(query_info), indent=2)
+
+
+if __name__ == "__main__":
+    test_rewriter()
+
+    # python -m converters.dsl.rewrite
