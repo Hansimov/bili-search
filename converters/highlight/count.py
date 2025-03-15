@@ -309,9 +309,11 @@ class HighlightsCounter:
         self, qwords: list[str], hword_count_of_hit: dict[str, int], hit_score: int = 1
     ) -> dict:
         """Examples of `group_hword_qword_count_of_hit` with query `Hongjing 08 2024 xiaokuaidi`:
+        ```
         - {'group_hwords': ('08', '红警'), 'count': 1, 'hword_qwords': {'08': ['08'], '红警': ['hongjing']}}
         - {'group_hwords': ('08', '小块地', '红警'), 'count': 1, 'hword_qwords': {'08': ['08'], '小块地': ['xiaokuaidi'], '红警': ['hongjing']}}
         - {'group_hwords': ('08', '小快递', '红警小块地'), 'count': 1, 'hword_qwords': {'08': ['08'], '小快递': ['xiaokuaidi'], '红警小块地': ['hongjing', 'xiaokuaidi']}}
+        ```
         """
         qword_hword_count_of_hit = self.calc_qword_hword_count_of_hit(
             qwords,
@@ -360,7 +362,7 @@ class HighlightsCounter:
         hit_scores: list[int] = [],
         threshold: int = 2,
     ) -> dict[tuple, dict]:
-        """Example of `hwords_qwords_count`:
+        """Example of `group_hwords_qwords_count`:
         ```json
         {
             ('08', '小块地', '红警'): 4,
@@ -394,6 +396,7 @@ class HighlightsCounter:
         threshold: int = 2,
         ignore_case: bool = True,
         remove_punct: bool = True,
+        is_calc_hwords_str_count: bool = True,
     ) -> dict:
         """Example of output:
         ```json
@@ -435,13 +438,17 @@ class HighlightsCounter:
             "threshold": threshold,
         }
         group_hwords_count = self.calc_group_hwords_count(**hword_func_params)
-        hwords_str_count = self.calc_hwords_str_count(**hword_func_params)
         res = {
             "qword_hword_count": qword_hword_count,
             "hword_qwords_maps": hword_qwords_maps,
             "group_hwords_count": group_hwords_count,
-            "hwords_str_count": hwords_str_count,
         }
+        # this field is only useful in VideoSearcherV1 with regex
+        # and not needed in VideoSearcherV2 with lark
+        # use this switch branch to avoid unnecessary calculation
+        if is_calc_hwords_str_count:
+            hwords_str_count = self.calc_hwords_str_count(**hword_func_params)
+            res["hwords_str_count"] = hwords_str_count
         return res
 
     def count_authors(

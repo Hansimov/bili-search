@@ -1,5 +1,5 @@
 from tclogger import logger
-from typing import Union
+from typing import Union, Literal
 
 from elastics.structure import get_es_source_val
 from converters.highlight.merge import HighlightMerger
@@ -201,11 +201,24 @@ class VideoHitsParser:
 
 
 class SuggestInfoParser:
-    def __init__(self):
+    def __init__(self, version: Literal["v1", "v2"] = "v1"):
         self.highlights_counter = HighlightsCounter()
+        self.version = version
+        self.init_keywords_params()
+
+    def init_keywords_params(self):
+        if self.version == "v1":
+            self.keywords_params = {"is_calc_hwords_str_count": True}
+        else:
+            self.keywords_params = {"is_calc_hwords_str_count": False}
 
     def parse(self, qwords: list[str], hits: list[dict]) -> dict:
-        keywords_info = self.highlights_counter.count_keywords(qwords, hits)
+        """keys of returned `suggest_info`:
+        - "qword_hword_count", "hword_qwords_maps", "group_hwords_count", "related_authors"
+        """
+        keywords_info = self.highlights_counter.count_keywords(
+            qwords, hits, **self.keywords_params
+        )
         related_authors = self.highlights_counter.count_authors(hits)
         suggest_info = {
             **keywords_info,
