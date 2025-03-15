@@ -11,6 +11,8 @@ from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.rewrite import QueryRewriter
 from converters.query.field import is_pinyin_field, deboost_field
 from converters.query.field import remove_suffixes_from_fields
+from converters.dsl.rewrite import DslExprRewriter
+from converters.dsl.elastic import DslExprToElasticConverter
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -213,7 +215,7 @@ class VideoSearcherV1:
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
         combined_fields_list: list[list[str]] = [],
-        **kwargs,  # for compatibility with different input params
+        **kwargs,  # for compatibility with variable input params in v2
     ) -> tuple[dict, dict, dict]:
         """This is version v1, which uses regex to extract query_info, convert rewrite_info, and construct query_dsl_dict."""
         # get query_info and rewrite_info
@@ -644,4 +646,75 @@ class VideoSearcherV1:
         logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
         logger.exit_quiet(not verbose)
         return res_dict
-VideoSearcher = VideoSearcherV1
+
+
+class VideoSearcherV2(VideoSearcherV1):
+    def init_processors(self):
+        self.hit_parser = VideoHitsParser()
+        self.query_rewriter = DslExprRewriter()
+        self.elastic_converter = DslExprToElasticConverter()
+        self.suggest_parser = SuggestInfoParser("v2")
+
+    def rewrite_with_suggest(self, query_info: dict, suggest_info: dict) -> dict:
+        if suggest_info:
+            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
+        else:
+            rewrite_info = {}
+        return rewrite_info
+
+    def suggest_and_rewrite(
+        self,
+        query_info: dict,
+        suggest_info: dict = {},
+        rewrite_info: dict = {},
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
+        return_res: dict = {},
+    ) -> dict:
+        if request_type == "suggest":
+            qwords = query_info["keywords_body"]
+            suggest_info = self.suggest_parser.parse(
+                qwords=qwords, hits=return_res["hits"]
+            )
+            rewrite_info = self.query_rewriter.rewrite(
+                query_info=query_info, suggest_info=suggest_info
+            )
+        else:
+            suggest_info = suggest_info or {}
+            rewrite_info = rewrite_info or {}
+        return_res["suggest_info"] = suggest_info
+        return_res["rewrite_info"] = rewrite_info
+        return return_res
+
+    def get_info_of_query_rewrite_dsl(
+        self,
+        query: str,
+        suggest_info: dict = {},
+        boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        extra_filters: list[dict] = [],
+        combined_fields_list: list[list[str]] = [],
+        **kwargs,  # for compatibility with different input params
+    ) -> tuple[dict, dict, dict]:
+        # get query_info
+        query_info = self.query_rewriter.get_query_info(query)
+        logger.mesg(dict_to_str(query_info, add_quotes=True, align_list=False))
+        # get rewrite_info with suggest_info
+        rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
+        rewrited_expr_tree = rewrite_info.get(
+            "rewrited_expr_tree", None
+        ) or query_info.get("query_expr_tree", None)
+        # construct query_dsl_dict from rewrited expr trees
+        self.elastic_converter.word_converter.switch_mode(
+            match_fields=boosted_match_fields,
+            date_match_fields=boosted_date_fields,
+            match_type=match_type,
+        )
+        query_dsl_dict = self.elastic_converter.expr_tree_to_dict(rewrited_expr_tree)
+        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
+        return query_info, rewrite_info, query_dsl_dict
+
+
+VideoSearcher = VideoSearcherV2
