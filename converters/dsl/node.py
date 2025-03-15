@@ -134,6 +134,24 @@ class DslNode:
             raise ValueError(err_mesg)
         return res
 
+    def find_parent_with_key(
+        self,
+        key: Union[str, list[str]],
+        raise_error: bool = False,
+        use_re: bool = False,
+    ) -> Union["DslNode", None]:
+        queue = [self]
+        while queue:
+            current = queue.pop(0)
+            if current is None or current.is_key(key, use_re=use_re):
+                return current
+            queue.append(current.parent)
+        if raise_error:
+            err_mesg = logstr.warn(f"× Not found: <{logstr.file(key)}>")
+            raise ValueError(err_mesg)
+        else:
+            return None
+
     def get_value_by_key(self, key: str, raise_error: bool = False) -> Union[Any, None]:
         child = self.find_child_with_key(key, raise_error=raise_error)
         if child:

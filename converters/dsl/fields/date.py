@@ -256,7 +256,7 @@ class DateExprElasticConverter:
                 "leqs": {"lte": end_ts},
             }
 
-        return {"filter": {"range": {self.DATE_FIELD: op_range.get(op_key, {})}}}
+        return {"range": {self.DATE_FIELD: op_range.get(op_key, {})}}
 
     def convert_list_info_to_elastic_dict(
         self,
@@ -319,7 +319,7 @@ class DateExprElasticConverter:
                 else:
                     es_op_val["lt"] = r_ts_beg
 
-        return {"filter": {"range": {self.DATE_FIELD: es_op_val}}}
+        return {"range": {self.DATE_FIELD: es_op_val}}
 
     def convert_single(self, node: DslExprNode) -> dict:
         val_single = node.find_child_with_key("date_val_single")
@@ -363,8 +363,7 @@ class DateExprElasticConverter:
             op_key = op_val_node.find_child_with_key(
                 "date_op_single"
             ).get_deepest_node_key()
-            elatic_dict = self.convert_single_info_to_elastic_dict(op_key, info)
-            return elatic_dict
+            elastic_dict = self.convert_single_info_to_elastic_dict(op_key, info)
         elif op_val_node.is_key("date_op_val_list"):
             info_list = self.convert_list(op_val_node)
             op_key = op_val_node.find_child_with_key(
@@ -383,7 +382,10 @@ class DateExprElasticConverter:
             elastic_dict = self.convert_list_info_to_elastic_dict(
                 op_key, info_list, lb_key, rb_key
             )
-            return elastic_dict
         else:
             logger.warn(f"× Invalid date_op_val key: {op_val_node.key}")
             return None
+        is_or_node_parent = bool(node.find_parent_with_key("or"))
+        if not is_or_node_parent:
+            elastic_dict = {"filter": elastic_dict}
+        return elastic_dict
