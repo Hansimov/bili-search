@@ -11,8 +11,8 @@ from converters.dsl.fields.word import WordNodeToExprConstructor
 from converters.dsl.fields.bool import BoolElasticReducer
 
 
-class DslExprToElasticConverter(DslTreeExprGrouper):
-    def __init__(self):
+class DslExprToElasticConverter:
+    def __init__(self, verbose: bool = False):
         self.parser = DslLarkParser()
         self.builder = DslTreeBuilder()
         self.grouper = DslTreeExprGrouper()
@@ -21,6 +21,7 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         self.date_converter = DateExprElasticConverter()
         self.user_converter = UserExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
+        self.verbose = verbose
 
     def atom_node_to_elastic_dict(self, node: DslExprNode) -> dict:
         expr_node = node.find_child_with_key(ITEM_EXPRS)
@@ -31,7 +32,7 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         elif expr_node.is_key("word_expr"):
             return self.word_converter.convert(node)
         else:
-            logger.warn(f"× Unknown atom_node: <{expr_node.key}>")
+            logger.warn(f"× Unknown atom_node: <{expr_node.key}>", verbose=self.verbose)
             return {}
 
     def word_cluster_to_bool_clauses(self, node: DslExprNode) -> list[dict]:
@@ -75,7 +76,7 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         elif expr_node.is_key("atom"):
             return self.atom_node_to_elastic_dict(expr_node)
         else:
-            logger.warn(f"× Unknown node: <{expr_node.key}>")
+            logger.warn(f"× Unknown node: <{expr_node.key}>", verbose=self.verbose)
             return {}
 
     def construct_expr_tree(self, expr: str) -> DslExprNode:
@@ -84,12 +85,13 @@ class DslExprToElasticConverter(DslTreeExprGrouper):
         expr_tree = self.grouper.group_dsl_tree_to_expr_tree(dsl_tree)
         return expr_tree
 
-    def convert(self, expr: str) -> dict:
-        expr_tree = self.construct_expr_tree(expr)
+    def expr_tree_to_dict(self, expr_tree: DslExprNode) -> dict:
         expr_tree = self.flatter.flatten(expr_tree)
-        logger.mesg(str(expr_tree), verbose=expr_tree)
-        elastic_dict = {"query": self.node_to_elastic_dict(expr_tree)}
-        return elastic_dict
+        return self.node_to_elastic_dict(expr_tree)
+
+    def expr_to_dict(self, expr: str) -> dict:
+        expr_tree = self.construct_expr_tree(expr)
+        return self.expr_tree_to_dict(expr_tree)
 
 
 class DslTreeToExprConstructor(DslExprToElasticConverter):
@@ -131,26 +133,8 @@ class DslTreeToExprConstructor(DslExprToElasticConverter):
             if node.children:
                 return self.construct(node.first_child)
             else:
-                logger.warn(f"× Unknown expr_tree: <{node.key}>")
+                logger.warn(f"× Unknown expr_tree: <{node.key}>", verbose=self.verbose)
                 return ""
-
-
-class DslExprKeywordsFilterSplitter(DslExprToElasticConverter):
-    def __init__(self):
-        super().__init__()
-        self.expr_constructor = DslTreeToExprConstructor()
-
-    def get_keywords_info(self, expr_tree: DslExprNode) -> dict[str, list[str]]:
-        keywords_expr_tree = expr_tree.filter_atoms_by_keys(["word_expr"])
-        keywords_only_expr = self.expr_constructor.construct(keywords_expr_tree)
-        return {"keywords": keywords_only_expr}
-
-    def split_expr_to_keywords_and_filters(self, expr: str) -> dict:
-        expr_tree = self.construct_expr_tree(expr)
-        keywords_info = self.get_keywords_info(expr_tree)
-        return {
-            **keywords_info,
-        }
 
 
 def test_converter():
@@ -159,15 +143,12 @@ def test_converter():
     from converters.field.test import test_text_strs
     from converters.field.test import test_comb_strs
 
-    elastic_converter = DslExprToElasticConverter()
-    keyword_splitter = DslExprKeywordsFilterSplitter()
+    elastic_converter = DslExprToElasticConverter(verbose=True)
     test_strs = test_text_strs
     for test_str in test_strs:
         logger.note(f"{test_str}")
-        # elastic_dict = elastic_converter.convert(test_str)
-        # logger.mesg(dict_to_str(elastic_dict, add_quotes=True), indent=2)
-        split_dict = keyword_splitter.split_expr_to_keywords_and_filters(test_str)
-        logger.mesg(dict_to_str(split_dict, add_quotes=True), indent=2)
+        elastic_dict = elastic_converter.expr_to_dict(test_str)
+        logger.mesg(dict_to_str(elastic_dict, add_quotes=True), indent=2)
 
 
 if __name__ == "__main__":
