@@ -338,20 +338,31 @@ class HighlightsCounter:
         return res
 
     def calc_group_hword_count_of_hit(
-        self, qwords: list[str], hword_count_of_hit: dict[str, int], hit_score: int = 1
+        self,
+        qwords: list[str],
+        hword_count_of_hit: dict[str, int],
+        hword_qword_chword: dict[str, dict] = None,
+        hit_score: int = 1,
+        match_part: Literal["prefix", "full", "middle"] = "prefix",
     ) -> dict:
         """Examples of `group_hword_qword_count_of_hit` with query `Hongjing 08 2024 xiaokuaidi`:
+        1. If `hword_qword_chword` is not provided:
         ```
         - {'group_hwords': ('08', '红警'), 'count': 1, 'hword_qwords': {'08': ['08'], '红警': ['hongjing']}}
         - {'group_hwords': ('08', '小块地', '红警'), 'count': 1, 'hword_qwords': {'08': ['08'], '小块地': ['xiaokuaidi'], '红警': ['hongjing']}}
         - {'group_hwords': ('08', '小快递', '红警小块地'), 'count': 1, 'hword_qwords': {'08': ['08'], '小快递': ['xiaokuaidi'], '红警小块地': ['hongjing', 'xiaokuaidi']}}
+        - ...
+        ```
+        2. If `hword_qword_chword` is provided:
+        ```
+        {'group_hwords': ('08', '小快递', '小块地', '红警'), 'count': 1, 'hword_qwords': {'08': ['08'], '小快递': ['xiaokuaidi'], '小块地': ['xiaokuaidi'], '红警': ['hongjing']}}
         ```
         """
         qword_hword_count_of_hit = self.calc_qword_hword_count_of_hit(
             qwords,
             hword_count_of_hit=hword_count_of_hit,
             hit_score=hit_score,
-            match_part="prefix",
+            match_part=match_part,
         )
         # sort qword_hword_count_of_hit by hword_count
         qword_hword_count_of_hit = {
@@ -365,7 +376,7 @@ class HighlightsCounter:
         #     qword: dict(list(hword_count_of_hit.items())[:1])
         #     for qword, hword_count_of_hit in qword_hword_count_of_hit.items()
         # }
-        """Examples of `qword_hword_count_of_hit` with query `Hongjing 08 2024 xiaokuaidi`:
+        """Examples of intermediate `qword_hword_count_of_hit` with query `Hongjing 08 2024 xiaokuaidi`:
         - {'hongjing': {'红警': 2}, '08': {'08': 1}}
         - {'hongjing': {'红警': 3}, '08': {'08': 1}, 'xiaokuaidi': {'小块地': 1}}
         - {'hongjing': {'红警小块地': 1}, '08': {'08': 1}, 'xiaokuaidi': {'小快递': 1}}
@@ -376,10 +387,20 @@ class HighlightsCounter:
             for hword, hword_count in hword_count_dict.items():
                 group_hwords_count_dict[hword] += hword_count
         # group hwords to tuple, and get matched qwords for each hword
-        group_hwords = tuple(sorted(list(group_hwords_count_dict.keys())))
-        group_hwords_count = min(
-            group_hwords_count_dict[hword] for hword in group_hwords
-        )
+        # if `hword_qword_chword` is provided, split hwords to chwords
+        hword_keys = list(set(group_hwords_count_dict.keys()))
+        if hword_qword_chword:
+            new_hword_keys = []
+            for hword_key in hword_keys:
+                if hword_key in hword_qword_chword:
+                    qword_chword_dict = hword_qword_chword[hword_key]
+                    new_hword_keys.extend(qword_chword_dict.values())
+                else:
+                    new_hword_keys.append(hword_key)
+            group_hwords = tuple(sorted(set(new_hword_keys)))
+        else:
+            group_hwords = tuple(sorted(set(hword_keys)))
+        group_hwords_count = 1
         group_hword_qword_count_of_hit = {
             "group_hwords": group_hwords,
             "count": group_hwords_count,
@@ -391,6 +412,7 @@ class HighlightsCounter:
         qwords: list[str],
         hword_count_of_hits: list[dict[str, int]],
         qword_hword_count: dict[str, dict[str, int]] = {},
+        hword_qword_chword: dict[str, dict] = None,
         hit_scores: list[int] = [],
         threshold: int = 2,
     ) -> dict[tuple, dict]:
@@ -408,7 +430,10 @@ class HighlightsCounter:
         qwords = list(qword_hword_count.keys())
         for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
             group_hword_count_of_hit = self.calc_group_hword_count_of_hit(
-                qwords, hword_count_of_hit=hword_count_of_hit, hit_score=hit_score
+                qwords=qwords,
+                hword_count_of_hit=hword_count_of_hit,
+                hword_qword_chword=hword_qword_chword,
+                hit_score=hit_score,
             )
             group_hwords_of_hit = group_hword_count_of_hit["group_hwords"]
             count_of_hit = group_hword_count_of_hit["count"]
@@ -442,10 +467,19 @@ class HighlightsCounter:
                     "红警08" : 4
                 }
             },
+            "hword_qwords_maps"  : {
+                "红警": ["hongjing"],
+                "红警08": ["08", "hongjing"],
+                "08": ["08"]
+            },
+            "group_hwords_count" : {
+                ("08","红警"): 20,
+                ("08","红警","红警08"): 2
+            },
             "hwords_str_count": {
                 "红警 08" : 20,
                 "红警08"  : 3
-            }
+            },
         }
         ```
         """
@@ -462,10 +496,12 @@ class HighlightsCounter:
             qwords, hword_count_of_hits, hit_scores=hit_scores, threshold=1
         )
         hword_qwords_maps = self.calc_hword_qwords_maps(qwords, qword_hword_count)
+        hword_qword_chword = self.calc_hword_qword_chword_from_maps(hword_qwords_maps)
         hword_func_params = {
             "qwords": qwords,
             "hword_count_of_hits": hword_count_of_hits,
             "qword_hword_count": qword_hword_count,
+            "hword_qword_chword": hword_qword_chword,
             "hit_scores": hit_scores,
             "threshold": threshold,
         }
