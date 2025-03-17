@@ -65,7 +65,7 @@ class PinyinHighlighter:
         return matched_indices
 
     def highlight_keyword(
-        self, keyword: str, text: str, tag: str = "em", verbose: bool = False
+        self, keyword: str, text: str, tag: str = "hit", verbose: bool = False
     ) -> Union[str, None]:
         if not keyword:
             return None
@@ -102,7 +102,7 @@ class PinyinHighlighter:
         self,
         keywords: Union[str, list[str]],
         text: str,
-        tag: str = "em",
+        tag: str = "hit",
         verbose: bool = False,
     ):
         if isinstance(keywords, str):

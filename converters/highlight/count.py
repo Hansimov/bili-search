@@ -1,14 +1,18 @@
+import re
+
 from collections import defaultdict
 from typing import Union, Literal
 
 from converters.query.punct import Puncter
 from converters.query.pinyin import ChinesePinyinizer
+from converters.highlight.pinyin import PinyinHighlighter
 
 
 class HighlightsCounter:
     def __init__(self):
         self.puncter = Puncter(non_specials="-")
         self.pinyinizer = ChinesePinyinizer()
+        self.highlighter = PinyinHighlighter()
 
     def qword_match_hword(self, qword: str, hword: str) -> dict[str, bool]:
         is_match = {"prefix": False, "full": False, "middle": False}
@@ -36,6 +40,34 @@ class HighlightsCounter:
             if self.qword_match_hword(qword, hword)[match_part]:
                 matched_qwords.append(qword)
         return matched_qwords
+
+    def calc_hword_qword_chword(self, hword: str, qwords: list[str]) -> dict[str, dict]:
+        """Input:
+        ```
+        hword = "红警小块地"
+        qwords = ["hongjing", "xiaokuaidi"]
+        ```
+        Output:
+        ` { "红警小块地": { "hongjing": "红警", "xiaokuaidi": "小块地" } }`
+        """
+        qword_chword_dict = {}
+        tag = "hit"
+        hpattern = f"<{tag}>(.*?)</{tag}>"
+        for qword in qwords:
+            htext = self.highlighter.highlight(qword, hword, tag=tag)
+            chword = re.findall(hpattern, htext)[0]
+            if chword:
+                qword_chword_dict[qword] = chword
+        return {hword: qword_chword_dict}
+
+    def calc_hword_qword_chword_from_maps(
+        self, hword_qwords_maps: dict[str, list[str]]
+    ) -> dict[str, dict]:
+        hword_qword_chword = {}
+        for hword, qwords in hword_qwords_maps.items():
+            if len(qwords) > 1:
+                hword_qword_chword.update(self.calc_hword_qword_chword(hword, qwords))
+        return hword_qword_chword
 
     def filter_hword_qword_tuples(
         self,
