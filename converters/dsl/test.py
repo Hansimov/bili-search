@@ -1,3 +1,6 @@
+from tclogger import logger, dict_to_str
+from converters.dsl.rewrite import DslExprRewriter
+
 date_queries = [
     "日期=1d",
     "dt= =1小时",
@@ -74,6 +77,12 @@ comp_queries = [
     "《影视飓风》 :date=2024-01-01 :view>=1w",
 ]
 
+rewrite_queries = [
+    "yingshi ju",
+    "hongjing (08 | 月亮3)",
+    "hongjing 08 2024 :view>=1w",
+]
+
 
 queries = [
     # *date_queries,
@@ -83,5 +92,19 @@ queries = [
     # *region_queries,
     # *word_queries,
     # *bool_queries,
-    *comp_queries,
+    # *comp_queries,
+    *rewrite_queries,
 ]
+
+
+def test_rewriter():
+    rewriter = DslExprRewriter()
+    for query in rewrite_queries:
+        query_info = rewriter.get_query_info(query)
+        logger.mesg(dict_to_str(query_info), indent=2)
+
+
+if __name__ == "__main__":
+    test_rewriter()
+
+    # python -m converters.dsl.test

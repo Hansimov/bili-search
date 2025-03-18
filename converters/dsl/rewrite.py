@@ -95,18 +95,3 @@ class DslExprRewriter:
             "rewrited": False,
         }
         return rewrite_info
-
-
-def test_rewriter():
-    from converters.dsl.test import rewrite_queries
-
-    rewriter = DslExprRewriter()
-    for query in rewrite_queries:
-        query_info = rewriter.get_query_info(query)
-        logger.mesg(dict_to_str(query_info), indent=2)
-
-
-if __name__ == "__main__":
-    test_rewriter()
-
-    # python -m converters.dsl.rewrite
