@@ -33,6 +33,9 @@ class DslNode:
         self.children = children or []
         self.extras = {}
 
+    def copy(self) -> "DslNode":
+        return deepcopy(self)
+
     def get_key_logstr(self, level: int = 0):
         return self.KEY_LOGSTRS.get(level % len(self.KEY_LOGSTRS), logstr.note)
 
@@ -51,13 +54,18 @@ class DslNode:
         for child in node.children:
             self.recursive_log_node(child, level=level + 1)
 
-    def __str__(self):
+    def yaml(self):
         self.node_str = ""
         self.recursive_log_node(self, level=0)
         return self.node_str
 
     def __repr__(self):
-        return self.__str__()
+        atom_nodes = self.find_all_childs_with_key("atom")
+        word_expr_num = sum(
+            1 for atom_node in atom_nodes if atom_node.first_child_key == "word_expr"
+        )
+        other_expr_num = len(atom_nodes) - word_expr_num
+        return f"<DslNode> ({word_expr_num} word_exprs, {other_expr_num} filters)"
 
     @property
     def first_child(self) -> Union["DslNode", None]:
@@ -166,17 +174,31 @@ class DslNode:
             key: self.get_value_by_key(key, raise_error=raise_error) for key in keys
         }
 
-    def get_deepest_node_value(self) -> str:
+    def get_deepest_node(self) -> "DslNode":
         if not self.children:
-            return self.value
+            return self
         else:
-            return self.first_child.get_deepest_node_value()
+            return self.first_child.get_deepest_node()
 
     def get_deepest_node_key(self) -> str:
         if not self.children:
             return self.key
         else:
             return self.first_child.get_deepest_node_key()
+
+    def set_deepest_node_key(self, key: str):
+        deepest_node = self.get_deepest_node()
+        deepest_node.key = key
+
+    def get_deepest_node_value(self) -> str:
+        if not self.children:
+            return self.value
+        else:
+            return self.first_child.get_deepest_node_value()
+
+    def set_deepest_node_value(self, value: str):
+        deepest_node = self.get_deepest_node()
+        deepest_node.value = value
 
     def is_start(self):
         return self.key == START_EXPR
@@ -328,7 +350,7 @@ class DslExprNode(DslNode):
     def filter_atoms_by_keys(
         self, include_keys: list[str] = [], exclude_keys: list[str] = []
     ) -> "DslExprNode":
-        new_node = deepcopy(self)
+        new_node = self.copy()
         atom_nodes = new_node.find_all_childs_with_key("atom")
         for atom_node in atom_nodes:
             atom_key = atom_node.first_child_key
