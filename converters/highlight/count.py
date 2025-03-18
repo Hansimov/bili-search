@@ -162,6 +162,26 @@ class HighlightsCounter:
                     hwords_containing_all_qwords[hword] = hword_count
         return hwords_containing_all_qwords
 
+    def hwords_to_tuple(
+        self, hwords: list[str], hword_count_qword: dict[str, int]
+    ) -> tuple[str]:
+        # only keep the highest-freq hword for each qword
+        qword_hword_dict = {}
+        for hword in hwords:
+            if hword in hword_count_qword:
+                count, qword = hword_count_qword[hword]
+            else:
+                continue
+            if qword not in qword_hword_dict:
+                qword_hword_dict[qword] = (hword, count)
+            else:
+                _, old_count = qword_hword_dict[qword]
+                if count > old_count:
+                    qword_hword_dict[qword] = (hword, count)
+        hwords = [hword for hword, _ in qword_hword_dict.values()]
+        hwords_tuple = tuple(sorted(hwords))
+        return hwords_tuple
+
     def get_hword_count_of_hits(
         self,
         hits: list[dict],
@@ -399,9 +419,8 @@ class HighlightsCounter:
                     new_hword_keys.extend(qword_chword_dict.values())
                 else:
                     new_hword_keys.append(hword_key)
-            group_hwords = tuple(sorted(set(new_hword_keys)))
-        else:
-            group_hwords = tuple(sorted(set(hword_keys)))
+            hword_keys = new_hword_keys
+        group_hwords = self.hwords_to_tuple(hword_keys, hword_count_qword)
         group_hwords_count = 1
         group_hword_qword_count_of_hit = {
             "group_hwords": group_hwords,
@@ -430,10 +449,15 @@ class HighlightsCounter:
         """
         group_hwords_count = defaultdict(int)
         qwords = list(qword_hword_count.keys())
+        hword_count_qword: dict[str, tuple[int, str]] = {}
+        for qword, hword_count in qword_hword_count.items():
+            for hword, count in hword_count.items():
+                hword_count_qword[hword] = (count, qword)
         for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
-            group_hword_count_of_hit = self.calc_group_hword_count_of_hit(
+            group_hword_count_of_hit = self.calc_group_hwords_count_of_hit(
                 qwords=qwords,
                 hword_count_of_hit=hword_count_of_hit,
+                hword_count_qword=hword_count_qword,
                 hword_qword_chword=hword_qword_chword,
                 hit_score=hit_score,
             )
