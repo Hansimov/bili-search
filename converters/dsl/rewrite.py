@@ -1,4 +1,4 @@
-from tclogger import logger, dict_to_str, tcdatetime, get_now
+from tclogger import tcdatetime, get_now
 
 from converters.dsl.node import DslExprNode
 from converters.dsl.elastic import DslExprToElasticConverter, DslTreeToExprConstructor
@@ -60,31 +60,48 @@ class DslExprRewriter:
         self.expr_constructor = DslTreeToExprConstructor()
         self.word_expander = WordNodeExpander()
 
-    def get_keywords_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
+    def get_words_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
         word_nodes = expr_tree.find_all_childs_with_key("word_val_single")
-        keywords_body = []
-        keywords_date = []
+        words_body = []
+        words_date = []
         for word_node in word_nodes:
-            keyword = word_node.get_deepest_node_value()
+            word = word_node.get_deepest_node_value()
             if word_node.extras.get("is_date_format", False):
-                keywords_date.append(keyword)
+                words_date.append(word)
             else:
-                keywords_body.append(keyword)
+                words_body.append(word)
         return {
-            "keywords_body": keywords_body,
-            "keywords_date": keywords_date,
+            "keywords_body": words_body,
+            "keywords_date": words_date,
         }
 
-    def get_query_info(self, expr: str) -> dict[str, list[str]]:
+    def replace_words_in_expr_tree(
+        self, expr_tree: DslExprNode, qword_hword_dict: dict[str, str]
+    ) -> DslExprNode:
+        """Rewrite the expr tree with the given qword_hword_dict."""
+        new_expr_tree = expr_tree.copy()
+        word_nodes = new_expr_tree.find_all_childs_with_key("word_val_single")
+        for word_node in word_nodes:
+            word = word_node.get_deepest_node_value().lower()
+            if word in qword_hword_dict:
+                new_word = qword_hword_dict[word]
+                word_node.set_deepest_node_value(new_word)
+        return new_expr_tree
+
+    def expr_to_tree(self, expr: str) -> DslExprNode:
         expr_tree = self.elastic_converter.construct_expr_tree(expr)
         expr_tree = self.word_expander.expand_expr_tree(expr_tree)
-        keywords_expr_tree = expr_tree.filter_atoms_by_keys(include_keys=["word_expr"])
-        keywords_dict = self.get_keywords_from_expr_tree(keywords_expr_tree)
-        keywords_expr = self.expr_constructor.construct(keywords_expr_tree)
+        return expr_tree
+
+    def get_query_info(self, expr: str) -> dict[str, list[str]]:
+        expr_tree = self.expr_to_tree(expr)
+        words_expr_tree = expr_tree.filter_atoms_by_keys(include_keys=["word_expr"])
+        words_dict = self.get_words_from_expr_tree(words_expr_tree)
+        words_expr = self.expr_constructor.construct(words_expr_tree)
         return {
             "query": expr,
-            "keywords_expr": keywords_expr,
-            **keywords_dict,
+            "words_expr": words_expr,
+            **words_dict,
             "query_expr_tree": expr_tree,
         }
 
