@@ -160,7 +160,7 @@ class VideoHitsParser:
             )
             is_hit_ignored = (
                 drop_no_highlights
-                and (match_type == "most_fields" and match_operator == "or")
+                # and (match_type == "most_fields" and match_operator == "or")
                 and ((not common_highlights) and (not pinyin_highlights))
             )
             if is_hit_ignored:
