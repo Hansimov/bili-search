@@ -108,7 +108,35 @@ class DslExprRewriter:
     def rewrite(
         self, query_info: dict = {}, suggest_info: dict = {}, threshold: int = 2
     ) -> dict:
-        rewrite_info = {
-            "rewrited": False,
-        }
+        rewrite_info = {"rewrited": False}
+        if not query_info or not suggest_info:
+            return rewrite_info
+        # expr_tree = query_info["query_expr_tree"]
+        query = query_info["query"]
+        expr_tree = self.expr_to_tree(query)
+        group_hwords_count = suggest_info.get("group_hwords_count", {})
+        hword_count_qword = suggest_info.get("hword_count_qword", {})
+        rewrited_expr_trees = []
+        rewrited_word_exprs = []
+        for group_hwords, group_count in group_hwords_count.items():
+            # replace qword with hword in expr_tree
+            qword_hword_dict = {
+                hword_count_qword[hword][1]: hword for hword in group_hwords
+            }
+            rewrited_expr_tree = self.replace_words_in_expr_tree(
+                expr_tree, qword_hword_dict=qword_hword_dict
+            )
+            rewrited_expr_trees.append(rewrited_expr_tree)
+            # only keep word_expr atoms for expr display
+            rewrited_word_expr_tree = rewrited_expr_tree.filter_atoms_by_keys(
+                include_keys=["word_expr"]
+            )
+            rewrited_word_expr = self.expr_constructor.construct(
+                rewrited_word_expr_tree
+            )
+            rewrited_word_exprs.append(rewrited_word_expr)
+        rewrite_info["rewrited_expr_trees"] = rewrited_expr_trees
+        rewrite_info["rewrited_word_exprs"] = rewrited_word_exprs
+        if rewrited_word_exprs:
+            rewrite_info["rewrited"] = True
         return rewrite_info

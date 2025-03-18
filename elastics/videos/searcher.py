@@ -665,11 +665,7 @@ class VideoSearcherV2(VideoSearcherV1):
         self.suggest_parser = SuggestInfoParser("v2")
 
     def rewrite_with_suggest(self, query_info: dict, suggest_info: dict) -> dict:
-        if suggest_info:
-            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
-        else:
-            rewrite_info = {}
-        return rewrite_info
+        return self.query_rewriter.rewrite(query_info, suggest_info)
 
     def suggest_and_rewrite(
         self,
@@ -684,9 +680,7 @@ class VideoSearcherV2(VideoSearcherV1):
             suggest_info = self.suggest_parser.parse(
                 qwords=qwords, hits=return_res["hits"]
             )
-            rewrite_info = self.query_rewriter.rewrite(
-                query_info=query_info, suggest_info=suggest_info
-            )
+            rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
         else:
             suggest_info = suggest_info or {}
             rewrite_info = rewrite_info or {}
