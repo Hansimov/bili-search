@@ -292,6 +292,15 @@ class HighlightsCounter:
         }
         return res
 
+    def calc_hword_count_qword(
+        self, qword_hword_count: dict[str, dict[str, int]]
+    ) -> dict[str, tuple[int, str]]:
+        hword_count_qword = {}
+        for qword, hword_count in qword_hword_count.items():
+            for hword, count in hword_count.items():
+                hword_count_qword[hword] = (count, qword)
+        return hword_count_qword
+
     def calc_hword_qwords_maps(
         self, qwords: list[str], qword_hword_count: dict[str, dict[str, int]]
     ) -> dict[str, list[str]]:
@@ -432,7 +441,7 @@ class HighlightsCounter:
         self,
         qwords: list[str],
         hword_count_of_hits: list[dict[str, int]],
-        qword_hword_count: dict[str, dict[str, int]] = {},
+        hword_count_qword: dict[str, tuple[int, str]] = {},
         hword_qword_chword: dict[str, dict] = None,
         hit_scores: list[int] = [],
         threshold: int = 2,
@@ -448,11 +457,6 @@ class HighlightsCounter:
         ```
         """
         group_hwords_count = defaultdict(int)
-        qwords = list(qword_hword_count.keys())
-        hword_count_qword: dict[str, tuple[int, str]] = {}
-        for qword, hword_count in qword_hword_count.items():
-            for hword, count in hword_count.items():
-                hword_count_qword[hword] = (count, qword)
         for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
             group_hword_count_of_hit = self.calc_group_hwords_count_of_hit(
                 qwords=qwords,
@@ -468,6 +472,12 @@ class HighlightsCounter:
         group_hwords_count = dict(
             sorted(dict(group_hwords_count).items(), key=lambda x: x[1], reverse=True)
         )
+        # filter group_hwords_count by threshold
+        group_hwords_count = {
+            group_hwords: count
+            for group_hwords, count in group_hwords_count.items()
+            if count >= threshold
+        }
         return group_hwords_count
 
     def count_keywords(
@@ -523,10 +533,11 @@ class HighlightsCounter:
         )
         hword_qwords_maps = self.calc_hword_qwords_maps(qwords, qword_hword_count)
         hword_qword_chword = self.calc_hword_qword_chword_from_maps(hword_qwords_maps)
+        hword_count_qword = self.calc_hword_count_qword(qword_hword_count)
         hword_func_params = {
             "qwords": qwords,
             "hword_count_of_hits": hword_count_of_hits,
-            "qword_hword_count": qword_hword_count,
+            "hword_count_qword": hword_count_qword,
             "hword_qword_chword": hword_qword_chword,
             "hit_scores": hit_scores,
             "threshold": threshold,
@@ -535,6 +546,7 @@ class HighlightsCounter:
         res = {
             "qword_hword_count": qword_hword_count,
             "hword_qwords_maps": hword_qwords_maps,
+            "hword_count_qword": hword_count_qword,
             "group_hwords_count": group_hwords_count,
         }
         # this field is only useful in VideoSearcherV1 with regex
