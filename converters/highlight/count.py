@@ -54,10 +54,16 @@ class HighlightsCounter:
         tag = "hit"
         hpattern = f"<{tag}>(.*?)</{tag}>"
         for qword in qwords:
+            # text match
+            if qword in hword:
+                qword_chword_dict[qword] = qword
+                continue
+            # pinyin match
             htext = self.highlighter.highlight(qword, hword, tag=tag)
-            chword = re.findall(hpattern, htext)[0]
-            if chword:
-                qword_chword_dict[qword] = chword
+            if htext:
+                chword = re.findall(hpattern, htext)[0]
+                if chword:
+                    qword_chword_dict[qword] = chword
         return {hword: qword_chword_dict}
 
     def calc_hword_qword_chword_from_maps(
@@ -203,7 +209,6 @@ class HighlightsCounter:
         qwords: list[str],
         hword_count_of_hit: dict[str, int],
         hit_score: Union[int, float] = 1,
-        match_part: Literal["prefix", "full", "middle"] = "prefix",
         res: dict[str, dict[str, int]] = None,
     ) -> dict[str, dict[str, int]]:
         """Example of output:
@@ -219,7 +224,7 @@ class HighlightsCounter:
         for hword, hword_count in hword_count_of_hit.items():
             hword = hword.lower().replace(" ", "")
             for qword in qwords:
-                if len(qwords) == 1 or self.qword_match_hword(qword, hword)[match_part]:
+                if len(qwords) == 1 or self.qword_match_hword(qword, hword)["middle"]:
                     res[qword] = res.get(qword, {})
                     res[qword][hword] = (
                         res[qword].get(hword, 0) + hword_count * hit_score
@@ -337,13 +342,13 @@ class HighlightsCounter:
         res = dict(sorted(res.items(), key=lambda x: x[1], reverse=True))
         return res
 
-    def calc_group_hword_count_of_hit(
+    def calc_group_hwords_count_of_hit(
         self,
         qwords: list[str],
         hword_count_of_hit: dict[str, int],
+        hword_count_qword: dict[str, tuple[int, str]],
         hword_qword_chword: dict[str, dict] = None,
         hit_score: int = 1,
-        match_part: Literal["prefix", "full", "middle"] = "prefix",
     ) -> dict:
         """Examples of `group_hword_qword_count_of_hit` with query `Hongjing 08 2024 xiaokuaidi`:
         1. If `hword_qword_chword` is not provided:
@@ -359,10 +364,7 @@ class HighlightsCounter:
         ```
         """
         qword_hword_count_of_hit = self.calc_qword_hword_count_of_hit(
-            qwords,
-            hword_count_of_hit=hword_count_of_hit,
-            hit_score=hit_score,
-            match_part=match_part,
+            qwords, hword_count_of_hit=hword_count_of_hit, hit_score=hit_score
         )
         # sort qword_hword_count_of_hit by hword_count
         qword_hword_count_of_hit = {
