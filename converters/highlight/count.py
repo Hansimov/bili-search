@@ -41,6 +41,22 @@ class HighlightsCounter:
                 matched_qwords.append(qword)
         return matched_qwords
 
+    def get_chwords_in_hword_of_qword(self, hword: str, qword: str) -> list[str]:
+        """Input: `hword = "红警小块地", qword = "hongjing"`
+        Output: `"红警"`
+        """
+        chwords = []
+        if qword in hword:
+            hpattern = f"{qword}[a-zA-Z0-9_]*"
+            chwords = re.findall(hpattern, hword)
+        else:
+            tag = "hit"
+            htext = self.highlighter.highlight(qword, hword, tag=tag)
+            if htext:
+                hpattern = f"<{tag}>(.*?)</{tag}>"
+                chwords = re.findall(hpattern, htext)
+        return chwords
+
     def calc_hword_qword_chword(self, hword: str, qwords: list[str]) -> dict[str, dict]:
         """Input:
         ```
@@ -251,6 +267,38 @@ class HighlightsCounter:
                     )
         return res
 
+    def calc_qword_chword_count_of_hit(
+        self,
+        qwords: list[str],
+        hword_count_of_hit: dict[str, int],
+        hit_score: Union[int, float] = 1,
+        res: dict[str, dict[str, int]] = None,
+    ) -> dict[str, dict[str, int]]:
+        """Example of output:
+        ```json
+        {
+            "hongjing": { "红警": 2 },
+            "08": { "08": 3 }
+        }
+        ```
+
+        The main difference between `qword_chword_count` and `qword_hword_count` is that:
+        It uses chword (instead of hword) as sub keys, which is the full-matched part of hword with qword.
+        """
+        if res is None:
+            res = {}
+        for hword, hword_count in hword_count_of_hit.items():
+            hword = hword.lower().replace(" ", "")
+            for qword in qwords:
+                if len(qwords) == 1 or self.qword_match_hword(qword, hword)["middle"]:
+                    res[qword] = res.get(qword, {})
+                    chwords = self.get_chwords_in_hword_of_qword(hword, qword)
+                    for chword in chwords:
+                        res[qword][chword] = (
+                            res[qword].get(chword, 0) + hword_count * hit_score
+                        )
+        return res
+
     def calc_qword_hword_count(
         self,
         qwords: list[str],
@@ -276,7 +324,7 @@ class HighlightsCounter:
         """
         res: dict[str, dict[str, int]] = {}
         for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
-            res = self.calc_qword_hword_count_of_hit(
+            res = self.calc_qword_chword_count_of_hit(
                 qwords,
                 hword_count_of_hit=hword_count_of_hit,
                 hit_score=hit_score,
@@ -392,7 +440,7 @@ class HighlightsCounter:
         {'group_hwords': ('08', '小快递', '小块地', '红警'), 'count': 1, 'hword_qwords': {'08': ['08'], '小快递': ['xiaokuaidi'], '小块地': ['xiaokuaidi'], '红警': ['hongjing']}}
         ```
         """
-        qword_hword_count_of_hit = self.calc_qword_hword_count_of_hit(
+        qword_hword_count_of_hit = self.calc_qword_chword_count_of_hit(
             qwords, hword_count_of_hit=hword_count_of_hit, hit_score=hit_score
         )
         # sort qword_hword_count_of_hit by hword_count

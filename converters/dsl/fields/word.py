@@ -83,7 +83,7 @@ class WordExprElasticConverter:
             op = op_node.find_child_with_key(WORD_OPS).get_deepest_node_key()
 
         if op == "eq":
-            elastic_dict = match_dict
+            elastic_dict = {"bool": {"must": match_dict}}
         elif op == "neq":
             elastic_dict = {"bool": {"must_not": match_dict}}
         elif op == "qs":
