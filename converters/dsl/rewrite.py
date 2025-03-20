@@ -79,6 +79,8 @@ class DslExprRewriter:
         self, expr_tree: DslExprNode, qword_hword_dict: dict[str, str]
     ) -> DslExprNode:
         """Rewrite the expr tree with the given qword_hword_dict."""
+        if not qword_hword_dict:
+            return expr_tree
         new_expr_tree = expr_tree.copy()
         word_nodes = new_expr_tree.find_all_childs_with_key("word_val_single")
         for word_node in word_nodes:
@@ -108,7 +110,7 @@ class DslExprRewriter:
     def rewrite(
         self, query_info: dict = {}, suggest_info: dict = {}, threshold: int = 2
     ) -> dict:
-        rewrite_info = {"rewrited": False}
+        rewrite_info = {"rewrited": False, "is_original_in_rewrites": False}
         if not query_info or not suggest_info:
             return rewrite_info
         # expr_tree = query_info["query_expr_tree"]
@@ -117,7 +119,11 @@ class DslExprRewriter:
         group_replaces_count = suggest_info.get("group_replaces_count", {})
         rewrited_expr_trees = []
         rewrited_word_exprs = []
-        for group_replaces, group_count in group_replaces_count.items():
+        for group_replaces, group_count in group_replaces_count:
+            # this line is used in frontend to check if original query is in rewrites,
+            # to determine whether the original query should be displayed or not in rewrite options
+            if len(group_replaces) == 0:
+                rewrite_info["is_original_in_rewrites"] = True
             # replace qword with hword in expr_tree
             qword_hword_dict = {}
             for i in range(0, len(group_replaces), 2):
