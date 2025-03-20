@@ -127,8 +127,8 @@ class VideoHitsParser:
         }
         ```
         """
-        qwords = query_info["keywords_body"]
-        query = query_info["query"]
+        qwords = query_info.get("keywords_body", None)
+        query = query_info.get("query", None)
         if not res_dict:
             hits_info = {
                 "query": query,

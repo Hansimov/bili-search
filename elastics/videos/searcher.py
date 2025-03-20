@@ -270,6 +270,9 @@ class VideoSearcherV1:
             search_body = {**rrf_dsl_dict, **common_params}
         return search_body
 
+    def post_process_return_res(self, return_res: dict) -> dict:
+        return return_res
+
     def search(
         self,
         query: str,
@@ -377,6 +380,7 @@ class VideoSearcherV1:
             request_type=request_type,
             return_res=return_res,
         )
+        return_res = self.post_process_return_res(return_res)
         # exit quiet
         logger.exit_quiet(not verbose)
         return return_res
@@ -592,7 +596,7 @@ class VideoSearcherV1:
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
         if parse_hits:
-            return_res = self.hit_parser.parse("", [], res_dict, request_type="random")
+            return_res = self.hit_parser.parse({}, [], res_dict, request_type="random")
         else:
             return_res = res_dict
         logger.exit_quiet(not verbose)
@@ -619,7 +623,7 @@ class VideoSearcherV1:
         res = self.es.client.search(index=self.index_name, body=search_body)
         res_dict = res.body
         if parse_hits:
-            return_res = self.hit_parser.parse("", [], res_dict, request_type="latest")
+            return_res = self.hit_parser.parse({}, [], res_dict, request_type="latest")
         else:
             return_res = res_dict
         logger.exit_quiet(not verbose)
@@ -722,6 +726,12 @@ class VideoSearcherV2(VideoSearcherV1):
         query_dsl_dict = self.filter_merger.merge(query_dsl_dict, extra_filters)
         logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
         return query_info, rewrite_info, query_dsl_dict
+
+    def post_process_return_res(self, return_res: dict) -> dict:
+        """Remove some non-jsonable items from return_res."""
+        return_res["query_info"].pop("query_expr_tree", None)
+        return_res["rewrite_info"].pop("rewrited_expr_trees", None)
+        return return_res
 
 
 VideoSearcher = VideoSearcherV2
