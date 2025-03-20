@@ -137,16 +137,16 @@ SEARCH_DETAIL_LEVELS = {
             {"range": {"stat.view": {"gte": 1000}}},
             {"range": {"stat.coin": {"gte": 10}}},
         ],
-        "timeout": 3,
+        "timeout": 4,
     },
     3: {
-        "match_type": "phrase",
+        "match_type": SEARCH_MATCH_TYPE,
         "bool": SEARCH_MATCH_BOOL,
         "filters": [
-            {"range": {"stat.view": {"gte": 10000}}},
-            {"range": {"stat.coin": {"gte": 15}}},
+            {"range": {"stat.view": {"gte": 2500}}},
+            {"range": {"stat.coin": {"gte": 10}}},
         ],
-        "timeout": 4,
+        "timeout": 6,
     },
 }
 MAX_SEARCH_DETAIL_LEVEL = 3

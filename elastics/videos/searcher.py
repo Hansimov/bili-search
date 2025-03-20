@@ -13,6 +13,7 @@ from converters.query.field import is_pinyin_field, deboost_field
 from converters.query.field import remove_suffixes_from_fields
 from converters.dsl.rewrite import DslExprRewriter
 from converters.dsl.elastic import DslExprToElasticConverter
+from converters.dsl.filter import QueryDslDictFilterMerger
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -127,9 +128,9 @@ class VideoSearcherV1:
                 search_body["timeout"] = f"{timeout_str}ms"
             else:
                 logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
-        logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
+        logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
 
         logger.note(f"> Get search results by query:", end=" ")
         logger.mesg(f"[{query_info['query']}]")
@@ -662,6 +663,7 @@ class VideoSearcherV2(VideoSearcherV1):
         self.hit_parser = VideoHitsParser()
         self.query_rewriter = DslExprRewriter()
         self.elastic_converter = DslExprToElasticConverter()
+        self.filter_merger = QueryDslDictFilterMerger()
         self.suggest_parser = SuggestInfoParser("v2")
 
     def rewrite_with_suggest(self, query_info: dict, suggest_info: dict) -> dict:
@@ -716,7 +718,9 @@ class VideoSearcherV2(VideoSearcherV1):
             match_type=match_type,
         )
         query_dsl_dict = self.elastic_converter.expr_tree_to_dict(rewrited_expr_tree)
-        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
+        # merge extra_filters to query_dsl_dict
+        query_dsl_dict = self.filter_merger.merge(query_dsl_dict, extra_filters)
+        logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
         return query_info, rewrite_info, query_dsl_dict
 
 

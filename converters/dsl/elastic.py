@@ -56,7 +56,7 @@ class DslExprToElasticConverter:
             else:
                 for child in node.children:
                     bool_clauses.append(self.node_to_elastic_dict(child))
-            return self.reducer.reduce_bool_clauses(bool_clauses)
+            return self.reducer.reduce_co_bool_clauses(bool_clauses)
         elif node.is_key("or"):
             shoulds = []
             for child in node.children:
