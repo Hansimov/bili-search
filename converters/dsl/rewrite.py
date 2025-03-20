@@ -114,15 +114,17 @@ class DslExprRewriter:
         # expr_tree = query_info["query_expr_tree"]
         query = query_info["query"]
         expr_tree = self.expr_to_tree(query)
-        group_hwords_count = suggest_info.get("group_hwords_count", {})
-        hword_count_qword = suggest_info.get("hword_count_qword", {})
+        group_replaces_count = suggest_info.get("group_replaces_count", {})
         rewrited_expr_trees = []
         rewrited_word_exprs = []
-        for group_hwords, group_count in group_hwords_count.items():
+        for group_replaces, group_count in group_replaces_count.items():
             # replace qword with hword in expr_tree
-            qword_hword_dict = {
-                hword_count_qword[hword][1]: hword for hword in group_hwords
-            }
+            qword_hword_dict = {}
+            for i in range(0, len(group_replaces), 2):
+                # loop over group_replaces by pairs
+                qword = group_replaces[i]
+                hword = group_replaces[i + 1]
+                qword_hword_dict[qword] = hword
             rewrited_expr_tree = self.replace_words_in_expr_tree(
                 expr_tree, qword_hword_dict=qword_hword_dict
             )
