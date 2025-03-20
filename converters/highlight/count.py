@@ -272,6 +272,7 @@ class HighlightsCounter:
         qwords: list[str],
         hword_count_of_hit: dict[str, int],
         hit_score: Union[int, float] = 1,
+        sort: bool = True,
         res: dict[str, dict[str, int]] = None,
     ) -> dict[str, dict[str, int]]:
         """Example of output:
@@ -297,6 +298,14 @@ class HighlightsCounter:
                         res[qword][chword] = (
                             res[qword].get(chword, 0) + hword_count * hit_score
                         )
+        # sort by hword_count
+        if sort:
+            res = {
+                qword: dict(
+                    sorted(hword_count_of_hit.items(), key=lambda x: x[1], reverse=True)
+                )
+                for qword, hword_count_of_hit in res.items()
+            }
         return res
 
     def calc_qword_hword_count(
@@ -443,13 +452,6 @@ class HighlightsCounter:
         qword_hword_count_of_hit = self.calc_qword_chword_count_of_hit(
             qwords, hword_count_of_hit=hword_count_of_hit, hit_score=hit_score
         )
-        # sort qword_hword_count_of_hit by hword_count
-        qword_hword_count_of_hit = {
-            qword: dict(
-                sorted(hword_count_of_hit.items(), key=lambda x: x[1], reverse=True)
-            )
-            for qword, hword_count_of_hit in qword_hword_count_of_hit.items()
-        }
         # # pick hword with highest hword_count for each qword
         # qword_hword_count_of_hit = {
         #     qword: dict(list(hword_count_of_hit.items())[:1])
@@ -528,6 +530,88 @@ class HighlightsCounter:
         }
         return group_hwords_count
 
+    def calc_group_replaces_count_of_hit(
+        self,
+        qwords: list[str],
+        hword_count_of_hit: dict[str, int],
+        hit_score: int = 1,
+    ) -> dict:
+        """Example of `group_replaces_count_of_hit`:
+        ```json
+        {
+            "group_replaces": ("xiaokuaidi", "小块地", "hongjing", "红警"),
+            "count": 1
+        },
+        ```
+        """
+        qword_hword_count_of_hit = self.calc_qword_chword_count_of_hit(
+            qwords, hword_count_of_hit=hword_count_of_hit, hit_score=hit_score
+        )
+        # pick the highest replaces of qword-hword pairs
+        # the qword_hword_count_of_hit is already sorted by hword_count
+        qword_hword_pairs: list[tuple] = []
+        for qword, hword_count_dict in qword_hword_count_of_hit.items():
+            hword = list(hword_count_dict.keys())[0]
+            # only keep qword-hword pairs that are different
+            # this is used for later qword rewriting
+            if qword == hword:
+                continue
+            qword_hword_pairs.append((qword, hword))
+        # sort qword-hword pairs by qwords order
+        qword_hword_pairs = sorted(qword_hword_pairs, key=lambda x: qwords.index(x[0]))
+        # flatten list[tuple] to tuple
+        group_replaces = tuple([item for pair in qword_hword_pairs for item in pair])
+        group_replaces_count = 1
+        group_replaces_count_of_hit = {
+            "group_replaces": group_replaces,
+            "count": group_replaces_count,
+        }
+        return group_replaces_count_of_hit
+
+    def calc_group_replaces_count(
+        self,
+        qwords: list[str],
+        hword_count_of_hits: list[dict[str, int]],
+        hit_scores: list[int] = [],
+        threshold: int = 2,
+    ) -> dict[tuple, int]:
+        """Example of `group_replaces_count`:
+        ```json
+        {
+            ("xiaokuaidi", "小块地", "hongjing", "红警"): 12,
+            ("xiaokuaidi", "小快递", "hongjing", "红警"): 6,
+            ("hongjing", "红警"): 2,
+        },
+        ```
+
+        The keys are tuple of qword-hword pairs, and the values are the count of co-occurrence of the qword-hword pairs.
+        """
+        group_replaces_count = defaultdict(int)
+        for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
+            group_replaces_count_of_hit = self.calc_group_replaces_count_of_hit(
+                qwords=qwords,
+                hword_count_of_hit=hword_count_of_hit,
+                hit_score=hit_score,
+            )
+            group_replaces = group_replaces_count_of_hit["group_replaces"]
+            count_of_hit = group_replaces_count_of_hit["count"]
+            group_replaces_count[group_replaces] += count_of_hit
+        # sort group_replaces_count by count
+        group_replaces_count = dict(
+            sorted(dict(group_replaces_count).items(), key=lambda x: x[1], reverse=True)
+        )
+        # filter group_replaces_count by threshold
+        # also ensure max_count >= threshold
+        if group_replaces_count:
+            max_count = list(group_replaces_count.values())[0]
+            if max_count >= threshold:
+                group_replaces_count = {
+                    group_replaces: count
+                    for group_replaces, count in group_replaces_count.items()
+                    if count >= threshold
+                }
+        return group_replaces_count
+
     def count_keywords(
         self,
         qwords: list[str],
@@ -579,23 +663,17 @@ class HighlightsCounter:
         qword_hword_count = self.calc_qword_hword_count(
             qwords, hword_count_of_hits, hit_scores=hit_scores, threshold=1
         )
-        hword_qwords_maps = self.calc_hword_qwords_maps(qwords, qword_hword_count)
-        hword_qword_chword = self.calc_hword_qword_chword_from_maps(hword_qwords_maps)
         hword_count_qword = self.calc_hword_count_qword(qword_hword_count)
-        hword_func_params = {
-            "qwords": qwords,
-            "hword_count_of_hits": hword_count_of_hits,
-            "hword_count_qword": hword_count_qword,
-            "hword_qword_chword": hword_qword_chword,
-            "hit_scores": hit_scores,
-            "threshold": threshold,
-        }
-        group_hwords_count = self.calc_group_hwords_count(**hword_func_params)
+        group_replaces_count = self.calc_group_replaces_count(
+            qwords=qwords,
+            hword_count_of_hits=hword_count_of_hits,
+            hit_scores=hit_scores,
+            threshold=threshold,
+        )
         res = {
             "qword_hword_count": qword_hword_count,
-            "hword_qwords_maps": hword_qwords_maps,
             "hword_count_qword": hword_count_qword,
-            "group_hwords_count": group_hwords_count,
+            "group_replaces_count": group_replaces_count,
         }
         # this field is only useful in VideoSearcherV1 with regex
         # and not needed in VideoSearcherV2 with lark

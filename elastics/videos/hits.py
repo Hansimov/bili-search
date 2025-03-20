@@ -214,7 +214,10 @@ class SuggestInfoParser:
 
     def parse(self, qwords: list[str], hits: list[dict]) -> dict:
         """keys of returned `suggest_info`:
-        - "qword_hword_count", "hword_qwords_maps", "group_hwords_count", "related_authors"
+        - "qword_hword_count": dict[str, dict[str, int]]
+        - "hword_count_qword": dict[str, tuple[int, str]]
+        - "group_replaces_count": dict[tuple[str], int]
+        - "related_authors": dict[str, dict]
         """
         keywords_info = self.highlights_counter.count_keywords(
             qwords, hits, **self.keywords_params
