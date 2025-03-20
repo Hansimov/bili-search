@@ -76,10 +76,10 @@ class WordExprElasticConverter:
         single_nodes = val_node.find_all_childs_with_key("word_val_single")
         match_dict = self.convert_multi(single_nodes)
 
-        key_op_node = node.find_child_with_key(["word_key_op", "word_sp"])
+        op_node = node.find_child_with_key(["word_op", "word_sp"])
         op = "eq"
-        if key_op_node:
-            op_node = key_op_node.find_child_with_key(WORD_OPS)
+        if op_node:
+            op_node = op_node.find_child_with_key(WORD_OPS)
             op = op_node.find_child_with_key(WORD_OPS).get_deepest_node_key()
 
         if op == "eq":

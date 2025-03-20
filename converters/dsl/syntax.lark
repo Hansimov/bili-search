@@ -160,8 +160,7 @@ stat_expr: colon? stat_key stat_op_val
         danmaku_key: /(?i:(弹幕|danmu|danm|danmaku|dm))/
         share_key: /(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh))/
     stat_op_val: stat_op_val_single | stat_op_val_list
-        stat_op_val_single: stat_op stat_val_single
-            stat_op: op_rel
+        stat_op_val_single: op_rel stat_val_single
             stat_val_single: stat_num stat_unit?
                 stat_num: digits
                 stat_unit: /[百千kK万wWmM亿]+/
@@ -183,12 +182,11 @@ region_expr: colon? region_key region_op region_val
 
 
 // ---------- word exprs ---------- //
-word_expr: colon? word_key_op? word_val word_sp?
-    word_key_op: word_key? word_op
-        word_key: /(?i:(关键字|keyword|key|k))/
+word_expr: colon? word_key? word_op_val
+    word_key: /(?i:(关键字|keyword|key|k))/
+    word_op_val: word_op? word_val_single word_sp? | word_op word_val_list
+        word_sp: qs
         word_op: eq | neq
-    word_sp: qs
-    word_val: word_val_single | word_val_list
         word_val_single: text_expr
         word_val_list: word_val_list_lr | word_val_list_no_lr
             word_val_list_lr: lb_comma (word_val_single)? (comma word_val_single)* comma_rb
