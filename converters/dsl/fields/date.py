@@ -387,5 +387,5 @@ class DateExprElasticConverter:
             return None
         is_or_node_parent = bool(node.find_parent_with_key("or"))
         if not is_or_node_parent:
-            elastic_dict = {"filter": elastic_dict}
+            elastic_dict = {"bool": {"filter": elastic_dict}}
         return elastic_dict

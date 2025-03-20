@@ -7,14 +7,10 @@ class BoolElasticReducer:
     def get_bool_op(self, bool_clause: dict) -> ES_BOOL_OP_TYPE:
         """Get bool key of bool_clause, which is one of:
         - {"bool": {<bool_op>: <bool_dict>}}
-            - "must", "should", "must_not"
-        - {"filter": <filter_dict>}
-            - "filter"
+            - "must", "should", "must_not", "filter"
         """
         if "bool" in bool_clause:
             return next(iter(bool_clause["bool"]))
-        if "filter" in bool_clause:
-            return "filter"
         return None
 
     def get_bool_dict(
@@ -28,10 +24,7 @@ class BoolElasticReducer:
         if not bool_op:
             bool_op = self.get_bool_op(bool_clause)
         if bool_op:
-            if bool_op == "filter":
-                return bool_clause.get(bool_op, {})
-            else:
-                return bool_clause.get("bool", {}).get(bool_op, {})
+            return bool_clause.get("bool", {}).get(bool_op, {})
 
     def get_bool_op_and_dict(self, bool_clause: dict) -> tuple[ES_BOOL_OP_TYPE, dict]:
         """Get bool op and dict of bool_clause"""
@@ -44,18 +37,10 @@ class BoolElasticReducer:
     ) -> list[tuple[ES_BOOL_OP_TYPE, dict]]:
         """Return list of tuples: [(bool_op, bool_dict), ...]"""
         bool_ops_and_dicts = []
-        # case: {"bool": {"must": ...}}
         bool_items = bool_clause.get("bool", {})
         for bool_op, bool_dict in bool_items.items():
             if bool_dict is not None:
                 bool_ops_and_dicts.append((bool_op, bool_dict))
-        # case: {"filter": ...}
-        filter_dict = bool_clause.get("filter", {})
-        if filter_dict:
-            bool_ops_and_dicts.append(("filter", filter_dict))
-        # case: {"multi_match": {"query": ...}}
-        if not bool_items and not filter_dict:
-            bool_ops_and_dicts.append(("must", bool_clause))
         return bool_ops_and_dicts
 
     def get_minimum_should_match(self, bool_clause: dict) -> int:

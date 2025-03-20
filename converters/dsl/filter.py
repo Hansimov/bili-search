@@ -44,7 +44,7 @@ class QueryDslDictFilterMerger:
     def set_filters_to_query_dsl_dict(
         self, query_dsl_dict: dict, filters: list[dict]
     ) -> dict:
-        query_dsl_dict["bool"]["filter"] = filters
+        query_dsl_dict.setdefault("bool", {})["filter"] = filters
         return query_dsl_dict
 
     def get_gl_key_val(self, range_value: dict, gl: GL_TYPE) -> tuple:

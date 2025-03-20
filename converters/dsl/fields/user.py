@@ -34,6 +34,6 @@ class UserExprElasticConverter:
         if op in ["at_neq", "neq"]:
             elastic_dict = {"bool": {"must_not": elastic_dict}}
         else:
-            elastic_dict = {"filter": elastic_dict}
+            elastic_dict = {"bool": {"filter": elastic_dict}}
 
         return elastic_dict
