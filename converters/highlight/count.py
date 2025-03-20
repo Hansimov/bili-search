@@ -574,19 +574,21 @@ class HighlightsCounter:
         hword_count_of_hits: list[dict[str, int]],
         hit_scores: list[int] = [],
         threshold: int = 2,
-    ) -> dict[tuple, int]:
+    ) -> list[list[tuple, int]]:
         """Example of `group_replaces_count`:
         ```json
-        {
-            ("xiaokuaidi", "小块地", "hongjing", "红警"): 12,
-            ("xiaokuaidi", "小快递", "hongjing", "红警"): 6,
-            ("hongjing", "红警"): 2,
-        },
+        [
+            [("xiaokuaidi", "小块地", "hongjing", "红警"), 12]
+            [("xiaokuaidi", "小快递", "hongjing", "红警"), 6]
+            [("hongjing", "红警"), 2]
+        ]
         ```
 
         The keys are tuple of qword-hword pairs, and the values are the count of co-occurrence of the qword-hword pairs.
+
+        Original version of `group_replaces_count` is dict[tuple, int], but this is unable to serialize to JSON, as tuple would be converted to list, which is not hashable.
         """
-        group_replaces_count = defaultdict(int)
+        group_replaces_count_dict = defaultdict(int)
         for hword_count_of_hit, hit_score in zip(hword_count_of_hits, hit_scores):
             group_replaces_count_of_hit = self.calc_group_replaces_count_of_hit(
                 qwords=qwords,
@@ -595,21 +597,26 @@ class HighlightsCounter:
             )
             group_replaces = group_replaces_count_of_hit["group_replaces"]
             count_of_hit = group_replaces_count_of_hit["count"]
-            group_replaces_count[group_replaces] += count_of_hit
+            group_replaces_count_dict[group_replaces] += count_of_hit
+        # dict[tuple, int] to list[list[tuple, int]]
+        group_replaces_count = [
+            [group_replaces, count]
+            for group_replaces, count in group_replaces_count_dict.items()
+        ]
         # sort group_replaces_count by count
-        group_replaces_count = dict(
-            sorted(dict(group_replaces_count).items(), key=lambda x: x[1], reverse=True)
+        group_replaces_count = sorted(
+            group_replaces_count, key=lambda x: x[1], reverse=True
         )
         # filter group_replaces_count by threshold
         # also ensure max_count >= threshold
         if group_replaces_count:
-            max_count = list(group_replaces_count.values())[0]
+            max_count = max([count for _, count in group_replaces_count])
             if max_count >= threshold:
-                group_replaces_count = {
-                    group_replaces: count
-                    for group_replaces, count in group_replaces_count.items()
+                group_replaces_count = [
+                    [group_replaces, count]
+                    for group_replaces, count in group_replaces_count
                     if count >= threshold
-                }
+                ]
         return group_replaces_count
 
     def count_keywords(
