@@ -165,9 +165,9 @@ stat_expr: colon? stat_key stat_op_val
                 stat_num: digits
                 stat_unit: /[百千kK万wWmM亿]+/
         stat_op_val_list: op_rel stat_val_list
-            stat_val_list: stat_val_list_lr | stat_val_list_no_lr
-                stat_val_list_lr: lb_comma (stat_val_single)? (comma stat_val_single)* comma_rb
-                stat_val_list_no_lr: comma? stat_val_single (comma stat_val_single)*
+            stat_val_list: lb_comma stat_val_left? comma? stat_val_right? comma_rb
+                stat_val_left: stat_val_single
+                stat_val_right: stat_val_single
 
 
 // ---------- region exprs ---------- //
