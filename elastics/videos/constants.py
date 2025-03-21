@@ -143,8 +143,8 @@ SEARCH_DETAIL_LEVELS = {
         "match_type": SEARCH_MATCH_TYPE,
         "bool": SEARCH_MATCH_BOOL,
         "filters": [
-            {"range": {"stat.view": {"gte": 2500}}},
-            {"range": {"stat.coin": {"gte": 10}}},
+            {"range": {"stat.view": {"gte": 10000}}},
+            {"range": {"stat.coin": {"gte": 20}}},
         ],
         "timeout": 6,
     },

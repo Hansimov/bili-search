@@ -27,9 +27,17 @@ class QueryDslDictFilterMerger:
         ("range", "stat.view", {"gte": 1000})
         ```
         """
-        filter_type = next(iter(filter_clause))
-        filter_field = next(iter(filter_clause[filter_type]))
-        filter_value = filter_clause[filter_type][filter_field]
+        if filter_clause:
+            filter_type = next(iter(filter_clause))
+        else:
+            return None, None, None
+
+        if filter_clause.get(filter_type, None):
+            filter_field = next(iter(filter_clause[filter_type]))
+        else:
+            return filter_type, None, None
+
+        filter_value = filter_clause[filter_type].get(filter_field, None)
         # unify "term" to "terms" for consistency in future processing
         if filter_type == "term":
             filter_type = "terms"
