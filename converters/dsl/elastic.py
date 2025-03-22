@@ -4,7 +4,9 @@ from converters.dsl.constants import BOOL_OPS, ITEM_EXPRS, MSM
 from converters.dsl.parse import DslLarkParser
 from converters.dsl.node import DslExprNode, DslTreeBuilder, DslTreeExprGrouper
 from converters.dsl.node import DslExprTreeFlatter
+from converters.dsl.fields.bvid import BvidExprElasticConverter
 from converters.dsl.fields.date import DateExprElasticConverter
+from converters.dsl.fields.stat import StatExprElasticConverter
 from converters.dsl.fields.user import UserExprElasticConverter
 from converters.dsl.fields.word import WordExprElasticConverter
 from converters.dsl.fields.word import WordNodeToExprConstructor
@@ -18,15 +20,21 @@ class DslExprToElasticConverter:
         self.grouper = DslTreeExprGrouper()
         self.flatter = DslExprTreeFlatter()
         self.reducer = BoolElasticReducer()
+        self.bvid_converter = BvidExprElasticConverter()
         self.date_converter = DateExprElasticConverter()
         self.user_converter = UserExprElasticConverter()
+        self.stat_converter = StatExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
         self.verbose = verbose
 
     def atom_node_to_elastic_dict(self, node: DslExprNode) -> dict:
         expr_node = node.find_child_with_key(ITEM_EXPRS)
-        if expr_node.is_key("date_expr"):
+        if expr_node.is_key("bvid_expr"):
+            return self.bvid_converter.convert(node)
+        elif expr_node.is_key("date_expr"):
             return self.date_converter.convert(node)
+        elif expr_node.is_key("stat_expr"):
+            return self.stat_converter.convert(node)
         elif expr_node.is_key("user_expr"):
             return self.user_converter.convert(node)
         elif expr_node.is_key("word_expr"):
