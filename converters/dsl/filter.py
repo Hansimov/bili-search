@@ -15,16 +15,28 @@ GL_KEYS_MAPS = {
 GL_TYPE = Literal["g", "l"]
 UI_TYPE = Literal["u", "i"]
 
+EXCLUSIVE_FILTER_TYPE_FIELDS = [
+    ("bool", "should"),  # often appears when bvid and aid are both present
+    ("terms", "owner.name"),
+    ("terms", "owner.mid"),
+    ("terms", "bvid"),
+    ("terms", "aid"),
+]
+
 
 class QueryDslDictFilterMerger:
     def get_filter_type_field_value(self, filter_clause: dict) -> tuple[str, str, dict]:
         """Example of input:
         ```
         {"range": {"stat.view": {"gte": 1000}}}
+        {"term": {"owner.name": "红警HBK08"}}
+        {"bool": {"should": [...], "minimum_should_match": 1}}
         ```
         Example of output:
         ```
         ("range", "stat.view", {"gte": 1000})
+        ("term", "owner.name", "红警HBK08")
+        ("bool", "should", {"should": [...], "minimum_should_match": 1})
         ```
         """
         if filter_clause:
@@ -37,7 +49,11 @@ class QueryDslDictFilterMerger:
         else:
             return filter_type, None, None
 
-        filter_value = filter_clause[filter_type].get(filter_field, None)
+        if filter_type == "bool":
+            filter_value = filter_clause[filter_type]
+        else:
+            filter_value = filter_clause[filter_type].get(filter_field, None)
+
         # unify "term" to "terms" for consistency in future processing
         if filter_type == "term":
             filter_type = "terms"
@@ -149,15 +165,17 @@ class QueryDslDictFilterMerger:
             if filter_value in [None, {}, []]:
                 continue
             if filter_type == "range":
-                res.append({filter_type: {filter_field: filter_value}})
+                res.append({"range": {filter_field: filter_value}})
             elif filter_type == "terms":
                 if isinstance(filter_value, list):
                     if len(filter_value) > 1:
-                        res.append({filter_type: {filter_field: filter_value}})
+                        res.append({"terms": {filter_field: filter_value}})
                     else:
                         res.append({"term": filter_value[0]})
                 else:
                     res.append({"term": {filter_field: filter_value}})
+            elif filter_type == "bool":
+                res.append({"bool": filter_value})
             else:
                 res.append({filter_type: {filter_field: filter_value}})
         return res
@@ -214,6 +232,13 @@ class QueryDslDictFilterMerger:
             filter_type, filter_field, filter_value = self.get_filter_type_field_value(
                 query_filter
             )
+            # If there exist exclusive filter types and fields,
+            #   extra filters are overwritted, and not be merged with query_dsl_dict,
+            #   which would return original query_dsl_dict
+            if (
+                (filter_type, filter_field) in EXCLUSIVE_FILTER_TYPE_FIELDS
+            ) or filter_field.startswith("stat."):
+                return query_dsl_dict
             query_filter_maps[(filter_type, filter_field)] = filter_value
         for extra_filter in extra_filters:
             filter_type, filter_field, filter_value = self.get_filter_type_field_value(
