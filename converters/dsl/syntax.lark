@@ -7,7 +7,7 @@ start: expr | expr_with_error
         co_expr: expr+
         and_expr: expr (and expr)+
         pa_expr: lp expr? rp
-        atom_expr: date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
+        atom_expr: bvid_expr | date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
     ?expr_with_error: (expr | expr_error)+
         expr_error: text_catch
 
@@ -132,9 +132,7 @@ user_expr: colon? user_key_op user_val
         user_at: at_neq | at_eq
     user_val: user_val_single | user_val_list
         user_val_single: text_quoted | text_strict
-        user_val_list: user_val_list_lr | user_val_list_no_lr
-            user_val_list_lr: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
-            user_val_list_no_lr: comma? user_val_single (comma user_val_single)*
+        user_val_list: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
 
 uid_expr: colon? uid_key uid_op_val
     uid_key: /(?i:(uid|mid))/
@@ -142,12 +140,21 @@ uid_expr: colon? uid_key uid_op_val
         uid_op_val_single: op_rel uid_val_single
             uid_val_single: digits
         uid_op_val_list: op_rel uid_val_list
-            uid_val_list: uid_val_list_lr | uid_val_list_no_lr
-                uid_val_list_lr: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
-                uid_val_list_no_lr: comma? uid_val_single (comma uid_val_single)*
+            uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
 
 at_eq: AT
 at_neq: AT NQ
+
+
+// ---------- avid/bvid exprs ---------- //
+bvid_expr: colon? bvid_key bvid_op bvid_val
+    bvid_key: /(?i:(avid|aid|av|bvid|bid|bv))/
+    bvid_op: op_list
+    bvid_val: bvid_val_single | bvid_val_list
+        bvid_val_single: bvid_str
+        bvid_val_list: lb_comma (bvid_val_single)? (comma bvid_val_single)* comma_rb
+
+bvid_str: /[a-zA-Z0-9]+/
 
 // ---------- stat exprs ---------- //
 stat_expr: colon? stat_key stat_op_val
@@ -176,9 +183,7 @@ region_expr: colon? region_key region_op region_val
     region_op: op_list
     region_val: region_val_single | region_val_list
         region_val_single: digits | text_strict
-        region_val_list: region_val_list_lr | region_val_list_no_lr
-            region_val_list_lr: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
-            region_val_list_no_lr: comma? region_val_single (comma region_val_single)*
+        region_val_list: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
 
 
 // ---------- word exprs ---------- //
