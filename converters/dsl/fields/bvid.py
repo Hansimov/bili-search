@@ -10,7 +10,7 @@ RE_AVID = re.compile(r"(av)?[0-9]+", re.IGNORECASE)
 
 class BvidExprElasticConverter:
     AVID_FIELD = "aid"
-    BVID_FIELD = "bvid"
+    BVID_FIELD = "bvid.keyword"
 
     def parse_bvid_value(self, value: str) -> tuple[str, int]:
         value = value.strip('" ')

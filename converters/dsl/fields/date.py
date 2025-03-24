@@ -268,14 +268,14 @@ class DateExprElasticConverter:
         info_l, info_r = info_list
         if info_l:
             l_date_type = info_l["date_type"]
-            l_ts_beg, l_ts_end = info_l["range_str"]
+            l_ts_beg, l_ts_end = info_l["range_ts"]
         else:
             l_date_type = None
             l_ts_beg, l_ts_end = None, None
 
         if info_r:
             r_date_type = info_r["date_type"]
-            r_ts_beg, r_ts_end = info_r["range_str"]
+            r_ts_beg, r_ts_end = info_r["range_ts"]
         else:
             r_date_type = None
             r_ts_beg, r_ts_end = None, None

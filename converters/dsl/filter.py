@@ -17,9 +17,9 @@ UI_TYPE = Literal["u", "i"]
 
 EXCLUSIVE_FILTER_TYPE_FIELDS = [
     ("bool", "should"),  # often appears when bvid and aid are both present
-    ("terms", "owner.name"),
+    ("terms", "owner.name.keyword"),
     ("terms", "owner.mid"),
-    ("terms", "bvid"),
+    ("terms", "bvid.keyword"),
     ("terms", "aid"),
 ]
 

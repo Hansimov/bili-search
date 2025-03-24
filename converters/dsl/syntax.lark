@@ -190,8 +190,8 @@ region_expr: colon? region_key region_op region_val
 word_expr: colon? word_key? word_op_val
     word_key: /(?i:(关键字|keyword|key|k))/
     word_op_val: word_op? word_val_single word_sp? | word_op word_val_list
-        word_sp: qs
         word_op: eq | neq
+        word_sp: qs
         word_val_single: text_expr
         word_val_list: word_val_list_lr | word_val_list_no_lr
             word_val_list_lr: lb_comma (word_val_single)? (comma word_val_single)* comma_rb
