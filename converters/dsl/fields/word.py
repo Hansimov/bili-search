@@ -70,7 +70,7 @@ class WordExprElasticConverter:
 
     def convert(self, node: DslExprNode) -> dict:
         """node key is `word_expr`"""
-        val_node = node.find_child_with_key("word_op_val")
+        val_node = node.find_child_with_key("word_key_op_val")
         if not val_node:
             return {}
         single_nodes = val_node.find_all_childs_with_key("word_val_single")
