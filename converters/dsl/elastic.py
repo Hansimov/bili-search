@@ -1,6 +1,7 @@
-from tclogger import logger, dict_to_str
+from tclogger import logger, dict_to_str, dict_get, dict_set
 
-from converters.dsl.constants import BOOL_OPS, ITEM_EXPRS, MSM
+from converters.dsl.constants import BOOL_OPS, ITEM_EXPRS, FILTER_EXPRS
+from converters.dsl.constants import MSM, BMM, BM_MAP
 from converters.dsl.parse import DslLarkParser
 from converters.dsl.node import DslExprNode, DslTreeBuilder, DslTreeExprGrouper
 from converters.dsl.node import DslExprTreeFlatter
@@ -11,6 +12,10 @@ from converters.dsl.fields.user import UserExprElasticConverter
 from converters.dsl.fields.word import WordExprElasticConverter
 from converters.dsl.fields.word import WordNodeToExprConstructor
 from converters.dsl.fields.bool import BoolElasticReducer
+from elastics.videos.constants import SEARCH_MATCH_TYPE, QUERY_TYPE_DEFAULT
+
+BMM = BM_MAP[QUERY_TYPE_DEFAULT]["BM"]
+BMMQ = BM_MAP[QUERY_TYPE_DEFAULT]["BMQ"]
 
 
 class DslExprToElasticConverter:
@@ -43,12 +48,42 @@ class DslExprToElasticConverter:
             logger.warn(f"× Unknown atom_node: <{expr_node.key}>", verbose=self.verbose)
             return {}
 
-    def word_cluster_to_bool_clauses(self, node: DslExprNode) -> list[dict]:
+    def merge_word_match_clauses(self, bool_clauses: list[dict]) -> list[dict]:
+        """Merge multiple "multi_match"/"query_string" word_expr exprs into one query with "cross_fields"."""
+        word_match_clauses = []
+        other_bool_clauses = []
+        for bool_clause in bool_clauses:
+            if dict_get(bool_clause, BMM):
+                word_match_clauses.append(bool_clause)
+            else:
+                other_bool_clauses.append(bool_clause)
+
+        new_bool_clauses = other_bool_clauses
+        if word_match_clauses:
+            query_words = [
+                dict_get(word_match_clause, BMMQ)
+                for word_match_clause in word_match_clauses
+            ]
+            merged_query_words = " ".join(query_words)
+            merged_word_match_clause = word_match_clauses[0]
+            dict_set(merged_word_match_clause, BMMQ, merged_query_words)
+            new_bool_clauses.insert(0, merged_word_match_clause)
+        return new_bool_clauses
+
+    def co_and_cluster_to_bool_clauses(self, node: DslExprNode) -> list[dict]:
         word_expr_nodes = node.find_all_childs_with_key("word_expr")
-        bool_clauses = [
+        word_clauses = [
             self.word_converter.convert(word_expr_node)
             for word_expr_node in word_expr_nodes
         ]
+        if SEARCH_MATCH_TYPE == "cross_fields":
+            word_clauses = self.merge_word_match_clauses(word_clauses)
+        filter_expr_nodes = node.find_all_childs_with_key(FILTER_EXPRS)
+        filter_clauses = [
+            self.atom_node_to_elastic_dict(non_word_expr_node)
+            for non_word_expr_node in filter_expr_nodes
+        ]
+        bool_clauses = word_clauses + filter_clauses
         return bool_clauses
 
     def bool_node_to_elastic_dict(self, node: DslExprNode) -> dict:
@@ -56,11 +91,8 @@ class DslExprToElasticConverter:
             return self.node_to_elastic_dict(node.children[0])
         elif node.is_key(["and", "co"]):
             bool_clauses = []
-            if (
-                node.all_bool_childs_are_co_and()
-                and node.all_atom_childs_are_word_expr()
-            ):
-                bool_clauses = self.word_cluster_to_bool_clauses(node)
+            if node.all_bool_childs_are_co_and():
+                bool_clauses = self.co_and_cluster_to_bool_clauses(node)
             else:
                 for child in node.children:
                     bool_clauses.append(self.node_to_elastic_dict(child))
