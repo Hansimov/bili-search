@@ -9,7 +9,7 @@ from tclogger import TCLogger, dict_to_str
 from typing import Optional, List
 
 from configs.envs import SEARCH_APP_ENVS
-from elastics.videos.searcher import VideoSearcher
+from elastics.videos.searcher import VideoSearcherV2
 
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS
@@ -18,6 +18,7 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
 from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
+from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
 
 logger = TCLogger()
 
@@ -34,7 +35,7 @@ class SearchApp:
         )
         self.mode = app_envs.get("mode", "prod")
         # self.allow_cors()
-        self.video_searcher = VideoSearcher(app_envs["bili_videos_index"])
+        self.video_searcher = VideoSearcherV2(app_envs["bili_videos_index"])
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
 
@@ -54,6 +55,7 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(SEARCH_MATCH_FIELDS),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
+        use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE_DEFAULT),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(MAX_SEARCH_DETAIL_LEVEL),
         limit: Optional[int] = Body(SEARCH_LIMIT),
@@ -65,6 +67,7 @@ class SearchApp:
             source_fields=source_fields,
             match_type=match_type,
             suggest_info=suggest_info,
+            use_script_score=use_script_score,
             detail_level=detail_level,
             max_detail_level=max_detail_level,
             limit=limit,
@@ -78,7 +81,7 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(SUGGEST_MATCH_FIELDS),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SUGGEST_MATCH_TYPE),
-        use_script_score: Optional[bool] = Body(True),
+        use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE_DEFAULT),
         use_pinyin: Optional[bool] = Body(True),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(MAX_SUGGEST_DETAIL_LEVEL),
