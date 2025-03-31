@@ -41,6 +41,8 @@ GEQS: GT EQS
 eq: EQ
 lt: LT
 gt: GT
+mi: MI
+pl: PL
 neq: NEQ
 peq: PEQ
 leq: LEQ
@@ -188,10 +190,11 @@ region_expr: colon? region_key region_op region_val
 
 // ---------- word exprs ---------- //
 word_expr: colon? word_key_op_val
-    word_key_op_val: word_key_op? word_val_single word_sp? | word_key_op word_val_list
+    word_key_op_val: word_pp? word_val_single word_sp? | word_key_op word_val_list
         word_key_op: word_key word_op
             word_key: /(?i:(关键字|keyword|key|k))/
             word_op: eq | neq
+        word_pp: mi | pl
         word_sp: qs
         word_val_single: text_expr
         word_val_list: word_val_list_lr | word_val_list_no_lr

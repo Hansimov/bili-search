@@ -32,7 +32,7 @@ class WordExprElasticConverter:
         self.query_type = query_type or QUERY_TYPE_DEFAULT
 
     def clean_word_val(self, val: str) -> str:
-        return val.strip('" ')
+        return val.strip(" ")
 
     def query_to_match_dict(self, query: str, is_date_format: bool = False) -> dict:
         if is_date_format:
@@ -48,11 +48,18 @@ class WordExprElasticConverter:
         }
 
     def node_to_match_dict(self, node: DslExprNode) -> dict:
+        """node key is `word_val_single`"""
         text_node = node.find_child_with_key(TEXT_TYPES)
         text = text_node.get_deepest_node_value()
         is_date_format = node.extras.get("is_date_format", False)
+        word_pp_node = node.find_sibling_with_key("word_pp")
+        if word_pp_node:
+            word_pp_str = word_pp_node.get_deepest_node_value()
+        else:
+            word_pp_str = ""
         if text:
             text = self.clean_word_val(text)
+            text = f"{word_pp_str}{text}"
             return self.query_to_match_dict(text, is_date_format=is_date_format)
         else:
             return {}
@@ -100,7 +107,8 @@ class WordExprElasticConverter:
 
 
 class WordNodeToExprConstructor:
-    def get_word_key_op_str(self, node: DslExprNode) -> tuple[str, str, str]:
+    def get_word_key_op_str(self, node: DslExprNode) -> dict:
+        """node key is `word_expr`."""
         word_key_node = node.find_child_with_key("word_key")
         if word_key_node:
             word_key_str = word_key_node.get_deepest_node_value()
@@ -117,18 +125,34 @@ class WordNodeToExprConstructor:
             word_op_str = "="
         else:
             word_op_str = ""
+        word_pp_node = node.find_child_with_key("word_pp")
+        if word_pp_node:
+            word_pp_key = word_pp_node.get_deepest_node_key()
+        else:
+            word_pp_key = ""
+        if word_pp_key == "pl":
+            word_pp_str = "+"
+        elif word_pp_key == "mi":
+            word_pp_str = "-"
+        else:
+            word_pp_str = ""
         word_sp_node = node.find_child_with_key("word_sp")
         if word_sp_node:
             word_sp_str = "?"
         else:
             word_sp_str = ""
 
-        return word_key_str, word_op_str, word_sp_str
+        return {
+            "key": word_key_str,
+            "op": word_op_str,
+            "pp": word_pp_str,
+            "sp": word_sp_str,
+        }
 
     def construct(self, node: DslExprNode) -> str:
         """node key is `word_expr`.
         This would construct word expr str from a DslExprNode with key `word_expr`."""
-        word_key_str, word_op_str, word_sp_str = self.get_word_key_op_str(node)
+        word_key_op_str_dict = self.get_word_key_op_str(node)
         word_val_single_nodes = node.find_all_childs_with_key("word_val_single")
         if len(word_val_single_nodes) == 1:
             word_val_joined_str = word_val_single_nodes[0].get_deepest_node_value()
@@ -140,5 +164,6 @@ class WordNodeToExprConstructor:
             word_val_joined_str = "[" + ",".join(word_val_strs) + "]"
         else:
             word_val_joined_str = ""
-
-        return f"{word_key_str}{word_op_str}{word_val_joined_str}{word_sp_str}"
+        key, op, pp, sp = list(map(word_key_op_str_dict.get, ["key", "op", "pp", "sp"]))
+        constructed_res = f"{key}{op}{pp}{word_val_joined_str}{sp}"
+        return constructed_res
