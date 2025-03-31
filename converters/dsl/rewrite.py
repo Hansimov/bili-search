@@ -2,6 +2,7 @@ from tclogger import tcdatetime, get_now
 
 from converters.dsl.node import DslExprNode
 from converters.dsl.elastic import DslExprToElasticConverter, DslTreeToExprConstructor
+from converters.dsl.fields.word import WordNodeToExprConstructor
 from converters.times import DateFormatChecker
 
 
@@ -58,18 +59,20 @@ class DslExprRewriter:
     def __init__(self):
         self.elastic_converter = DslExprToElasticConverter()
         self.expr_constructor = DslTreeToExprConstructor()
+        self.word_constructor = WordNodeToExprConstructor()
         self.word_expander = WordNodeExpander()
 
     def get_words_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
-        word_nodes = expr_tree.find_all_childs_with_key("word_val_single")
+        word_expr_nodes = expr_tree.find_all_childs_with_key("word_expr")
         words_body = []
         words_date = []
-        for word_node in word_nodes:
-            word = word_node.get_deepest_node_value()
-            if word_node.extras.get("is_date_format", False):
-                words_date.append(word)
+        for word_expr_node in word_expr_nodes:
+            word_val_node = word_expr_node.find_child_with_key("word_val_single")
+            word_expr = self.word_constructor.construct(word_expr_node)
+            if word_val_node.extras.get("is_date_format", False):
+                words_date.append(word_expr)
             else:
-                words_body.append(word)
+                words_body.append(word_expr)
         return {
             "keywords_body": words_body,
             "keywords_date": words_date,
