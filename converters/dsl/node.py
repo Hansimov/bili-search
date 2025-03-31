@@ -160,6 +160,23 @@ class DslNode:
         else:
             return None
 
+    def find_sibling_with_key(
+        self,
+        key: Union[str, list[str]],
+        raise_error: bool = False,
+        use_re: bool = False,
+    ) -> Union["DslNode", None]:
+        if self.parent:
+            siblings = self.parent.children
+            for sibling in siblings:
+                if sibling is not self and sibling.is_key(key, use_re=use_re):
+                    return sibling
+        if raise_error:
+            err_mesg = logstr.warn(f"× Not found: <{logstr.file(key)}>")
+            raise ValueError(err_mesg)
+        else:
+            return None
+
     def get_value_by_key(self, key: str, raise_error: bool = False) -> Union[Any, None]:
         child = self.find_child_with_key(key, raise_error=raise_error)
         if child:
@@ -199,6 +216,38 @@ class DslNode:
     def set_deepest_node_value(self, value: str):
         deepest_node = self.get_deepest_node()
         deepest_node.value = value
+
+    def get_next_sibling(self) -> "DslNode":
+        if self.parent:
+            siblings = self.parent.children
+            if siblings and self in siblings:
+                self_idx = siblings.index(self)
+                if self_idx < len(siblings) - 1:
+                    return siblings[self_idx + 1]
+        return None
+
+    def get_prev_sibling(self) -> "DslNode":
+        if self.parent:
+            siblings = self.parent.children
+            if siblings and self in siblings:
+                self_idx = siblings.index(self)
+                if self_idx > 0:
+                    return siblings[self_idx - 1]
+        return None
+
+    def get_next_sibling_key(self) -> str:
+        next_sibling = self.get_next_sibling()
+        if next_sibling:
+            return next_sibling.key
+        else:
+            return None
+
+    def get_prev_sibling_key(self) -> str:
+        prev_sibling = self.get_prev_sibling()
+        if prev_sibling:
+            return prev_sibling.key
+        else:
+            return None
 
     def is_start(self):
         return self.key == START_EXPR
