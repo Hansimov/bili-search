@@ -9,6 +9,11 @@ from elastics.videos.constants import QUERY_TYPE, QUERY_TYPE_DEFAULT
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 
+WORD_REPLACES = {
+    "“": '"',
+    "”": '"',
+}
+
 
 class WordExprElasticConverter:
     def __init__(self, mode: Literal["search", "suggest"] = "search"):
@@ -32,7 +37,10 @@ class WordExprElasticConverter:
         self.query_type = query_type or QUERY_TYPE_DEFAULT
 
     def clean_word_val(self, val: str) -> str:
-        return val.strip(" ")
+        val = val.strip(" ")
+        for k, v in WORD_REPLACES.items():
+            val = val.replace(k, v)
+        return val
 
     def query_to_match_dict(self, query: str, is_date_format: bool = False) -> dict:
         if is_date_format:
@@ -132,7 +140,7 @@ class WordNodeToExprConstructor:
             word_pp_key = ""
         if word_pp_key == "pl":
             word_pp_str = "+"
-        elif word_pp_key == "mi":
+        elif word_pp_key in ["mi", "nq"]:
             word_pp_str = "-"
         else:
             word_pp_str = ""

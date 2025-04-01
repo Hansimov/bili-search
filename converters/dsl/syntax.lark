@@ -43,6 +43,7 @@ lt: LT
 gt: GT
 mi: MI
 pl: PL
+nq: NQ
 neq: NEQ
 peq: PEQ
 leq: LEQ
@@ -194,7 +195,7 @@ word_expr: colon? word_key_op_val
         word_key_op: word_key word_op
             word_key: /(?i:(关键字|keyword|key|k))/
             word_op: eq | neq
-        word_pp: mi | pl
+        word_pp: mi | pl | nq
         word_sp: qs
         word_val_single: text_expr
         word_val_list: word_val_list_lr | word_val_list_no_lr
@@ -204,8 +205,8 @@ word_expr: colon? word_key_op_val
 text_expr: text_quoted | text_strict | text_plain
 
 text_quoted: /[“][^“”]+[”]/ | /["][^"]+["]/
-text_strict: /[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
-text_plain:  /[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
+text_strict: /(?=[^+\-])[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
+text_plain:  /(?=[^+\-])[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
 text_catch:   /[\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
 
 %import common.WS
