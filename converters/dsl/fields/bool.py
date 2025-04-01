@@ -1,6 +1,11 @@
 from collections import defaultdict
 
 from converters.dsl.constants import ES_BOOL_OPS, ES_BOOL_OP_TYPE, MSM
+from converters.dsl.constants import MSM, BM_MAP
+from elastics.videos.constants import QUERY_TYPE_DEFAULT
+
+BMM = BM_MAP[QUERY_TYPE_DEFAULT]["BM"]
+BMMQ = BM_MAP[QUERY_TYPE_DEFAULT]["BMQ"]
 
 
 class BoolElasticReducer:
@@ -97,6 +102,56 @@ class BoolElasticReducer:
         )
         return op_list_dict
 
+    def get_query_string_tuple(self, clause: dict) -> tuple[str, tuple]:
+        """Example of `word_match_dict`:
+        {
+            "query_string" : {
+                "query"  : "deepseek",
+                "type"   : "cross_fields",
+                "fields" : ['title.words^3', 'tags.words^2.5', 'owner.name.words^2', 'desc.words^0.1']
+            }
+        }
+        """
+        query_string_dict = clause.get("query_string", {})
+        if not query_string_dict:
+            return None, None
+        key_value_tuple_list = []
+        query = None
+        key_value_tuple_tuple = None
+        for k, v in query_string_dict.items():
+            if k == "query":
+                query = v
+                continue
+            if isinstance(v, list):
+                value_tuple = tuple(sorted(v))
+            else:
+                value_tuple = v
+            key_value_tuple_list.append((k, value_tuple))
+        key_value_tuple_tuple = tuple(sorted(key_value_tuple_list, key=lambda x: x[0]))
+        return query, key_value_tuple_tuple
+
+    def merge_query_string_clauses(self, clauses: list[dict]) -> list[dict]:
+        grouped_clauses = {}
+        no_change_clauses = []
+        for clause in clauses:
+            query, key_value_tuple_tuple = self.get_query_string_tuple(clause)
+            if query and key_value_tuple_tuple:
+                if key_value_tuple_tuple not in grouped_clauses:
+                    grouped_clauses[key_value_tuple_tuple] = {}
+                    grouped_clauses[key_value_tuple_tuple]["query"] = [query]
+                    grouped_clauses[key_value_tuple_tuple]["format"] = clause
+                else:
+                    grouped_clauses[key_value_tuple_tuple]["query"].append(query)
+            else:
+                no_change_clauses.append(clause)
+        res_clauses = no_change_clauses
+        for key_value_tuple_tuple, grouped_clause in grouped_clauses.items():
+            query = " ".join(grouped_clause["query"])
+            format_clause = grouped_clause["format"]
+            format_clause["query_string"]["query"] = query
+            res_clauses.append(format_clause)
+        return res_clauses
+
     def reduce_co_bool_clauses(
         self, bool_clauses: list[dict], sort: bool = True
     ) -> dict:
@@ -124,8 +179,13 @@ class BoolElasticReducer:
                     op_list_dict[bool_op].append(bool_dict)
         op_list_dict = self.add_shoulds_to_op_list_dict(op_list_dict, should_clauses)
         for bool_op, bool_dict_list in op_list_dict.items():
-            if isinstance(bool_dict_list, list) and len(bool_dict_list) == 1:
-                op_list_dict[bool_op] = bool_dict_list[0]
+            if isinstance(bool_dict_list, list):
+                if len(bool_dict_list) == 1:
+                    op_list_dict[bool_op] = bool_dict_list[0]
+                else:
+                    op_list_dict[bool_op] = self.merge_query_string_clauses(
+                        bool_dict_list
+                    )
         if sort:
             op_list_dict = self.sort_op_list_dict(op_list_dict)
         return {"bool": op_list_dict}
