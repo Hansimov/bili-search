@@ -3,7 +3,7 @@ from pprint import pformat
 from tclogger import logger, get_now, tcdatetime
 from typing import Literal, Union
 
-from elastics.client import ElasticSearchClient
+from elastics.video_details.client import ElasticSearchClient
 from converters.highlight.merge import HighlightMerger
 from converters.highlight.pinyin import PinyinHighlighter
 from elastics.structure import get_es_source_val

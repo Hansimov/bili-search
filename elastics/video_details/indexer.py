@@ -6,7 +6,7 @@ from tclogger import logger, ts_to_str
 from tqdm import tqdm
 
 from configs.envs import BILI_DATA_ROOT
-from elastics.client import ElasticSearchClient
+from elastics.video_details.client import ElasticSearchClient
 
 # https://github.com/infinilabs/analysis-pinyin
 VIDEO_DETAILS_INDEX_SETTINGS = {
