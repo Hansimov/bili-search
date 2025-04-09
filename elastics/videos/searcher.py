@@ -29,6 +29,7 @@ from elastics.videos.constants import SUGGEST_DETAIL_LEVELS, MAX_SUGGEST_DETAIL_
 from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
+from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 
 
@@ -130,10 +131,9 @@ class VideoSearcherV1:
                 logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
-        logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
+        if verbose:
+            logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
 
-        logger.note(f"> Get search results by query:", end=" ")
-        logger.mesg(f"[{query_info['query']}]")
         try:
             res = self.es.client.search(index=self.index_name, body=search_body)
             res_dict = res.body
@@ -249,7 +249,7 @@ class VideoSearcherV1:
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
         is_explain: bool = False,
-        use_script_score: bool = True,
+        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
     ) -> dict:
         """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
         script_score_constructor = ScriptScoreQueryDSLConstructor()
@@ -265,9 +265,15 @@ class VideoSearcherV1:
                 "highlight": self.get_highlight_settings(match_fields),
                 **common_params,
             }
+        # elif use_rrf_score:
+        #     rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
+        #     search_body = {**rrf_dsl_dict, **common_params}
         else:
-            rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
-            search_body = {**rrf_dsl_dict, **common_params}
+            search_body = {
+                "query": query_dsl_dict,
+                "highlight": self.get_highlight_settings(match_fields),
+                **common_params,
+            }
         return search_body
 
     def post_process_return_res(self, return_res: dict) -> dict:
@@ -290,7 +296,7 @@ class VideoSearcherV1:
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
-        use_script_score: bool = True,
+        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         use_pinyin: bool = False,
         detail_level: int = -1,
         detail_levels: dict = SEARCH_DETAIL_LEVELS,
@@ -401,7 +407,7 @@ class VideoSearcherV1:
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
-        use_script_score: bool = True,
+        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         use_pinyin: bool = False,
         detail_level: int = -1,
         detail_levels: dict = SEARCH_DETAIL_LEVELS,
@@ -466,7 +472,7 @@ class VideoSearcherV1:
         boost: bool = True,
         boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
-        use_script_score: bool = True,
+        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         use_pinyin: bool = True,
         detail_level: int = -1,
         detail_levels: dict = SUGGEST_DETAIL_LEVELS,
@@ -511,7 +517,7 @@ class VideoSearcherV1:
         boost: bool = True,
         boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
-        use_script_score: bool = True,
+        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         use_pinyin: bool = True,
         detail_level: int = -1,
         detail_levels: dict = SUGGEST_DETAIL_LEVELS,

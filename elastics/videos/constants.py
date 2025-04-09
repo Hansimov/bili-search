@@ -50,22 +50,25 @@ DATE_MATCH_FIELDS = [
 ]
 
 # boosted fields
-SHARED_BOOSTED_FIELDS = {
-    # "title": 2.5,
-    # "title.words": 2.5,
+BIAS_BOOSTED_FIELDS = {
     "title": 3,
     "title.words": 3,
-    # "tags": 3.5,
-    # "tags.words": 3.5,
     "tags": 2.5,
     "tags.words": 2.5,
-    # "owner.name": 2,
-    # "owner.name.words": 2,
     "owner.name": 2,
     "owner.name.words": 2,
 }
+NORM_BOOSTED_FIELDS = {
+    "title": 1,
+    "title.words": 1,
+    "tags": 1,
+    "tags.words": 1,
+    "owner.name": 1,
+    "owner.name.words": 1,
+}
 SEARCH_BOOSTED_FIELDS = {
-    **SHARED_BOOSTED_FIELDS,
+    # **BIAS_BOOSTED_FIELDS,
+    **NORM_BOOSTED_FIELDS,
     "title.pinyin": 0.25,
     "tags.pinyin": 0.2,
     "owner.name.pinyin": 0.2,
@@ -74,7 +77,8 @@ SEARCH_BOOSTED_FIELDS = {
     "desc.pinyin": 0.01,
 }
 SUGGEST_BOOSTED_FIELDS = {
-    **SHARED_BOOSTED_FIELDS,
+    # **BIAS_BOOSTED_FIELDS,
+    **NORM_BOOSTED_FIELDS,
     "title.pinyin": 0.5,
     "tags.pinyin": 0.4,
     "owner.name.pinyin": 0.4,
@@ -135,7 +139,6 @@ SEARCH_DETAIL_LEVELS = {
         "bool": SEARCH_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 100}}},
-            {"range": {"stat.coin": {"gte": 1}}},
         ],
         "timeout": 3,
     },
@@ -144,7 +147,6 @@ SEARCH_DETAIL_LEVELS = {
         "bool": SEARCH_MATCH_BOOL,
         "filters": [
             {"range": {"stat.view": {"gte": 100}}},
-            {"range": {"stat.coin": {"gte": 1}}},
         ],
         "timeout": 6,
     },
