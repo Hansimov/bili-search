@@ -17,9 +17,9 @@ EQ: WT* "="
 EQS: (WT* EQ)+
 MI: "-"
 PL: "+"
-NQ: "!" | "！"
-LT: "<" | "《"
-GT: ">" | "》"
+NQ: "!"
+LT: "<"
+GT: ">"
 AT: "@"
 
 AND: "&"
@@ -61,13 +61,13 @@ neq_list: NEQS
 op_rel: eqs | lt | gt | neqs | leqs | geqs
 op_list: eq_list | neq_list
 
-COMMA: "," | "，"
-COLON: ":" | "："
-LP: "(" | "（"
-RP: ")" | "）"
-LK: "[" | "【"
-RK: "]" | "】"
-QS: "?" | "？"
+COMMA: ","
+COLON: ":"
+LP: "("
+RP: ")"
+LK: "["
+RK: "]"
+QS: "?"
 
 COLONS: (WT* COLON WT*)+
 COMMAS: (WT* COMMA WT*)+
@@ -86,7 +86,7 @@ comma_rb: comma? rb
 
 // ---------- date exprs ---------- //
 date_expr: colon? date_key date_op_val
-    date_key: /(?i:(日期|时间|rq|date|dt|d))/
+    date_key: /(?i:(date|rq|dt|d))/
     date_op_val: date_op_val_single | date_op_val_list
         date_op_val_single: date_op_single date_val_single
             date_op_single: op_rel
@@ -120,17 +120,17 @@ sep_hms: /[\_\.]+/
 sep_dh: /[\s\.]+/
 sep_en: /[\_\.\s\-]+/
 
-date_unit_year: /(?i:(年|years?|yr|y))/
-date_unit_month: /(?i:(个?月|months?|mon|m))/
-date_unit_week: /(?i:(周|weeks?|wk|w))/
-date_unit_day: /(?i:(日|天|days?|d))/
-date_unit_hour: /(?i:(个?小时|时|hours?|hr|h))/
+date_unit_year: /(?i:(year|yr|y))/
+date_unit_month: /(?i:(month|mon|m))/
+date_unit_week: /(?i:(week|wk|w))/
+date_unit_day: /(?i:(day|d))/
+date_unit_hour: /(?i:(hour|hr|h))/
 
 
 // ---------- user exprs ---------- //
 user_expr: colon? user_key_op user_val
     user_key_op: user_key user_op | user_at
-        user_key: /(?i:(用户|昵称|作者|name|author|uploader|up|user|u))/
+        user_key: /(?i:(user|up|u))/
         user_op: eq | neq
         user_at: at_neq | at_eq
     user_val: user_val_single | user_val_list
@@ -151,7 +151,7 @@ at_neq: AT NQ
 
 // ---------- avid/bvid exprs ---------- //
 bvid_expr: colon? bvid_key bvid_op bvid_val
-    bvid_key: /(?i:(avid|aid|av|bvid|bid|bv))/
+    bvid_key: /(?i:(avid|av|bvid|bv))/
     bvid_op: op_list
     bvid_val: bvid_val_single | bvid_val_list
         bvid_val_single: bvid_str
@@ -162,18 +162,18 @@ bvid_str: /[a-zA-Z0-9]+/
 // ---------- stat exprs ---------- //
 stat_expr: colon? stat_key stat_op_val
     stat_key: view_key | like_key | coin_key | favorite_key | reply_key | danmaku_key | share_key
-        view_key: /(?i:(播放|bofang|bof|bf|view|vw|v))/
-        like_key: /(?i:(点赞|dianzan|dianz|dz|like|lk|l))/
-        coin_key: /(?i:(投币|toubi|toub|tb|coin|cn|c))/
-        favorite_key: /(?i:(收藏|shouchang|shouc|sc|star|favorite|fav|fv))/
-        reply_key: /(?i:(评论|回复|pinglun|pingl|huifu|huif|pl|hf|reply|rp))/
-        danmaku_key: /(?i:(弹幕|danmu|danm|danmaku|dm))/
-        share_key: /(?i:(分享|转发|fenxiang|fenx|zhuanfa|zhuanf|fx|zf|share|sh))/
+        view_key: /(?i:(view|bf|vw|v))/
+        like_key: /(?i:(like|dz|lk|l))/
+        coin_key: /(?i:(coin|tb|cn|c))/
+        favorite_key: /(?i:(favorite|fav|sc|fv))/
+        reply_key: /(?i:(reply|pl|rp))/
+        danmaku_key: /(?i:(danmaku|dm))/
+        share_key: /(?i:(share|fx|sh))/
     stat_op_val: stat_op_val_single | stat_op_val_list
         stat_op_val_single: op_rel stat_val_single
             stat_val_single: stat_num stat_unit?
                 stat_num: digits
-                stat_unit: /[百千kK万wWmM亿]+/
+                stat_unit: /[kKwWmM]+/
         stat_op_val_list: op_rel stat_val_list
             stat_val_list: lb_comma stat_val_left? comma? stat_val_right? comma_rb
                 stat_val_left: stat_val_single
@@ -182,7 +182,7 @@ stat_expr: colon? stat_key stat_op_val
 
 // ---------- region exprs ---------- //
 region_expr: colon? region_key region_op region_val
-    region_key: /(?i:(分区|fenqu|fq|region|rid|r))/
+    region_key: /(?i:(region|rid|fq|r))/
     region_op: op_list
     region_val: region_val_single | region_val_list
         region_val_single: digits | text_strict
@@ -193,7 +193,7 @@ region_expr: colon? region_key region_op region_val
 word_expr: colon? word_key_op_val
     word_key_op_val: word_pp? word_val_single word_sp? | word_key_op word_val_list
         word_key_op: word_key word_op
-            word_key: /(?i:(关键字|keyword|key|k))/
+            word_key: /(?i:(keyword|kw|k))/
             word_op: eq | neq
         word_pp: mi | pl | nq
         word_sp: qs
@@ -205,9 +205,9 @@ word_expr: colon? word_key_op_val
 text_expr: text_quoted | text_strict | text_plain
 
 text_quoted: /[“][^“”]+[”]/ | /["][^"]+["]/
-text_strict: /(?=[^+\-])[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
-text_plain:  /(?=[^+\-])[^\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
-text_catch:   /[\s\n"“”\|\&\?？\(\)\[\]（）【】:：!！,，<>《》]+/
+text_strict: /(?=[^+\-])[^\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
+text_plain:  /(?=[^+\-])[^\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
+text_catch:   /[\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
 
 %import common.WS
 %ignore WS
