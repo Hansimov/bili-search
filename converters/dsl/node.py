@@ -6,7 +6,7 @@ from lark import Token, Tree
 from tclogger import logger, logstr
 from typing import Union, Literal, Any
 
-from converters.dsl.constants import START_EXPR, ATOM_EXPRS, ITEM_EXPRS
+from converters.dsl.constants import START_EXPR, MAIN_EXPRS, ATOM_EXPRS, ITEM_EXPRS
 from converters.dsl.constants import PA_EXPRS, BOOL_OPS, BOOL_EXPRS
 
 
@@ -69,7 +69,10 @@ class DslNode:
 
     @property
     def first_child(self) -> Union["DslNode", None]:
-        return self.children[0]
+        if isinstance(self.children, list) and len(self.children) > 0:
+            return self.children[0]
+        else:
+            return None
 
     @property
     def first_child_key(self) -> str:
@@ -252,6 +255,9 @@ class DslNode:
     def is_start(self):
         return self.key == START_EXPR
 
+    def is_main(self):
+        return self.key in MAIN_EXPRS
+
     def is_atom_expr(self):
         return self.key in ATOM_EXPRS
 
@@ -324,6 +330,16 @@ class DslNode:
         self.disconnect_from_parent()
         return parent
 
+    def insert_subparent(self, subparent: "DslNode") -> "DslNode":
+        """Insert mid_subparent between itself and its childs,
+        which means subparent will be new parent of self's children, while self will be parent of subparent.
+        """
+        child_copy = list(self.children)
+        for child in child_copy:
+            child.graft_to_new_parent(subparent)
+        subparent.connect_to_parent(self)
+        return subparent
+
 
 class DslTreeProcessor:
     @staticmethod
@@ -371,6 +387,12 @@ class DslExprNode(DslNode):
             return atom_node.first_child_key
         else:
             return ""
+
+    def has_level_1_atom_child(self) -> bool:
+        for child in self.children:
+            if child.is_key("atom"):
+                return True
+        return False
 
     def get_all_atom_childs_expr_keys(self) -> list[str]:
         atom_nodes = self.find_all_childs_with_key("atom")
@@ -428,12 +450,17 @@ class DslTreeExprGrouper(DslTreeProcessor):
             for child in children:
                 self.group(child).connect_to_parent(expr_node)
             return expr_node
+        elif node.is_main():
+            expr_node = DslExprNode("expr")
+            for child in children:
+                self.group(child).connect_to_parent(expr_node)
+            return expr_node
         elif node.is_pa_expr():
             expr_node = DslExprNode("pa")
             for child in children:
                 if child.is_lp() or child.is_rp():
                     pass
-                elif child.is_bool_expr() or child.is_atom_expr():
+                elif child.is_bool_expr() or child.is_atom_expr() or child.is_pa_expr():
                     self.group(child).connect_to_parent(expr_node)
                 else:
                     raise ValueError(f"Invalid pa_expr: {child.key}")
@@ -528,6 +555,15 @@ class DslExprTreeFlatter(DslTreeProcessor):
             queue.extend(co_node.children)
 
     def flatten(self, node: DslExprNode) -> DslExprNode:
+        """node key is `start`"""
+        if node.first_child.is_key("expr"):
+            expr_node: DslExprNode = node.first_child
+            if expr_node.has_level_1_atom_child():
+                # this condition often appears when there is `expr_error` in the first-level child of root `expr` node
+                # need to put all childs under the `co` expr node
+                co_node = DslExprNode("co")
+                expr_node.insert_subparent(co_node)
+
         queue = node.find_all_childs_with_key(BOOL_OPS, max_level=1)
         while queue:
             current = queue.pop(0)

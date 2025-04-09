@@ -88,7 +88,10 @@ class DslExprToElasticConverter:
 
     def bool_node_to_elastic_dict(self, node: DslExprNode) -> dict:
         if node.is_key("pa"):
-            return self.node_to_elastic_dict(node.children[0])
+            if node.first_child:
+                return self.node_to_elastic_dict(node.first_child)
+            else:
+                return {}
         elif node.is_key(["and", "co"]):
             bool_clauses = []
             if node.all_bool_childs_are_co_and():

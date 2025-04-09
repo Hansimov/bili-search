@@ -6,7 +6,7 @@ USER_OPS = ["eq", "neq", "at_eq", "at_neq"]
 WORD_OPS = ["eq", "neq", "pl", "mi", "nq", "qs"]
 
 START_EXPR = "start"
-MAIN_EXPRS = ["expr", "expr_error"]
+MAIN_EXPRS = ["expr", "expr_with_error"]
 ATOM_EXPRS = ["atom_expr"]
 PA_EXPRS = ["pa_expr"]
 BOOL_EXPRS = ["and_expr", "or_expr", "co_expr"]
