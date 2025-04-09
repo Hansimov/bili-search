@@ -204,7 +204,7 @@ word_expr: colon? word_key_op_val
 
 text_expr: text_quoted | text_strict | text_plain
 
-text_quoted: /[“][^“”]+[”]/ | /["][^"]+["]/
+text_quoted: /[“][^“”]+[”]/ | /[《][^《》]+[》]/ | /[【][^【】]+[】]/ | /[（][^（）]+[）]/ | /["][^"]+["]/
 text_strict: /(?=[^+\-])[^\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
 text_plain:  /(?=[^+\-])[^\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
 text_catch:   /[\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
