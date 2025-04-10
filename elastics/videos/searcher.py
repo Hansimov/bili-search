@@ -33,7 +33,7 @@ from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 
 
-class VideoSearcherV1:
+class VideoSearcherBase:
     def __init__(self, index_name: str = VIDEOS_INDEX_DEFAULT):
         self.index_name = index_name
         self.es = ElasticOperator(
@@ -42,10 +42,10 @@ class VideoSearcherV1:
         )
         self.init_processors()
 
+    @abstractmethod
     def init_processors(self):
+        """Initialize processors for all kinds of parse, rewrite and convert."""
         self.hit_parser = VideoHitsParser()
-        self.suggest_parser = SuggestInfoParser()
-        self.query_rewriter = QueryRewriter()
 
     def get_highlight_settings(
         self,
@@ -159,24 +159,12 @@ class VideoSearcherV1:
             return_res = res_dict
         return return_res
 
-    def rewrite_with_suggest(
-        self, query_info: dict, suggest_info: dict
-    ) -> tuple[dict, str]:
-        """if suggest_info is provided, get rewrite_info and keywords_rewrited, which is used in construct query_dsl_dict;
-        and if suggest_info is not provided, return empty rewrite_info and original keywords in query_info.
-        """
-        if suggest_info:
-            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
-            rewrite_list = rewrite_info.get("list", [])
-            if rewrite_list:
-                keywords_rewrited = rewrite_list[0]
-            else:
-                keywords_rewrited = " ".join(query_info["keywords"])
-        else:
-            rewrite_info = {}
-            keywords_rewrited = " ".join(query_info["keywords"])
-        return rewrite_info, keywords_rewrited
+    @abstractmethod
+    def rewrite_with_suggest(self, query_info: dict, suggest_info: dict):
+        """Get rewrite_info from query_info and suggest_info."""
+        pass
 
+    @abstractmethod
     def suggest_and_rewrite(
         self,
         query_info: dict,
@@ -185,63 +173,8 @@ class VideoSearcherV1:
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         return_res: dict = {},
     ) -> dict:
-        """if request_type is "suggest", parse suggest_info, and get rewrite_info:
-        - as in most cases, when request_type is "suggest", suggest_info is not provided,
-        - so in order to provide suggest_info for next search, we need to add this info
-        And if reqeust_type is "search" and the rewrite_info is provided, reuse it.
-        Then add suggest_info and rewrite_info to return_res.
-        """
-        if request_type == "suggest":
-            qwords = query_info["keywords_body"]
-            suggest_info = self.suggest_parser.parse(
-                qwords=qwords, hits=return_res["hits"]
-            )
-            rewrite_info = self.query_rewriter.rewrite(
-                query_info=query_info, suggest_info=suggest_info
-            )
-        else:
-            suggest_info = suggest_info or {}
-            rewrite_info = rewrite_info or {}
-        return_res["suggest_info"] = suggest_info
-        return_res["rewrite_info"] = rewrite_info
-        return return_res
-
-    def get_info_of_query_rewrite_dsl(
-        self,
-        query: str,
-        suggest_info: dict = {},
-        boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
-        boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
-        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
-        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
-        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
-        extra_filters: list[dict] = [],
-        combined_fields_list: list[list[str]] = [],
-        **kwargs,  # for compatibility with variable input params in v2
-    ) -> tuple[dict, dict, dict]:
-        """This is version v1, which uses regex to extract query_info, convert rewrite_info, and construct query_dsl_dict."""
-        # get query_info and rewrite_info
-        query_info_extractor = QueryFilterExtractor()
-        query_info = query_info_extractor.split_keyword_and_filter_expr(query)
-        rewrite_info, keywords_rewrited = self.rewrite_with_suggest(
-            query_info=query_info, suggest_info=suggest_info
-        )
-        # construct query_dsl_dict from keywords_rewrited
-        query_constructor = MultiMatchQueryDSLConstructor()
-        query_dsl_dict = query_constructor.construct(
-            keywords_rewrited,
-            match_fields=boosted_match_fields,
-            date_match_fields=boosted_date_fields,
-            match_bool=match_bool,
-            match_type=match_type,
-            match_operator=match_operator,
-            combined_fields_list=combined_fields_list,
-        )
-        # add filter_dicts and extra_filters to query_dsl_dict
-        _, filter_dicts = query_info_extractor.construct(query)
-        if filter_dicts or extra_filters:
-            query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
-        return query_info, rewrite_info, query_dsl_dict
+        """Get suggest_info and rewrite_info."""
+        pass
 
     def construct_search_body(
         self,
@@ -276,8 +209,26 @@ class VideoSearcherV1:
             }
         return search_body
 
+    @abstractmethod
     def post_process_return_res(self, return_res: dict) -> dict:
         return return_res
+
+    @abstractmethod
+    def get_info_of_query_rewrite_dsl(
+        self,
+        query: str,
+        suggest_info: dict = {},
+        boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        extra_filters: list[dict] = [],
+        combined_fields_list: list[list[str]] = [],
+        **kwargs,  # for compatibility with variable input params in different versions
+    ) -> tuple[dict, dict, dict]:
+        """Return: query_info, rewrite_info, query_dsl_dict"""
+        pass
 
     def search(
         self,
@@ -668,7 +619,101 @@ class VideoSearcherV1:
         return res_dict
 
 
-class VideoSearcherV2(VideoSearcherV1):
+class VideoSearcherV1(VideoSearcherBase):
+    def init_processors(self):
+        self.hit_parser = VideoHitsParser()
+        self.suggest_parser = SuggestInfoParser()
+        self.query_rewriter = QueryRewriter()
+
+    def rewrite_with_suggest(
+        self, query_info: dict, suggest_info: dict
+    ) -> tuple[dict, str]:
+        """if suggest_info is provided, get rewrite_info and keywords_rewrited, which is used in construct query_dsl_dict;
+        and if suggest_info is not provided, return empty rewrite_info and original keywords in query_info.
+        """
+        if suggest_info:
+            rewrite_info = self.query_rewriter.rewrite(query_info, suggest_info)
+            rewrite_list = rewrite_info.get("list", [])
+            if rewrite_list:
+                keywords_rewrited = rewrite_list[0]
+            else:
+                keywords_rewrited = " ".join(query_info["keywords"])
+        else:
+            rewrite_info = {}
+            keywords_rewrited = " ".join(query_info["keywords"])
+        return rewrite_info, keywords_rewrited
+
+    def suggest_and_rewrite(
+        self,
+        query_info: dict,
+        suggest_info: dict = {},
+        rewrite_info: dict = {},
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
+        return_res: dict = {},
+    ) -> dict:
+        """if request_type is "suggest", parse suggest_info, and get rewrite_info:
+        - as in most cases, when request_type is "suggest", suggest_info is not provided,
+        - so in order to provide suggest_info for next search, we need to add this info
+        And if reqeust_type is "search" and the rewrite_info is provided, reuse it.
+        Then add suggest_info and rewrite_info to return_res.
+        """
+        if request_type == "suggest":
+            qwords = query_info["keywords_body"]
+            suggest_info = self.suggest_parser.parse(
+                qwords=qwords, hits=return_res["hits"]
+            )
+            rewrite_info = self.query_rewriter.rewrite(
+                query_info=query_info, suggest_info=suggest_info
+            )
+        else:
+            suggest_info = suggest_info or {}
+            rewrite_info = rewrite_info or {}
+        return_res["suggest_info"] = suggest_info
+        return_res["rewrite_info"] = rewrite_info
+        return return_res
+
+    def get_info_of_query_rewrite_dsl(
+        self,
+        query: str,
+        suggest_info: dict = {},
+        boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
+        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
+        extra_filters: list[dict] = [],
+        combined_fields_list: list[list[str]] = [],
+        **kwargs,  # for compatibility with variable input params in v2
+    ) -> tuple[dict, dict, dict]:
+        """This is version v1, which uses regex to extract query_info, convert rewrite_info, and construct query_dsl_dict."""
+        # get query_info and rewrite_info
+        query_info_extractor = QueryFilterExtractor()
+        query_info = query_info_extractor.split_keyword_and_filter_expr(query)
+        rewrite_info, keywords_rewrited = self.rewrite_with_suggest(
+            query_info=query_info, suggest_info=suggest_info
+        )
+        # construct query_dsl_dict from keywords_rewrited
+        query_constructor = MultiMatchQueryDSLConstructor()
+        query_dsl_dict = query_constructor.construct(
+            keywords_rewrited,
+            match_fields=boosted_match_fields,
+            date_match_fields=boosted_date_fields,
+            match_bool=match_bool,
+            match_type=match_type,
+            match_operator=match_operator,
+            combined_fields_list=combined_fields_list,
+        )
+        # add filter_dicts and extra_filters to query_dsl_dict
+        _, filter_dicts = query_info_extractor.construct(query)
+        if filter_dicts or extra_filters:
+            query_dsl_dict["bool"]["filter"] = filter_dicts + extra_filters
+        return query_info, rewrite_info, query_dsl_dict
+
+    def post_process_return_res(self, return_res: dict) -> dict:
+        return return_res
+
+
+class VideoSearcherV2(VideoSearcherBase):
     def init_processors(self):
         self.hit_parser = VideoHitsParser()
         self.query_rewriter = DslExprRewriter()
