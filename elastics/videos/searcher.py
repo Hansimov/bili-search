@@ -30,6 +30,8 @@ from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
+from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 
 
@@ -749,6 +751,95 @@ class VideoSearcherV2(VideoSearcherBase):
         return_res["query_info"].pop("query_expr_tree", None)
         return_res["rewrite_info"].pop("rewrited_expr_trees", None)
         return return_res
+
+    def construct_agg_body(
+        self,
+        query_dsl_dict: dict,
+        timeout: Union[int, float, str] = AGG_TIMEOUT,
+        # sort_field: str = AGG_SORT_FIELD,
+        # sort_order: str = AGG_SORT_ORDER,
+    ) -> dict:
+        """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
+        common_params = {
+            "size": 0,
+            "track_total_hits": True,
+            "_source": False,
+        }
+        # sort_dict = [{sort_field: {"order": sort_order}}]
+        aggs_dict = {
+            "score_ps": {
+                "percentiles": {
+                    "script": {"source": "_score"},
+                    "percents": AGG_PERCENTS,
+                }
+            },
+            "view_ps": {
+                "percentiles": {
+                    "field": "stat.view",
+                    "percents": AGG_PERCENTS,
+                }
+            },
+            "star_ps": {
+                "percentiles": {
+                    "field": "stat.favorite",
+                    "percents": AGG_PERCENTS,
+                }
+            },
+            "pubdate_ps": {
+                "percentiles": {
+                    "field": "pubdate",
+                    "percents": AGG_PERCENTS,
+                }
+            },
+        }
+        agg_body = {
+            **common_params,
+            "query": query_dsl_dict,
+            # "sort": sort_dict,
+            "aggs": aggs_dict,
+        }
+        agg_body = self.set_timeout(agg_body, timeout=timeout)
+        return agg_body
+
+    def agg(
+        self,
+        query: str,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
+        boost: bool = True,
+        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
+        timeout: Union[int, float, str] = AGG_TIMEOUT,
+        verbose: bool = False,
+    ) -> Union[dict, list[dict]]:
+        # construct boosted fields
+        boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
+            match_fields=match_fields,
+            boost=boost,
+            boosted_fields=boosted_fields,
+        )
+        query_rewrite_dsl_params = {
+            "query": query,
+            "suggest_info": suggest_info,
+            "boosted_match_fields": boosted_match_fields,
+            "boosted_date_fields": boosted_date_fields,
+            "match_type": match_type,
+            "extra_filters": extra_filters,
+        }
+        _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
+            **query_rewrite_dsl_params
+        )
+        # construct agg_body
+        agg_body = self.construct_agg_body(
+            query_dsl_dict=query_dsl_dict, timeout=timeout
+        )
+        if verbose:
+            logger.hint("> agg_body:")
+            logger.mesg(dict_to_str(agg_body, add_quotes=True, align_list=False))
+        # submit agg_body to es client
+        es_res_dict = self.submit_to_es(agg_body)
+        return es_res_dict
 
 
 VideoSearcher = VideoSearcherV2

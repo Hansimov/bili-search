@@ -192,6 +192,12 @@ SUGGEST_LIMIT = 10
 # timeout
 SEARCH_TIMEOUT = 2
 SUGGEST_TIMEOUT = 1.5
+AGG_TIMEOUT = 2
+
+# aggregation
+AGG_PERCENTS = [0, 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 99.9, 99.99, 100]
+AGG_SORT_FIELD = "_score"
+AGG_SORT_ORDER = "desc"
 
 # This constant is to contain more hits for redundance,
 # as drop_no_highlights would drop some hits
