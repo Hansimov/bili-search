@@ -106,58 +106,14 @@ class VideoSearcherBase:
             boosted_date_fields = date_fields
         return boosted_match_fields, boosted_date_fields
 
-    def submit_and_parse(
-        self,
-        query_info: dict,
-        search_body: dict,
-        match_fields: list[str] = SEARCH_MATCH_FIELDS,
-        parse_hits: bool = True,
-        drop_no_highlights: bool = False,
-        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
-        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
-        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
-        detail_level: int = -1,
-        limit: int = SEARCH_LIMIT,
-        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
-        verbose: bool = False,
-    ) -> dict:
-        if timeout:
-            if isinstance(timeout, str):
-                search_body["timeout"] = timeout
-            elif isinstance(timeout, int) or isinstance(timeout, float):
-                timeout_str = round(timeout * 1000)
-                search_body["timeout"] = f"{timeout_str}ms"
-            else:
-                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
-        if limit and limit > 0:
-            search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
-        if verbose:
-            logger.note(dict_to_str(search_body, add_quotes=True, align_list=False))
-
+    def submit_to_es(self, search_body: dict) -> dict:
         try:
             res = self.es.client.search(index=self.index_name, body=search_body)
             res_dict = res.body
         except Exception as e:
             logger.warn(f"× Error: {e}")
             res_dict = {}
-
-        if parse_hits:
-            return_res = self.hit_parser.parse(
-                query_info,
-                match_fields,
-                res_dict,
-                request_type=request_type,
-                drop_no_highlights=drop_no_highlights,
-                match_type=match_type,
-                match_operator=match_operator,
-                detail_level=detail_level,
-                limit=limit,
-                verbose=verbose,
-            )
-        else:
-            logger.mesg(dict_to_str(res_dict))
-            return_res = res_dict
-        return return_res
+        return res_dict
 
     @abstractmethod
     def rewrite_with_suggest(self, query_info: dict, suggest_info: dict):
@@ -183,6 +139,8 @@ class VideoSearcherBase:
         source_fields: list[str] = SOURCE_FIELDS,
         is_explain: bool = False,
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        limit: int = SEARCH_LIMIT,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
     ) -> dict:
         """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
         script_score_constructor = ScriptScoreQueryDSLConstructor()
@@ -207,6 +165,16 @@ class VideoSearcherBase:
                 "highlight": self.get_highlight_settings(match_fields),
                 **common_params,
             }
+        if timeout:
+            if isinstance(timeout, str):
+                search_body["timeout"] = timeout
+            elif isinstance(timeout, int) or isinstance(timeout, float):
+                timeout_str = round(timeout * 1000)
+                search_body["timeout"] = f"{timeout_str}ms"
+            else:
+                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
+        if limit and limit > 0:
+            search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         return search_body
 
     @abstractmethod
@@ -312,32 +280,37 @@ class VideoSearcherBase:
             "source_fields": source_fields,
             "is_explain": is_explain,
             "use_script_score": use_script_score,
-        }
-        search_body = self.construct_search_body(**search_body_params)
-        # submit search_body, parse results, and suggest and rewrite
-        submit_and_parse_params = {
-            "query_info": query_info,
-            "search_body": search_body,
-            "match_fields": match_fields,
-            "match_type": match_type,
-            "match_operator": match_operator,
-            "request_type": request_type,
-            "parse_hits": parse_hits,
-            "drop_no_highlights": drop_no_highlights,
-            "detail_level": detail_level,
             "limit": limit,
             "timeout": timeout,
-            "verbose": verbose,
         }
-        return_res = self.submit_and_parse(**submit_and_parse_params)
+        search_body = self.construct_search_body(**search_body_params)
+        # submit search_body to es client
+        es_submit_res = self.submit_to_es(search_body=search_body)
+        # parse results
+        if parse_hits:
+            parse_res = self.hit_parser.parse(
+                query_info,
+                match_fields=match_fields,
+                res_dict=es_submit_res,
+                request_type=request_type,
+                drop_no_highlights=drop_no_highlights,
+                match_type=match_type,
+                match_operator=match_operator,
+                detail_level=detail_level,
+                limit=limit,
+                verbose=verbose,
+            )
+        else:
+            parse_res = es_submit_res
+        # suggest and rewrite
         return_res = self.suggest_and_rewrite(
             query_info,
             suggest_info=suggest_info,
             rewrite_info=rewrite_info,
             request_type=request_type,
-            return_res=return_res,
+            return_res=parse_res,
         )
-        return_res = self.post_process_return_res(return_res)
+        return_res = self.post_process_return_res(parse_res)
         # exit quiet
         logger.exit_quiet(not verbose)
         return return_res
