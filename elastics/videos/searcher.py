@@ -1,4 +1,4 @@
-from copy import deepcopy
+from abc import abstractmethod
 from pprint import pformat
 from sedb import ElasticOperator
 from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
@@ -9,7 +9,7 @@ from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.rewrite import QueryRewriter
-from converters.query.field import is_pinyin_field, deboost_field
+from converters.query.field import is_pinyin_field, deboost_field, boost_fields
 from converters.query.field import remove_suffixes_from_fields
 from converters.dsl.rewrite import DslExprRewriter
 from converters.dsl.elastic import DslExprToElasticConverter
@@ -73,14 +73,6 @@ class VideoSearcherBase:
         }
         return highlight_settings
 
-    def boost_fields(self, match_fields: list, boosted_fields: dict):
-        boosted_match_fields = deepcopy(match_fields)
-        for key in boosted_fields:
-            if key in boosted_match_fields:
-                key_index = boosted_match_fields.index(key)
-                boosted_match_fields[key_index] += f"^{boosted_fields[key]}"
-        return boosted_match_fields
-
     def construct_boosted_fields(
         self,
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
@@ -99,16 +91,16 @@ class VideoSearcherBase:
             and any(field.startswith(date_field) for date_field in DATE_MATCH_FIELDS)
         ]
         if boost:
-            boosted_match_fields = self.boost_fields(match_fields, boosted_fields)
-            boosted_date_fields = self.boost_fields(date_fields, DATE_BOOSTED_FIELDS)
+            boosted_match_fields = boost_fields(match_fields, boosted_fields)
+            boosted_date_fields = boost_fields(date_fields, DATE_BOOSTED_FIELDS)
         else:
             boosted_match_fields = match_fields
             boosted_date_fields = date_fields
         return boosted_match_fields, boosted_date_fields
 
-    def submit_to_es(self, search_body: dict) -> dict:
+    def submit_to_es(self, body: dict) -> dict:
         try:
-            res = self.es.client.search(index=self.index_name, body=search_body)
+            res = self.es.client.search(index=self.index_name, body=body)
             res_dict = res.body
         except Exception as e:
             logger.warn(f"× Error: {e}")
@@ -131,6 +123,17 @@ class VideoSearcherBase:
     ) -> dict:
         """Get suggest_info and rewrite_info."""
         pass
+
+    def set_timeout(self, body: dict, timeout: Union[int, float, str] = None):
+        if timeout is not None:
+            if isinstance(timeout, str):
+                body["timeout"] = timeout
+            elif isinstance(timeout, (int, float)):
+                timeout_str = round(timeout * 1000)
+                body["timeout"] = f"{timeout_str}ms"
+            else:
+                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
+        return body
 
     def construct_search_body(
         self,
@@ -165,14 +168,7 @@ class VideoSearcherBase:
                 "highlight": self.get_highlight_settings(match_fields),
                 **common_params,
             }
-        if timeout:
-            if isinstance(timeout, str):
-                search_body["timeout"] = timeout
-            elif isinstance(timeout, int) or isinstance(timeout, float):
-                timeout_str = round(timeout * 1000)
-                search_body["timeout"] = f"{timeout_str}ms"
-            else:
-                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
+        search_body = self.set_timeout(search_body, timeout=timeout)
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         return search_body
@@ -285,13 +281,13 @@ class VideoSearcherBase:
         }
         search_body = self.construct_search_body(**search_body_params)
         # submit search_body to es client
-        es_submit_res = self.submit_to_es(search_body=search_body)
+        es_res_dict = self.submit_to_es(search_body)
         # parse results
         if parse_hits:
             parse_res = self.hit_parser.parse(
                 query_info,
                 match_fields=match_fields,
-                res_dict=es_submit_res,
+                res_dict=es_res_dict,
                 request_type=request_type,
                 drop_no_highlights=drop_no_highlights,
                 match_type=match_type,
@@ -301,7 +297,7 @@ class VideoSearcherBase:
                 verbose=verbose,
             )
         else:
-            parse_res = es_submit_res
+            parse_res = es_res_dict
         # suggest and rewrite
         return_res = self.suggest_and_rewrite(
             query_info,
@@ -724,11 +720,8 @@ class VideoSearcherV2(VideoSearcherBase):
         suggest_info: dict = {},
         boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
         boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
-        match_bool: MATCH_BOOL = SEARCH_MATCH_BOOL,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
-        match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         extra_filters: list[dict] = [],
-        combined_fields_list: list[list[str]] = [],
         **kwargs,  # for compatibility with different input params
     ) -> tuple[dict, dict, dict]:
         # get query_info

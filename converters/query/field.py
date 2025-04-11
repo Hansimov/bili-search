@@ -1,10 +1,20 @@
 import re
 
+from copy import deepcopy
 from typing import Union, Literal
 
 
 def deboost_field(field: str):
     return field.split("^", 1)[0]
+
+
+def boost_fields(match_fields: list, boosted_fields: dict):
+    boosted_match_fields = deepcopy(match_fields)
+    for key in boosted_fields:
+        if key in boosted_match_fields:
+            key_index = boosted_match_fields.index(key)
+            boosted_match_fields[key_index] += f"^{boosted_fields[key]}"
+    return boosted_match_fields
 
 
 def is_pinyin_field(field: str):
