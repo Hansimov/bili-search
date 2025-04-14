@@ -436,20 +436,19 @@ class ScriptScoreQueryDSLConstructor:
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
-    def construct(self, query_dsl_dict: dict) -> dict:
-        script_score_dsl_dict = {
-            "script_score": {
-                "query": query_dsl_dict,
-                "script": {
-                    # "source": self.get_script_source_by_powers(),
-                    "source": self.get_script_source_by_stats(),
-                    "params": {
-                        "now_ts": get_now_ts(),
-                    },
-                },
-            }
+    def construct(self, query_dsl_dict: dict, only_script: bool = False) -> dict:
+        script_dict = {
+            # "source": self.get_script_source_by_powers(),
+            "source": self.get_script_source_by_stats(),
+            "params": {"now_ts": get_now_ts()},
         }
-        return script_score_dsl_dict
+        if only_script:
+            return script_dict
+        else:
+            script_score_dict = {
+                "script_score": {"query": query_dsl_dict, "script": script_dict}
+            }
+            return script_score_dict
 
     def construct_rrf(
         self,

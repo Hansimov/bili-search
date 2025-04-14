@@ -2,7 +2,7 @@ from abc import abstractmethod
 from pprint import pformat
 from sedb import ElasticOperator
 from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
-from typing import Union, Literal
+from typing import Union
 
 from configs.envs import ELASTIC_ENVS
 from converters.query.filter import QueryFilterExtractor
@@ -282,6 +282,7 @@ class VideoSearcherBase:
             "timeout": timeout,
         }
         search_body = self.construct_search_body(**search_body_params)
+        logger.mesg(dict_to_str(search_body), indent=2, verbose=verbose)
         # submit search_body to es client
         es_res_dict = self.submit_to_es(search_body)
         # parse results
@@ -779,7 +780,7 @@ class VideoSearcherV2(VideoSearcherBase):
                     "percents": AGG_PERCENTS,
                 }
             },
-            "star_ps": {
+            "favorite_ps": {
                 "percentiles": {
                     "field": "stat.favorite",
                     "percents": AGG_PERCENTS,
@@ -803,7 +804,8 @@ class VideoSearcherV2(VideoSearcherBase):
 
     def agg(
         self,
-        query: str,
+        query: str = None,
+        query_dsl_dict: dict = None,
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         extra_filters: list[dict] = [],
@@ -813,23 +815,26 @@ class VideoSearcherV2(VideoSearcherBase):
         timeout: Union[int, float, str] = AGG_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
-        # construct boosted fields
-        boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
-            match_fields=match_fields,
-            boost=boost,
-            boosted_fields=boosted_fields,
-        )
-        query_rewrite_dsl_params = {
-            "query": query,
-            "suggest_info": suggest_info,
-            "boosted_match_fields": boosted_match_fields,
-            "boosted_date_fields": boosted_date_fields,
-            "match_type": match_type,
-            "extra_filters": extra_filters,
-        }
-        _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
-            **query_rewrite_dsl_params
-        )
+        """If query_dsl_dict is provided, use it directly, then only `timeout` and `verbose` is taking effect."""
+        if not query_dsl_dict:
+            # construct boosted fields
+            boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
+                match_fields=match_fields,
+                boost=boost,
+                boosted_fields=boosted_fields,
+            )
+            # construct query_dsl_dict
+            query_rewrite_dsl_params = {
+                "query": query,
+                "suggest_info": suggest_info,
+                "boosted_match_fields": boosted_match_fields,
+                "boosted_date_fields": boosted_date_fields,
+                "match_type": match_type,
+                "extra_filters": extra_filters,
+            }
+            _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
+                **query_rewrite_dsl_params
+            )
         # construct agg_body
         agg_body = self.construct_agg_body(
             query_dsl_dict=query_dsl_dict, timeout=timeout
