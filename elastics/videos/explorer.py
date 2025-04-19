@@ -1,3 +1,5 @@
+import json
+
 from copy import deepcopy
 from tclogger import dict_get, get_by_threshold, get_now_ts, dict_to_str, to_digits
 from tclogger import logstr, logger, brk
@@ -18,22 +20,23 @@ class VideoExplorer(VideoSearcherV2):
     def get_stat_filter_by_threshold(
         self,
         agg_result: dict,
-        field: Literal["score", "pubdate", "view", "favorite"],
+        field: Literal["view", "like", "coin", "favorite"],
         threshold: float = None,
         max_doc_count: int = None,
-    ) -> dict:
+        res_format: Literal["dict", "tuple"] = "dict",
+    ) -> Union[dict, tuple]:
         total_hits = self.get_total_hits(agg_result)
         if total_hits is None:
             logger.warn(f"× Not found total_hits")
             return None
         if max_doc_count is None and threshold is None:
             return {}
+        if threshold is None:
+            threshold = 0
         if max_doc_count is not None:
             if total_hits <= max_doc_count:
                 return {}
-            threshold = (1 - max_doc_count / total_hits) * 100
-        else:
-            threshold = threshold
+            threshold = max((1 - max_doc_count / total_hits) * 100, threshold)
         stat_agg_dict = dict_get(agg_result, f"aggregations.{field}_ps.values", None)
         if stat_agg_dict is None:
             logger.warn(f"× Not found aggregation: {field}_ps")
@@ -47,8 +50,21 @@ class VideoExplorer(VideoSearcherV2):
         if stat_key is None and stat_value is None:
             logger.warn(f"× Not found threshold: {threshold}")
             return None
-        stat_filter = {"range": {f"stat.{field}": {"gte": int(stat_value)}}}
-        return stat_filter
+        if res_format == "tuple":
+            return stat_key, stat_value
+        else:
+            stat_filter = {"range": {f"stat.{field}": {"gte": int(stat_value)}}}
+            return stat_filter
+
+    def format_result(
+        self, res: dict, res_format: Literal["json", "str"] = "json"
+    ) -> Union[dict, str]:
+        if res_format == "str":
+            # used for EventSourceResponse
+            return json.dumps(res)
+        else:
+            # used for normal response
+            return res
 
     def explore(
         self,
@@ -65,9 +81,11 @@ class VideoExplorer(VideoSearcherV2):
         timeout: Union[int, float, str] = AGG_TIMEOUT,
         verbose: bool = False,
         # `explore` related params
-        relevance_percentile: float = 50.0,
-        most_relevant_count: int = 10000,
-        relevant_recall_count: int = 10,
+        view_percent_threshold: float = 25.0,
+        score_ratio_threshold: float = 0.45,
+        max_count_by_view: int = 10000,
+        max_count_by_score: int = 10000,
+        res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
         """Multi-step explorative search, yield result at each step.
 
@@ -114,7 +132,7 @@ class VideoExplorer(VideoSearcherV2):
             "output": query_dsl_dict,
             "comment": "",
         }
-        yield query_dsl_dict_yield
+        yield self.format_result(query_dsl_dict_yield, res_format=res_format)
 
         # Step 1: Aggregation
         step_idx += 1
@@ -130,12 +148,11 @@ class VideoExplorer(VideoSearcherV2):
             "output": agg_result,
             "comment": "",
         }
-        yield agg_yield
-
-        filter_merger = QueryDslDictFilterMerger()
+        yield self.format_result(agg_yield, res_format=res_format)
 
         # Step 2: Most-relevant docs
         #   - with view filter
+        step_idx += 1
         step_str = logstr.note(brk(f"Step {step_idx}"))
         logger.hint(
             f"> {step_str} Top relevant docs based on relevance and view filter"
@@ -143,8 +160,8 @@ class VideoExplorer(VideoSearcherV2):
         view_filter = self.get_stat_filter_by_threshold(
             agg_result,
             field="view",
-            threshold=relevance_percentile,
-            max_doc_count=most_relevant_count,
+            threshold=view_percent_threshold,
+            max_doc_count=max_count_by_view,
         )
         relevant_extra_filters = deepcopy(extra_filters)
         if view_filter is None:
@@ -171,4 +188,4 @@ class VideoExplorer(VideoSearcherV2):
             "output": relevant_search_res,
             "comment": "",
         }
-        yield relevant_search_yield
+        yield self.format_result(relevant_search_yield, res_format=res_format)
