@@ -394,6 +394,9 @@ class ScriptScoreQueryDSLConstructor:
         assign_str = f"\ndouble stats_score = {stats_score_str};\n"
         return assign_str
 
+    def score_threshold_script(self, name: str = "score_threshold"):
+        return f"if (_score < params.{name}) {{ return 0; }}\n"
+
     def get_script_source_by_powers(self):
         assign_vars = []
         stat_powers = {
@@ -436,12 +439,29 @@ class ScriptScoreQueryDSLConstructor:
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 
-    def construct(self, query_dsl_dict: dict, only_script: bool = False) -> dict:
-        script_dict = {
-            # "source": self.get_script_source_by_powers(),
-            "source": self.get_script_source_by_stats(),
-            "params": {"now_ts": get_now_ts()},
-        }
+    def construct(
+        self,
+        query_dsl_dict: dict,
+        only_script: bool = False,
+        score_threshold: float = None,
+    ) -> dict:
+        script_source = self.get_script_source_by_stats()
+        if score_threshold is not None:
+            score_thresold_name = "score_threshold"
+            score_threshold_script = self.score_threshold_script(score_thresold_name)
+            script_source = f"{score_threshold_script}{script_source}"
+            script_dict = {
+                "source": script_source,
+                "params": {
+                    "now_ts": get_now_ts(),
+                    score_thresold_name: score_threshold,
+                },
+            }
+        else:
+            script_dict = {
+                "source": script_source,
+                "params": {"now_ts": get_now_ts()},
+            }
         if only_script:
             return script_dict
         else:

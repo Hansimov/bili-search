@@ -137,6 +137,11 @@ class VideoSearcherBase:
                 logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
         return body
 
+    def set_min_score(self, body: dict, min_score: float = None):
+        if min_score is not None:
+            body["min_score"] = min_score
+        return body
+
     def construct_search_body(
         self,
         query_dsl_dict: dict,
@@ -144,33 +149,33 @@ class VideoSearcherBase:
         source_fields: list[str] = SOURCE_FIELDS,
         is_explain: bool = False,
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        score_threshold: float = None,
         limit: int = SEARCH_LIMIT,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
     ) -> dict:
-        """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
-        script_score_constructor = ScriptScoreQueryDSLConstructor()
+        """construct script_score from query_dsl_dict, and return search_body"""
         common_params = {
             "_source": source_fields,
             "explain": is_explain,
             "track_total_hits": True,
+            "highlight": self.get_highlight_settings(match_fields),
         }
+        script_score_constructor = ScriptScoreQueryDSLConstructor()
         if use_script_score:
-            scripted_query_dsl_dict = script_score_constructor.construct(query_dsl_dict)
+            script_query_dsl_dict = script_score_constructor.construct(
+                query_dsl_dict, score_threshold=score_threshold
+            )
             search_body = {
-                "query": scripted_query_dsl_dict,
-                "highlight": self.get_highlight_settings(match_fields),
+                "query": script_query_dsl_dict,
                 **common_params,
             }
-        # elif use_rrf_score:
-        #     rrf_dsl_dict = script_score_constructor.construct_rrf(query_dsl_dict)
-        #     search_body = {**rrf_dsl_dict, **common_params}
         else:
             search_body = {
                 "query": query_dsl_dict,
-                "highlight": self.get_highlight_settings(match_fields),
                 **common_params,
             }
         search_body = self.set_timeout(search_body, timeout=timeout)
+        search_body = self.set_min_score(search_body, min_score=score_threshold)
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         return search_body
@@ -214,6 +219,7 @@ class VideoSearcherBase:
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        score_threshold: float = None,
         use_pinyin: bool = False,
         detail_level: int = -1,
         detail_levels: dict = SEARCH_DETAIL_LEVELS,
@@ -278,11 +284,14 @@ class VideoSearcherBase:
             "source_fields": source_fields,
             "is_explain": is_explain,
             "use_script_score": use_script_score,
+            "score_threshold": score_threshold,
             "limit": limit,
             "timeout": timeout,
         }
         search_body = self.construct_search_body(**search_body_params)
-        logger.mesg(dict_to_str(search_body), indent=2, verbose=verbose)
+        logger.mesg(
+            dict_to_str(search_body, add_quotes=True), indent=2, verbose=verbose
+        )
         # submit search_body to es client
         es_res_dict = self.submit_to_es(search_body)
         # parse results
