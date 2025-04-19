@@ -1,4 +1,4 @@
-from tclogger import logger
+from tclogger import logger, dict_to_str
 from typing import Union, Literal
 
 from elastics.structure import get_es_source_val
@@ -190,13 +190,15 @@ class VideoHitsParser:
             "query_info": query_info,
         }
         if verbose:
-            # logger.success(pformat(hits_info, indent=4, sort_dicts=False))
             logger.note(f"Request type: [{request_type}]")
-            logger.mesg(f"  * detail level: {detail_level}")
-            logger.mesg(f"  * return hits count: {hits_info['return_hits']}")
-            logger.mesg(f"  * total hits count: {hits_info['total_hits']}")
-            logger.mesg(f"  * took: {hits_info['took']}ms")
-            logger.mesg(f"  * timed_out: {hits_info['timed_out']}")
+            log_info = {
+                "detail_level": detail_level,
+                "return_hits": hits_info["return_hits"],
+                "total_hits": hits_info["total_hits"],
+                "took": hits_info["took"],
+                "timed_out": hits_info["timed_out"],
+            }
+            logger.okay(dict_to_str(log_info), indent=2)
         return hits_info
 
 

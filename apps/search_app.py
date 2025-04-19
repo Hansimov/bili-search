@@ -5,12 +5,11 @@ import uvicorn
 from copy import deepcopy
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from tclogger import TCLogger, dict_to_str
 from typing import Optional, List
 
 from configs.envs import SEARCH_APP_ENVS
-from elastics.videos.searcher import VideoSearcherV2
-
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS
@@ -19,6 +18,8 @@ from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
 from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.searcher import VideoSearcherV2
+from elastics.videos.explorer import VideoExplorer
 
 logger = TCLogger()
 
@@ -36,6 +37,7 @@ class SearchApp:
         self.mode = app_envs.get("mode", "prod")
         # self.allow_cors()
         self.video_searcher = VideoSearcherV2(app_envs["bili_videos_index"])
+        self.video_explorer = VideoExplorer(app_envs["bili_videos_index"])
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
 
@@ -74,6 +76,25 @@ class SearchApp:
             verbose=verbose,
         )
         return results
+
+    def explore(
+        self,
+        query: str = Body(...),
+        suggest_info: Optional[dict] = Body({}),
+        verbose: Optional[bool] = Body(False),
+    ):
+        event_source_response = EventSourceResponse(
+            self.video_explorer.explore(
+                query=query,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                res_format="str",
+            ),
+            media_type="text/event-stream",
+            ping=2000,
+            ping_message_factory=lambda: ServerSentEvent(comment=""),
+        )
+        return event_source_response
 
     def suggest(
         self,
@@ -146,6 +167,11 @@ class SearchApp:
             "/search",
             summary="Get search results by query",
         )(self.search)
+
+        self.app.post(
+            "/explore",
+            summary="Get explore results by query",
+        )(self.explore)
 
         self.app.post(
             "/random",
