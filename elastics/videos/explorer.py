@@ -56,6 +56,44 @@ class VideoExplorer(VideoSearcherV2):
             stat_filter = {"range": {f"stat.{field}": {"gte": int(stat_value)}}}
             return stat_filter
 
+    def get_score_threshold_by_ratio(
+        self,
+        agg_result: dict,
+        ratio: float = None,
+        max_doc_count: int = None,
+    ) -> float:
+        """ratio: 0.0 - 1.0, means should be greater than ratio * max_score
+        for example, if ratio=0.75, means should be greater than 75% of max_score
+        """
+        field = "score"
+        total_hits = self.get_total_hits(agg_result)
+        if total_hits is None:
+            logger.warn(f"× Not found total_hits")
+            return None
+        if max_doc_count is None and ratio is None:
+            return 0
+        score_agg_dict = dict_get(agg_result, f"aggregations.{field}_ps.values", None)
+        if score_agg_dict is None:
+            logger.warn(f"× Not found aggregation: {field}_ps")
+            return None
+        max_score = max(score_agg_dict.values())
+        min_score = min(score_agg_dict.values())
+        # ratio should be max of the constraints by max_doc_count and ratio
+        if ratio is None:
+            ratio = 0
+        if max_doc_count is not None and max_doc_count < total_hits:
+            doc_count_percentile = max_doc_count / total_hits * 100
+            percent_by_count, _ = get_by_threshold(
+                score_agg_dict,
+                threshold=doc_count_percentile,
+                direction="upper_bound",
+                target="key",
+            )
+            ratio_by_count = percent_by_count / 100
+            ratio = max(ratio, ratio_by_count)
+        score_threshold = round(max(max_score * ratio, min_score), 4)
+        return score_threshold
+
     def format_result(
         self, res: dict, res_format: Literal["json", "str"] = "json"
     ) -> Union[dict, str]:
@@ -164,19 +202,25 @@ class VideoExplorer(VideoSearcherV2):
             max_doc_count=max_count_by_view,
         )
         relevant_extra_filters = deepcopy(extra_filters)
-        if view_filter is None:
-            logger.warn("  × No view filter")
-        else:
-            logger.hint("  > View filter:")
-            logger.okay(dict_to_str(view_filter), indent=2)
-            if view_filter:
-                relevant_extra_filters.append(view_filter)
-
+        for stat_filter in [view_filter]:
+            if stat_filter is None:
+                logger.warn(f"  × No stat_filter: {stat_filter}")
+            else:
+                logger.hint("  > stat_filter:")
+                logger.okay(dict_to_str(stat_filter), indent=2)
+                if stat_filter:
+                    relevant_extra_filters.append(stat_filter)
+        score_threshold = self.get_score_threshold_by_ratio(
+            agg_result,
+            ratio=score_ratio_threshold,
+            max_doc_count=max_count_by_score,
+        )
         relevant_search_params = {
             "query": query,
             "suggest_info": suggest_info,
             "extra_filters": relevant_extra_filters,
             "use_script_score": True,
+            "score_threshold": score_threshold,
             "limit": 3,
             "verbose": verbose,
         }
