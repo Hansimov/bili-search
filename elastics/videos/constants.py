@@ -67,8 +67,18 @@ NORM_BOOSTED_FIELDS = {
     "owner.name.words": 1,
 }
 SEARCH_BOOSTED_FIELDS = {
-    # **BIAS_BOOSTED_FIELDS,
-    **NORM_BOOSTED_FIELDS,
+    **BIAS_BOOSTED_FIELDS,
+    # **NORM_BOOSTED_FIELDS,
+    "title.pinyin": 0.25,
+    "tags.pinyin": 0.2,
+    "owner.name.pinyin": 0.2,
+    "desc": 0.1,
+    "desc.words": 0.1,
+    "desc.pinyin": 0.01,
+}
+EXPLORE_BOOSTED_FIELDS = {
+    **BIAS_BOOSTED_FIELDS,
+    # **NORM_BOOSTED_FIELDS,
     "title.pinyin": 0.25,
     "tags.pinyin": 0.2,
     "owner.name.pinyin": 0.2,
@@ -191,6 +201,7 @@ SUGGEST_LIMIT = 10
 
 # timeout
 SEARCH_TIMEOUT = 2
+EXPLORE_TIMEOUT = 5
 SUGGEST_TIMEOUT = 1.5
 AGG_TIMEOUT = 2
 

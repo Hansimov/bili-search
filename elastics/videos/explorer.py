@@ -7,10 +7,32 @@ from typing import Generator, Union, Literal
 
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.dsl.filter import QueryDslDictFilterMerger
-from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
+from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
-from elastics.videos.constants import AGG_TIMEOUT
+from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.searcher import VideoSearcherV2
+
+STEP_ZH_NAMES = {
+    "init": {
+        "name_zh": "初始化",
+    },
+    "construct_query_dsl_dict": {
+        "name_zh": "解析查询",
+        "output_type": "info",
+    },
+    "aggregation": {
+        "name_zh": "聚合",
+        "output_type": "info",
+    },
+    "most_relevant_search": {
+        "name_zh": "相关性排序",
+        "output_type": "hits",
+    },
+    "most_popular_search": {
+        "name_zh": "热门排序",
+        "output_type": "hits",
+    },
+}
 
 
 class VideoExplorer(VideoSearcherV2):
@@ -78,7 +100,9 @@ class VideoExplorer(VideoSearcherV2):
             return None
         max_score = max(score_agg_dict.values())
         min_score = min(score_agg_dict.values())
-        # ratio should be max of the constraints by max_doc_count and ratio
+        # ratio should be min of the constraints by max_doc_count and ratio,
+        # which could ensure that there are enough-but-not-too-much candidate docs
+        # if use max, this would be too strict
         if ratio is None:
             ratio = 0
         if max_doc_count is not None and max_doc_count < total_hits:
@@ -90,7 +114,7 @@ class VideoExplorer(VideoSearcherV2):
                 target="key",
             )
             ratio_by_count = percent_by_count / 100
-            ratio = max(ratio, ratio_by_count)
+            ratio = min(ratio, ratio_by_count)
         score_threshold = round(max(max_score * ratio, min_score), 4)
         return score_threshold
 
@@ -104,6 +128,11 @@ class VideoExplorer(VideoSearcherV2):
             # used for normal response
             return res
 
+    def update_step_output(self, step_yield: dict, step_output: dict = None) -> dict:
+        step_yield["status"] = "finished"
+        step_yield["output"] = step_output
+        return step_yield
+
     def explore(
         self,
         # `query_dsl_dict` related params
@@ -114,15 +143,14 @@ class VideoExplorer(VideoSearcherV2):
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
         boost: bool = True,
-        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
-        # timeout and verbose
-        timeout: Union[int, float, str] = AGG_TIMEOUT,
+        boosted_fields: dict = EXPLORE_BOOSTED_FIELDS,
         verbose: bool = False,
         # `explore` related params
         view_percent_threshold: float = 25.0,
-        score_ratio_threshold: float = 0.45,
+        score_ratio_threshold: float = 0.5,
         max_count_by_view: int = 10000,
         max_count_by_score: int = 10000,
+        relevant_search_limit: int = 400,
         res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
         """Multi-step explorative search, yield result at each step.
@@ -139,8 +167,38 @@ class VideoExplorer(VideoSearcherV2):
         """
         logger.enter_quiet(not verbose)
 
-        step_idx = 0
+        # Step 0: Initialize info of explore steps
+        step_idx = -1
+        step_name = "init"
+        steps = [
+            "construct_query_dsl_dict",
+            "aggregation",
+            "most_relevant_search",
+        ]
+        init_yield = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "finished",
+            "input": {},
+            "output_type": "nodes",
+            "output": {
+                "nodes": [
+                    {
+                        "name": node_name,
+                        "name_zh": STEP_ZH_NAMES[node_name]["name_zh"],
+                        "output_type": STEP_ZH_NAMES[node_name]["output_type"],
+                    }
+                    for node_name in steps
+                ],
+            },
+            "comment": "",
+        }
+        yield self.format_result(init_yield, res_format=res_format)
+
         # Step 0: Construct query_dsl_dict
+        step_idx = 0
+        step_name = "construct_query_dsl_dict"
         logger.hint("> [step 1] Aggregating ...")
         if query_dsl_dict is None:
             boosted_fields_params = {
@@ -165,8 +223,11 @@ class VideoExplorer(VideoSearcherV2):
             )
         query_dsl_dict_yield = {
             "step": step_idx,
-            "name": "init_query_dsl_dict",
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "finished",
             "input": query_rewrite_dsl_params,
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "output": query_dsl_dict,
             "comment": "",
         }
@@ -174,23 +235,30 @@ class VideoExplorer(VideoSearcherV2):
 
         # Step 1: Aggregation
         step_idx += 1
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Aggregating ...")
-        agg_result = self.agg(
-            query_dsl_dict=query_dsl_dict, timeout=timeout, verbose=verbose
-        )
+        step_name = "aggregation"
         agg_yield = {
             "step": step_idx,
-            "name": "aggregation",
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
             "input": query_dsl_dict,
-            "output": agg_result,
+            "output": {},
+            "output_type": "info",
             "comment": "",
         }
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Aggregating ...")
+        yield self.format_result(agg_yield, res_format=res_format)
+        agg_result = self.agg(
+            query_dsl_dict=query_dsl_dict, timeout=AGG_TIMEOUT, verbose=verbose
+        )
+        self.update_step_output(agg_yield, step_output=agg_result)
         yield self.format_result(agg_yield, res_format=res_format)
 
         # Step 2: Most-relevant docs
         #   - with view filter
         step_idx += 1
+        step_name = "most_relevant_search"
         step_str = logstr.note(brk(f"Step {step_idx}"))
         logger.hint(
             f"> {step_str} Top relevant docs based on relevance and view filter"
@@ -202,7 +270,7 @@ class VideoExplorer(VideoSearcherV2):
             max_doc_count=max_count_by_view,
         )
         relevant_extra_filters = deepcopy(extra_filters)
-        for stat_filter in [view_filter]:
+        for stat_filter in []:
             if stat_filter is None:
                 logger.warn(f"  × No stat_filter: {stat_filter}")
             else:
@@ -221,15 +289,21 @@ class VideoExplorer(VideoSearcherV2):
             "extra_filters": relevant_extra_filters,
             "use_script_score": True,
             "score_threshold": score_threshold,
-            "limit": 3,
+            "limit": relevant_search_limit,
+            "timeout": EXPLORE_TIMEOUT,
             "verbose": verbose,
         }
-        relevant_search_res = self.search(**relevant_search_params)
         relevant_search_yield = {
             "step": step_idx,
-            "name": "most_relevant_search",
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
             "input": relevant_search_params,
-            "output": relevant_search_res,
+            "output": {},
+            "output_type": "hits",
             "comment": "",
         }
+        yield self.format_result(relevant_search_yield, res_format=res_format)
+        relevant_search_res = self.search(**relevant_search_params)
+        self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
         yield self.format_result(relevant_search_yield, res_format=res_format)

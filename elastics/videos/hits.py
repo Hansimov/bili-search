@@ -147,6 +147,7 @@ class VideoHitsParser:
         for hit in res_dict["hits"]["hits"]:
             source = hit["_source"]
             score = hit["_score"]
+            sort_score = hit.get("sort", [None])[0]
             common_highlights = hit.get("highlight", {})
             pinyin_highlights = self.get_pinyin_highlights(
                 keywords=qwords, match_fields=match_fields, source=source
@@ -168,6 +169,7 @@ class VideoHitsParser:
             hit_info = {
                 **source,
                 "score": score,
+                "sort_score": sort_score,
                 "highlights": {
                     "common": common_highlights,
                     "pinyin": pinyin_highlights,
