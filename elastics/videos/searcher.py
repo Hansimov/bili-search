@@ -163,10 +163,10 @@ class VideoSearcherBase:
         script_score_constructor = ScriptScoreQueryDSLConstructor()
         if use_script_score:
             script_query_dsl_dict = script_score_constructor.construct(
-                query_dsl_dict, score_threshold=score_threshold
+                query_dsl_dict, score_threshold=score_threshold, combine_type="sort"
             )
             search_body = {
-                "query": script_query_dsl_dict,
+                **script_query_dsl_dict,
                 **common_params,
             }
         else:

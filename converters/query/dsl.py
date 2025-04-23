@@ -10,6 +10,7 @@ from converters.query.punct import HansChecker
 from converters.query.field import is_pinyin_field, is_field_in_fields
 from converters.query.field import remove_fields_from_fields
 from converters.query.field import remove_suffixes_from_fields
+from elastics.videos.constants import SEARCH_MATCH_TYPE
 
 STAT_FIELD_TYPE = Literal[
     "stat.view",
@@ -374,9 +375,14 @@ class ScriptScoreQueryDSLConstructor:
     def assign_var_of_relevance_score(
         self, power: float = 2, min_value: float = 0.01, down_scale: float = 100
     ):
-        dow_score_str = f"(_score / {down_scale})"
-        pow_score_str = self.pow_func(dow_score_str, power=power, min_value=min_value)
-        assign_str = f"\ndouble relevance_score = {pow_score_str};\n"
+        if SEARCH_MATCH_TYPE == "phrase_prefix":
+            dow_score_str = f"(_score / {down_scale})"
+            pow_score_str = self.pow_func(
+                dow_score_str, power=power, min_value=min_value
+            )
+            assign_str = f"\ndouble relevance_score = {pow_score_str};\n"
+        else:
+            assign_str = f"\ndouble relevance_score = _score;\n"
         return assign_str
 
     def assign_var_of_stats_score(
@@ -444,6 +450,7 @@ class ScriptScoreQueryDSLConstructor:
         query_dsl_dict: dict,
         only_script: bool = False,
         score_threshold: float = None,
+        combine_type: Literal["sort", "wrap"] = "sort",
     ) -> dict:
         script_source = self.get_script_source_by_stats()
         if score_threshold is not None:
@@ -464,11 +471,24 @@ class ScriptScoreQueryDSLConstructor:
             }
         if only_script:
             return script_dict
-        else:
+        if combine_type == "wrap":
             script_score_dict = {
                 "script_score": {"query": query_dsl_dict, "script": script_dict}
             }
-            return script_score_dict
+        else:
+            script_sort_dict = {
+                "_script": {
+                    "type": "number",
+                    "script": script_dict,
+                    "order": "desc",
+                }
+            }
+            script_score_dict = {
+                "query": query_dsl_dict,
+                "track_scores": True,
+                "sort": [script_sort_dict],
+            }
+        return script_score_dict
 
     def construct_rrf(
         self,
