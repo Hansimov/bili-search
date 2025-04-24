@@ -441,7 +441,7 @@ class ScriptScoreQueryDSLConstructor:
         assign_vars_str += self.assign_var_of_pubdate_decay_by_interpolation()
         assign_vars_str += self.assign_var_of_relevance_score()
         assign_vars_str += self.assign_var_of_stats_score(stat_fields=stat_fields)
-        func_str = f"return stats_score * pubdate_decay * relevance_score;"
+        func_str = f"return stats_score * pubdate_decay * (relevance_score + 0.0001);"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 

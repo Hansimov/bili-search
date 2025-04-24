@@ -100,9 +100,9 @@ class VideoExplorer(VideoSearcherV2):
             return None
         max_score = max(score_agg_dict.values())
         min_score = min(score_agg_dict.values())
-        # ratio should be min of the constraints by max_doc_count and ratio,
-        # which could ensure that there are enough-but-not-too-much candidate docs
-        # if use max, this would be too strict
+        # ratio could be min/max of the constraints by max_doc_count and ratio,
+        # - if use min, could ensure there are enough-but-not-too-much candidate docs
+        # - if use max, would get less candidates, especially useful when the first recall docs are too many
         if ratio is None:
             ratio = 0
         if max_doc_count is not None and max_doc_count < total_hits:
@@ -114,7 +114,7 @@ class VideoExplorer(VideoSearcherV2):
                 target="key",
             )
             ratio_by_count = percent_by_count / 100
-            ratio = min(ratio, ratio_by_count)
+            ratio = max(ratio, ratio_by_count)
         score_threshold = round(max(max_score * ratio, min_score), 4)
         return score_threshold
 
@@ -163,38 +163,9 @@ class VideoExplorer(VideoSearcherV2):
             - most-recent
 
         yields:
-            dict: 'step', 'name', 'input', 'output'
+            dict: 'step', 'name', 'name_zh', 'status', 'input', 'output_type', 'output', 'comment'
         """
         logger.enter_quiet(not verbose)
-
-        # Step 0: Initialize info of explore steps
-        step_idx = -1
-        step_name = "init"
-        steps = [
-            "construct_query_dsl_dict",
-            "aggregation",
-            "most_relevant_search",
-        ]
-        init_yield = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "finished",
-            "input": {},
-            "output_type": "nodes",
-            "output": {
-                "nodes": [
-                    {
-                        "name": node_name,
-                        "name_zh": STEP_ZH_NAMES[node_name]["name_zh"],
-                        "output_type": STEP_ZH_NAMES[node_name]["output_type"],
-                    }
-                    for node_name in steps
-                ],
-            },
-            "comment": "",
-        }
-        yield self.format_result(init_yield, res_format=res_format)
 
         # Step 0: Construct query_dsl_dict
         step_idx = 0

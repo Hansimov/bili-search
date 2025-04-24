@@ -319,6 +319,7 @@ class VideoSearcherBase:
             return_res=parse_res,
         )
         return_res = self.post_process_return_res(parse_res)
+        return_res["search_body"] = search_body
         # exit quiet
         logger.exit_quiet(not verbose)
         return return_res
