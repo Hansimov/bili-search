@@ -32,6 +32,10 @@ STEP_ZH_NAMES = {
         "name_zh": "热门排序",
         "output_type": "hits",
     },
+    "group_hits_by_owner": {
+        "name_zh": "UP主聚合",
+        "output_type": "info",
+    },
 }
 
 
@@ -133,6 +137,51 @@ class VideoExplorer(VideoSearcherV2):
         step_yield["output"] = step_output
         return step_yield
 
+    def group_hits_by_owner(
+        self,
+        search_res: dict,
+        sort_field: Literal[
+            "total_view", "doc_count", "total_sort_score"
+        ] = "total_sort_score",
+        limit: int = 10,
+    ) -> dict:
+        group_res = {}
+        for hit in search_res.get("hits", []):
+            owner_name = dict_get(hit, "owner.name", None)
+            owner_mid = dict_get(hit, "owner.mid", None)
+            pubdate = dict_get(hit, "pubdate", 0)
+            view = dict_get(hit, "stat.view", 0)
+            sort_score = dict_get(hit, "sort_score", 0)
+            if owner_mid is None or owner_name is None:
+                continue
+            item = group_res.get(owner_mid, None)
+            if item is None:
+                group_res[owner_mid] = {
+                    "owner_name": owner_name,
+                    "latest_pubdate": pubdate,
+                    "total_view": view,
+                    "total_sort_score": sort_score,
+                    "doc_count": 0,
+                    "hits": [],
+                }
+            else:
+                latest_pubdate = group_res[owner_mid]["latest_pubdate"]
+                if pubdate > latest_pubdate:
+                    group_res[owner_mid]["latest_pubdate"] = pubdate
+                    group_res[owner_mid]["owner_name"] = owner_name
+                total_view = group_res[owner_mid]["total_view"]
+                total_sort_score = group_res[owner_mid]["total_sort_score"]
+                group_res[owner_mid]["total_view"] = total_view + view
+                group_res[owner_mid]["total_sort_score"] = total_sort_score + sort_score
+            group_res[owner_mid]["hits"].append(hit)
+            group_res[owner_mid]["doc_count"] = len(group_res[owner_mid]["hits"])
+        # sort by sort_field, and limit to top N
+        sorted_items = sorted(
+            group_res.items(), key=lambda item: item[1][sort_field], reverse=True
+        )[:limit]
+        group_res = dict(sorted_items)
+        return group_res
+
     def explore(
         self,
         # `query_dsl_dict` related params
@@ -151,6 +200,7 @@ class VideoExplorer(VideoSearcherV2):
         max_count_by_view: int = 10000,
         max_count_by_score: int = 10000,
         relevant_search_limit: int = 400,
+        group_owner_limit: int = 10,
         res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
         """Multi-step explorative search, yield result at each step.
@@ -278,3 +328,27 @@ class VideoExplorer(VideoSearcherV2):
         relevant_search_res = self.search(**relevant_search_params)
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
         yield self.format_result(relevant_search_yield, res_format=res_format)
+
+        # Step 3: Group hits by owner
+        step_idx += 1
+        step_name = "group_hits_by_owner"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Group hits by owner, sort by sum of view")
+        group_hits_by_owner_params = {
+            "search_res": relevant_search_res,
+            "limit": group_owner_limit,
+        }
+        group_hits_by_owner_yield = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": {"limit": group_owner_limit},
+            "output": {},
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "comment": "",
+        }
+        yield self.format_result(group_hits_by_owner_yield, res_format=res_format)
+        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
+        self.update_step_output(group_hits_by_owner_yield, step_output=group_res)
+        yield self.format_result(group_hits_by_owner_yield, res_format=res_format)
