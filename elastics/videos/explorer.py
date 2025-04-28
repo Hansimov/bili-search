@@ -5,8 +5,6 @@ from tclogger import dict_get, get_by_threshold, get_now_ts, dict_to_str, to_dig
 from tclogger import logstr, logger, brk
 from typing import Generator, Union, Literal
 
-from converters.query.dsl import ScriptScoreQueryDSLConstructor
-from converters.dsl.filter import QueryDslDictFilterMerger
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
@@ -142,6 +140,16 @@ class VideoExplorer(VideoSearcherV2):
             step_yield["output"] = step_output
         return step_yield
 
+    def get_user_docs(self, mids: list[str]) -> dict:
+        user_docs_list = self.mongo.get_docs(
+            "users",
+            ids=mids,
+            id_field="mid",
+            include_fields=["mid", "name", "face"],
+        )
+        user_docs_dict = {user_doc["mid"]: user_doc for user_doc in user_docs_list}
+        return user_docs_dict
+
     def group_hits_by_owner(
         self,
         search_res: dict,
@@ -186,6 +194,11 @@ class VideoExplorer(VideoSearcherV2):
             group_res.items(), key=lambda item: item[1][sort_field], reverse=True
         )[:limit]
         group_res = dict(sorted_items)
+        # add user faces
+        mids = list(group_res.keys())
+        user_docs = self.get_user_docs(mids)
+        for mid, user_doc in user_docs.items():
+            group_res[mid]["face"] = user_doc.get("face", "")
         return group_res
 
     def explore(

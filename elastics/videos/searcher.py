@@ -1,10 +1,10 @@
 from abc import abstractmethod
 from pprint import pformat
-from sedb import ElasticOperator
+from sedb import MongoOperator, ElasticOperator
 from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
 from typing import Union
 
-from configs.envs import ELASTIC_ENVS
+from configs.envs import MONGO_ENVS, ELASTIC_ENVS
 from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
@@ -41,6 +41,10 @@ class VideoSearcherBase:
         self.es = ElasticOperator(
             ELASTIC_ENVS,
             connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('elastic'))}",
+        )
+        self.mongo = MongoOperator(
+            MONGO_ENVS,
+            connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('mongo'))}",
         )
         self.init_processors()
 
