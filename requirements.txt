@@ -12,3 +12,4 @@ tzdata~=2024.1
 uvicorn~=0.31.0
 websockets~=11.0.3
 zhconv~=1.4.3
+sse_starlette~=2.1.0
