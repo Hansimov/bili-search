@@ -739,7 +739,8 @@ class VideoSearcherV2(VideoSearcherBase):
     ) -> tuple[dict, dict, dict]:
         # get query_info
         query_info = self.query_rewriter.get_query_info(query)
-        logger.mesg(dict_to_str(query_info, add_quotes=True, align_list=False))
+        # logger.hint("> query_info:")
+        # logger.mesg(dict_to_str(query_info, add_quotes=True, align_list=False))
         # get rewrite_info with suggest_info
         rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
         rewrited_expr_tree = rewrite_info.get(
@@ -751,10 +752,16 @@ class VideoSearcherV2(VideoSearcherBase):
             date_match_fields=boosted_date_fields,
             match_type=match_type,
         )
+        # logger.hint("> query_dsl_dict (original):")
         query_dsl_dict = self.elastic_converter.expr_tree_to_dict(rewrited_expr_tree)
+        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
         # merge extra_filters to query_dsl_dict
         query_dsl_dict = self.filter_merger.merge(query_dsl_dict, extra_filters)
-        logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
+        # logger.hint("> query_dsl_dict:")
+        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
+        # logger.hint("> rewrited_expr_tree:")
+        # logger.mesg(rewrited_expr_tree.yaml())
+        # raise NotImplementedError("query_dsl_dict")
         return query_info, rewrite_info, query_dsl_dict
 
     def post_process_return_res(self, return_res: dict) -> dict:

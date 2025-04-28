@@ -373,9 +373,9 @@ class ScriptScoreQueryDSLConstructor:
         return func_str
 
     def assign_var_of_relevance_score(
-        self, power: float = 2, min_value: float = 0.01, down_scale: float = 100
+        self, power: float = 2, min_value: float = 0.0001, down_scale: float = 100
     ):
-        if SEARCH_MATCH_TYPE == "phrase_prefix":
+        if SEARCH_MATCH_TYPE in ["phrase_prefix", "cross_fields"]:
             dow_score_str = f"(_score / {down_scale})"
             pow_score_str = self.pow_func(
                 dow_score_str, power=power, min_value=min_value

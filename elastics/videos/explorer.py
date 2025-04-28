@@ -202,7 +202,7 @@ class VideoExplorer(VideoSearcherV2):
         verbose: bool = False,
         # `explore` related params
         view_percent_threshold: float = 25.0,
-        score_ratio_threshold: float = 0.5,
+        score_ratio_threshold: float = 0.45,
         max_count_by_view: int = 10000,
         max_count_by_score: int = 10000,
         relevant_search_limit: int = 400,
