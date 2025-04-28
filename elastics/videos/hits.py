@@ -2,6 +2,7 @@ from tclogger import logger, dict_to_str
 from typing import Union, Literal
 
 from elastics.structure import get_es_source_val
+from converters.field.region_infos import REGION_INFOS_BY_ID
 from converters.highlight.merge import HighlightMerger
 from converters.highlight.count import HighlightsCounter
 from converters.highlight.pinyin import PinyinHighlighter
@@ -147,6 +148,11 @@ class VideoHitsParser:
         for hit in res_dict["hits"]["hits"]:
             source = hit["_source"]
             score = hit["_score"]
+            tid = source.get("tid", None)
+            region_name = REGION_INFOS_BY_ID.get(tid, {}).get("region_name", "")
+            region_parent_name = REGION_INFOS_BY_ID.get(tid, {}).get("parent_name", "")
+            source["region_name"] = region_name
+            source["region_parent_name"] = region_parent_name
             sort_score = hit.get("sort", [None])[0]
             common_highlights = hit.get("highlight", {})
             pinyin_highlights = self.get_pinyin_highlights(
