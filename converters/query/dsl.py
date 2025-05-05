@@ -382,7 +382,7 @@ class ScriptScoreQueryDSLConstructor:
             )
             assign_str = f"\ndouble relevance_score = {pow_score_str};\n"
         else:
-            assign_str = f"\ndouble relevance_score = _score;\n"
+            assign_str = f"\ndouble relevance_score = (_score + {min_value});\n"
         return assign_str
 
     def assign_var_of_stats_score(
@@ -404,6 +404,7 @@ class ScriptScoreQueryDSLConstructor:
         return f"if (_score < params.{name}) {{ return 0; }}\n"
 
     def get_script_source_by_powers(self):
+        """Deprecated. Use `assign_var_of_stats_score()` + `get_script_source_by_stats()` instead."""
         assign_vars = []
         stat_powers = {
             "stat.view": 0.1,
@@ -441,7 +442,7 @@ class ScriptScoreQueryDSLConstructor:
         assign_vars_str += self.assign_var_of_pubdate_decay_by_interpolation()
         assign_vars_str += self.assign_var_of_relevance_score()
         assign_vars_str += self.assign_var_of_stats_score(stat_fields=stat_fields)
-        func_str = f"return stats_score * pubdate_decay * (relevance_score + 0.0001);"
+        func_str = f"return stats_score * pubdate_decay * relevance_score;"
         script_source = f"{assign_vars_str}\n{func_str}"
         return script_source
 

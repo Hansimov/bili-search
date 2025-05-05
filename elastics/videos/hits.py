@@ -1,4 +1,4 @@
-from tclogger import logger, dict_to_str
+from tclogger import logger, dict_to_str, dict_get
 from typing import Union, Literal
 
 from elastics.structure import get_es_source_val
@@ -192,7 +192,7 @@ class VideoHitsParser:
             "detail_level": detail_level,
             "took": res_dict["took"],
             "timed_out": res_dict["timed_out"],
-            "total_hits": res_dict["hits"]["total"]["value"],
+            "total_hits": dict_get(res_dict, "hits.total.value", -1),
             "return_hits": len(hits),
             "hits": hits,
             "query_info": query_info,

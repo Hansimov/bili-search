@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from pprint import pformat
 from sedb import MongoOperator, ElasticOperator
 from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
 from typing import Union
@@ -30,6 +29,7 @@ from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.constants import TRACK_TOTAL_HITS
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
@@ -161,7 +161,7 @@ class VideoSearcherBase:
         common_params = {
             "_source": source_fields,
             "explain": is_explain,
-            "track_total_hits": True,
+            "track_total_hits": TRACK_TOTAL_HITS,
             "highlight": self.get_highlight_settings(match_fields),
         }
         script_score_constructor = ScriptScoreQueryDSLConstructor()
@@ -600,7 +600,7 @@ class VideoSearcherBase:
             for k, v in res_dict.items()
             if k in ["title", "bvid", "pubdate_str", "desc"]
         }
-        logger.success(pformat(reduced_dict, indent=4, sort_dicts=False))
+        logger.success(dict_to_str(reduced_dict), indent=4)
         logger.exit_quiet(not verbose)
         return res_dict
 
@@ -784,7 +784,7 @@ class VideoSearcherV2(VideoSearcherBase):
         """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
         common_params = {
             "size": 0,
-            "track_total_hits": True,
+            "track_total_hits": TRACK_TOTAL_HITS,
             "_source": False,
         }
         # sort_dict = [{sort_field: {"order": sort_order}}]
