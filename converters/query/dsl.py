@@ -1,6 +1,6 @@
 import math
 
-from tclogger import get_now, get_now_ts
+from tclogger import get_now, get_now_ts, brp
 from typing import Literal, Union
 
 from converters.times import DateFormatChecker
@@ -22,6 +22,15 @@ STAT_FIELD_TYPE = Literal[
     "stat.share",
 ]
 SCORED_STAT_FIELDS = ["stat.like", "stat.coin", "stat.danmaku", "stat.reply"]
+STAT_POWERS = {
+    "stat.view": 0.1,
+    "stat.like": 0.1,
+    "stat.coin": 0.25,
+    "stat.favorite": 0.15,
+    "stat.reply": 0.2,
+    "stat.danmaku": 0.15,
+    "stat.share": 0.2,
+}
 
 
 class MultiMatchQueryDSLConstructor:
@@ -373,7 +382,7 @@ class ScriptScoreQueryDSLConstructor:
         return func_str
 
     def assign_var_of_relevance_score(
-        self, power: float = 2, min_value: float = 0.0001, down_scale: float = 100
+        self, power: float = 1, min_value: float = 0.0001, down_scale: float = 1
     ):
         if SEARCH_MATCH_TYPE in ["phrase_prefix", "cross_fields"]:
             dow_score_str = f"(_score / {down_scale})"
@@ -388,12 +397,22 @@ class ScriptScoreQueryDSLConstructor:
     def assign_var_of_stats_score(
         self,
         stat_fields: list[STAT_FIELD_TYPE] = SCORED_STAT_FIELDS,
-        power: float = 2,
+        power: float = 1,
         min_value: float = 1,
+        concat_method: Literal["add", "product"] = "product",
     ):
-        stats_score_str = " * ".join(
-            f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
-        )
+        if concat_method == "add":
+            stat_scores_list = [
+                f"{STAT_POWERS[field]} * ({self.log_func(self.field_to_var(field))})"
+                for field in stat_fields
+            ]
+            stats_score_str = brp(" + ".join(stat_scores_list))
+            stats_score_str = f"(10 * {stats_score_str})"
+        else:
+            stat_scores_list = [
+                f"{self.log_func(self.field_to_var(field))}" for field in stat_fields
+            ]
+            stats_score_str = " * ".join(stat_scores_list)
         stats_score_str = self.pow_func(
             stats_score_str, power=power, min_value=min_value
         )
@@ -406,25 +425,16 @@ class ScriptScoreQueryDSLConstructor:
     def get_script_source_by_powers(self):
         """Deprecated. Use `assign_var_of_stats_score()` + `get_script_source_by_stats()` instead."""
         assign_vars = []
-        stat_powers = {
-            "stat.view": 0.1,
-            "stat.like": 0.1,
-            "stat.coin": 0.25,
-            "stat.favorite": 0.15,
-            "stat.reply": 0.2,
-            "stat.danmaku": 0.15,
-            "stat.share": 0.2,
-        }
         stat_pow_ratio = (
-            1 / math.sqrt(len(stat_powers.keys())) / sum(stat_powers.values())
+            1 / math.sqrt(len(STAT_POWERS.keys())) / sum(STAT_POWERS.values())
         )
-        for field in list(stat_powers.keys()) + ["pubdate"]:
+        for field in list(STAT_POWERS.keys()) + ["pubdate"]:
             assign_vars.append(self.assign_var(field))
         assign_vars_str = "\n".join(assign_vars)
         assign_vars_str += self.assign_var_of_pubdate_decay_by_reciprocal()
         stat_func_str = " * ".join(
             self.pow_func(self.field_to_var(field), field_power * stat_pow_ratio, 1)
-            for field, field_power in stat_powers.items()
+            for field, field_power in STAT_POWERS.items()
         )
         score_str = self.pow_func("_score", 1, 1)
         func_str = f"return ({stat_func_str}) * pubdate_decay * {score_str};"
