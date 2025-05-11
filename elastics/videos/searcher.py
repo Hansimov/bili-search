@@ -32,6 +32,7 @@ from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
 from elastics.videos.constants import TRACK_TOTAL_HITS
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
+from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 
 
@@ -146,6 +147,11 @@ class VideoSearcherBase:
             body["min_score"] = min_score
         return body
 
+    def set_terminate_after(self, body: dict, terminate_after: int = None):
+        if terminate_after is not None:
+            body["terminate_after"] = terminate_after
+        return body
+
     def construct_search_body(
         self,
         query_dsl_dict: dict,
@@ -155,6 +161,7 @@ class VideoSearcherBase:
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         score_threshold: float = None,
         limit: int = SEARCH_LIMIT,
+        terminate_after: int = TERMINATE_AFTER,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
     ) -> dict:
         """construct script_score from query_dsl_dict, and return search_body"""
@@ -180,6 +187,9 @@ class VideoSearcherBase:
             }
         search_body = self.set_timeout(search_body, timeout=timeout)
         search_body = self.set_min_score(search_body, min_score=score_threshold)
+        search_body = self.set_terminate_after(
+            search_body, terminate_after=terminate_after
+        )
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         return search_body
@@ -228,6 +238,7 @@ class VideoSearcherBase:
         detail_level: int = -1,
         detail_levels: dict = SEARCH_DETAIL_LEVELS,
         limit: int = SEARCH_LIMIT,
+        terminate_after: int = TERMINATE_AFTER,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
@@ -290,6 +301,7 @@ class VideoSearcherBase:
             "use_script_score": use_script_score,
             "score_threshold": score_threshold,
             "limit": limit,
+            "terminate_after": terminate_after,
             "timeout": timeout,
         }
         search_body = self.construct_search_body(**search_body_params)
@@ -798,12 +810,6 @@ class VideoSearcherV2(VideoSearcherBase):
             "view_ps": {
                 "percentiles": {
                     "field": "stat.view",
-                    "percents": AGG_PERCENTS,
-                }
-            },
-            "favorite_ps": {
-                "percentiles": {
-                    "field": "stat.favorite",
                     "percents": AGG_PERCENTS,
                 }
             },

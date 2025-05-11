@@ -102,9 +102,6 @@ class VideoExplorer(VideoSearcherV2):
             return None
         max_score = max(score_agg_dict.values())
         min_score = min(score_agg_dict.values())
-        # ratio could be min/max of the constraints by max_doc_count and ratio,
-        # - if use min, could ensure there are enough-but-not-too-much candidate docs
-        # - if use max, would get less candidates, especially useful when the first recall docs are too many
         if ratio is None:
             ratio = 0
         if max_doc_count is not None and max_doc_count < total_hits:
@@ -116,6 +113,9 @@ class VideoExplorer(VideoSearcherV2):
                 target="key",
             )
             ratio_by_count = percent_by_count / 100
+            # ratio could be min/max of the constraints by max_doc_count and ratio,
+            # - if use min, could ensure there are enough-but-not-too-much candidate docs
+            # - if use max, would get less candidates, especially useful when the first recall docs are too many
             ratio = max(ratio, ratio_by_count)
         score_threshold = round(max(max_score * ratio, min_score), 4)
         return score_threshold
@@ -215,7 +215,7 @@ class VideoExplorer(VideoSearcherV2):
         verbose: bool = False,
         # `explore` related params
         view_percent_threshold: float = 25.0,
-        score_ratio_threshold: float = 0.45,
+        score_ratio_threshold: float = 0.6,
         max_count_by_view: int = 10000,
         max_count_by_score: int = 10000,
         relevant_search_limit: int = 400,
