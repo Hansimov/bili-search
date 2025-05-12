@@ -205,7 +205,7 @@ SEARCH_TIMEOUT = 2
 EXPLORE_TIMEOUT = 5
 SUGGEST_TIMEOUT = 1.5
 AGG_TIMEOUT = 3
-TERMINATE_AFTER = 500000
+TERMINATE_AFTER = 1000000
 
 # aggregation
 AGG_PERCENTS = [0, 1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 99.9, 99.99, 100]
@@ -215,3 +215,7 @@ AGG_SORT_ORDER = "desc"
 # This constant is to contain more hits for redundance,
 # as drop_no_highlights would drop some hits
 NO_HIGHLIGHT_REDUNDANCE_RATIO = 2
+
+# search analyzer
+# defined in: [bili-scraper/converters/elastic/video_index_settings_v3.py]
+SEARCH_ANALYZER_NAME = "chinese_analyzer"
