@@ -3,7 +3,7 @@ from typing import Literal
 OP_REL_TYPE = Literal["eqs", "neqs", "lt", "gt", "leqs", "geqs"]
 
 USER_OPS = ["eq", "neq", "at_eq", "at_neq"]
-WORD_OPS = ["eq", "neq", "pl", "mi", "nq", "qs"]
+WORD_OPS = ["eq", "neq", "pl", "mi", "nq", "qs", "fz"]
 
 START_EXPR = "start"
 MAIN_EXPRS = ["expr", "expr_with_error"]

@@ -21,6 +21,7 @@ NQ: "!"
 LT: "<"
 GT: ">"
 AT: "@"
+TD: "~"
 
 AND: "&"
 OR: "|"
@@ -80,6 +81,7 @@ rb: rp | rk
     rp: RP
     rk: RK
 qs: QS
+fz: /~\d*/
 
 lb_comma: lb comma?
 comma_rb: comma? rb
@@ -196,7 +198,7 @@ word_expr: colon? word_key_op_val
             word_key: /(?i:(keyword|kw|k))/
             word_op: eq | neq
         word_pp: mi | pl | nq
-        word_sp: qs
+        word_sp: qs | fz
         word_val_single: text_expr
         word_val_list: word_val_list_lr | word_val_list_no_lr
             word_val_list_lr: lb_comma (word_val_single)? (comma word_val_single)* comma_rb

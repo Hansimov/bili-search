@@ -65,9 +65,14 @@ class WordExprElasticConverter:
             word_pp_str = word_pp_node.get_deepest_node_value()
         else:
             word_pp_str = ""
+        word_sp_node = node.find_sibling_with_key("word_sp")
+        if word_sp_node and word_sp_node.first_child_key == "fz":
+            word_sp_str = word_sp_node.get_deepest_node_value()
+        else:
+            word_sp_str = ""
         if text:
             text = self.clean_word_val(text, is_quoted=is_quoted)
-            text = f"{word_pp_str}{text}"
+            text = f"{word_pp_str}{text}{word_sp_str}"
             return self.query_to_match_dict(text, is_date_format=is_date_format)
         else:
             return {}
@@ -122,6 +127,7 @@ class WordNodeToExprConstructor:
             word_key_str = word_key_node.get_deepest_node_value()
         else:
             word_key_str = ""
+
         word_op_node = node.find_child_with_key("word_op")
         if word_op_node:
             word_op_key = word_op_node.get_deepest_node_key()
@@ -133,6 +139,7 @@ class WordNodeToExprConstructor:
             word_op_str = "="
         else:
             word_op_str = ""
+
         word_pp_node = node.find_child_with_key("word_pp")
         if word_pp_node:
             word_pp_key = word_pp_node.get_deepest_node_key()
@@ -144,9 +151,16 @@ class WordNodeToExprConstructor:
             word_pp_str = "-"
         else:
             word_pp_str = ""
+
         word_sp_node = node.find_child_with_key("word_sp")
         if word_sp_node:
+            word_sp_key = word_sp_node.get_deepest_node_key()
+        else:
+            word_sp_key = ""
+        if word_sp_key == "qs":
             word_sp_str = "?"
+        elif word_pp_key == "fz":
+            word_sp_str = word_sp_node.get_deepest_node_value()
         else:
             word_sp_str = ""
 

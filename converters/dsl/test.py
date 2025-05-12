@@ -133,6 +133,7 @@ comp_queries = [
         [("word_expr", 4)],
         [("co", 1), ("or", 2), ("pa", 2)],
     ],
+    ['"deep learning"~', [("word_expr", 1)], []],
 ]
 
 rewrite_queries = [
