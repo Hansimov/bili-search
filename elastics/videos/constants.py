@@ -1,6 +1,6 @@
 from typing import Literal
 
-VIDEOS_INDEX_DEFAULT = "bili_videos_dev3"
+VIDEOS_INDEX_DEFAULT = "bili_videos_dev4"
 
 SEARCH_REQUEST_TYPE = Literal["search", "suggest"]
 SEARCH_REQUEST_TYPE_DEFAULT = "search"
