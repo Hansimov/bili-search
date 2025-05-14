@@ -100,8 +100,11 @@ class VideoExplorer(VideoSearcherV2):
         if score_agg_dict is None:
             logger.warn(f"× Not found aggregation: {field}_ps")
             return None
-        max_score = max(score_agg_dict.values())
-        min_score = min(score_agg_dict.values())
+        try:
+            max_score = max(score_agg_dict.values())
+            min_score = min(score_agg_dict.values())
+        except:
+            return None
         if ratio is None:
             ratio = 0
         if max_doc_count is not None and max_doc_count < total_hits:
