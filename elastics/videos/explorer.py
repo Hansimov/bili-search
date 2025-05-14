@@ -133,7 +133,10 @@ class VideoExplorer(VideoSearcherV2):
     def update_step_output(
         self, step_yield: dict, step_output: dict = None, field: str = None
     ) -> dict:
-        step_yield["status"] = "finished"
+        if isinstance(step_output, dict) and step_output.get("timed_out", None) is True:
+            step_yield["status"] = "timedout"
+        else:
+            step_yield["status"] = "finished"
         if field is not None:
             step_yield["output"][field] = step_output
         else:
@@ -294,6 +297,8 @@ class VideoExplorer(VideoSearcherV2):
         )
         self.update_step_output(agg_yield, step_output=agg_result)
         yield self.format_result(agg_yield, res_format=res_format)
+        if agg_yield.get("status", None) == "timedout":
+            return
 
         # Step 2: Most-relevant docs
         #   - with view filter
@@ -347,6 +352,8 @@ class VideoExplorer(VideoSearcherV2):
         relevant_search_res = self.search(**relevant_search_params)
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
         yield self.format_result(relevant_search_yield, res_format=res_format)
+        if relevant_search_yield.get("status", None) == "timedout":
+            return
 
         # Step 3: Group hits by owner
         step_idx += 1
