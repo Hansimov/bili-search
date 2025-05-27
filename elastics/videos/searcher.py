@@ -29,7 +29,7 @@ from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
-from elastics.videos.constants import TRACK_TOTAL_HITS
+from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.constants import TERMINATE_AFTER
@@ -158,6 +158,7 @@ class VideoSearcherBase:
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
         is_explain: bool = False,
+        is_highlight: bool = IS_HIGHLIGHT,
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         score_threshold: float = None,
         limit: int = SEARCH_LIMIT,
@@ -169,8 +170,9 @@ class VideoSearcherBase:
             "_source": source_fields,
             "explain": is_explain,
             "track_total_hits": TRACK_TOTAL_HITS,
-            "highlight": self.get_highlight_settings(match_fields),
         }
+        if is_highlight:
+            common_params["highlight"] = self.get_highlight_settings(match_fields)
         script_score_constructor = ScriptScoreQueryDSLConstructor()
         if use_script_score:
             script_query_dsl_dict = script_score_constructor.construct(
@@ -229,6 +231,7 @@ class VideoSearcherBase:
         parse_hits: bool = True,
         drop_no_highlights: bool = False,
         is_explain: bool = False,
+        is_highlight: bool = IS_HIGHLIGHT,
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
@@ -298,6 +301,7 @@ class VideoSearcherBase:
             "match_fields": boosted_match_fields,
             "source_fields": source_fields,
             "is_explain": is_explain,
+            "is_highlight": is_highlight,
             "use_script_score": use_script_score,
             "score_threshold": score_threshold,
             "limit": limit,
