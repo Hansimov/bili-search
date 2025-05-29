@@ -8,6 +8,7 @@ from typing import Generator, Union, Literal
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
+from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.searcher import VideoSearcherV2
 
 STEP_ZH_NAMES = {
@@ -122,6 +123,14 @@ class VideoExplorer(VideoSearcherV2):
             ratio = max(ratio, ratio_by_count)
         score_threshold = round(max(max_score * ratio, min_score), 4)
         return score_threshold
+
+    def set_total_hits(self, agg_res: dict, search_res: dict) -> None:
+        agg_total_hits = self.get_total_hits(agg_res)
+        search_total_hits = search_res.get("total_hits", 0)
+        if agg_total_hits is not None and search_total_hits is not None:
+            if search_total_hits == TERMINATE_AFTER:
+                search_res["total_hits"] = agg_total_hits
+        return search_res
 
     def format_result(
         self, res: dict, res_format: Literal["json", "str"] = "json"
@@ -300,8 +309,8 @@ class VideoExplorer(VideoSearcherV2):
         )
         self.update_step_output(agg_yield, step_output=agg_result)
         yield self.format_result(agg_yield, res_format=res_format)
-        if agg_yield.get("status", None) == "timedout":
-            return
+        # if agg_yield.get("status", None) == "timedout":
+        #     return
 
         # Step 2: Most-relevant docs
         #   - with view filter
@@ -311,12 +320,16 @@ class VideoExplorer(VideoSearcherV2):
         logger.hint(
             f"> {step_str} Top relevant docs based on relevance and view filter"
         )
-        view_filter = self.get_stat_filter_by_threshold(
-            agg_result,
-            field="view",
-            threshold=view_percent_threshold,
-            max_doc_count=max_count_by_view,
-        )
+        try:
+            view_filter = self.get_stat_filter_by_threshold(
+                agg_result,
+                field="view",
+                threshold=view_percent_threshold,
+                max_doc_count=max_count_by_view,
+            )
+        except Exception as e:
+            logger.warn(f"× Failed to get view_filter: {e}")
+            return
         relevant_extra_filters = deepcopy(extra_filters)
         for stat_filter in []:
             if stat_filter is None:
@@ -326,11 +339,15 @@ class VideoExplorer(VideoSearcherV2):
                 logger.okay(dict_to_str(stat_filter), indent=2)
                 if stat_filter:
                     relevant_extra_filters.append(stat_filter)
-        score_threshold = self.get_score_threshold_by_ratio(
-            agg_result,
-            ratio=score_ratio_threshold,
-            max_doc_count=max_count_by_score,
-        )
+        try:
+            score_threshold = self.get_score_threshold_by_ratio(
+                agg_result,
+                ratio=score_ratio_threshold,
+                max_doc_count=max_count_by_score,
+            )
+        except Exception as e:
+            logger.warn(f"× Failed to get score threshold: {e}")
+            return
         relevant_search_params = {
             "query": query,
             "suggest_info": suggest_info,
@@ -353,6 +370,7 @@ class VideoExplorer(VideoSearcherV2):
         }
         yield self.format_result(relevant_search_yield, res_format=res_format)
         relevant_search_res = self.search(**relevant_search_params)
+        self.set_total_hits(agg_res=agg_result, search_res=relevant_search_res)
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
         yield self.format_result(relevant_search_yield, res_format=res_format)
         if relevant_search_yield.get("status", None) == "timedout":
