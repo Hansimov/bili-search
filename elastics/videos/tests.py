@@ -1,7 +1,9 @@
+from btok import SentenceCategorizer
 from tclogger import logger, logstr, dict_to_str, brk
 
 from elastics.videos.searcher import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
+from elastics.videos.splitter import QuerySplitter
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
@@ -9,6 +11,8 @@ from converters.query.filter import QueryFilterExtractor
 
 searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
 explorer = VideoExplorer(VIDEOS_INDEX_DEFAULT)
+splitter = QuerySplitter(VIDEOS_INDEX_DEFAULT)
+categorizer = SentenceCategorizer()
 
 
 def test_random():
@@ -196,11 +200,39 @@ def test_explore():
     for query in search_queries:
         logger.note("> Explore results:", end=" ")
         logger.file(f"[{query}]")
-        explore_res = explorer.explore(query, verbose=True)
+        explore_res = explorer.explore(query, verbose=True, relevant_search_limit=3)
         for step_res in explore_res:
             stage_name = step_res["name"]
             logger.hint(f"* stage result of {(logstr.mesg(brk(stage_name)))}:")
             logger.mesg(dict_to_str(step_res, align_list=False), indent=2)
+
+
+split_queries = [
+    # "外場最速伝説と飛翔の雄鷹！髮型監一郎です！",
+    # "《我的世界》是一款沙盒游戏",
+    # "GTA6新预告有哪些细节",
+    # "s1mple即将加入新战队的新闻",
+    # "能不能给我推荐点原神新出的角色的皮肤",
+    # "鸣潮 皮肤和壁纸",
+    # "我想知道鸣潮的公式是啥意思",
+    "原神,启动!是什么梗",
+]
+
+
+def test_split():
+    for query in split_queries:
+        logger.note("> Splitting:", end=" ")
+        logger.file(f"[{query}]")
+        res = splitter.split(query)
+        logger.success(dict_to_str(res, add_quotes=True), indent=2)
+
+
+def test_categorize():
+    for query in split_queries:
+        logger.note("> Splitting:", end=" ")
+        logger.file(f"[{query}]")
+        res = categorizer.categorize(query)
+        logger.success(dict_to_str(res, add_quotes=True), indent=2)
 
 
 if __name__ == "__main__":
@@ -210,6 +242,8 @@ if __name__ == "__main__":
     # test_multi_level_search()
     # test_search()
     # test_agg()
-    test_explore()
+    # test_explore()
+    # test_split()
+    test_categorize()
 
     # python -m elastics.videos.tests

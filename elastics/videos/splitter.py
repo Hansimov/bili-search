@@ -1,6 +1,7 @@
 import math
 import re
 
+from btok import SentenceCategorizer
 from sedb import ElasticOperator
 from tclogger import logger, logstr, dict_get, dict_to_str, brk, chars_len
 from typing import Union
@@ -47,6 +48,7 @@ class QuerySplitter:
             ELASTIC_ENVS,
             connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('elastic'))}",
         )
+        self.categorizer = SentenceCategorizer()
         self.entity_extractor = QueryEntityExtractor()
 
     def get_total_doc_count(self) -> int:
@@ -87,8 +89,12 @@ class QuerySplitter:
             res[(beg, end)] = token
         return res
 
-    def analyze(self, query: str, is_sort: bool = True) -> list[dict]:
-        """Get tokens by analyzer from ES.
+    def analyze(self, query: str) -> dict:
+        """[DEPRECATED]
+        Use `categorize` instead.
+        As the internal elastic analyzer does not output "well-formatted" tokens.
+
+        Get tokens by analyzer from ES.
         Example output:
         ```py
         {
@@ -100,6 +106,9 @@ class QuerySplitter:
             ],
             "idxs": {
                 0: "我", 1: "的", 2: "世", 3: "界", ...
+            },
+            "bounds": {
+                (0, 1): "我", (1, 2): "的", (2, 4): "世界", ...
             }
         }
         ```
@@ -170,6 +179,9 @@ class QuerySplitter:
         else:
             return {}
 
+    def get_ngram_token(self, beg: int, ngram_size: int, token_infos: dict):
+        pass
+
     def get_ngram_tokens(
         self,
         token_dicts: list[dict],
@@ -184,13 +196,14 @@ class QuerySplitter:
     def split(self, query: str) -> list[str]:
         total_doc_count = self.get_total_doc_count()
         logger.line(f"total_doc_count: {total_doc_count}")
-        token_dicts = self.analyze(query)
+        # token_infos: dict = self.analyze(query)
+        token_infos: dict = self.categorizer.categorize(query)
         # # extract entity from query
         # entity_dict = self.entity_extractor.get_entity(query)
         # logger.line("entity_dict:")
         # logger.okay(dict_to_str(entity_dict))
         # get first-level analyzed tokens and counts
-        tokens = [token_dict.get("token", "") for token_dict in token_dicts["tokens"]]
+        tokens = [token_dict.get("token", "") for token_dict in token_infos["tokens"]]
         words_counts = self.agg_counts(tokens)
 
         ...
