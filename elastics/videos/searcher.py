@@ -8,17 +8,14 @@ from converters.query.filter import QueryFilterExtractor
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.rewrite import QueryRewriter
-from converters.query.field import is_pinyin_field, deboost_field, boost_fields
-from converters.query.field import remove_suffixes_from_fields
-from converters.dsl.rewrite import DslExprRewriter
-from converters.dsl.elastic import DslExprToElasticConverter
-from converters.dsl.filter import QueryDslDictFilterMerger
+from elastics.structure import get_highlight_settings, construct_boosted_fields
+from elastics.structure import set_min_score, set_timeout, set_terminate_after
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
-from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS
+from elastics.videos.constants import DATE_MATCH_FIELDS
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
@@ -30,8 +27,6 @@ from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
 from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
-from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
-from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 
@@ -53,57 +48,6 @@ class VideoSearcherBase:
     def init_processors(self):
         """Initialize processors for all kinds of parse, rewrite and convert."""
         self.hit_parser = VideoHitsParser()
-
-    def get_highlight_settings(
-        self,
-        match_fields: list[str],
-        removable_suffixes: list[str] = [".words"],
-        tag: str = "hit",
-    ):
-        highlight_fields = [
-            deboost_field(field) for field in match_fields if not is_pinyin_field(field)
-        ]
-        if removable_suffixes:
-            highlight_fields.extend(
-                remove_suffixes_from_fields(
-                    highlight_fields, suffixes=removable_suffixes
-                )
-            )
-
-        highlight_fields = sorted(list(set(highlight_fields)))
-        highlight_fields_dict = {field: {} for field in highlight_fields}
-
-        highlight_settings = {
-            "pre_tags": [f"<{tag}>"],
-            "post_tags": [f"</{tag}>"],
-            "fields": highlight_fields_dict,
-        }
-        return highlight_settings
-
-    def construct_boosted_fields(
-        self,
-        match_fields: list[str] = SEARCH_MATCH_FIELDS,
-        boost: bool = True,
-        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
-        use_pinyin: bool = False,
-    ) -> tuple[list[str], list[str]]:
-        if not use_pinyin:
-            match_fields = [
-                field for field in match_fields if not field.endswith(".pinyin")
-            ]
-        date_fields = [
-            field
-            for field in match_fields
-            if not field.endswith(".pinyin")
-            and any(field.startswith(date_field) for date_field in DATE_MATCH_FIELDS)
-        ]
-        if boost:
-            boosted_match_fields = boost_fields(match_fields, boosted_fields)
-            boosted_date_fields = boost_fields(date_fields, DATE_BOOSTED_FIELDS)
-        else:
-            boosted_match_fields = match_fields
-            boosted_date_fields = date_fields
-        return boosted_match_fields, boosted_date_fields
 
     def submit_to_es(self, body: dict) -> dict:
         try:
@@ -131,27 +75,6 @@ class VideoSearcherBase:
         """Get suggest_info and rewrite_info."""
         pass
 
-    def set_timeout(self, body: dict, timeout: Union[int, float, str] = None):
-        if timeout is not None:
-            if isinstance(timeout, str):
-                body["timeout"] = timeout
-            elif isinstance(timeout, (int, float)):
-                timeout_str = round(timeout * 1000)
-                body["timeout"] = f"{timeout_str}ms"
-            else:
-                logger.warn(f"× Invalid type of `timeout`: {type(timeout)}")
-        return body
-
-    def set_min_score(self, body: dict, min_score: float = None):
-        if min_score is not None:
-            body["min_score"] = min_score
-        return body
-
-    def set_terminate_after(self, body: dict, terminate_after: int = None):
-        if terminate_after is not None:
-            body["terminate_after"] = terminate_after
-        return body
-
     def construct_search_body(
         self,
         query_dsl_dict: dict,
@@ -172,7 +95,7 @@ class VideoSearcherBase:
             "track_total_hits": TRACK_TOTAL_HITS,
         }
         if is_highlight:
-            common_params["highlight"] = self.get_highlight_settings(match_fields)
+            common_params["highlight"] = get_highlight_settings(match_fields)
         script_score_constructor = ScriptScoreQueryDSLConstructor()
         if use_script_score:
             script_query_dsl_dict = script_score_constructor.construct(
@@ -187,11 +110,9 @@ class VideoSearcherBase:
                 "query": query_dsl_dict,
                 **common_params,
             }
-        search_body = self.set_timeout(search_body, timeout=timeout)
-        search_body = self.set_min_score(search_body, min_score=score_threshold)
-        search_body = self.set_terminate_after(
-            search_body, terminate_after=terminate_after
-        )
+        search_body = set_timeout(search_body, timeout=timeout)
+        search_body = set_min_score(search_body, min_score=score_threshold)
+        search_body = set_terminate_after(search_body, terminate_after=terminate_after)
         if limit and limit > 0:
             search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
         return search_body
@@ -272,7 +193,7 @@ class VideoSearcherBase:
             extra_filters = match_detail.get("filters", extra_filters)
             timeout = match_detail.get("timeout", timeout)
         # construct boosted fields
-        boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
+        boosted_match_fields, boosted_date_fields = construct_boosted_fields(
             match_fields=match_fields,
             boost=boost,
             boosted_fields=boosted_fields,
@@ -713,169 +634,3 @@ class VideoSearcherV1(VideoSearcherBase):
 
     def post_process_return_res(self, return_res: dict) -> dict:
         return return_res
-
-
-class VideoSearcherV2(VideoSearcherBase):
-    def init_processors(self):
-        self.hit_parser = VideoHitsParser()
-        self.query_rewriter = DslExprRewriter()
-        self.elastic_converter = DslExprToElasticConverter()
-        self.filter_merger = QueryDslDictFilterMerger()
-        self.suggest_parser = SuggestInfoParser("v2")
-
-    def rewrite_with_suggest(self, query_info: dict, suggest_info: dict) -> dict:
-        return self.query_rewriter.rewrite(query_info, suggest_info)
-
-    def suggest_and_rewrite(
-        self,
-        query_info: dict,
-        suggest_info: dict = {},
-        rewrite_info: dict = {},
-        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
-        return_res: dict = {},
-    ) -> dict:
-        if request_type == "suggest":
-            qwords = query_info["keywords_body"]
-            suggest_info = self.suggest_parser.parse(
-                qwords=qwords, hits=return_res["hits"]
-            )
-            rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
-        else:
-            suggest_info = suggest_info or {}
-            rewrite_info = rewrite_info or {}
-        return_res["suggest_info"] = suggest_info
-        return_res["rewrite_info"] = rewrite_info
-        return return_res
-
-    def get_info_of_query_rewrite_dsl(
-        self,
-        query: str,
-        suggest_info: dict = {},
-        boosted_match_fields: list[str] = SEARCH_MATCH_FIELDS,
-        boosted_date_fields: list[str] = DATE_MATCH_FIELDS,
-        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
-        extra_filters: list[dict] = [],
-        **kwargs,  # for compatibility with different input params
-    ) -> tuple[dict, dict, dict]:
-        # get query_info
-        query_info = self.query_rewriter.get_query_info(query)
-        # logger.hint("> query_info:")
-        # logger.mesg(dict_to_str(query_info, add_quotes=True, align_list=False))
-        # get rewrite_info with suggest_info
-        rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
-        rewrited_expr_tree = rewrite_info.get(
-            "rewrited_expr_tree", None
-        ) or query_info.get("query_expr_tree", None)
-        # construct query_dsl_dict from rewrited expr trees
-        self.elastic_converter.word_converter.switch_mode(
-            match_fields=boosted_match_fields,
-            date_match_fields=boosted_date_fields,
-            match_type=match_type,
-        )
-        # logger.hint("> query_dsl_dict (original):")
-        query_dsl_dict = self.elastic_converter.expr_tree_to_dict(rewrited_expr_tree)
-        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
-        # merge extra_filters to query_dsl_dict
-        query_dsl_dict = self.filter_merger.merge(query_dsl_dict, extra_filters)
-        # logger.hint("> query_dsl_dict:")
-        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
-        # logger.hint("> rewrited_expr_tree:")
-        # logger.mesg(rewrited_expr_tree.yaml())
-        # raise NotImplementedError("query_dsl_dict")
-        return query_info, rewrite_info, query_dsl_dict
-
-    def post_process_return_res(self, return_res: dict) -> dict:
-        """Remove some non-jsonable items from return_res."""
-        return_res["query_info"].pop("query_expr_tree", None)
-        return_res["rewrite_info"].pop("rewrited_expr_trees", None)
-        return return_res
-
-    def construct_agg_body(
-        self,
-        query_dsl_dict: dict,
-        timeout: Union[int, float, str] = AGG_TIMEOUT,
-        # sort_field: str = AGG_SORT_FIELD,
-        # sort_order: str = AGG_SORT_ORDER,
-    ) -> dict:
-        """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
-        common_params = {
-            "size": 0,
-            "track_total_hits": TRACK_TOTAL_HITS,
-            "_source": False,
-        }
-        # sort_dict = [{sort_field: {"order": sort_order}}]
-        aggs_dict = {
-            "score_ps": {
-                "percentiles": {
-                    "script": {"source": "_score"},
-                    "percents": AGG_PERCENTS,
-                }
-            },
-            "view_ps": {
-                "percentiles": {
-                    "field": "stat.view",
-                    "percents": AGG_PERCENTS,
-                }
-            },
-            "pubdate_ps": {
-                "percentiles": {
-                    "field": "pubdate",
-                    "percents": AGG_PERCENTS,
-                }
-            },
-        }
-        agg_body = {
-            **common_params,
-            "query": query_dsl_dict,
-            # "sort": sort_dict,
-            "aggs": aggs_dict,
-        }
-        agg_body = self.set_timeout(agg_body, timeout=timeout)
-        return agg_body
-
-    def agg(
-        self,
-        query: str = None,
-        query_dsl_dict: dict = None,
-        match_fields: list[str] = SEARCH_MATCH_FIELDS,
-        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
-        extra_filters: list[dict] = [],
-        suggest_info: dict = {},
-        boost: bool = True,
-        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
-        timeout: Union[int, float, str] = AGG_TIMEOUT,
-        verbose: bool = False,
-    ) -> Union[dict, list[dict]]:
-        """If query_dsl_dict is provided, use it directly, then only `timeout` and `verbose` is taking effect."""
-        if not query_dsl_dict:
-            # construct boosted fields
-            boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
-                match_fields=match_fields,
-                boost=boost,
-                boosted_fields=boosted_fields,
-            )
-            # construct query_dsl_dict
-            query_rewrite_dsl_params = {
-                "query": query,
-                "suggest_info": suggest_info,
-                "boosted_match_fields": boosted_match_fields,
-                "boosted_date_fields": boosted_date_fields,
-                "match_type": match_type,
-                "extra_filters": extra_filters,
-            }
-            _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
-                **query_rewrite_dsl_params
-            )
-        # construct agg_body
-        agg_body = self.construct_agg_body(
-            query_dsl_dict=query_dsl_dict, timeout=timeout
-        )
-        if verbose:
-            logger.hint("> agg_body:")
-            logger.mesg(dict_to_str(agg_body, add_quotes=True, align_list=False))
-        # submit agg_body to es client
-        es_res_dict = self.submit_to_es(agg_body)
-        return es_res_dict
-
-
-VideoSearcher = VideoSearcherV2

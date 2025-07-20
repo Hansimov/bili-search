@@ -18,7 +18,7 @@ from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
 from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
-from elastics.videos.searcher import VideoSearcherV2
+from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
 
 logger = TCLogger()

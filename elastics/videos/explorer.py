@@ -1,7 +1,7 @@
 import json
 
 from copy import deepcopy
-from tclogger import dict_get, get_by_threshold, get_now_ts, dict_to_str, to_digits
+from tclogger import dict_get, get_by_threshold, dict_to_str
 from tclogger import logstr, logger, brk
 from typing import Generator, Union, Literal
 
@@ -9,7 +9,8 @@ from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELD
 from elastics.videos.constants import SEARCH_MATCH_TYPE
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
-from elastics.videos.searcher import VideoSearcherV2
+from elastics.structure import construct_boosted_fields
+from elastics.videos.searcher_v2 import VideoSearcherV2
 
 STEP_ZH_NAMES = {
     "init": {
@@ -234,7 +235,7 @@ class VideoExplorer(VideoSearcherV2):
         max_count_by_view: int = 10000,
         max_count_by_score: int = 10000,
         relevant_search_limit: int = 400,
-        group_owner_limit: int = 10,
+        group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
         """Multi-step explorative search, yield result at each step.
@@ -261,7 +262,7 @@ class VideoExplorer(VideoSearcherV2):
                 "boost": boost,
                 "boosted_fields": boosted_fields,
             }
-            boosted_match_fields, boosted_date_fields = self.construct_boosted_fields(
+            boosted_match_fields, boosted_date_fields = construct_boosted_fields(
                 **boosted_fields_params
             )
             query_rewrite_dsl_params = {
@@ -271,7 +272,6 @@ class VideoExplorer(VideoSearcherV2):
                 "boosted_date_fields": boosted_date_fields,
                 "match_type": match_type,
                 "extra_filters": extra_filters,
-                "verbose": verbose,
             }
             _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
                 **query_rewrite_dsl_params
@@ -329,6 +329,7 @@ class VideoExplorer(VideoSearcherV2):
             )
         except Exception as e:
             logger.warn(f"× Failed to get view_filter: {e}")
+            logger.exit_quiet(not verbose)
             return
         relevant_extra_filters = deepcopy(extra_filters)
         for stat_filter in []:
@@ -374,6 +375,7 @@ class VideoExplorer(VideoSearcherV2):
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
         yield self.format_result(relevant_search_yield, res_format=res_format)
         if relevant_search_yield.get("status", None) == "timedout":
+            logger.exit_quiet(not verbose)
             return
 
         # Step 3: Group hits by owner
@@ -401,3 +403,5 @@ class VideoExplorer(VideoSearcherV2):
             group_hits_by_owner_yield, step_output=group_res, field="authors"
         )
         yield self.format_result(group_hits_by_owner_yield, res_format=res_format)
+
+        logger.exit_quiet(not verbose)

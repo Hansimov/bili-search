@@ -1,7 +1,7 @@
 from btok import SentenceCategorizer
 from tclogger import logger, logstr, dict_to_str, brk
 
-from elastics.videos.searcher import VideoSearcherV2
+from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.splitter import QuerySplitter
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
@@ -242,8 +242,8 @@ if __name__ == "__main__":
     # test_multi_level_search()
     # test_search()
     # test_agg()
-    # test_explore()
+    test_explore()
     # test_split()
-    test_categorize()
+    # test_categorize()
 
     # python -m elastics.videos.tests
