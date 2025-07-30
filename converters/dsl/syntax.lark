@@ -61,6 +61,7 @@ neq_list: NEQS
 
 op_rel: eqs | lt | gt | neqs | leqs | geqs
 op_list: eq_list | neq_list
+op_eqs: eqs | neqs
 
 COMMA: ","
 COLON: ":"
@@ -112,6 +113,7 @@ date_expr: colon? date_key date_op_val
                 date_val_right: date_val_single
 
 digits: /[0-9]+/
+alpha_digits: /[a-zA-Z0-9_]+/
 yyyy: /\d{4}/
 mm: /\d{1,2}/
 dd: /\d{1,2}/
@@ -139,16 +141,17 @@ user_expr: colon? user_key_op user_val
         user_val_single: text_quoted | text_strict
         user_val_list: lb_comma (user_val_single)? (comma user_val_single)* comma_rb
 
-uid_expr: colon? uid_key uid_op_val
-    uid_key: /(?i:(uid|mid))/
-    uid_op_val: uid_op_val_single | uid_op_val_list
-        uid_op_val_single: op_rel uid_val_single
-            uid_val_single: digits
-        uid_op_val_list: op_rel uid_val_list
-            uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
-
 at_eq: AT
 at_neq: AT NQ
+
+
+// ---------- uid exprs ---------- //
+uid_expr: colon? uid_key uid_op uid_val
+    uid_key: /(?i:(uid|mid))/
+    uid_op: op_eqs
+    uid_val: uid_val_single | uid_val_list
+        uid_val_single: digits
+        uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
 
 
 // ---------- avid/bvid exprs ---------- //

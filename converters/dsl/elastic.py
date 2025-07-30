@@ -9,6 +9,7 @@ from converters.dsl.fields.bvid import BvidExprElasticConverter
 from converters.dsl.fields.date import DateExprElasticConverter
 from converters.dsl.fields.stat import StatExprElasticConverter
 from converters.dsl.fields.user import UserExprElasticConverter
+from converters.dsl.fields.umid import UmidExprElasticConverter
 from converters.dsl.fields.word import WordExprElasticConverter
 from converters.dsl.fields.word import WordNodeToExprConstructor
 from converters.dsl.fields.bool import BoolElasticReducer
@@ -28,6 +29,7 @@ class DslExprToElasticConverter:
         self.bvid_converter = BvidExprElasticConverter()
         self.date_converter = DateExprElasticConverter()
         self.user_converter = UserExprElasticConverter()
+        self.umid_converter = UmidExprElasticConverter()
         self.stat_converter = StatExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
         self.verbose = verbose
@@ -42,6 +44,8 @@ class DslExprToElasticConverter:
             return self.stat_converter.convert(node)
         elif expr_node.is_key("user_expr"):
             return self.user_converter.convert(node)
+        elif expr_node.is_key("uid_expr"):
+            return self.umid_converter.convert(node)
         elif expr_node.is_key("word_expr"):
             return self.word_converter.convert(node)
         else:
@@ -183,11 +187,12 @@ class DslTreeToExprConstructor(DslExprToElasticConverter):
 def test_converter():
     from converters.field.test import test_date_strs, test_date_list_strs
     from converters.field.test import test_user_strs
+    from converters.field.test import test_umid_strs
     from converters.field.test import test_text_strs
     from converters.field.test import test_comb_strs
 
     elastic_converter = DslExprToElasticConverter(verbose=True)
-    test_strs = test_text_strs
+    test_strs = test_umid_strs
     for test_str in test_strs:
         logger.note(f"{test_str}")
         elastic_dict = elastic_converter.expr_to_dict(test_str)

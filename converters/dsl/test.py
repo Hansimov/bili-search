@@ -24,7 +24,7 @@ user_queries = [
     ['@!["-LKs-",  ，红警HBK08，，红警月亮3,,]', ("user_expr", 1)],
 ]
 uid_queries = [
-    ["uid>1234", ("uid_expr", 1)],
+    ["uid=1234", ("uid_expr", 1)],
     ["uid=[123,456,789)", ("uid_expr", 1)],
     ["mid! =[123,456]", ("uid_expr", 1)],
 ]
