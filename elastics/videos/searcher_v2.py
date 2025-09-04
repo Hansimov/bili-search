@@ -36,14 +36,8 @@ from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 class VideoSearcherV2:
     def __init__(self, index_name: str = VIDEOS_INDEX_DEFAULT):
         self.index_name = index_name
-        self.es = ElasticOperator(
-            ELASTIC_ENVS,
-            connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('elastic'))}",
-        )
-        self.mongo = MongoOperator(
-            MONGO_ENVS,
-            connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('mongo'))}",
-        )
+        self.es = ElasticOperator(ELASTIC_ENVS, connect_cls=self.__class__)
+        self.mongo = MongoOperator(MONGO_ENVS, connect_cls=self.__class__)
         self.init_processors()
 
     def init_processors(self):

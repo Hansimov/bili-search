@@ -178,9 +178,9 @@ class VideoExplorer(VideoSearcherV2):
         for hit in search_res.get("hits", []):
             name = dict_get(hit, "owner.name", None)
             mid = dict_get(hit, "owner.mid", None)
-            pubdate = dict_get(hit, "pubdate", 0)
-            view = dict_get(hit, "stat.view", 0)
-            sort_score = dict_get(hit, "sort_score", 0)
+            pubdate = dict_get(hit, "pubdate") or 0
+            view = dict_get(hit, "stat.view") or 0
+            sort_score = dict_get(hit, "sort_score") or 0
             if mid is None or name is None:
                 continue
             item = group_res.get(mid, None)
@@ -199,8 +199,8 @@ class VideoExplorer(VideoSearcherV2):
                 if pubdate > latest_pubdate:
                     group_res[mid]["latest_pubdate"] = pubdate
                     group_res[mid]["name"] = name
-                total_view = group_res[mid]["total_view"]
-                total_sort_score = group_res[mid]["total_sort_score"]
+                total_view = group_res[mid]["total_view"] or 0
+                total_sort_score = group_res[mid]["total_sort_score"] or 0
                 group_res[mid]["total_view"] = total_view + view
                 group_res[mid]["total_sort_score"] = total_sort_score + sort_score
             group_res[mid]["hits"].append(hit)
@@ -217,7 +217,7 @@ class VideoExplorer(VideoSearcherV2):
             group_res[mid]["face"] = user_doc.get("face", "")
         return group_res
 
-    def explore(
+    def explore_v1(
         self,
         # `query_dsl_dict` related params
         query: str,
@@ -251,6 +251,8 @@ class VideoExplorer(VideoSearcherV2):
             dict: 'step', 'name', 'name_zh', 'status', 'input', 'output_type', 'output', 'comment'
         """
         logger.enter_quiet(not verbose)
+
+        fparams = {"res_format": res_format}
 
         # Step 0: Construct query_dsl_dict
         step_idx = 0
@@ -286,7 +288,7 @@ class VideoExplorer(VideoSearcherV2):
             "output": query_dsl_dict,
             "comment": "",
         }
-        yield self.format_result(query_dsl_dict_yield, res_format=res_format)
+        yield self.format_result(query_dsl_dict_yield, **fparams)
 
         # Step 1: Aggregation
         step_idx += 1
@@ -303,12 +305,12 @@ class VideoExplorer(VideoSearcherV2):
         }
         step_str = logstr.note(brk(f"Step {step_idx}"))
         logger.hint(f"> {step_str} Aggregating ...")
-        yield self.format_result(agg_yield, res_format=res_format)
+        yield self.format_result(agg_yield, **fparams)
         agg_result = self.agg(
             query_dsl_dict=query_dsl_dict, timeout=AGG_TIMEOUT, verbose=verbose
         )
         self.update_step_output(agg_yield, step_output=agg_result)
-        yield self.format_result(agg_yield, res_format=res_format)
+        yield self.format_result(agg_yield, **fparams)
         # if agg_yield.get("status", None) == "timedout":
         #     return
 
@@ -369,11 +371,11 @@ class VideoExplorer(VideoSearcherV2):
             "output_type": "hits",
             "comment": "",
         }
-        yield self.format_result(relevant_search_yield, res_format=res_format)
+        yield self.format_result(relevant_search_yield, **fparams)
         relevant_search_res = self.search(**relevant_search_params)
         self.set_total_hits(agg_res=agg_result, search_res=relevant_search_res)
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
-        yield self.format_result(relevant_search_yield, res_format=res_format)
+        yield self.format_result(relevant_search_yield, **fparams)
         if relevant_search_yield.get("status", None) == "timedout":
             logger.exit_quiet(not verbose)
             return
@@ -397,11 +399,139 @@ class VideoExplorer(VideoSearcherV2):
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
         }
-        yield self.format_result(group_hits_by_owner_yield, res_format=res_format)
+        yield self.format_result(group_hits_by_owner_yield, **fparams)
         group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
         self.update_step_output(
             group_hits_by_owner_yield, step_output=group_res, field="authors"
         )
-        yield self.format_result(group_hits_by_owner_yield, res_format=res_format)
+        yield self.format_result(group_hits_by_owner_yield, **fparams)
+
+        logger.exit_quiet(not verbose)
+
+    def explore(
+        self,
+        # `query_dsl_dict` related params
+        query: str,
+        query_dsl_dict: dict = None,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        match_type: str = SEARCH_MATCH_TYPE,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
+        boost: bool = True,
+        boosted_fields: dict = EXPLORE_BOOSTED_FIELDS,
+        verbose: bool = False,
+        # `explore` related params
+        most_relevant_limit: int = 10000,
+        return_result_limit: int = 400,
+        group_owner_limit: int = 20,
+        res_format: Literal["json", "str"] = "json",
+    ) -> Generator[dict, None, None]:
+        logger.enter_quiet(not verbose)
+
+        fparams = {"res_format": res_format}
+
+        # Step 0: Construct query_dsl_dict
+        step_idx = 0
+        step_name = "construct_query_dsl_dict"
+        logger.hint("> [step 1] Query constructing ...")
+        if query_dsl_dict is None:
+            boosted_fields_params = {
+                "match_fields": match_fields,
+                "boost": boost,
+                "boosted_fields": boosted_fields,
+            }
+            boosted_match_fields, boosted_date_fields = construct_boosted_fields(
+                **boosted_fields_params
+            )
+            query_rewrite_dsl_params = {
+                "query": query,
+                "suggest_info": suggest_info,
+                "boosted_match_fields": boosted_match_fields,
+                "boosted_date_fields": boosted_date_fields,
+                "match_type": match_type,
+                "extra_filters": extra_filters,
+            }
+            _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
+                **query_rewrite_dsl_params
+            )
+        query_dsl_dict_yield = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "finished",
+            "input": query_rewrite_dsl_params,
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "output": query_dsl_dict,
+            "comment": "",
+        }
+        yield self.format_result(query_dsl_dict_yield, **fparams)
+
+        # Step 1: Most-relevant docs
+        step_idx += 1
+        step_name = "most_relevant_search"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Top relevant docs")
+        relevant_search_params = {
+            "query": query,
+            "suggest_info": suggest_info,
+            "extra_filters": extra_filters,
+            "use_script_score": False,  # IMPORTANT: search faster
+            "is_highlight": False,  # IMPORTANT: search faster
+            "limit": most_relevant_limit,
+            "timeout": EXPLORE_TIMEOUT,
+            "verbose": verbose,
+        }
+        relevant_search_yield = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": relevant_search_params,
+            "output": {},
+            "output_type": "hits",
+            "comment": "",
+        }
+        yield self.format_result(relevant_search_yield, **fparams)
+        relevant_search_res = self.search(**relevant_search_params)
+        self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
+        if relevant_search_yield.get("status", None) == "timedout":
+            logger.exit_quiet(not verbose)
+            return
+        # limit number of returned relevant results
+        if return_result_limit is not None and return_result_limit > 0:
+            limit_relevant_res = deepcopy(relevant_search_res)
+            limit_relevant_res["hits"] = limit_relevant_res.get("hits", [])[
+                :return_result_limit
+            ]
+            self.update_step_output(
+                relevant_search_yield, step_output=limit_relevant_res
+            )
+        yield self.format_result(relevant_search_yield, **fparams)
+
+        # Step 3: Group hits by owner
+        step_idx += 1
+        step_name = "group_hits_by_owner"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Group hits by owner, sort by sum of view")
+        group_hits_by_owner_params = {
+            "search_res": relevant_search_res,
+            "limit": group_owner_limit,
+        }
+        group_hits_by_owner_yield = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": {"limit": group_owner_limit},
+            "output": {},
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "comment": "",
+        }
+        yield self.format_result(group_hits_by_owner_yield, **fparams)
+        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
+        self.update_step_output(
+            group_hits_by_owner_yield, step_output=group_res, field="authors"
+        )
+        yield self.format_result(group_hits_by_owner_yield, **fparams)
 
         logger.exit_quiet(not verbose)
