@@ -421,7 +421,7 @@ class VideoExplorer(VideoSearcherV2):
         boosted_fields: dict = EXPLORE_BOOSTED_FIELDS,
         verbose: bool = False,
         # `explore` related params
-        most_relevant_limit: int = 10000,
+        most_relevant_limit: int = 20000,
         return_result_limit: int = 400,
         group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
@@ -474,9 +474,13 @@ class VideoExplorer(VideoSearcherV2):
         relevant_search_params = {
             "query": query,
             "suggest_info": suggest_info,
+            "source_fields": ["bvid", "stat", "pubdate", "duration"],  # reduce io
             "extra_filters": extra_filters,
-            "use_script_score": False,  # IMPORTANT: search faster
-            "is_highlight": False,  # IMPORTANT: search faster
+            "use_script_score": False,  # NOTE:  speed up
+            "add_region_info": False,  # NOTE: speed up
+            "add_highlights_info": False,  # NOTE: speed up
+            "is_profile": False,
+            "is_highlight": False,  # NOTE: speed up
             "limit": most_relevant_limit,
             "timeout": EXPLORE_TIMEOUT,
             "verbose": verbose,

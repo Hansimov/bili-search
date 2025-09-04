@@ -87,6 +87,8 @@ class VideoHitsParser:
         res_dict: dict,
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         drop_no_highlights: bool = False,
+        add_region_info: bool = True,
+        add_highlights_info: bool = True,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         match_operator: MATCH_OPERATOR = SEARCH_MATCH_OPERATOR,
         detail_level: int = -1,
@@ -148,41 +150,48 @@ class VideoHitsParser:
         for hit in res_dict["hits"]["hits"]:
             source = hit["_source"]
             score = hit["_score"]
-            tid = source.get("tid", None)
-            region_name = REGION_INFOS_BY_ID.get(tid, {}).get("region_name", "")
-            region_parent_name = REGION_INFOS_BY_ID.get(tid, {}).get("parent_name", "")
-            source["region_name"] = region_name
-            source["region_parent_name"] = region_parent_name
             sort_score = hit.get("sort", [None])[0]
-            common_highlights = hit.get("highlight", {})
-            pinyin_highlights = self.get_pinyin_highlights(
-                keywords=qwords, match_fields=match_fields, source=source
-            )
-            merged_highlights, segged_highlights = (
-                self.get_merged_and_segged_highlights(
-                    source=source,
-                    common_highlights=common_highlights,
-                    pinyin_highlights=pinyin_highlights,
+            if add_region_info:
+                tid = source.get("tid", None)
+                region_name = REGION_INFOS_BY_ID.get(tid, {}).get("region_name", "")
+                region_parent_name = REGION_INFOS_BY_ID.get(tid, {}).get(
+                    "parent_name", ""
                 )
-            )
-            is_hit_ignored = (
-                drop_no_highlights
-                # and (match_type == "most_fields" and match_operator == "or")
-                and ((not common_highlights) and (not pinyin_highlights))
-            )
-            if is_hit_ignored:
-                continue
+                source["region_name"] = region_name
+                source["region_parent_name"] = region_parent_name
             hit_info = {
                 **source,
                 "score": score,
                 "sort_score": sort_score,
-                "highlights": {
-                    "common": common_highlights,
-                    "pinyin": pinyin_highlights,
-                    "merged": merged_highlights,
-                    "segged": segged_highlights,
-                },
             }
+            if add_highlights_info:
+                common_highlights = hit.get("highlight", {})
+                pinyin_highlights = self.get_pinyin_highlights(
+                    keywords=qwords, match_fields=match_fields, source=source
+                )
+                merged_highlights, segged_highlights = (
+                    self.get_merged_and_segged_highlights(
+                        source=source,
+                        common_highlights=common_highlights,
+                        pinyin_highlights=pinyin_highlights,
+                    )
+                )
+                is_hit_ignored = (
+                    drop_no_highlights
+                    # and (match_type == "most_fields" and match_operator == "or")
+                    and ((not common_highlights) and (not pinyin_highlights))
+                )
+                if is_hit_ignored:
+                    continue
+                highlights_info = {
+                    "highlights": {
+                        "common": common_highlights,
+                        "pinyin": pinyin_highlights,
+                        "merged": merged_highlights,
+                        "segged": segged_highlights,
+                    },
+                }
+                hit_info.update(highlights_info)
             hits.append(hit_info)
         if limit > 0:
             hits = hits[:limit]

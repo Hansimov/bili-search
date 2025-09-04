@@ -10,7 +10,8 @@ from converters.dsl.elastic import DslExprToElasticConverter
 from converters.dsl.filter import QueryDslDictFilterMerger
 
 from elastics.structure import get_highlight_settings, construct_boosted_fields
-from elastics.structure import set_timeout, set_min_score, set_terminate_after
+from elastics.structure import set_min_score, set_terminate_after
+from elastics.structure import set_timeout, set_profile
 from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -61,7 +62,9 @@ class VideoSearcherV2:
         query_dsl_dict: dict,
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         source_fields: list[str] = SOURCE_FIELDS,
+        drop_no_highlights: bool = False,
         is_explain: bool = False,
+        is_profile: bool = False,
         is_highlight: bool = IS_HIGHLIGHT,
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
         score_threshold: float = None,
@@ -94,8 +97,12 @@ class VideoSearcherV2:
         search_body = set_timeout(search_body, timeout=timeout)
         search_body = set_min_score(search_body, min_score=score_threshold)
         search_body = set_terminate_after(search_body, terminate_after=terminate_after)
+        search_body = set_profile(search_body, profile=is_profile)
         if limit and limit > 0:
-            search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
+            if drop_no_highlights:
+                search_body["size"] = int(limit * NO_HIGHLIGHT_REDUNDANCE_RATIO)
+            else:
+                search_body["size"] = limit
         return search_body
 
     def suggest(
@@ -110,6 +117,8 @@ class VideoSearcherV2:
         parse_hits: bool = True,
         drop_no_highlights: bool = False,
         is_explain: bool = False,
+        is_profile: bool = False,
+        is_highlight: bool = IS_HIGHLIGHT,
         boost: bool = True,
         boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
@@ -133,6 +142,8 @@ class VideoSearcherV2:
             parse_hits=parse_hits,
             drop_no_highlights=drop_no_highlights,
             is_explain=is_explain,
+            is_profile=is_profile,
+            is_highlight=is_highlight,
             boost=boost,
             boosted_fields=boosted_fields,
             combined_fields_list=combined_fields_list,
@@ -429,7 +440,10 @@ class VideoSearcherV2:
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         parse_hits: bool = True,
         drop_no_highlights: bool = False,
+        add_region_info: bool = True,
+        add_highlights_info: bool = True,
         is_explain: bool = False,
+        is_profile: bool = False,
         is_highlight: bool = IS_HIGHLIGHT,
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
@@ -478,7 +492,9 @@ class VideoSearcherV2:
             "query_dsl_dict": query_dsl_dict,
             "match_fields": boosted_match_fields,
             "source_fields": source_fields,
+            "drop_no_highlights": drop_no_highlights,
             "is_explain": is_explain,
+            "is_profile": is_profile,
             "is_highlight": is_highlight,
             "use_script_score": use_script_score,
             "score_threshold": score_threshold,
@@ -500,6 +516,8 @@ class VideoSearcherV2:
                 res_dict=es_res_dict,
                 request_type=request_type,
                 drop_no_highlights=drop_no_highlights,
+                add_region_info=add_region_info,
+                add_highlights_info=add_highlights_info,
                 match_type=match_type,
                 match_operator=match_operator,
                 detail_level=detail_level,

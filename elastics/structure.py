@@ -97,6 +97,12 @@ def set_terminate_after(body: dict, terminate_after: int = None):
     return body
 
 
+def set_profile(body: dict, profile: bool = None):
+    if profile is not None:
+        body["profile"] = profile
+    return body
+
+
 if __name__ == "__main__":
     d = {
         "owner": {"name": {"space": "value1"}},
