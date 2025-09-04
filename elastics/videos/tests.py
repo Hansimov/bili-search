@@ -1,6 +1,7 @@
 from btok import SentenceCategorizer
 from tclogger import logger, logstr, dict_to_str, brk
 
+from elastics.videos.searcher import VideoSearcherV1
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.splitter import QuerySplitter
@@ -9,13 +10,9 @@ from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.filter import QueryFilterExtractor
 
-searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
-explorer = VideoExplorer(VIDEOS_INDEX_DEFAULT)
-splitter = QuerySplitter(VIDEOS_INDEX_DEFAULT)
-categorizer = SentenceCategorizer()
-
 
 def test_random():
+    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
     logger.note("> Getting random results ...")
     res = searcher.random(limit=3)
     logger.mesg(dict_to_str(res))
@@ -28,6 +25,7 @@ filter_queries = [
 
 
 def test_filter():
+    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
     for query in filter_queries:
         match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
         date_match_fields = [
@@ -120,6 +118,7 @@ suggest_queries = [
 
 
 def test_suggest():
+    searcher = VideoSearcherV1(VIDEOS_INDEX_DEFAULT)
     for query in suggest_queries:
         query_str = logstr.mesg(brk(query))
         logger.note(f"> Query: {query_str}")
@@ -140,6 +139,7 @@ multi_level_search_queries = [
 
 
 def test_multi_level_search():
+    searcher = VideoSearcherV1(VIDEOS_INDEX_DEFAULT)
     for query in multi_level_search_queries:
         logger.note("> Searching results:", end=" ")
         logger.file(f"[{query}]")
@@ -171,6 +171,7 @@ search_queries = [
 
 
 def test_search():
+    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
     for query in search_queries:
         logger.note("> Searching results:", end=" ")
         logger.file(f"[{query}]")
@@ -189,6 +190,7 @@ def test_search():
 
 
 def test_agg():
+    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
     for query in search_queries:
         logger.note("> Agg results:", end=" ")
         logger.file(f"[{query}]")
@@ -197,14 +199,15 @@ def test_agg():
 
 
 def test_explore():
+    explorer = VideoExplorer(VIDEOS_INDEX_DEFAULT)
     for query in search_queries:
         logger.note("> Explore results:", end=" ")
         logger.file(f"[{query}]")
-        explore_res = explorer.explore(query, verbose=True, relevant_search_limit=3)
+        explore_res = explorer.explore(query, verbose=True)
         for step_res in explore_res:
             stage_name = step_res["name"]
             logger.hint(f"* stage result of {(logstr.mesg(brk(stage_name)))}:")
-            logger.mesg(dict_to_str(step_res, align_list=False), indent=2)
+            # logger.mesg(dict_to_str(step_res, align_list=False), indent=2)
 
 
 split_queries = [
@@ -220,6 +223,7 @@ split_queries = [
 
 
 def test_split():
+    splitter = QuerySplitter(VIDEOS_INDEX_DEFAULT)
     for query in split_queries:
         logger.note("> Splitting:", end=" ")
         logger.file(f"[{query}]")
@@ -228,8 +232,9 @@ def test_split():
 
 
 def test_categorize():
+    categorizer = SentenceCategorizer()
     for query in split_queries:
-        logger.note("> Splitting:", end=" ")
+        logger.note("> Categorizing:", end=" ")
         logger.file(f"[{query}]")
         res = categorizer.categorize(query)
         logger.success(dict_to_str(res, add_quotes=True), indent=2)
