@@ -80,6 +80,14 @@ class VideoHitsParser:
                 segged_highlights[field] = segged_highlight
         return merged_highlights, segged_highlights
 
+    def add_region_info_to_source(self, source: dict) -> dict:
+        tid = source.get("tid", None)
+        region_name = REGION_INFOS_BY_ID.get(tid, {}).get("region_name", "")
+        region_parent_name = REGION_INFOS_BY_ID.get(tid, {}).get("parent_name", "")
+        source["region_name"] = region_name
+        source["region_parent_name"] = region_parent_name
+        return source
+
     def parse(
         self,
         query_info: dict,
@@ -98,35 +106,56 @@ class VideoHitsParser:
         """Example of output:
         ```json
         {
-            "bvid": "BV19LqeYnEyv",
-            "tid": 17,
-            "title": "红警08！深夜高歌一曲！",
-            "tname": "单机游戏",
-            "ptid": 4,
-            "rtags": "游戏, 单机游戏",
-            "tags": "红色警戒, 唱歌, 演唱, 08",
-            "score": 2644.0063,
-            "highlights": {
-                "common": {
-                    "owner.name.words: ["红警HBK<hit>08</hit>"],
-                    "title.words": ["红警<hit>08</hit>！深夜高歌一曲！"],
-                    "tags.words": ["红色警戒, 唱歌, 演唱, <hit>08</hit>"]
+            "query": "红警08",
+            "request_type": "search",
+            "detail_level": -1,
+            "took": 750,
+            "timed_out": false,
+            "total_hits": 1234,
+            "return_hits": 10,
+            "hits": [
+                {
+                    "bvid": "BV19LqeYnEyv",
+                    "tid": 17,
+                    "title": "红警08！深夜高歌一曲！",
+                    "tname": "单机游戏",
+                    "ptid": 4,
+                    "rtags": "游戏, 单机游戏",
+                    "tags": "红色警戒, 唱歌, 演唱, 08",
+                    "score": 2644.0063,
+                    "stat":{
+                        "view": 11111,
+                        "danmaku": 222,
+                        "reply": 33,
+                        "favorite": 444,
+                        "coin": 55,
+                        "share": 6
+                    },
+                    "highlights": {
+                        "common": {
+                            "owner.name.words: ["红警HBK<hit>08</hit>"],
+                            "title.words": ["红警<hit>08</hit>！深夜高歌一曲！"],
+                            "tags.words": ["红色警戒, 唱歌, 演唱, <hit>08</hit>"]
+                        },
+                        "pinyin": {
+                            "title.pinyin": ["<hit>红警</hit>08！深夜高歌一曲！"],
+                            "owner.name.pinyin": ["<hit>红警</hit>HBK08"]
+                        },
+                        "merged": {
+                            "title": ["<hit>红警08</hit>！深夜高歌一曲！"],
+                            "owner.name": ["<hit>红警</hit>HBK<hit>08</hit>"],
+                            "tags": ["红色警戒, 唱歌, 演唱, <hit>08</hit>"]
+                        },
+                        "segged": {
+                            "title": ["08", "红警"],
+                            "owner.name": ["08", "红警"],
+                            "tags": ["08"]
+                        }
+                    }
                 },
-                "pinyin": {
-                    "title.pinyin": ["<hit>红警</hit>08！深夜高歌一曲！"],
-                    "owner.name.pinyin": ["<hit>红警</hit>HBK08"]
-                },
-                "merged": {
-                    "title": ["<hit>红警08</hit>！深夜高歌一曲！"],
-                    "owner.name": ["<hit>红警</hit>HBK<hit>08</hit>"],
-                    "tags": ["红色警戒, 唱歌, 演唱, <hit>08</hit>"]
-                },
-                "segged": {
-                    "title": ["08", "红警"],
-                    "owner.name": ["08", "红警"],
-                    "tags": ["08"]
-                }
-            }
+                ...
+            ],
+            "query_info": <query_info>
         }
         ```
         """
@@ -152,13 +181,7 @@ class VideoHitsParser:
             score = hit["_score"]
             sort_score = hit.get("sort", [None])[0]
             if add_region_info:
-                tid = source.get("tid", None)
-                region_name = REGION_INFOS_BY_ID.get(tid, {}).get("region_name", "")
-                region_parent_name = REGION_INFOS_BY_ID.get(tid, {}).get(
-                    "parent_name", ""
-                )
-                source["region_name"] = region_name
-                source["region_parent_name"] = region_parent_name
+                self.add_region_info_to_source(source)
             hit_info = {
                 **source,
                 "score": score,
@@ -169,13 +192,6 @@ class VideoHitsParser:
                 pinyin_highlights = self.get_pinyin_highlights(
                     keywords=qwords, match_fields=match_fields, source=source
                 )
-                merged_highlights, segged_highlights = (
-                    self.get_merged_and_segged_highlights(
-                        source=source,
-                        common_highlights=common_highlights,
-                        pinyin_highlights=pinyin_highlights,
-                    )
-                )
                 is_hit_ignored = (
                     drop_no_highlights
                     # and (match_type == "most_fields" and match_operator == "or")
@@ -183,6 +199,13 @@ class VideoHitsParser:
                 )
                 if is_hit_ignored:
                     continue
+                merged_highlights, segged_highlights = (
+                    self.get_merged_and_segged_highlights(
+                        source=source,
+                        common_highlights=common_highlights,
+                        pinyin_highlights=pinyin_highlights,
+                    )
+                )
                 highlights_info = {
                     "highlights": {
                         "common": common_highlights,

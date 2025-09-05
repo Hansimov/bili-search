@@ -7,17 +7,17 @@ from collections import defaultdict
 RE_BVID = re.compile(r"bv[0-9A-Za-z]+", re.IGNORECASE)
 RE_AVID = re.compile(r"(av)?[0-9]+", re.IGNORECASE)
 
+AVID_FIELD = "aid"
+BVID_FIELD = "bvid.keyword"
+
 
 class BvidExprElasticConverter:
-    AVID_FIELD = "aid"
-    BVID_FIELD = "bvid.keyword"
-
     def parse_bvid_value(self, value: str) -> tuple[str, int]:
         value = value.strip('" ')
         if RE_AVID.match(value):
-            return self.AVID_FIELD, int(value)
+            return AVID_FIELD, int(value)
         else:
-            return self.BVID_FIELD, value
+            return BVID_FIELD, value
 
     def convert_multi(self, nodes: list[DslExprNode]) -> dict:
         field_values = []
@@ -35,12 +35,12 @@ class BvidExprElasticConverter:
             vid_dict = defaultdict(list)
             for field, value in field_values:
                 vid_dict[field].append(value)
-            if self.AVID_FIELD in vid_dict and self.BVID_FIELD in vid_dict:
+            if AVID_FIELD in vid_dict and BVID_FIELD in vid_dict:
                 res = {
                     "bool": {
                         "should": [
-                            {"terms": {self.AVID_FIELD: vid_dict[self.AVID_FIELD]}},
-                            {"terms": {self.BVID_FIELD: vid_dict[self.BVID_FIELD]}},
+                            {"terms": {AVID_FIELD: vid_dict[AVID_FIELD]}},
+                            {"terms": {BVID_FIELD: vid_dict[BVID_FIELD]}},
                         ],
                         "minimum_should_match": 1,
                     }
@@ -67,3 +67,7 @@ class BvidExprElasticConverter:
             elastic_dict = {"bool": {"filter": elastic_dict}}
 
         return elastic_dict
+
+
+def bvids_to_filter(bvids: list[str]) -> dict:
+    return {"terms": {BVID_FIELD: bvids}}
