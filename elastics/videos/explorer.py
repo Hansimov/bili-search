@@ -5,6 +5,7 @@ from tclogger import dict_get, get_by_threshold, dict_to_str
 from tclogger import logstr, logger, brk
 from typing import Generator, Union, Literal
 
+from converters.dsl.fields.bvid import bvids_to_filter
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
@@ -217,6 +218,9 @@ class VideoExplorer(VideoSearcherV2):
             group_res[mid]["face"] = user_doc.get("face", "")
         return group_res
 
+    def is_status_timedout(self, result: dict) -> bool:
+        return result.get("status", None) == "timedout"
+
     def explore_v1(
         self,
         # `query_dsl_dict` related params
@@ -238,7 +242,9 @@ class VideoExplorer(VideoSearcherV2):
         group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
-        """Multi-step explorative search, yield result at each step.
+        """Deprecated. Use `explore()` instead.
+
+        Multi-step explorative search, yield result at each step.
 
         Steps:
         1. Aggregate: Get overall statistics (percentiles of score, view, pubdate, etc.)
@@ -376,7 +382,7 @@ class VideoExplorer(VideoSearcherV2):
         self.set_total_hits(agg_res=agg_result, search_res=relevant_search_res)
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
         yield self.format_result(relevant_search_yield, **fparams)
-        if relevant_search_yield.get("status", None) == "timedout":
+        if self.is_status_timedout(relevant_search_yield):
             logger.exit_quiet(not verbose)
             return
 
@@ -422,7 +428,7 @@ class VideoExplorer(VideoSearcherV2):
         verbose: bool = False,
         # `explore` related params
         most_relevant_limit: int = 20000,
-        return_result_limit: int = 400,
+        rank_top_k: int = 400,
         group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
@@ -476,12 +482,14 @@ class VideoExplorer(VideoSearcherV2):
             "suggest_info": suggest_info,
             "source_fields": ["bvid", "stat", "pubdate", "duration"],  # reduce io
             "extra_filters": extra_filters,
-            "use_script_score": False,  # NOTE:  speed up
-            "add_region_info": False,  # NOTE: speed up
-            "add_highlights_info": False,  # NOTE: speed up
+            "use_script_score": False,  # speed up
+            "use_python_rank": True,  # better ranking
+            "add_region_info": False,  # speed up
+            "add_highlights_info": False,  # speed up
             "is_profile": False,
-            "is_highlight": False,  # NOTE: speed up
+            "is_highlight": False,  # speed up
             "limit": most_relevant_limit,
+            "rank_top_k": rank_top_k,  # final returned docs with partial fields
             "timeout": EXPLORE_TIMEOUT,
             "verbose": verbose,
         }
@@ -498,18 +506,31 @@ class VideoExplorer(VideoSearcherV2):
         yield self.format_result(relevant_search_yield, **fparams)
         relevant_search_res = self.search(**relevant_search_params)
         self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
-        if relevant_search_yield.get("status", None) == "timedout":
+        if self.is_status_timedout(relevant_search_yield):
             logger.exit_quiet(not verbose)
             return
-        # limit number of returned relevant results
-        if return_result_limit is not None and return_result_limit > 0:
-            limit_relevant_res = deepcopy(relevant_search_res)
-            limit_relevant_res["hits"] = limit_relevant_res.get("hits", [])[
-                :return_result_limit
-            ]
-            self.update_step_output(
-                relevant_search_yield, step_output=limit_relevant_res
-            )
+
+        # Step 2: Fetch full-docs by return ranked ids
+        full_doc_search_params = deepcopy(relevant_search_params)
+        bvids = [hit.get("bvid", None) for hit in relevant_search_res.get("hits", [])]
+        bvid_filter = bvids_to_filter(bvids)
+        full_doc_search_params.pop("source_fields", None)
+        full_doc_search_params.update(
+            {
+                "use_python_rank": True,  # 2nd rank for better score
+                "is_highlight": True,
+                "add_region_info": True,
+                "add_highlights_info": True,
+                "extra_filters": extra_filters + [bvid_filter],
+                "limit": len(bvids),
+            }
+        )
+        full_doc_search_res = self.search(**full_doc_search_params)
+        full_doc_search_res["total_hits"] = relevant_search_res.get("total_hits", 0)
+        self.update_step_output(relevant_search_yield, step_output=full_doc_search_res)
+        if self.is_status_timedout(relevant_search_yield):
+            logger.exit_quiet(not verbose)
+            return
         yield self.format_result(relevant_search_yield, **fparams)
 
         # Step 3: Group hits by owner
