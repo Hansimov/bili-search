@@ -23,15 +23,16 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SUGGEST_MATCH_BOOL, SUGGEST_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_DETAIL_LEVELS, SUGGEST_DETAIL_LEVELS
-from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT
+from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT, RANK_TOP_K
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
-from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT, USE_PYTHON_RANK_DEFAULT
 from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
+from elastics.videos.ranker import VideoHitsRanker
 
 
 class VideoSearcherV2:
@@ -43,6 +44,7 @@ class VideoSearcherV2:
 
     def init_processors(self):
         self.hit_parser = VideoHitsParser()
+        self.hit_ranker = VideoHitsRanker()
         self.query_rewriter = DslExprRewriter()
         self.elastic_converter = DslExprToElasticConverter()
         self.filter_merger = QueryDslDictFilterMerger()
@@ -449,11 +451,13 @@ class VideoSearcherV2:
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        use_python_rank: bool = USE_PYTHON_RANK_DEFAULT,
         score_threshold: float = None,
         use_pinyin: bool = False,
         detail_level: int = -1,
         detail_levels: dict = SEARCH_DETAIL_LEVELS,
         limit: int = SEARCH_LIMIT,
+        rank_top_k: int = RANK_TOP_K,
         terminate_after: int = TERMINATE_AFTER,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
@@ -524,6 +528,10 @@ class VideoSearcherV2:
                 limit=limit,
                 verbose=verbose,
             )
+            if use_python_rank:
+                parse_res = self.hit_ranker.rank(parse_res, top_k=rank_top_k)
+            else:
+                parse_res = self.hit_ranker.tops(parse_res, top_k=rank_top_k)
         else:
             parse_res = es_res_dict
         # suggest and rewrite
