@@ -120,6 +120,7 @@ class VideoHitsParser:
                     "title": "红警08！深夜高歌一曲！",
                     "tname": "单机游戏",
                     "ptid": 4,
+                    "pubdate": "1734027686",
                     "rtags": "游戏, 单机游戏",
                     "tags": "红色警戒, 唱歌, 演唱, 08",
                     "score": 2644.0063,

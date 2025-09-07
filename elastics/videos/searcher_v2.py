@@ -529,7 +529,7 @@ class VideoSearcherV2:
                 verbose=verbose,
             )
             if use_python_rank:
-                parse_res = self.hit_ranker.rank(parse_res, top_k=rank_top_k)
+                parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
             else:
                 parse_res = self.hit_ranker.tops(parse_res, top_k=rank_top_k)
         else:
