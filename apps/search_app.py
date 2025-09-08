@@ -34,12 +34,22 @@ class SearchApp:
             version=self.version,
             swagger_ui_parameters={"defaultModelsExpandDepth": -1},
         )
-        self.mode = app_envs.get("mode", "prod")
+        self.app_envs = app_envs
+        self.init_searchers()
         # self.allow_cors()
-        self.video_searcher = VideoSearcherV2(app_envs["bili_videos_index"])
-        self.video_explorer = VideoExplorer(app_envs["bili_videos_index"])
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
+
+    def init_searchers(self):
+        self.mode = self.app_envs.get("mode", "prod")
+        self.elastic_videos_index = self.app_envs["elastic_index"]
+        self.elastic_env_name = self.app_envs.get("elastic_env_name", None)
+        self.video_searcher = VideoSearcherV2(
+            self.elastic_videos_index, elastic_env_name=self.elastic_env_name
+        )
+        self.video_explorer = VideoExplorer(
+            self.elastic_videos_index, elastic_env_name=self.elastic_env_name
+        )
 
     def allow_cors(self):
         self.app.add_middleware(
@@ -63,7 +73,7 @@ class SearchApp:
         limit: Optional[int] = Body(SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        results = self.video_searcher.multi_level_search(
+        results = self.video_searcher.search(
             query,
             match_fields=match_fields,
             source_fields=source_fields,
@@ -109,7 +119,7 @@ class SearchApp:
         limit: Optional[int] = Body(SUGGEST_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
-        results = self.video_searcher.multi_level_suggest(
+        results = self.video_searcher.suggest(
             query,
             match_fields=match_fields,
             source_fields=source_fields,
@@ -189,7 +199,7 @@ class SearchApp:
         )(self.doc)
 
 
-class ArgParser(argparse.ArgumentParser):
+class SearchAppArgParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_arguments()
@@ -215,18 +225,25 @@ class ArgParser(argparse.ArgumentParser):
             help=f"Running mode of app",
         )
         self.add_argument(
-            "-i",
-            "--index",
+            "-ei",
+            "--elastic-index",
             type=str,
-            help=f"Bili videos index name",
+            help=f"Elastic videos index name",
+        )
+        self.add_argument(
+            "-ev",
+            "--elastic-env-name",
+            type=str,
+            default="elastic",
+            help=f"Elastic env name in secrets.json",
         )
 
         self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
 
     def update_app_envs(self, app_envs: dict):
         new_app_envs = deepcopy(app_envs)
-        new_app_envs["mode"] = self.args.mode
-        mode = new_app_envs["mode"]
+        mode = self.args.mode
+        new_app_envs["mode"] = mode
         for key, val in app_envs.items():
             if isinstance(val, dict) and mode in val.keys():
                 new_app_envs[key] = val[mode]
@@ -235,8 +252,10 @@ class ArgParser(argparse.ArgumentParser):
             new_app_envs["host"] = self.args.host
         if self.args.port:
             new_app_envs["port"] = self.args.port
-        if self.args.index:
-            new_app_envs["bili_videos_index"] = self.args.index
+        if self.args.elastic_index:
+            new_app_envs["elastic_index"] = self.args.elastic_index
+        if self.args.elastic_env_name:
+            new_app_envs["elastic_env_name"] = self.args.elastic_env_name
 
         self.new_app_envs = new_app_envs
 
@@ -248,14 +267,15 @@ class ArgParser(argparse.ArgumentParser):
 
 if __name__ == "__main__":
     app_envs = SEARCH_APP_ENVS
-    arg_parser = ArgParser()
+    arg_parser = SearchAppArgParser()
     new_app_envs = arg_parser.update_app_envs(app_envs)
     app = SearchApp(new_app_envs).app
     uvicorn.run("__main__:app", host=new_app_envs["host"], port=new_app_envs["port"])
 
     # Production mode by default:
     # python -m apps.search_app
-    # python -m apps.search_app -i bili_videos_dev4
+    # python -m apps.search_app -ei bili_videos_dev4
 
     # Development mode:
     # python -m apps.search_app -m dev
+    # python -m apps.search_app -m dev -ei bili_videos_dev5 -ev elastic_dev

@@ -2,7 +2,7 @@ from sedb import MongoOperator, ElasticOperator
 from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
 from typing import Union
 
-from configs.envs import MONGO_ENVS, ELASTIC_ENVS
+from configs.envs import MONGO_ENVS, SECRETS, ELASTIC_ENVS
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 
 from converters.dsl.rewrite import DslExprRewriter
@@ -36,13 +36,39 @@ from elastics.videos.ranker import VideoHitsRanker
 
 
 class VideoSearcherV2:
-    def __init__(self, index_name: str = VIDEOS_INDEX_DEFAULT):
+    def __init__(
+        self,
+        index_name: str = VIDEOS_INDEX_DEFAULT,
+        elastic_env_name: str = None,
+        mongo_env_name: str = None,
+    ):
+        """
+        - index_name:
+            name of elastic index for videos
+            - example: "bili_videos_dev4"
+        - elastic_env_name:
+            name of elastic envs in secrets.json
+            - example: "elastic", "elastic_dev"
+        - mongo_env_name:
+            name of mongo envs in secrets.json
+            - example: "mongo"
+        """
         self.index_name = index_name
-        self.es = ElasticOperator(ELASTIC_ENVS, connect_cls=self.__class__)
-        self.mongo = MongoOperator(MONGO_ENVS, connect_cls=self.__class__)
+        self.elastic_env_name = elastic_env_name
+        self.mongo_env_name = mongo_env_name
         self.init_processors()
 
     def init_processors(self):
+        if self.elastic_env_name:
+            elastic_envs = SECRETS[self.elastic_env_name]
+        else:
+            elastic_envs = ELASTIC_ENVS
+        if self.mongo_env_name:
+            mongo_envs = SECRETS[self.mongo_env_name]
+        else:
+            mongo_envs = MONGO_ENVS
+        self.es = ElasticOperator(elastic_envs, connect_cls=self.__class__)
+        self.mongo = MongoOperator(mongo_envs, connect_cls=self.__class__)
         self.hit_parser = VideoHitsParser()
         self.hit_ranker = VideoHitsRanker()
         self.query_rewriter = DslExprRewriter()
