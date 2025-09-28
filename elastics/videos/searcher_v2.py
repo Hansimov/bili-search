@@ -1,6 +1,7 @@
+from copy import deepcopy
 from sedb import MongoOperator, ElasticOperator
 from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
-from typing import Union
+from typing import Union, Literal
 
 from configs.envs import MONGO_ENVS, SECRETS, ELASTIC_ENVS
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
@@ -23,10 +24,11 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SUGGEST_MATCH_BOOL, SUGGEST_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_DETAIL_LEVELS, SUGGEST_DETAIL_LEVELS
-from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT, RANK_TOP_K
+from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT, RANK_TOP_K, AGG_TOP_K
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
-from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT, USE_PYTHON_RANK_DEFAULT
+from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
@@ -368,14 +370,14 @@ class VideoSearcherV2:
         return_res["rewrite_info"].pop("rewrited_expr_trees", None)
         return return_res
 
-    def construct_agg_body(
+    def construct_agg_body_of_percentile(
         self,
         query_dsl_dict: dict,
         timeout: Union[int, float, str] = AGG_TIMEOUT,
         # sort_field: str = AGG_SORT_FIELD,
         # sort_order: str = AGG_SORT_ORDER,
     ) -> dict:
-        """construct script_score or rrf dict from query_dsl_dict, and return search_body"""
+        """construct aggregations body for percentile"""
         common_params = {
             "size": 0,
             "track_total_hits": TRACK_TOTAL_HITS,
@@ -411,10 +413,49 @@ class VideoSearcherV2:
         agg_body = set_timeout(agg_body, timeout=timeout)
         return agg_body
 
+    def construct_agg_body_of_top_hits(
+        self,
+        query_dsl_dict: dict,
+        timeout: Union[int, float, str] = AGG_TIMEOUT,
+        top_k: int = AGG_TOP_K,
+    ) -> dict:
+        """construct aggregations body for top_hits"""
+        common_params = {
+            "size": 0,
+            "track_total_hits": TRACK_TOTAL_HITS,
+            "_source": False,
+        }
+        query_dsl_dict_without_sort = deepcopy(query_dsl_dict)
+        query_dsl_dict_without_sort["sort"] = ["_doc"]
+        aggs_dict = {
+            "pubdate_tops": {
+                "top_hits": {
+                    "side": top_k,
+                    "sort": [{"pubdate": {"order": "desc"}}],
+                    "_source": False,
+                }
+            },
+            "favorite_tops": {
+                "top_hits": {
+                    "side": top_k,
+                    "sort": [{"stat.favorite": {"order": "desc"}}],
+                    "_source": False,
+                }
+            },
+        }
+        agg_body = {
+            **common_params,
+            "query": query_dsl_dict_without_sort,
+            "aggs": aggs_dict,
+        }
+        agg_body = set_timeout(agg_body, timeout=timeout)
+        return agg_body
+
     def agg(
         self,
         query: str = None,
         query_dsl_dict: dict = None,
+        agg_type: Literal["percentile", "top_hits"] = "top_hits",
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         extra_filters: list[dict] = [],
@@ -445,9 +486,14 @@ class VideoSearcherV2:
                 **query_rewrite_dsl_params
             )
         # construct agg_body
-        agg_body = self.construct_agg_body(
-            query_dsl_dict=query_dsl_dict, timeout=timeout
-        )
+        if agg_type == "percentile":
+            agg_body = self.construct_agg_body_of_percentile(
+                query_dsl_dict=query_dsl_dict, timeout=timeout
+            )
+        else:
+            agg_body = self.construct_agg_body_of_top_hits(
+                query_dsl_dict=query_dsl_dict, timeout=timeout
+            )
         if verbose:
             logger.hint("> agg_body:")
             logger.mesg(dict_to_str(agg_body, add_quotes=True, align_list=False))
@@ -477,7 +523,7 @@ class VideoSearcherV2:
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
         use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
-        use_python_rank: bool = USE_PYTHON_RANK_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
         score_threshold: float = None,
         use_pinyin: bool = False,
         detail_level: int = -1,
@@ -554,9 +600,9 @@ class VideoSearcherV2:
                 limit=limit,
                 verbose=verbose,
             )
-            if use_python_rank:
+            if rank_method == "rrf":
                 parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
-            else:
+            else:  # "tops"
                 parse_res = self.hit_ranker.tops(parse_res, top_k=rank_top_k)
         else:
             parse_res = es_res_dict

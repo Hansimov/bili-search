@@ -26,11 +26,11 @@ STEP_ZH_NAMES = {
         "output_type": "info",
     },
     "most_relevant_search": {
-        "name_zh": "相关性排序",
+        "name_zh": "搜索相关",
         "output_type": "hits",
     },
     "most_popular_search": {
-        "name_zh": "热门排序",
+        "name_zh": "搜索热门",
         "output_type": "hits",
     },
     "group_hits_by_owner": {
@@ -242,7 +242,8 @@ class VideoExplorer(VideoSearcherV2):
         group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
     ) -> Generator[dict, None, None]:
-        """Deprecated. Use `explore()` instead.
+        """WARN: Deprecated. Would be removed in future.
+        Use `explore()` instead.
 
         Multi-step explorative search, yield result at each step.
 
@@ -427,7 +428,7 @@ class VideoExplorer(VideoSearcherV2):
         boosted_fields: dict = EXPLORE_BOOSTED_FIELDS,
         verbose: bool = False,
         # `explore` related params
-        most_relevant_limit: int = 20000,
+        most_relevant_limit: int = 10000,
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
@@ -483,7 +484,7 @@ class VideoExplorer(VideoSearcherV2):
             "source_fields": ["bvid", "stat", "pubdate", "duration"],  # reduce io
             "extra_filters": extra_filters,
             "use_script_score": False,  # speed up
-            "use_python_rank": True,  # better ranking
+            "rank_method": "rrf",  # better ranking
             "add_region_info": False,  # speed up
             "add_highlights_info": False,  # speed up
             "is_profile": False,
@@ -510,14 +511,14 @@ class VideoExplorer(VideoSearcherV2):
             logger.exit_quiet(not verbose)
             return
 
-        # Step 2: Fetch full-docs by return ranked ids
+        # Step 3: Fetch full-docs by return ranked ids
         full_doc_search_params = deepcopy(relevant_search_params)
         bvids = [hit.get("bvid", None) for hit in relevant_search_res.get("hits", [])]
         bvid_filter = bvids_to_filter(bvids)
         full_doc_search_params.pop("source_fields", None)
         full_doc_search_params.update(
             {
-                "use_python_rank": True,  # 2nd rank for better score
+                "rank_method": "rrf",  # same with relevant search
                 "is_highlight": True,
                 "add_region_info": True,
                 "add_highlights_info": True,
@@ -533,13 +534,13 @@ class VideoExplorer(VideoSearcherV2):
             return
         yield self.format_result(relevant_search_yield, **fparams)
 
-        # Step 3: Group hits by owner
+        # Step 4: Group hits by owner
         step_idx += 1
         step_name = "group_hits_by_owner"
         step_str = logstr.note(brk(f"Step {step_idx}"))
         logger.hint(f"> {step_str} Group hits by owner, sort by sum of view")
         group_hits_by_owner_params = {
-            "search_res": relevant_search_res,
+            "search_res": full_doc_search_res,
             "limit": group_owner_limit,
         }
         group_hits_by_owner_yield = {
