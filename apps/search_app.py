@@ -234,7 +234,6 @@ class SearchAppArgParser(argparse.ArgumentParser):
             "-ev",
             "--elastic-env-name",
             type=str,
-            default="elastic",
             help=f"Elastic env name in secrets.json",
         )
 
@@ -278,4 +277,4 @@ if __name__ == "__main__":
 
     # Development mode:
     # python -m apps.search_app -m dev
-    # python -m apps.search_app -m dev -ei bili_videos_dev5 -ev elastic_dev
+    # python -m apps.search_app -m dev -ei bili_videos_dev5 -ev elastic_dev -p 21011

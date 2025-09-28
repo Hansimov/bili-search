@@ -199,15 +199,18 @@ def test_agg():
 
 
 def test_explore():
-    explorer = VideoExplorer(VIDEOS_INDEX_DEFAULT)
+    explorer = VideoExplorer(
+        index_name="bili_videos_dev5", elastic_env_name="elastic_dev"
+    )
     for query in search_queries:
         logger.note("> Explore results:", end=" ")
         logger.file(f"[{query}]")
-        explore_res = explorer.explore(query, verbose=True)
+        explore_res = explorer.explore(query, rank_top_k=3, verbose=True)
         for step_res in explore_res:
             stage_name = step_res["name"]
             logger.hint(f"* stage result of {(logstr.mesg(brk(stage_name)))}:")
-            # logger.mesg(dict_to_str(step_res, align_list=False), indent=2)
+            if stage_name != "group_hits_by_owner":
+                logger.mesg(dict_to_str(step_res, align_list=False), indent=2)
 
 
 split_queries = [
