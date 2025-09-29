@@ -8,6 +8,7 @@ from typing import Generator, Union, Literal
 from converters.dsl.fields.bvid import bvids_to_filter
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
+from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.structure import construct_boosted_fields
@@ -429,6 +430,7 @@ class VideoExplorer(VideoSearcherV2):
         verbose: bool = False,
         # `explore` related params
         most_relevant_limit: int = 10000,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
         res_format: Literal["json", "str"] = "json",
@@ -484,7 +486,7 @@ class VideoExplorer(VideoSearcherV2):
             "source_fields": ["bvid", "stat", "pubdate", "duration"],  # reduce io
             "extra_filters": extra_filters,
             "use_script_score": False,  # speed up
-            "rank_method": "rrf",  # better ranking
+            "rank_method": rank_method,  # better ranking
             "add_region_info": False,  # speed up
             "add_highlights_info": False,  # speed up
             "is_profile": False,
@@ -518,7 +520,7 @@ class VideoExplorer(VideoSearcherV2):
         full_doc_search_params.pop("source_fields", None)
         full_doc_search_params.update(
             {
-                "rank_method": "rrf",  # same with relevant search
+                "rank_method": rank_method,  # same with relevant search
                 "is_highlight": True,
                 "add_region_info": True,
                 "add_highlights_info": True,

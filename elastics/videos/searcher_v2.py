@@ -602,8 +602,10 @@ class VideoSearcherV2:
             )
             if rank_method == "rrf":
                 parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
-            else:  # "tops"
-                parse_res = self.hit_ranker.tops(parse_res, top_k=rank_top_k)
+            elif rank_method == "stats":
+                parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
+            else:  # "heads"
+                parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
         else:
             parse_res = es_res_dict
         # suggest and rewrite

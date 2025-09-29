@@ -18,6 +18,7 @@ from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
 from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
 
@@ -68,6 +69,7 @@ class SearchApp:
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
         use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE_DEFAULT),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(MAX_SEARCH_DETAIL_LEVEL),
         limit: Optional[int] = Body(SEARCH_LIMIT),
@@ -80,6 +82,7 @@ class SearchApp:
             match_type=match_type,
             suggest_info=suggest_info,
             use_script_score=use_script_score,
+            rank_method=rank_method,
             detail_level=detail_level,
             max_detail_level=max_detail_level,
             limit=limit,
@@ -113,6 +116,7 @@ class SearchApp:
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SUGGEST_MATCH_TYPE),
         use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE_DEFAULT),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
         use_pinyin: Optional[bool] = Body(True),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(MAX_SUGGEST_DETAIL_LEVEL),
@@ -125,6 +129,7 @@ class SearchApp:
             source_fields=source_fields,
             match_type=match_type,
             use_script_score=use_script_score,
+            rank_method=rank_method,
             use_pinyin=use_pinyin,
             detail_level=detail_level,
             max_detail_level=max_detail_level,

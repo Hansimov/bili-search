@@ -1,4 +1,6 @@
 import heapq
+import math
+
 from tclogger import dict_get
 
 from elastics.videos.constants import RANK_TOP_K
@@ -19,18 +21,139 @@ RRF_HEAP_SIZE = 2000
 RRF_HEAP_RATIO = 5
 
 
+# 2010-01-01 00:00:00, the beginning of most videos in Bilibili
+PUBDATE_BASE = 1262275200
+# seconds per day
+SECONDS_PER_DAY = 86400
+# score for videos published most recently
+ZERO_DAY_SCORE = 4.0
+# score for videos published before base (infinity days ago)
+INFT_DAY_SCORE = 0.25
+# pubdate score interpolation points
+PUBDATE_SCORE_POINTS = [(0, 4.0), (7, 1.0), (30, 0.6), (365, 0.3)]
+# fields of stats
+STAT_FIELDS = ["view", "favorite", "coin", "reply", "share", "danmaku"]
+# offsets for log(x+offset) of stats
+STAT_LOGX_OFFSETS = {
+    "view": 10,
+    "favorite": 2,
+    "coin": 2,
+    "reply": 2,
+    "share": 2,
+    "danmaku": 2,
+}
+# power for relate score
+RELATE_POWER = 2.0
+# offset for relate score
+RELATE_OFFSET = 1.0
+
+
+def log_x(x: int, base: float = 10.0, offset: int = 10) -> float:
+    x = max(x, 0)
+    return math.log(x + offset, base)
+
+
+class HitStatsScorer:
+    def __init__(
+        self,
+        stat_fields: list = STAT_FIELDS,
+        stat_logx_offsets: dict = STAT_LOGX_OFFSETS,
+        day_score_points: list[tuple[float, float]] = PUBDATE_SCORE_POINTS,
+        zero_day_score: float = ZERO_DAY_SCORE,
+        inft_day_score: float = INFT_DAY_SCORE,
+        relate_power: float = RELATE_POWER,
+        relate_offset: float = RELATE_OFFSET,
+    ):
+        """
+        - day_score_points: (days, score) pairs
+            - (0, 4.0): score 4.0 for videos published most recently
+            - (7, 1.0): score 1.0 for videos published 7 days ago
+            - (30, 0.6): score 0.6 for videos published 30 days ago
+            - (365, 0.3): score 0.3 for videos published 1 year ago
+        - zero_day_score: score for videos published after now (default 4.0)
+        - inft_day_score: score for videos published before base (default 0.25)
+        """
+        self.day_score_points = sorted(day_score_points)
+        self.zero_day_score = zero_day_score
+        self.inft_day_score = inft_day_score
+        self.stat_fields = stat_fields
+        self.stat_logx_offsets = stat_logx_offsets
+        self.relate_power = relate_power
+        self.relate_offset = relate_offset
+        self.slope_offsets = self.pre_calc_slope_offsets(day_score_points)
+
+    def pre_calc_slope_offsets(self, points: list[tuple[float, float]]):
+        slope_offsets = []
+        for i in range(1, len(points)):
+            x1, y1 = points[i - 1]
+            x2, y2 = points[i]
+            slope = (y2 - y1) / (x2 - x1)
+            offset = y1 - slope * x1
+            slope_offsets.append((slope, offset))
+        return slope_offsets
+
+    def calc_pass_days(self, pubdate: int) -> float:
+        return (pubdate - PUBDATE_BASE) / SECONDS_PER_DAY
+
+    def calc_pubdate_score_by_slope_offsets(self, pubdate: int) -> float:
+        """Segmented linear functions by slopes and offsets"""
+        pass_days = self.calc_pass_days(pubdate)
+        points = self.day_score_points
+        if pass_days <= points[0][0]:
+            return self.zero_day_score
+        if pass_days >= points[-1][0]:
+            return self.inft_day_score
+        for i in range(1, len(points)):
+            if pass_days <= points[i][0]:
+                slope, offset = self.slope_offsets[i - 1]
+                score = slope * pass_days + offset
+                return score
+        return self.inft_day_score
+
+    def calc_stats_score_by_prod_logx(self, stats: dict) -> float:
+        """Product of log(x+offset) of stats fields"""
+        return math.prod(
+            log_x(
+                x=stats.get(field, 0),
+                base=10,
+                offset=self.stat_logx_offsets.get(field, 2),
+            )
+            for field in self.stat_fields
+        )
+
+    def calc_relate_score_by_powx(self, relate: float) -> float:
+        """_score ^ power"""
+        return math.pow(relate + self.relate_offset, self.relate_power)
+
+    def calc(self, hit: dict) -> float:
+        stats = dict_get(hit, "stat", {})
+        pubdate = dict_get(hit, "pubdate", 0)
+        relate = dict_get(hit, "_score", 0.0)
+        stats_score = self.calc_stats_score_by_prod_logx(stats)
+        pubdate_score = self.calc_pubdate_score_by_slope_offsets(pubdate)
+        relate_score = self.calc_relate_score_by_powx(relate)
+        total_score = stats_score * pubdate_score * relate_score
+        return round(total_score, 6)
+
+
 class VideoHitsRanker:
     def __init__(self):
-        pass
+        self.stats_scorer = HitStatsScorer()
 
-    def tops(self, hits_info: dict, top_k: int = RANK_TOP_K) -> dict:
+    def heads(self, hits_info: dict, top_k: int = RANK_TOP_K) -> dict:
         """Get first k hits without rank"""
         hits = hits_info.get("hits", [])
         if top_k and len(hits) > top_k:
             hits = hits[:top_k]
             hits_info["hits"] = hits
             hits_info["return_hits"] = len(hits)
+            hits_info["rank_method"] = "tops"
         return hits_info
+
+    def get_top_hits(
+        self, hits: list[dict], top_k: int, sort_field: str = "rank_score"
+    ) -> list[dict]:
+        return heapq.nlargest(top_k, hits, key=lambda x: x[sort_field])
 
     def rrf_rank(
         self,
@@ -78,9 +201,23 @@ class VideoHitsRanker:
 
         # get top_k hits by RRF scores
         for i, hit in enumerate(hits):
-            hit["rrf_rank_score"] = round(rrf_scores[i], 6)
-        ranked_hits = heapq.nlargest(top_k, hits, key=lambda x: x["rrf_rank_score"])
-        hits_info["hits"] = ranked_hits
-        hits_info["return_hits"] = len(ranked_hits)
+            hit["rank_score"] = round(rrf_scores[i], 6)
+        top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
+        hits_info["hits"] = top_hits
+        hits_info["return_hits"] = len(top_hits)
+        hits_info["rank_method"] = "rrf"
 
+        return hits_info
+
+    def stats_rank(self, hits_info: dict, top_k: int = RANK_TOP_K):
+        hits: list[dict] = hits_info.get("hits", [])
+        hits_num = len(hits)
+        top_k = min(top_k, hits_num)
+        for hit in hits:
+            rank_score = self.stats_scorer.calc(hit)
+            hit["rank_score"] = rank_score
+        top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
+        hits_info["hits"] = top_hits
+        hits_info["return_hits"] = len(top_hits)
+        hits_info["rank_method"] = "stats"
         return hits_info

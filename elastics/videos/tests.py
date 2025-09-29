@@ -205,7 +205,9 @@ def test_explore():
     for query in search_queries:
         logger.note("> Explore results:", end=" ")
         logger.file(f"[{query}]")
-        explore_res = explorer.explore(query, rank_top_k=3, verbose=True)
+        explore_res = explorer.explore(
+            query, rank_method="stats", rank_top_k=3, verbose=True
+        )
         for step_res in explore_res:
             stage_name = step_res["name"]
             logger.hint(f"* stage result of {(logstr.mesg(brk(stage_name)))}:")
