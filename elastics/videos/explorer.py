@@ -172,8 +172,8 @@ class VideoExplorer(VideoSearcherV2):
         self,
         search_res: dict,
         sort_field: Literal[
-            "total_view", "doc_count", "total_sort_score"
-        ] = "total_sort_score",
+            "sum_count", "sum_view", "sum_sort_score", "sum_rank_score"
+        ] = "sum_rank_score",
         limit: int = 10,
     ) -> dict:
         group_res = {}
@@ -183,6 +183,7 @@ class VideoExplorer(VideoSearcherV2):
             pubdate = dict_get(hit, "pubdate") or 0
             view = dict_get(hit, "stat.view") or 0
             sort_score = dict_get(hit, "sort_score") or 0
+            rank_score = dict_get(hit, "rank_score") or 0
             if mid is None or name is None:
                 continue
             item = group_res.get(mid, None)
@@ -191,9 +192,10 @@ class VideoExplorer(VideoSearcherV2):
                     "mid": mid,
                     "name": name,
                     "latest_pubdate": pubdate,
-                    "total_view": view,
-                    "total_sort_score": sort_score,
-                    "doc_count": 0,
+                    "sum_view": view,
+                    "sum_sort_score": sort_score,
+                    "sum_rank_score": rank_score,
+                    "sum_count": 0,
                     "hits": [],
                 }
             else:
@@ -201,12 +203,14 @@ class VideoExplorer(VideoSearcherV2):
                 if pubdate > latest_pubdate:
                     group_res[mid]["latest_pubdate"] = pubdate
                     group_res[mid]["name"] = name
-                total_view = group_res[mid]["total_view"] or 0
-                total_sort_score = group_res[mid]["total_sort_score"] or 0
-                group_res[mid]["total_view"] = total_view + view
-                group_res[mid]["total_sort_score"] = total_sort_score + sort_score
+                sum_view = group_res[mid]["sum_view"] or 0
+                sum_sort_score = group_res[mid]["sum_sort_score"] or 0
+                sum_rank_score = group_res[mid]["sum_rank_score"] or 0
+                group_res[mid]["sum_view"] = sum_view + view
+                group_res[mid]["sum_sort_score"] = sum_sort_score + sort_score
+                group_res[mid]["sum_rank_score"] = sum_rank_score + rank_score
             group_res[mid]["hits"].append(hit)
-            group_res[mid]["doc_count"] = len(group_res[mid]["hits"])
+            group_res[mid]["sum_count"] += len(group_res[mid]["hits"])
         # sort by sort_field, and limit to top N
         sorted_items = sorted(
             group_res.items(), key=lambda item: item[1][sort_field], reverse=True
