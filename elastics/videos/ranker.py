@@ -42,10 +42,12 @@ STAT_LOGX_OFFSETS = {
     "share": 2,
     "danmaku": 2,
 }
+# relate gate ratio
+RELATE_GATE_RATIO = 0.6
+# relate gate count
+RELATE_GATE_COUNT = 2000
 # relate score power
-RELATE_POWER = 4.0
-# relate score power offset
-RELATE_OFFSET = 1.0
+RELATE_SCORE_POWER = 4
 
 
 def log_x(x: int, base: float = 10.0, offset: int = 10) -> float:
@@ -133,8 +135,60 @@ class PubdateScorer:
 
 
 class RelateScorer:
+    def __init__(self, relate_gate: float = None):
+        self.relate_gate = relate_gate
+
+    def set_relate_gate(self, relate_gate: float):
+        self.relate_gate = relate_gate
+
+    def calc_relate_gate_by_ratio(
+        self, relate_list: list[float], ratio: float = RELATE_GATE_RATIO
+    ):
+        """relate under ratio * max_relate would be set to 0"""
+        if not relate_list:
+            return None
+        max_relate = max(relate_list)
+        relate_gate = max_relate * ratio
+        return relate_gate
+
+    def calc_relate_gate_by_count(
+        self, relate_list: list[float], count: int = RELATE_GATE_COUNT
+    ):
+        """relate after N-th highest relate would be set to 0"""
+        if not relate_list:
+            return None
+        if len(relate_list) <= count:
+            return None
+        sorted_list = sorted(relate_list, reverse=True)
+        relate_gate = sorted_list[count - 1]
+        return relate_gate
+
+    def update_relate_gate(self, relate_list: list[float]):
+        gate_by_ratio = self.calc_relate_gate_by_ratio(relate_list)
+        gate_by_count = self.calc_relate_gate_by_count(relate_list)
+        if gate_by_ratio is None and gate_by_count is None:
+            return
+        if gate_by_ratio is None:
+            relate_gate = gate_by_count
+        elif gate_by_count is None:
+            relate_gate = gate_by_ratio
+        else:
+            # min() means allow more hits
+            relate_gate = min(gate_by_ratio, gate_by_count)
+        self.set_relate_gate(relate_gate)
+
+    def is_pass_gate(self, relate: float) -> bool:
+        return self.relate_gate is None or relate >= self.relate_gate
+
+    def is_set_gate(self) -> bool:
+        return self.relate_gate is not None and self.relate_gate > 0
+
     def calc(self, relate: float) -> float:
-        return (relate - 8) ** 4
+        if not self.is_pass_gate(relate):
+            return 0.0
+        if self.is_set_gate():
+            return (relate / self.relate_gate) ** RELATE_SCORE_POWER
+        return relate
 
 
 class ScoreFuser:
@@ -230,14 +284,23 @@ class VideoHitsRanker:
 
         return hits_info
 
+    def get_hits_metrics(
+        self, hits: list[dict]
+    ) -> tuple[list[dict], list[int], list[float]]:
+        stats_list = [dict_get(hit, "stat", {}) for hit in hits]
+        pubdate_list = [dict_get(hit, "pubdate", 0) for hit in hits]
+        relate_list = [dict_get(hit, "score", 0.0) for hit in hits]
+        return stats_list, pubdate_list, relate_list
+
     def stats_rank(self, hits_info: dict, top_k: int = RANK_TOP_K):
         hits: list[dict] = hits_info.get("hits", [])
         hits_num = len(hits)
         top_k = min(top_k, hits_num)
-        for hit in hits:
-            stats = dict_get(hit, "stat", {})
-            pubdate = dict_get(hit, "pubdate", 0)
-            relate = dict_get(hit, "score", 0.0)
+        stats_list, pubdate_list, relate_list = self.get_hits_metrics(hits)
+        self.relate_scorer.update_relate_gate(relate_list)
+        for hit, stats, pubdate, relate in zip(
+            hits, stats_list, pubdate_list, relate_list
+        ):
             stats_score = self.stats_scorer.calc(stats)
             pubdate_score = self.pubdate_scorer.calc(pubdate)
             relate_score = self.relate_scorer.calc(relate)
