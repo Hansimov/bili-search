@@ -42,9 +42,9 @@ STAT_LOGX_OFFSETS = {
     "share": 2,
     "danmaku": 2,
 }
-# power for relate score
-RELATE_POWER = 2.0
-# offset for relate score
+# relate score power
+RELATE_POWER = 4.0
+# relate score power offset
 RELATE_OFFSET = 1.0
 
 
@@ -53,16 +53,37 @@ def log_x(x: int, base: float = 10.0, offset: int = 10) -> float:
     return math.log(x + offset, base)
 
 
-class HitStatsScorer:
+class StatsScorer:
     def __init__(
         self,
         stat_fields: list = STAT_FIELDS,
         stat_logx_offsets: dict = STAT_LOGX_OFFSETS,
+    ):
+        self.stat_fields = stat_fields
+        self.stat_logx_offsets = stat_logx_offsets
+
+    def calc_stats_score_by_prod_logx(self, stats: dict) -> float:
+        """Product of log(x+offset) of stats fields"""
+        return math.prod(
+            log_x(
+                x=stats.get(field, 0),
+                base=10,
+                offset=self.stat_logx_offsets.get(field, 2),
+            )
+            for field in self.stat_fields
+        )
+
+    def calc(self, stats: dict) -> float:
+        stats_score = self.calc_stats_score_by_prod_logx(stats)
+        return stats_score
+
+
+class PubdateScorer:
+    def __init__(
+        self,
         day_score_points: list[tuple[float, float]] = PUBDATE_SCORE_POINTS,
         zero_day_score: float = ZERO_DAY_SCORE,
         inft_day_score: float = INFT_DAY_SCORE,
-        relate_power: float = RELATE_POWER,
-        relate_offset: float = RELATE_OFFSET,
     ):
         """
         - day_score_points: (days, score) pairs
@@ -76,10 +97,6 @@ class HitStatsScorer:
         self.day_score_points = sorted(day_score_points)
         self.zero_day_score = zero_day_score
         self.inft_day_score = inft_day_score
-        self.stat_fields = stat_fields
-        self.stat_logx_offsets = stat_logx_offsets
-        self.relate_power = relate_power
-        self.relate_offset = relate_offset
         self.slope_offsets = self.pre_calc_slope_offsets(day_score_points)
 
     def pre_calc_slope_offsets(self, points: list[tuple[float, float]]):
@@ -110,35 +127,39 @@ class HitStatsScorer:
                 return score
         return self.inft_day_score
 
-    def calc_stats_score_by_prod_logx(self, stats: dict) -> float:
-        """Product of log(x+offset) of stats fields"""
-        return math.prod(
-            log_x(
-                x=stats.get(field, 0),
-                base=10,
-                offset=self.stat_logx_offsets.get(field, 2),
-            )
-            for field in self.stat_fields
-        )
-
-    def calc_relate_score_by_powx(self, relate: float) -> float:
-        """_score ^ power"""
-        return math.pow(relate + self.relate_offset, self.relate_power)
-
-    def calc(self, hit: dict) -> float:
-        stats = dict_get(hit, "stat", {})
-        pubdate = dict_get(hit, "pubdate", 0)
-        relate = dict_get(hit, "_score", 0.0)
-        stats_score = self.calc_stats_score_by_prod_logx(stats)
+    def calc(self, pubdate: int) -> float:
         pubdate_score = self.calc_pubdate_score_by_slope_offsets(pubdate)
-        relate_score = self.calc_relate_score_by_powx(relate)
-        total_score = stats_score * pubdate_score * relate_score
-        return round(total_score, 6)
+        return pubdate_score
+
+
+class RelateScorer:
+    def calc(self, relate: float) -> float:
+        return (relate - 8) ** 4
+
+
+class ScoreFuser:
+    def calc_fuse_score_by_prod(
+        self, stats_score: float, pubdate_score: float, relate_score: float
+    ) -> float:
+        return round(stats_score * pubdate_score * relate_score, 6)
+
+    def fuse(
+        self, stats_score: float, pubdate_score: float, relate_score: float
+    ) -> float:
+        fuse_score = self.calc_fuse_score_by_prod(
+            stats_score=stats_score,
+            pubdate_score=pubdate_score,
+            relate_score=relate_score,
+        )
+        return fuse_score
 
 
 class VideoHitsRanker:
     def __init__(self):
-        self.stats_scorer = HitStatsScorer()
+        self.stats_scorer = StatsScorer()
+        self.pubdate_scorer = PubdateScorer()
+        self.relate_scorer = RelateScorer()
+        self.score_fuser = ScoreFuser()
 
     def heads(self, hits_info: dict, top_k: int = RANK_TOP_K) -> dict:
         """Get first k hits without rank"""
@@ -214,7 +235,17 @@ class VideoHitsRanker:
         hits_num = len(hits)
         top_k = min(top_k, hits_num)
         for hit in hits:
-            rank_score = self.stats_scorer.calc(hit)
+            stats = dict_get(hit, "stat", {})
+            pubdate = dict_get(hit, "pubdate", 0)
+            relate = dict_get(hit, "score", 0.0)
+            stats_score = self.stats_scorer.calc(stats)
+            pubdate_score = self.pubdate_scorer.calc(pubdate)
+            relate_score = self.relate_scorer.calc(relate)
+            rank_score = self.score_fuser.fuse(
+                stats_score=stats_score,
+                pubdate_score=pubdate_score,
+                relate_score=relate_score,
+            )
             hit["rank_score"] = rank_score
         top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
         hits_info["hits"] = top_hits
