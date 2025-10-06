@@ -8,6 +8,7 @@ from converters.dsl.node import DslExprTreeFlatter
 from converters.dsl.fields.bvid import BvidExprElasticConverter
 from converters.dsl.fields.date import DateExprElasticConverter
 from converters.dsl.fields.stat import StatExprElasticConverter
+from converters.dsl.fields.dura import DuraExprElasticConverter
 from converters.dsl.fields.user import UserExprElasticConverter
 from converters.dsl.fields.umid import UmidExprElasticConverter
 from converters.dsl.fields.word import WordExprElasticConverter
@@ -31,6 +32,7 @@ class DslExprToElasticConverter:
         self.user_converter = UserExprElasticConverter()
         self.umid_converter = UmidExprElasticConverter()
         self.stat_converter = StatExprElasticConverter()
+        self.dura_converter = DuraExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
         self.verbose = verbose
 
@@ -42,6 +44,8 @@ class DslExprToElasticConverter:
             return self.date_converter.convert(node)
         elif expr_node.is_key("stat_expr"):
             return self.stat_converter.convert(node)
+        elif expr_node.is_key("dura_expr"):
+            return self.dura_converter.convert(node)
         elif expr_node.is_key("user_expr"):
             return self.user_converter.convert(node)
         elif expr_node.is_key("uid_expr"):

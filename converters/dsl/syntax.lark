@@ -7,7 +7,7 @@ start: expr | expr_with_error
         co_expr: expr+
         and_expr: expr (and expr)+
         pa_expr: lp expr? rp
-        atom_expr: bvid_expr | date_expr | user_expr | uid_expr | stat_expr | region_expr | word_expr | text_expr
+        atom_expr: bvid_expr | date_expr | user_expr | uid_expr | stat_expr | dura_expr | region_expr | word_expr | text_expr
     ?expr_with_error: (expr | expr_error)+
         expr_error: text_catch
 
@@ -147,7 +147,7 @@ at_neq: AT NQ
 
 // ---------- uid exprs ---------- //
 uid_expr: colon? uid_key uid_op uid_val
-    uid_key: /(?i:(uid|mid))/
+    uid_key: /(?i:(uid|mid|ud))/
     uid_op: op_eqs
     uid_val: uid_val_single | uid_val_list
         uid_val_single: digits
@@ -184,10 +184,21 @@ stat_expr: colon? stat_key stat_op_val
                 stat_val_left: stat_val_single
                 stat_val_right: stat_val_single
 
+// ---------- dura exprs ---------- //
+dura_expr: colon? dura_key dura_op dura_val
+    dura_key: /(?i:(duration|dura|dr|time|t))/
+    dura_op: op_rel
+    dura_val: dura_val_single | dura_val_list
+        dura_val_single: dura_digits | dura_string
+            dura_digits: digits
+            dura_string: /(?:(\d+)([dDhHmMsS]))+/
+        dura_val_list: lb_comma dura_val_left? comma? dura_val_right? comma_rb
+            dura_val_left: dura_val_single
+            dura_val_right: dura_val_single
 
 // ---------- region exprs ---------- //
 region_expr: colon? region_key region_op region_val
-    region_key: /(?i:(region|rid|fq|r))/
+    region_key: /(?i:(region|rid|fq|rg))/
     region_op: op_list
     region_val: region_val_single | region_val_list
         region_val_single: digits | text_strict

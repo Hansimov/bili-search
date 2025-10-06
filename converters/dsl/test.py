@@ -35,6 +35,11 @@ stat_queries = [
     [":vw <= [ 1w,10w )", ("stat_expr", 1)],
     [":lk>= = [ 1w,10w )", ("stat_expr", 1)],
 ]
+dura_queries = [
+    ["dura>30", ("dura_expr", 1)],
+    ["t<=1h", ("dura_expr", 1)],
+    ["t=[30,1m30s]", ("dura_expr", 1)],
+]
 region_queries = [
     ["r = 动画", ("region_expr", 1)],
     ["region=(影视,动画,音乐)", ("region_expr", 1)],
@@ -148,6 +153,7 @@ queries_of_atoms = [
     *user_queries,
     *uid_queries,
     *stat_queries,
+    *dura_queries,
     *region_queries,
     *word_queries,
 ]
@@ -204,6 +210,7 @@ def test_expr_tree():
         if atoms_info == correct_atoms_info:
             logger.mesg(f"{okay_mark} {query}:", end=" ")
             logger.okay(f"{atoms_info}")
+            # logger.okay(dict_to_str(expr_tree.yaml()))
         else:
             logger.fail(f"{fail_mark} {query}:")
             logger.okay(f"  * {correct_atoms_info}")
