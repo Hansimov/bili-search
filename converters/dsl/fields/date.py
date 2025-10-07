@@ -152,44 +152,60 @@ class DateExprElasticConverter:
 
         return res
 
-    def calc_ts_range_of_date_num_unit(self, n: int, unit: str) -> dict:
+    def calc_ts_range_of_date_past(
+        self, unit: Literal["year", "month", "week", "day", "hour"]
+    ) -> dict:
+        start_ts, start_str = self.calc_ts_str_of_date_num_unit(1, unit)
         now = tcdatetime.now()
-        if unit == "year":
-            start_dt = tcdatetime(
-                now.year - n, now.month, now.day, now.hour, now.minute, now.second
-            )
-        elif unit == "month":
-            start_year = now.year - (n + 12 - now.month) // 12
-            start_month = ((now.month - n) % 12) or 12
-            start_dt = tcdatetime(
-                start_year, start_month, now.day, now.hour, now.minute, now.second
-            )
-        elif unit == "week":
-            start_dt = now - timedelta(weeks=n)
-        elif unit == "day":
-            start_dt = now - timedelta(days=n)
-        elif unit == "hour":
-            start_dt = now - timedelta(hours=n)
-        else:
-            logger.warn(f"× No match unit of date_num_unit: {unit}")
-            start_dt = None
-
-        if start_dt:
-            start_ts = int(start_dt.timestamp())
-            end_ts = int(start_dt.timestamp())
-            start_str = ts_to_str(start_ts)
-            end_str = ts_to_str(end_ts)
-        else:
-            start_ts = 0
-            end_ts = 0
-            start_str = ""
-            end_str = ""
-
+        end_ts = int(now.timestamp())
+        end_str = ts_to_str(end_ts)
         res = {
             "range_ts": [start_ts, end_ts],
             "range_str": [start_str, end_str],
         }
+        return res
 
+    def calc_ts_str_of_date_num_unit(self, n: int, unit: str) -> tuple[int, str]:
+        now = tcdatetime.now()
+        if unit == "year":
+            dt = tcdatetime(
+                now.year - n, now.month, now.day, now.hour, now.minute, now.second
+            )
+        elif unit == "month":
+            year = now.year - (n + 12 - now.month) // 12
+            month = ((now.month - n) % 12) or 12
+            dt = tcdatetime(year, month, now.day, now.hour, now.minute, now.second)
+        elif unit == "week":
+            dt = now - timedelta(weeks=n)
+        elif unit == "day":
+            dt = now - timedelta(days=n)
+        elif unit == "hour":
+            dt = now - timedelta(hours=n)
+        else:
+            logger.warn(f"× No match unit of date_num_unit: {unit}")
+            dt = None
+
+        if dt:
+            ts = int(dt.timestamp())
+            tstr = ts_to_str(ts)
+        else:
+            ts = 0
+            tstr = ""
+
+        return ts, tstr
+
+    def calc_ts_range_of_date_num_unit(self, n: int, unit: str) -> dict:
+        start_ts, start_str = self.calc_ts_str_of_date_num_unit(n, unit)
+        if start_ts:
+            end_ts = start_ts
+            end_str = start_str
+        else:
+            end_ts = 0
+            end_str = ""
+        res = {
+            "range_ts": [start_ts, end_ts],
+            "range_str": [start_str, end_str],
+        }
         return res
 
     def get_info_of_date_iso(self, node: DslExprNode) -> dict:
@@ -206,7 +222,7 @@ class DateExprElasticConverter:
         }
 
     def get_info_of_date_recent(self, node: DslExprNode) -> dict:
-        expr_node = node.find_child_with_key(["date_this", "date_last"])
+        expr_node = node.find_child_with_key(["date_this", "date_last", "date_past"])
         date_unit_node = expr_node.find_child_with_key("date_unit")
         unit_value_node = date_unit_node.find_child_with_key("date_unit_", use_re=True)
         unit = unit_value_node.get_deepest_node_key().split("_")[-1]
@@ -214,6 +230,8 @@ class DateExprElasticConverter:
             range_dict = self.calc_ts_range_of_date_this(unit)
         elif expr_node.is_key("date_last"):
             range_dict = self.calc_ts_range_of_date_last(unit)
+        elif expr_node.is_key("date_past"):
+            range_dict = self.calc_ts_range_of_date_past(unit)
         else:
             logger.warn(f"× Invalid date_recent key: {expr_node.key}")
             range_dict = None

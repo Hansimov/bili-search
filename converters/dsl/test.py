@@ -14,7 +14,11 @@ date_queries = [
     ["dt==[2024, 2025-01]", ("date_expr", 1)],
     ["date==[,2024, 3d,,)", ("date_expr", 1)],
     ["d=this_d", ("date_expr", 1)],
+    ["d=t d", ("date_expr", 1)],
     ["d=this_h", ("date_expr", 1)],
+    ["d=th", ("date_expr", 1)],
+    ["d=past_week", ("date_expr", 1)],
+    ["d=pw", ("date_expr", 1)],
     ["d=[last_d,]", ("date_expr", 1)],
 ]
 user_queries = [
