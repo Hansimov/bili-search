@@ -177,7 +177,7 @@ stat_expr: colon? stat_key stat_op_val
         share_key: /(?i:(share|fx|sh))/
     stat_op_val: stat_op_val_single | stat_op_val_list
         stat_op_val_single: op_rel stat_val_single
-            stat_val_single.2: stat_num stat_unit?
+            stat_val_single: stat_num stat_unit?
                 stat_num: digits
                 stat_unit: /[kKwWmM]+/
         stat_op_val_list: op_rel stat_val_list
@@ -191,7 +191,7 @@ dura_expr: colon? dura_key dura_op dura_val
     dura_op: op_rel
     dura_val: dura_val_single | dura_val_list
         dura_val_single: dura_string | dura_digits
-            dura_string.2: /(\d+[dDhHmMsS])+/
+            dura_string: /(\d+[dDhHmMsS])+/
             dura_digits: digits
         dura_val_list: lb_comma dura_val_left? comma? dura_val_right? comma_rb
             dura_val_left: dura_val_single
@@ -219,9 +219,9 @@ word_expr: colon? word_key_op_val
             word_val_list_lr: lb_comma (word_val_single)? (comma word_val_single)* comma_rb
             word_val_list_no_lr: comma? word_val_single (comma word_val_single)*
 
-text_expr: text_quoted | text_strict | text_plain
+text_expr.-1: text_quoted | text_strict | text_plain
 
-text_quoted: /[“][^“”]+[”]/ | /[《][^《》]+[》]/ | /[【][^【】]+[】]/ | /[（][^（）]+[）]/ | /["][^"]+["]/
+text_quoted: /“[^“”]+”/ | /《[^《》]+》/ | /【[^【】]+】/ | /（[^（）]+）/ | /"[^"]+"/
 text_strict: /(?=[^+\-])[^\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
 text_plain:  /(?=[^+\-])[^\s\n"“”\|\&\?\(\)\[\]:!,<>]+/
 text_catch:   /[\s\n"“”\|\&\?\(\)\[\]:!,<>]+/

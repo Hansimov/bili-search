@@ -26,6 +26,7 @@ user_queries = [
     ["u==咬人猫=", ("user_expr", 1)],
     ["user!=(飓多多StormCrew,何同学，影视飓风)", ("user_expr", 1)],
     ['@!["-LKs-",  ，红警HBK08，，红警月亮3,,]', ("user_expr", 1)],
+    ['戈壁 u="中国国家地理"', (("user_expr", 1), ("word_expr", 1))],
 ]
 uid_queries = [
     ["uid=1234", ("uid_expr", 1)],
