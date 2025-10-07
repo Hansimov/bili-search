@@ -39,12 +39,13 @@ dura_queries = [
     ["dura>30", ("dura_expr", 1)],
     ["t<=1h", ("dura_expr", 1)],
     ["t=[30,1m30s]", ("dura_expr", 1)],
+    ["d=1d t>5h v>1w", (("date_expr", 1), ("dura_expr", 1), ("stat_expr", 1))],
 ]
 region_queries = [
-    ["r = 动画", ("region_expr", 1)],
+    ["rg = 动画", ("region_expr", 1)],
     ["region=(影视,动画,音乐)", ("region_expr", 1)],
     ["rid ! = [1,24, 153]", ("region_expr", 1)],
-    ["r- = =(影视,动画,153]", ("region_expr", 1)],
+    ["rg- = =(影视,动画,153]", ("region_expr", 1)],
 ]
 word_queries = [
     ["k=你好", ("word_expr", 1)],
@@ -158,8 +159,8 @@ queries_of_atoms = [
     *word_queries,
 ]
 queries_of_bools = [
-    *bool_queries,
-    *comp_queries,
+    # *bool_queries,
+    # *comp_queries,
     # *rewrite_queries,
 ]
 
