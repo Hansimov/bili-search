@@ -304,9 +304,6 @@ class VideoSearcherV2:
         logger.exit_quiet(not verbose)
         return res_dict
 
-    def rewrite_with_suggest(self, query_info: dict, suggest_info: dict) -> dict:
-        return self.query_rewriter.rewrite(query_info, suggest_info)
-
     def suggest_and_rewrite(
         self,
         query_info: dict,
@@ -320,7 +317,9 @@ class VideoSearcherV2:
             suggest_info = self.suggest_parser.parse(
                 qwords=qwords, hits=return_res["hits"]
             )
-            rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
+            rewrite_info = self.query_rewriter.rewrite_query_info_by_suggest_info(
+                query_info, suggest_info
+            )
         else:
             suggest_info = suggest_info or {}
             rewrite_info = rewrite_info or {}
@@ -342,7 +341,9 @@ class VideoSearcherV2:
         # logger.hint("> query_info:")
         # logger.mesg(dict_to_str(query_info, add_quotes=True, align_list=False))
         # get rewrite_info with suggest_info
-        rewrite_info = self.rewrite_with_suggest(query_info, suggest_info)
+        rewrite_info = self.query_rewriter.rewrite_query_info_by_suggest_info(
+            query_info, suggest_info
+        )
         rewrited_expr_tree = rewrite_info.get(
             "rewrited_expr_tree", None
         ) or query_info.get("query_expr_tree", None)

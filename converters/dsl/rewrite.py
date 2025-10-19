@@ -73,10 +73,7 @@ class DslExprRewriter:
                 words_date.append(word_expr)
             else:
                 words_body.append(word_expr)
-        return {
-            "keywords_body": words_body,
-            "keywords_date": words_date,
-        }
+        return words_body, words_date
 
     def replace_words_in_expr_tree(
         self, expr_tree: DslExprNode, qword_hword_dict: dict[str, str]
@@ -98,21 +95,52 @@ class DslExprRewriter:
         expr_tree = self.word_expander.expand_expr_tree(expr_tree)
         return expr_tree
 
-    def get_query_info(self, expr: str) -> dict[str, list[str]]:
+    def get_query_info(self, expr: str) -> dict:
+        """Example output:
+        ```python
+        {
+            "query":           str,
+            "words_expr":      str
+            "keywords_body":   list[str]
+            "keywords_date":   list[str]
+            "query_expr_tree": DslExprNode(...)
+        }
+        ```
+        #ANCHOR[id=query_info]
+        """
         expr_tree = self.expr_to_tree(expr)
         words_expr_tree = expr_tree.filter_atoms_by_keys(include_keys=["word_expr"])
-        words_dict = self.get_words_from_expr_tree(words_expr_tree)
+        words_body, words_date = self.get_words_from_expr_tree(words_expr_tree)
         words_expr = self.expr_constructor.construct(words_expr_tree)
         return {
             "query": expr,
             "words_expr": words_expr,
-            **words_dict,
+            "keywords_body": words_body,
+            "keywords_date": words_date,
             "query_expr_tree": expr_tree,
         }
 
-    def rewrite(
+    def rewrite_query_info_by_suggest_info(
         self, query_info: dict = {}, suggest_info: dict = {}, threshold: int = 2
     ) -> dict:
+        """Get rewrite_info with query_info and suggest_info.
+
+        Input:
+            - Format of query_info:   # LINK converters/dsl/rewrite.py#query_info
+            - Format of suggest_info: # LINK elastics/videos/hits.py#suggest_info
+
+        Example output:
+        ```python
+        {
+            "rewrited":                bool,
+            "is_original_in_rewrites": bool,
+            "rewrited_expr_trees":     list[DslExprNode],
+            "rewrited_word_exprs":     list[str],
+        }
+        ```
+
+        #ANCHOR[id=rewrite_info]
+        """
         rewrite_info = {"rewrited": False, "is_original_in_rewrites": False}
         if not query_info or not suggest_info:
             return rewrite_info
@@ -120,8 +148,8 @@ class DslExprRewriter:
         query = query_info["query"]
         expr_tree = self.expr_to_tree(query)
         group_replaces_count = suggest_info.get("group_replaces_count", {})
-        rewrited_expr_trees = []
-        rewrited_word_exprs = []
+        rewrited_expr_trees: list[DslExprNode] = []
+        rewrited_word_exprs: list[str] = []
         for group_replaces, group_count in group_replaces_count:
             # this line is used in frontend to check if original query is in rewrites,
             # to determine whether the original query should be displayed or not in rewrite options

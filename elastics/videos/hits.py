@@ -256,11 +256,16 @@ class SuggestInfoParser:
             self.keywords_params = {"is_calc_hwords_str_count": False}
 
     def parse(self, qwords: list[str], hits: list[dict]) -> dict:
-        """keys of returned `suggest_info`:
-        - "qword_hword_count": dict[str, dict[str, int]]
-        - "hword_count_qword": dict[str, tuple[int, str]]
-        - "group_replaces_count": dict[tuple[str], int]
-        - "related_authors": dict[str, dict]
+        """Example output:
+        ```python
+        {
+            "qword_hword_count":    dict[str, dict[str, int]]
+            "hword_count_qword":    dict[str, tuple[int, str]]
+            "group_replaces_count": dict[tuple[str], int]
+            "related_authors":      dict[str, dict]
+        }
+        ```
+        #ANCHOR[id=suggest_info]
         """
         keywords_info = self.highlights_counter.count_keywords(
             qwords, hits, **self.keywords_params
