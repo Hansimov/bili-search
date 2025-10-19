@@ -1,15 +1,13 @@
 from copy import deepcopy
 from sedb import MongoOperator, ElasticOperator
-from tclogger import logger, logstr, brk, dict_to_str, get_now, tcdatetime
+from tclogger import logger, dict_to_str, get_now, tcdatetime
 from typing import Union, Literal
 
 from configs.envs import MONGO_ENVS, SECRETS, ELASTIC_ENVS
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
-
 from converters.dsl.rewrite import DslExprRewriter
 from converters.dsl.elastic import DslExprToElasticConverter
 from converters.dsl.filter import QueryDslDictFilterMerger
-
 from elastics.structure import get_highlight_settings, construct_boosted_fields
 from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
@@ -290,10 +288,9 @@ class VideoSearcherV2:
         )
         res_dict = res.body["_source"]
 
-        pudate_str = tcdatetime.fromtimestamp(res_dict.get("pubdate", 0)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        res_dict["pubdate_str"] = pudate_str
+        pubdate_t = tcdatetime.fromtimestamp(res_dict.get("pubdate", 0))
+        pubdate_str = pubdate_t.strftime("%Y-%m-%d %H:%M:%S")
+        res_dict["pubdate_str"] = pubdate_str
 
         reduced_dict = {
             k: v
@@ -304,7 +301,7 @@ class VideoSearcherV2:
         logger.exit_quiet(not verbose)
         return res_dict
 
-    def suggest_and_rewrite(
+    def rewrite_by_suggest(
         self,
         query_info: dict,
         suggest_info: dict = {},
@@ -312,10 +309,20 @@ class VideoSearcherV2:
         request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
         return_res: dict = {},
     ) -> dict:
+        """Example output:
+        ```python
+        {
+            ... (input `return_res` key-vals),
+            "suggest_info": dict,
+            "rewrite_info": dict,
+        }
+        ```
+        #ANCHOR[id=return_res]
+        """
         if request_type == "suggest":
-            qwords = query_info["keywords_body"]
             suggest_info = self.suggest_parser.parse(
-                qwords=qwords, hits=return_res["hits"]
+                qwords=query_info["keywords_body"],
+                hits=return_res["hits"],
             )
             rewrite_info = self.query_rewriter.rewrite_query_info_by_suggest_info(
                 query_info, suggest_info
@@ -336,33 +343,27 @@ class VideoSearcherV2:
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         extra_filters: list[dict] = [],
     ) -> tuple[dict, dict, dict]:
-        # get query_info
+        """return `(query_info, rewrite_info, query_dsl_dict)`"""
+        # get query_info, and get rewrite_info with suggest_info
         query_info = self.query_rewriter.get_query_info(query)
-        # logger.hint("> query_info:")
-        # logger.mesg(dict_to_str(query_info, add_quotes=True, align_list=False))
-        # get rewrite_info with suggest_info
         rewrite_info = self.query_rewriter.rewrite_query_info_by_suggest_info(
             query_info, suggest_info
         )
-        rewrited_expr_tree = rewrite_info.get(
-            "rewrited_expr_tree", None
-        ) or query_info.get("query_expr_tree", None)
-        # construct query_dsl_dict from rewrited expr trees
+        # get expr_tree, and construct query_dsl_dict from expr_tree
+        expr_tree = rewrite_info.get("rewrited_expr_tree", None)
+        expr_tree = expr_tree or query_info.get("query_expr_tree", None)
         self.elastic_converter.word_converter.switch_mode(
             match_fields=boosted_match_fields,
             date_match_fields=boosted_date_fields,
             match_type=match_type,
         )
-        # logger.hint("> query_dsl_dict (original):")
-        query_dsl_dict = self.elastic_converter.expr_tree_to_dict(rewrited_expr_tree)
-        # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
+        query_dsl_dict = self.elastic_converter.expr_tree_to_dict(expr_tree)
         # merge extra_filters to query_dsl_dict
         query_dsl_dict = self.filter_merger.merge(query_dsl_dict, extra_filters)
         # logger.hint("> query_dsl_dict:")
         # logger.mesg(dict_to_str(query_dsl_dict, add_quotes=True, align_list=False))
-        # logger.hint("> rewrited_expr_tree:")
-        # logger.mesg(rewrited_expr_tree.yaml())
-        # raise NotImplementedError("query_dsl_dict")
+        # logger.hint("> expr_tree:")
+        # logger.mesg(expr_tree.yaml())
         return query_info, rewrite_info, query_dsl_dict
 
     def post_process_return_res(self, return_res: dict) -> dict:
@@ -535,7 +536,6 @@ class VideoSearcherV2:
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
-        # enter quiet
         logger.enter_quiet(not verbose)
         # init params by detail_level
         if detail_level in detail_levels:
@@ -609,8 +609,8 @@ class VideoSearcherV2:
                 parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
         else:
             parse_res = es_res_dict
-        # suggest and rewrite
-        return_res = self.suggest_and_rewrite(
+        # rewrite_by_suggest, only apply for "suggest" request_type
+        return_res = self.rewrite_by_suggest(
             query_info,
             suggest_info=suggest_info,
             rewrite_info=rewrite_info,
@@ -619,6 +619,5 @@ class VideoSearcherV2:
         )
         return_res = self.post_process_return_res(parse_res)
         return_res["search_body"] = search_body
-        # exit quiet
         logger.exit_quiet(not verbose)
         return return_res
