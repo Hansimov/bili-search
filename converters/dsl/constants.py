@@ -27,6 +27,7 @@ MSM = "minimum_should_match"
 BM = "bool.must"
 BMM = f"bool.must.multi_match"
 BMS = f"bool.must.query_string"
+BMKS = f"bool.must.es_tok_query_string"
 BMMQ = f"bool.must.multi_match.query"
 BMSQ = f"bool.must.multi_match.query"
 
@@ -38,6 +39,10 @@ BM_MAP = {
     "query_string": {
         "BM": "bool.must.query_string",
         "BMQ": "bool.must.query_string.query",
+    },
+    "es_tok_query_string": {
+        "BM": "bool.must.es_tok_query_string",
+        "BMQ": "bool.must.es_tok_query_string.query",
     },
 }
 

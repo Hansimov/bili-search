@@ -109,9 +109,14 @@ SEARCH_COMBINED_FIELDS_LIST = [["title", "tags"]]
 SUGGEST_COMBINED_FIELDS_LIST = [["title", "tags"]]
 
 # query type
-QUERY_TYPE = Literal["multi_match", "combined_fields", "query_string"]
+QUERY_TYPE = Literal[
+    "multi_match", "combined_fields", "query_string", "es_tok_query_string"
+]
 # QUERY_TYPE_DEFAULT = "multi_match"
-QUERY_TYPE_DEFAULT = "query_string"
+# QUERY_TYPE_DEFAULT = "query_string"
+QUERY_TYPE_DEFAULT = "es_tok_query_string"
+
+ES_TOK_QUERY_STRING_MAX_FREQ = 1000000
 
 # match type, bool and operator
 MATCH_TYPE = Literal[

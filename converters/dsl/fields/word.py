@@ -6,6 +6,7 @@ from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
 from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS
 from elastics.videos.constants import QUERY_TYPE, QUERY_TYPE_DEFAULT
+from elastics.videos.constants import ES_TOK_QUERY_STRING_MAX_FREQ
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 
@@ -46,13 +47,14 @@ class WordExprElasticConverter:
             match_fields = self.date_match_fields
         else:
             match_fields = self.match_fields
-        return {
-            self.query_type: {
-                "query": query,
-                "type": self.match_type,
-                "fields": match_fields,
-            }
+        query_dict = {
+            "query": query,
+            "type": self.match_type,
+            "fields": match_fields,
         }
+        if self.query_type == "es_tok_query_string":
+            query_dict["max_freq"] = ES_TOK_QUERY_STRING_MAX_FREQ
+        return {self.query_type: query_dict}
 
     def node_to_match_dict(self, node: DslExprNode) -> dict:
         """node key is `word_val_single`"""

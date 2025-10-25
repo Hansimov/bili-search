@@ -103,7 +103,7 @@ class BoolElasticReducer:
         return op_list_dict
 
     def get_query_string_tuple(self, clause: dict) -> tuple[str, tuple]:
-        """Example of `word_match_dict`:
+        """Example of input `clause`:
         {
             "query_string" : {
                 "query"  : "deepseek",
@@ -112,7 +112,7 @@ class BoolElasticReducer:
             }
         }
         """
-        query_string_dict = clause.get("query_string", {})
+        query_string_dict = clause.get(QUERY_TYPE_DEFAULT, {})
         if not query_string_dict:
             return None, None
         key_value_tuple_list = []
@@ -148,7 +148,7 @@ class BoolElasticReducer:
         for key_value_tuple_tuple, grouped_clause in grouped_clauses.items():
             query = " ".join(grouped_clause["query"])
             format_clause = grouped_clause["format"]
-            format_clause["query_string"]["query"] = query
+            format_clause[QUERY_TYPE_DEFAULT]["query"] = query
             res_clauses.append(format_clause)
         return res_clauses
 
