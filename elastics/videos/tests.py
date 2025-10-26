@@ -166,22 +166,22 @@ search_queries = [
     # '《"你的名字"》',
     # '"何同学" v>1k',
     # '"何同学"',
-    '"影视飓风"'
+    # "影视飓风",
+    # '"影视飓风"',
+    # "影视",
+    # "雪茄 教程",
+    '影视飓风 "罗永浩"',
 ]
 
 
 def test_search():
-    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
+    searcher = VideoSearcherV2(
+        index_name="bili_videos_dev5", elastic_env_name="elastic_dev"
+    )
     for query in search_queries:
         logger.note("> Searching results:", end=" ")
         logger.file(f"[{query}]")
-        res = searcher.search(
-            query,
-            limit=50,
-            detail_level=1,
-            use_script_score=True,
-            verbose=True,
-        )
+        res = searcher.search(query, limit=50, verbose=True)
         # hits = res.pop("hits")
         # logger.success(dict_to_str(res))
         # for idx, hit in enumerate(hits[:3]):
@@ -250,9 +250,9 @@ if __name__ == "__main__":
     # test_filter()
     # test_suggest()
     # test_multi_level_search()
-    # test_search()
+    test_search()
     # test_agg()
-    test_explore()
+    # test_explore()
     # test_split()
     # test_categorize()
 
