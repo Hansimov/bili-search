@@ -5,7 +5,6 @@ import uvicorn
 from copy import deepcopy
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
-from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from tclogger import TCLogger, dict_to_str
 from typing import Optional, List
 
@@ -96,18 +95,12 @@ class SearchApp:
         suggest_info: Optional[dict] = Body({}),
         verbose: Optional[bool] = Body(False),
     ):
-        event_source_response = EventSourceResponse(
-            self.video_explorer.explore(
-                query=query,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                res_format="str",
-            ),
-            media_type="text/event-stream",
-            ping=2000,
-            ping_message_factory=lambda: ServerSentEvent(comment=""),
+        result = self.video_explorer.explore(
+            query=query,
+            suggest_info=suggest_info,
+            verbose=verbose,
         )
-        return event_source_response
+        return result
 
     def suggest(
         self,

@@ -1,9 +1,9 @@
 import json
 
 from copy import deepcopy
-from tclogger import dict_get, get_by_threshold, dict_to_str
+from tclogger import dict_get, get_by_threshold
 from tclogger import logstr, logger, brk
-from typing import Generator, Union, Literal
+from typing import Union, Literal
 
 from converters.dsl.fields.bvid import bvids_to_filter
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
@@ -243,11 +243,20 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
-        res_format: Literal["json", "str"] = "json",
-    ) -> Generator[dict, None, None]:
+    ) -> dict:
+        """Explore and return all step results in a single response.
+
+        Returns:
+            dict: {
+                "query": str,
+                "status": "finished" | "timedout",
+                "data": list[dict]  # list of step results
+            }
+        """
         logger.enter_quiet(not verbose)
 
-        fparams = {"res_format": res_format}
+        step_results = []  # Collect all step results
+        final_status = "finished"
 
         # Step 0: Construct query_dsl_dict
         step_idx = 0
@@ -273,7 +282,7 @@ class VideoExplorer(VideoSearcherV2):
             _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
                 **query_rewrite_dsl_params
             )
-        query_dsl_dict_yield = {
+        query_dsl_dict_result = {
             "step": step_idx,
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
@@ -283,7 +292,7 @@ class VideoExplorer(VideoSearcherV2):
             "output": query_dsl_dict,
             "comment": "",
         }
-        yield self.format_result(query_dsl_dict_yield, **fparams)
+        step_results.append(query_dsl_dict_result)
 
         # Step 1: Most-relevant docs
         step_idx += 1
@@ -306,7 +315,7 @@ class VideoExplorer(VideoSearcherV2):
             "timeout": EXPLORE_TIMEOUT,
             "verbose": verbose,
         }
-        relevant_search_yield = {
+        relevant_search_result = {
             "step": step_idx,
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
@@ -316,12 +325,13 @@ class VideoExplorer(VideoSearcherV2):
             "output_type": "hits",
             "comment": "",
         }
-        yield self.format_result(relevant_search_yield, **fparams)
         relevant_search_res = self.search(**relevant_search_params)
-        self.update_step_output(relevant_search_yield, step_output=relevant_search_res)
-        if self.is_status_timedout(relevant_search_yield):
+        self.update_step_output(relevant_search_result, step_output=relevant_search_res)
+        if self.is_status_timedout(relevant_search_result):
+            final_status = "timedout"
+            step_results.append(relevant_search_result)
             logger.exit_quiet(not verbose)
-            return
+            return {"query": query, "status": final_status, "data": step_results}
 
         # Step 3: Fetch full-docs by return ranked ids
         full_doc_search_params = deepcopy(relevant_search_params)
@@ -340,11 +350,13 @@ class VideoExplorer(VideoSearcherV2):
         )
         full_doc_search_res = self.search(**full_doc_search_params)
         full_doc_search_res["total_hits"] = relevant_search_res.get("total_hits", 0)
-        self.update_step_output(relevant_search_yield, step_output=full_doc_search_res)
-        if self.is_status_timedout(relevant_search_yield):
+        self.update_step_output(relevant_search_result, step_output=full_doc_search_res)
+        if self.is_status_timedout(relevant_search_result):
+            final_status = "timedout"
+            step_results.append(relevant_search_result)
             logger.exit_quiet(not verbose)
-            return
-        yield self.format_result(relevant_search_yield, **fparams)
+            return {"query": query, "status": final_status, "data": step_results}
+        step_results.append(relevant_search_result)
 
         # Step 4: Group hits by owner
         step_idx += 1
@@ -355,7 +367,7 @@ class VideoExplorer(VideoSearcherV2):
             "search_res": full_doc_search_res,
             "limit": group_owner_limit,
         }
-        group_hits_by_owner_yield = {
+        group_hits_by_owner_result = {
             "step": step_idx,
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
@@ -365,11 +377,11 @@ class VideoExplorer(VideoSearcherV2):
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
         }
-        yield self.format_result(group_hits_by_owner_yield, **fparams)
         group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
         self.update_step_output(
-            group_hits_by_owner_yield, step_output=group_res, field="authors"
+            group_hits_by_owner_result, step_output=group_res, field="authors"
         )
-        yield self.format_result(group_hits_by_owner_yield, **fparams)
+        step_results.append(group_hits_by_owner_result)
 
         logger.exit_quiet(not verbose)
+        return {"query": query, "status": final_status, "data": step_results}
