@@ -6,8 +6,8 @@ from sedb import ElasticOperator
 from tclogger import logger, logstr, dict_get, dict_to_str, brk, chars_len
 from typing import Union
 
-from configs.envs import ELASTIC_ENVS
-from elastics.videos.constants import VIDEOS_INDEX_DEFAULT, SEARCH_ANALYZER_NAME
+from configs.envs import ELASTIC_PRO_ENVS
+from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX, SEARCH_ANALYZER_NAME
 from elastics.videos.constants import SEARCH_MATCH_FIELDS_WORDS
 from llms.agents.entity import QueryEntityExtractor
 
@@ -42,10 +42,10 @@ def calc_pmi(counts: list[int], co_count: int, total_count: int) -> float:
 class QuerySplitter:
     """Split query to well-segmented words."""
 
-    def __init__(self, index_name: str = VIDEOS_INDEX_DEFAULT):
+    def __init__(self, index_name: str = ELASTIC_VIDEOS_PRO_INDEX):
         self.index_name = index_name
         self.es = ElasticOperator(
-            ELASTIC_ENVS,
+            ELASTIC_PRO_ENVS,
             connect_msg=f"{logstr.mesg(self.__class__.__name__)} -> {logstr.mesg(brk('elastic'))}",
         )
         self.categorizer = SentenceCategorizer()

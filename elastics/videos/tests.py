@@ -1,18 +1,18 @@
 from btok import SentenceCategorizer
 from tclogger import logger, logstr, dict_to_str, brk
 
+from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
 from elastics.videos.searcher import VideoSearcherV1
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.splitter import QuerySplitter
-from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.filter import QueryFilterExtractor
 
 
 def test_random():
-    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
+    searcher = VideoSearcherV2(ELASTIC_VIDEOS_DEV_INDEX)
     logger.note("> Getting random results ...")
     res = searcher.random(limit=3)
     logger.mesg(dict_to_str(res))
@@ -25,7 +25,7 @@ filter_queries = [
 
 
 def test_filter():
-    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
+    searcher = VideoSearcherV2(ELASTIC_VIDEOS_DEV_INDEX)
     for query in filter_queries:
         match_fields = ["title^2.5", "owner.name^2", "desc", "pubdate_str^2.5"]
         date_match_fields = [
@@ -118,7 +118,7 @@ suggest_queries = [
 
 
 def test_suggest():
-    searcher = VideoSearcherV1(VIDEOS_INDEX_DEFAULT)
+    searcher = VideoSearcherV1(ELASTIC_VIDEOS_DEV_INDEX)
     for query in suggest_queries:
         query_str = logstr.mesg(brk(query))
         logger.note(f"> Query: {query_str}")
@@ -139,7 +139,7 @@ multi_level_search_queries = [
 
 
 def test_multi_level_search():
-    searcher = VideoSearcherV1(VIDEOS_INDEX_DEFAULT)
+    searcher = VideoSearcherV1(ELASTIC_VIDEOS_DEV_INDEX)
     for query in multi_level_search_queries:
         logger.note("> Searching results:", end=" ")
         logger.file(f"[{query}]")
@@ -176,21 +176,22 @@ search_queries = [
 
 def test_search():
     searcher = VideoSearcherV2(
-        index_name="bili_videos_dev5", elastic_env_name="elastic_dev"
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
     )
     for query in search_queries:
         logger.note("> Searching results:", end=" ")
         logger.file(f"[{query}]")
         res = searcher.search(query, limit=50, verbose=True)
-        # hits = res.pop("hits")
-        # logger.success(dict_to_str(res))
-        # for idx, hit in enumerate(hits[:3]):
-        #     logger.note(f"* Hit {idx}:")
-        #     logger.file(dict_to_str(hit, align_list=False), indent=4)
+        hits = res.pop("hits")
+        logger.success(dict_to_str(res))
+        for idx, hit in enumerate(hits[:3]):
+            logger.note(f"* Hit {idx}:")
+            logger.file(dict_to_str(hit, align_list=False), indent=4)
 
 
 def test_agg():
-    searcher = VideoSearcherV2(VIDEOS_INDEX_DEFAULT)
+    """DEPRECATD. Use VideoExplorer instead."""
+    searcher = VideoSearcherV2(ELASTIC_VIDEOS_DEV_INDEX)
     for query in search_queries:
         logger.note("> Agg results:", end=" ")
         logger.file(f"[{query}]")
@@ -200,7 +201,7 @@ def test_agg():
 
 def test_explore():
     explorer = VideoExplorer(
-        index_name="bili_videos_dev5", elastic_env_name="elastic_dev"
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
     )
     for query in search_queries:
         logger.note("> Explore results:", end=" ")
@@ -228,7 +229,7 @@ split_queries = [
 
 
 def test_split():
-    splitter = QuerySplitter(VIDEOS_INDEX_DEFAULT)
+    splitter = QuerySplitter(ELASTIC_VIDEOS_DEV_INDEX)
     for query in split_queries:
         logger.note("> Splitting:", end=" ")
         logger.file(f"[{query}]")

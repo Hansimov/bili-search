@@ -3,7 +3,7 @@ from sedb import MongoOperator, ElasticOperator
 from tclogger import logger, dict_to_str, get_now, tcdatetime
 from typing import Union, Literal
 
-from configs.envs import MONGO_ENVS, SECRETS, ELASTIC_ENVS
+from configs.envs import MONGO_ENVS, SECRETS, ELASTIC_PRO_ENVS
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.dsl.rewrite import DslExprRewriter
 from converters.dsl.elastic import DslExprToElasticConverter
@@ -11,7 +11,7 @@ from converters.dsl.filter import QueryDslDictFilterMerger
 from elastics.structure import get_highlight_settings, construct_boosted_fields
 from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
-from elastics.videos.constants import VIDEOS_INDEX_DEFAULT
+from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
@@ -38,7 +38,7 @@ from elastics.videos.ranker import VideoHitsRanker
 class VideoSearcherV2:
     def __init__(
         self,
-        index_name: str = VIDEOS_INDEX_DEFAULT,
+        index_name: str = ELASTIC_VIDEOS_PRO_INDEX,
         elastic_env_name: str = None,
         mongo_env_name: str = None,
     ):
@@ -62,7 +62,7 @@ class VideoSearcherV2:
         if self.elastic_env_name:
             elastic_envs = SECRETS[self.elastic_env_name]
         else:
-            elastic_envs = ELASTIC_ENVS
+            elastic_envs = ELASTIC_PRO_ENVS
         if self.mongo_env_name:
             mongo_envs = SECRETS[self.mongo_env_name]
         else:

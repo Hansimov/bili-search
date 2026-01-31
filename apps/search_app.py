@@ -278,8 +278,8 @@ if __name__ == "__main__":
 
     # Production mode by default:
     # python -m apps.search_app
-    # python -m apps.search_app -ei bili_videos_dev4
+    # python -m apps.search_app -ei bili_videos_pro1 -ev elastic_pro
 
     # Development mode:
-    # python -m apps.search_app -m dev
-    # python -m apps.search_app -m dev -ei bili_videos_dev5 -ev elastic_dev -p 21011
+    # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev
+    # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -p 21001
