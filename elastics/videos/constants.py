@@ -154,13 +154,39 @@ USE_SCRIPT_SCORE_DEFAULT = False
 RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance"]
 RANK_METHOD_DEFAULT = "stats"
 
+# =============================================================================
+# Ranking Configuration
+# =============================================================================
+
 # Relevance-only ranking settings (for vector search)
 # When rank_method="relevance", only vector similarity score matters
 # No stats/pubdate weighting - pure relevance ranking
-RELEVANCE_MIN_SCORE = (
-    0.4  # minimum vector score to be considered relevant (lowered for better recall)
-)
+RELEVANCE_MIN_SCORE = 0.4  # minimum normalized score to be considered relevant
 RELEVANCE_SCORE_POWER = 2.0  # power transform to amplify score differences
+
+# RRF (Reciprocal Rank Fusion) settings for multi-metric ranking
+RRF_K = 60  # RRF constant k
+RRF_HEAP_SIZE = 2000  # max items to consider per metric
+RRF_HEAP_RATIO = 5  # heap_size = max(input, top_k * ratio)
+
+# RRF weights for different metrics
+RRF_WEIGHTS = {
+    "pubdate": 2.0,  # publish date timestamp
+    "stat.view": 1.0,
+    "stat.favorite": 1.0,
+    "stat.coin": 1.0,
+    "score": 5.0,  # relevance score (highest weight)
+}
+
+# Stats-based ranking: relevance gating
+# Results with score < RELATE_GATE_RATIO * max_score are filtered
+RELATE_GATE_RATIO = 0.5  # higher = more selective
+RELATE_GATE_COUNT = 2000  # max results to keep
+RELATE_SCORE_POWER = 4  # power transform for relevance score
+
+# =============================================================================
+# Query Mode Settings
+# =============================================================================
 
 # Query mode (qmod): controls word/vector/hybrid search
 # Each character represents a mode: w=word, v=vector
@@ -245,9 +271,9 @@ TERMINATE_AFTER = 2000000
 # KNN search settings
 # text_emb is a 2048-bit vector stored as dense_vector with element_type="bit"
 KNN_TEXT_EMB_FIELD = "text_emb"
-KNN_K = 500  # number of nearest neighbors to return (increased for better recall)
-KNN_NUM_CANDIDATES = 10000  # number of candidates to consider per shard
-KNN_TIMEOUT = 5  # timeout in seconds for KNN search (increased for larger k)
+KNN_K = 2000  # number of nearest neighbors to return (balanced for speed and recall)
+KNN_NUM_CANDIDATES = 10000  # candidates per shard (reduced for faster search)
+KNN_TIMEOUT = 8  # timeout in seconds for KNN search
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
 KNN_SIMILARITY_DEFAULT = "hamming"  # for bit vectors, hamming is most efficient
 KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims

@@ -199,7 +199,7 @@ class VideoExplorer(VideoSearcherV2):
         limit: int = 25,
     ) -> dict:
         """Group hits by owner (UP主) and sort by specified field.
-        
+
         Args:
             search_res: Search result containing hits list.
             sort_field: Field to sort grouped authors by:
@@ -209,13 +209,13 @@ class VideoExplorer(VideoSearcherV2):
                 - "sum_rank_score": Sum of rank_scores
                 - Other options: sum_count, sum_view, sum_sort_score
             limit: Max number of author groups to return.
-        
+
         Returns:
             Dict of author groups keyed by mid.
         """
         group_res = {}
         first_appear_idx = {}  # Track first appearance index for each author
-        
+
         for idx, hit in enumerate(search_res.get("hits", [])):
             name = dict_get(hit, "owner.name", None)
             mid = dict_get(hit, "owner.mid", None)
@@ -225,11 +225,11 @@ class VideoExplorer(VideoSearcherV2):
             rank_score = dict_get(hit, "rank_score") or 0
             if mid is None or name is None:
                 continue
-            
+
             # Track first appearance index for this author
             if mid not in first_appear_idx:
                 first_appear_idx[mid] = idx
-            
+
             item = group_res.get(mid, None)
             if item is None:
                 group_res[mid] = {
@@ -259,7 +259,7 @@ class VideoExplorer(VideoSearcherV2):
                 group_res[mid]["top_rank_score"] = max(top_rank_score, rank_score)
             group_res[mid]["hits"].append(hit)
             group_res[mid]["sum_count"] += len(group_res[mid]["hits"])
-        
+
         # sort by sort_field, and limit to top N
         # For first_appear_order, lower index = earlier appearance = higher priority
         if sort_field == "first_appear_order":
@@ -271,7 +271,7 @@ class VideoExplorer(VideoSearcherV2):
                 group_res.items(), key=lambda item: item[1][sort_field], reverse=True
             )[:limit]
         group_res = dict(sorted_items)
-        
+
         # add user faces
         mids = list(group_res.keys())
         user_docs = self.get_user_docs(mids)
@@ -512,7 +512,12 @@ class VideoExplorer(VideoSearcherV2):
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
         group_sort_field: Literal[
-            "sum_count", "sum_view", "sum_sort_score", "sum_rank_score", "top_rank_score", "first_appear_order"
+            "sum_count",
+            "sum_view",
+            "sum_sort_score",
+            "sum_rank_score",
+            "top_rank_score",
+            "first_appear_order",
         ] = "first_appear_order",  # Default: order by first appearance in ranked hits
     ) -> dict:
         """KNN-based explore using text embeddings instead of keyword matching.
@@ -641,16 +646,22 @@ class VideoExplorer(VideoSearcherV2):
 
         knn_search_params = {
             "query": query,
-            "source_fields": ["bvid", "stat", "pubdate", "duration"],  # Minimal fields
+            "source_fields": [
+                "bvid",
+                "owner",
+                "stat",
+                "pubdate",
+                "duration",
+            ],  # Include owner for author grouping
             "extra_filters": extra_filters,
             "knn_field": knn_field,
-            "k": most_relevant_limit,  # Use most_relevant_limit to get enough candidates
+            "k": knn_k,  # Use knn_k parameter for KNN search
             "num_candidates": knn_num_candidates,
             "similarity": similarity,
             "add_region_info": False,
             "is_explain": False,
             "rank_method": rank_method,
-            "limit": most_relevant_limit,
+            "limit": knn_k,  # Limit to k results
             "rank_top_k": rank_top_k,
             "timeout": KNN_TIMEOUT,
             "verbose": verbose,
@@ -670,17 +681,34 @@ class VideoExplorer(VideoSearcherV2):
         knn_search_res = self.knn_search(**knn_search_params)
         self.update_step_output(knn_search_result, step_output=knn_search_res)
 
+        # Track timeout status but continue processing if we have any hits
         if self.is_status_timedout(knn_search_result):
             final_status = "timedout"
-            step_results.append(knn_search_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": final_status, "data": step_results}
 
         # Step 2: Fetch full docs for ranked results
         bvids = [hit.get("bvid", None) for hit in knn_search_res.get("hits", [])]
         if not bvids:
+            # No results - still need to add empty group_hits_by_owner step for frontend
             logger.warn("× No results from KNN search")
             step_results.append(knn_search_result)
+            # Add empty group_hits_by_owner result with appropriate comment
+            step_idx += 1
+            # Distinguish between timeout and normal no-results
+            if final_status == "timedout":
+                comment = "搜索超时，请稍后重试"
+            else:
+                comment = "无搜索结果"
+            empty_group_result = {
+                "step": step_idx,
+                "name": "group_hits_by_owner",
+                "name_zh": STEP_ZH_NAMES["group_hits_by_owner"]["name_zh"],
+                "status": "finished",
+                "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
+                "output": {"authors": {}},
+                "output_type": STEP_ZH_NAMES["group_hits_by_owner"]["output_type"],
+                "comment": comment,
+            }
+            step_results.append(empty_group_result)
             logger.exit_quiet(not verbose)
             return {"query": query, "status": final_status, "data": step_results}
 
@@ -720,15 +748,15 @@ class VideoExplorer(VideoSearcherV2):
         full_doc_search_res["total_hits"] = knn_search_res.get("total_hits", 0)
         self.update_step_output(knn_search_result, step_output=full_doc_search_res)
 
+        # Track if any step timed out, but continue to group_hits_by_owner if we have hits
         if self.is_status_timedout(knn_search_result):
             final_status = "timedout"
-            step_results.append(knn_search_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": final_status, "data": step_results}
 
         step_results.append(knn_search_result)
 
         # Step 3: Group hits by owner
+        # IMPORTANT: Always execute this step even if previous steps timed out,
+        # as long as we have some hits to group. This ensures "相关作者" is always populated.
         # For KNN explore, use top_rank_score to find authors with highest relevance hits
         step_idx += 1
         step_name = "group_hits_by_owner"
@@ -781,7 +809,12 @@ class VideoExplorer(VideoSearcherV2):
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
         group_sort_field: Literal[
-            "sum_count", "sum_view", "sum_sort_score", "sum_rank_score", "top_rank_score", "first_appear_order"
+            "sum_count",
+            "sum_view",
+            "sum_sort_score",
+            "sum_rank_score",
+            "top_rank_score",
+            "first_appear_order",
         ] = "first_appear_order",  # Default: order by first appearance in ranked hits
     ) -> dict:
         """Hybrid explore combining word-based and vector-based retrieval.
@@ -855,11 +888,17 @@ class VideoExplorer(VideoSearcherV2):
 
         hybrid_search_params = {
             "query": query,
-            "source_fields": ["bvid", "stat", "pubdate", "duration"],  # Minimal fields
+            "source_fields": [
+                "bvid",
+                "owner",
+                "stat",
+                "pubdate",
+                "duration",
+            ],  # Include owner for author grouping
             "extra_filters": extra_filters,
             "suggest_info": suggest_info,
             "knn_field": knn_field,
-            "knn_k": most_relevant_limit,  # Use most_relevant_limit for k to get enough candidates
+            "knn_k": knn_k,  # Use knn_k parameter for KNN portion
             "knn_num_candidates": knn_num_candidates,
             "rrf_k": rrf_k,
             "fusion_method": fusion_method,
@@ -867,7 +906,7 @@ class VideoExplorer(VideoSearcherV2):
             "add_highlights_info": False,
             "is_highlight": False,
             "rank_method": rank_method,
-            "limit": most_relevant_limit,
+            "limit": min(most_relevant_limit, 2000),  # Cap limit for faster search
             "rank_top_k": rank_top_k,
             "timeout": EXPLORE_TIMEOUT,
             "verbose": verbose,
@@ -887,21 +926,34 @@ class VideoExplorer(VideoSearcherV2):
         hybrid_search_res = self.hybrid_search(**hybrid_search_params)
         self.update_step_output(hybrid_search_result, step_output=hybrid_search_res)
 
+        # Track timeout status but continue processing
         if self.is_status_timedout(hybrid_search_result):
             final_status = "timedout"
-            step_results.append(hybrid_search_result)
-            logger.exit_quiet(not verbose)
-            return {
-                "query": query,
-                "status": final_status,
-                "data": step_results,
-            }
 
         # Step 2: Fetch full docs for ranked results
         bvids = [hit.get("bvid", None) for hit in hybrid_search_res.get("hits", [])]
         if not bvids:
+            # No results - still need to add empty group_hits_by_owner step for frontend
             logger.warn("× No results from hybrid search")
             step_results.append(hybrid_search_result)
+            # Add empty group_hits_by_owner result with appropriate comment
+            step_idx += 1
+            # Distinguish between timeout and normal no-results
+            if final_status == "timedout":
+                comment = "搜索超时，请稍后重试"
+            else:
+                comment = "无搜索结果"
+            empty_group_result = {
+                "step": step_idx,
+                "name": "group_hits_by_owner",
+                "name_zh": STEP_ZH_NAMES["group_hits_by_owner"]["name_zh"],
+                "status": "finished",
+                "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
+                "output": {"authors": {}},
+                "output_type": STEP_ZH_NAMES["group_hits_by_owner"]["output_type"],
+                "comment": comment,
+            }
+            step_results.append(empty_group_result)
             logger.exit_quiet(not verbose)
             return {
                 "query": query,
@@ -931,11 +983,16 @@ class VideoExplorer(VideoSearcherV2):
         self.merge_scores_into_hits(full_hits, hybrid_hits)
 
         # Re-apply ranking after merging scores
-        # For hybrid explore, "relevance" is the preferred method - uses hybrid_score
+        # For hybrid explore, RRF fusion already produced well-ranked results
+        # Use heads to preserve RRF order, set rank_score = hybrid_score for consistency
         if rank_method == "relevance":
-            full_doc_search_res = self.hit_ranker.relevance_rank(
-                full_doc_search_res, top_k=rank_top_k, score_field="hybrid_score"
-            )
+            # Preserve RRF fusion order, just set rank_score for downstream use
+            for hit in full_hits:
+                hit["rank_score"] = hit.get("hybrid_score", 0) or 0
+            full_hits.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
+            full_doc_search_res["hits"] = full_hits[:rank_top_k]
+            full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
+            full_doc_search_res["rank_method"] = "relevance"
         elif rank_method == "rrf":
             full_doc_search_res = self.hit_ranker.rrf_rank(
                 full_doc_search_res, top_k=rank_top_k
@@ -962,17 +1019,15 @@ class VideoExplorer(VideoSearcherV2):
 
         self.update_step_output(hybrid_search_result, step_output=full_doc_search_res)
 
+        # Track if any step timed out, but continue to group_hits_by_owner if we have hits
         if self.is_status_timedout(hybrid_search_result):
             final_status = "timedout"
-            step_results.append(hybrid_search_result)
-            logger.exit_quiet(not verbose)
-            return {
-                "query": query,
-                "status": final_status,
-                "data": step_results,
-            }
 
         step_results.append(hybrid_search_result)
+
+        # Step 3: Group hits by owner
+        # IMPORTANT: Always execute this step even if previous steps timed out,
+        # as long as we have some hits to group. This ensures "相关作者" is always populated.
 
         # Step 3: Group hits by owner
         # For hybrid explore, use top_rank_score to find authors with highest relevance hits

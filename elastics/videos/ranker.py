@@ -5,17 +5,12 @@ from tclogger import dict_get
 
 from elastics.videos.constants import RANK_TOP_K
 from elastics.videos.constants import RELEVANCE_MIN_SCORE, RELEVANCE_SCORE_POWER
-
-# RRF weights of fields
-RRF_WEIGHTS = {
-    "pubdate": 2.0,  # publish date timestamp
-    "stat.view": 1.0,
-    "stat.favorite": 1.0,
-    "stat.coin": 1.0,
-    "score": 5.0,  # relevance score calculated by ES (increased weight)
-}
-# RRF constant (k)
-RRF_K = 60.0
+from elastics.videos.constants import RRF_K, RRF_HEAP_SIZE, RRF_HEAP_RATIO, RRF_WEIGHTS
+from elastics.videos.constants import (
+    RELATE_GATE_RATIO,
+    RELATE_GATE_COUNT,
+    RELATE_SCORE_POWER,
+)
 
 # Score transformation parameters for vector search
 # Uses power transform: transformed = ((score - min) / (max - min)) ^ power
@@ -27,25 +22,16 @@ SCORE_TRANSFORM_MAX = 1.0  # max possible score
 # Scores above this threshold get extra boost to ensure they rank first
 HIGH_RELEVANCE_THRESHOLD = 0.85  # top 15% of normalized score range
 HIGH_RELEVANCE_BOOST = 2.0  # multiplier for high relevance scores
-# speed up rank, by only covering top hits for each metric
-RRF_HEAP_SIZE = 2000
-# heap_size = max(input heap_size, top_k * RRF_HEAP_RATIO)
-RRF_HEAP_RATIO = 5
 
-
-# 2010-01-01 00:00:00, the beginning of most videos in Bilibili
-PUBDATE_BASE = 1262275200
-# seconds per day
+# Pubdate scoring parameters
+PUBDATE_BASE = 1262275200  # 2010-01-01 00:00:00
 SECONDS_PER_DAY = 86400
-# score for videos published most recently
-ZERO_DAY_SCORE = 4.0
-# score for videos published before base (infinity days ago)
-INFT_DAY_SCORE = 0.25
-# pubdate score interpolation points
+ZERO_DAY_SCORE = 4.0  # score for videos published most recently
+INFT_DAY_SCORE = 0.25  # score for videos published before base
 PUBDATE_SCORE_POINTS = [(0, 4.0), (7, 1.0), (30, 0.6), (365, 0.3)]
-# fields of stats
+
+# Stats scoring parameters
 STAT_FIELDS = ["view", "favorite", "coin", "reply", "share", "danmaku"]
-# offsets for log(x+offset) of stats
 STAT_LOGX_OFFSETS = {
     "view": 10,
     "favorite": 2,
@@ -54,12 +40,6 @@ STAT_LOGX_OFFSETS = {
     "share": 2,
     "danmaku": 2,
 }
-# relate gate ratio (lower = more selective, keep more relevant results)
-RELATE_GATE_RATIO = 0.4
-# relate gate count
-RELATE_GATE_COUNT = 2000
-# relate score power (higher = more emphasis on high relevance)
-RELATE_SCORE_POWER = 5
 
 
 def log_x(x: int, base: float = 10.0, offset: int = 10) -> float:
@@ -253,7 +233,15 @@ class ScoreFuser:
     def calc_fuse_score_by_prod(
         self, stats_score: float, pubdate_score: float, relate_score: float
     ) -> float:
-        return round(stats_score * pubdate_score * relate_score, 6)
+        """Fuse scores using product formula with relevance emphasis.
+
+        The formula is: stats_score * pubdate_score * (relate_score ^ 2)
+        The square on relate_score makes it dominate the ranking when
+        there are large differences in relevance.
+        """
+        # Square relate_score to amplify its importance
+        relate_emphasis = relate_score**2
+        return round(stats_score * pubdate_score * relate_emphasis, 6)
 
     def fuse(
         self, stats_score: float, pubdate_score: float, relate_score: float

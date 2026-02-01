@@ -463,41 +463,45 @@ class VideoSearcherV2:
         return return_res
 
     def sanitize_search_body_for_client(self, search_body: dict) -> dict:
-        """Remove large filter terms from search_body before returning to client.
+        """Remove large data from search_body before returning to client.
 
-        This reduces network payload by removing bvid terms filter arrays which
-        can contain hundreds of ids, while preserving the rest of the query structure.
+        This reduces network payload by:
+        1. Removing bvid terms filter arrays which can contain hundreds of ids
+        2. Removing query_vector arrays from KNN queries
 
         Args:
             search_body: The search body dict to sanitize.
 
         Returns:
-            A sanitized copy with large terms arrays replaced by placeholders.
+            A sanitized copy with large arrays replaced by placeholders.
         """
         if not search_body:
             return search_body
 
         sanitized = deepcopy(search_body)
 
-        def sanitize_terms(obj: dict, max_terms: int = 10) -> None:
-            """Recursively find and truncate large terms arrays."""
+        def sanitize_large_arrays(obj: dict, max_terms: int = 10) -> None:
+            """Recursively find and truncate large arrays."""
             if not isinstance(obj, dict):
                 return
-            for key, value in obj.items():
+            for key, value in list(obj.items()):
                 if key == "terms" and isinstance(value, dict):
                     # Found a terms filter, check each field
                     for field, terms_list in value.items():
                         if isinstance(terms_list, list) and len(terms_list) > max_terms:
                             # Replace with count indicator
                             value[field] = f"[{len(terms_list)} items omitted]"
+                elif key == "query_vector" and isinstance(value, list):
+                    # Remove query_vector from KNN queries - it's large and not needed by client
+                    obj[key] = f"[{len(value)} dims vector omitted]"
                 elif isinstance(value, dict):
-                    sanitize_terms(value, max_terms)
+                    sanitize_large_arrays(value, max_terms)
                 elif isinstance(value, list):
                     for item in value:
                         if isinstance(item, dict):
-                            sanitize_terms(item, max_terms)
+                            sanitize_large_arrays(item, max_terms)
 
-        sanitize_terms(sanitized)
+        sanitize_large_arrays(sanitized)
         return sanitized
 
     def construct_agg_body_of_percentile(
@@ -1197,11 +1201,13 @@ class VideoSearcherV2:
         }
 
         # Apply final ranking
+        # For hybrid search, RRF fusion already produces a well-ranked list
+        # So we use "heads" to preserve the RRF order, not "relevance" which would filter incorrectly
         if rank_method == "relevance":
-            # For relevance ranking, use hybrid_score (from fusion) as the score field
-            parse_res = self.hit_ranker.relevance_rank(
-                parse_res, top_k=rank_top_k, score_field="hybrid_score"
-            )
+            # For hybrid search with relevance ranking, just take top-k by hybrid_score
+            # Don't apply min_score filtering because hybrid_score has different scale
+            parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
+            parse_res["rank_method"] = "relevance"
         elif rank_method == "rrf":
             parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
         elif rank_method == "stats":
