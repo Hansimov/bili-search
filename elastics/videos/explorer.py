@@ -194,11 +194,29 @@ class VideoExplorer(VideoSearcherV2):
             "sum_sort_score",
             "sum_rank_score",
             "top_rank_score",
-        ] = "sum_rank_score",
+            "first_appear_order",
+        ] = "first_appear_order",
         limit: int = 25,
     ) -> dict:
+        """Group hits by owner (UP主) and sort by specified field.
+        
+        Args:
+            search_res: Search result containing hits list.
+            sort_field: Field to sort grouped authors by:
+                - "first_appear_order": Order by when author first appears in hits (default)
+                  This ensures author order matches the video list order.
+                - "top_rank_score": Max rank_score among author's videos
+                - "sum_rank_score": Sum of rank_scores
+                - Other options: sum_count, sum_view, sum_sort_score
+            limit: Max number of author groups to return.
+        
+        Returns:
+            Dict of author groups keyed by mid.
+        """
         group_res = {}
-        for hit in search_res.get("hits", []):
+        first_appear_idx = {}  # Track first appearance index for each author
+        
+        for idx, hit in enumerate(search_res.get("hits", [])):
             name = dict_get(hit, "owner.name", None)
             mid = dict_get(hit, "owner.mid", None)
             pubdate = dict_get(hit, "pubdate") or 0
@@ -207,6 +225,11 @@ class VideoExplorer(VideoSearcherV2):
             rank_score = dict_get(hit, "rank_score") or 0
             if mid is None or name is None:
                 continue
+            
+            # Track first appearance index for this author
+            if mid not in first_appear_idx:
+                first_appear_idx[mid] = idx
+            
             item = group_res.get(mid, None)
             if item is None:
                 group_res[mid] = {
@@ -217,6 +240,7 @@ class VideoExplorer(VideoSearcherV2):
                     "sum_sort_score": sort_score,
                     "sum_rank_score": rank_score,
                     "top_rank_score": rank_score,
+                    "first_appear_order": idx,  # Store first appearance index
                     "sum_count": 0,
                     "hits": [],
                 }
@@ -235,11 +259,19 @@ class VideoExplorer(VideoSearcherV2):
                 group_res[mid]["top_rank_score"] = max(top_rank_score, rank_score)
             group_res[mid]["hits"].append(hit)
             group_res[mid]["sum_count"] += len(group_res[mid]["hits"])
+        
         # sort by sort_field, and limit to top N
-        sorted_items = sorted(
-            group_res.items(), key=lambda item: item[1][sort_field], reverse=True
-        )[:limit]
+        # For first_appear_order, lower index = earlier appearance = higher priority
+        if sort_field == "first_appear_order":
+            sorted_items = sorted(
+                group_res.items(), key=lambda item: item[1][sort_field], reverse=False
+            )[:limit]
+        else:
+            sorted_items = sorted(
+                group_res.items(), key=lambda item: item[1][sort_field], reverse=True
+            )[:limit]
         group_res = dict(sorted_items)
+        
         # add user faces
         mids = list(group_res.keys())
         user_docs = self.get_user_docs(mids)
@@ -476,21 +508,28 @@ class VideoExplorer(VideoSearcherV2):
         similarity: float = None,
         # Explore params
         most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
+        group_sort_field: Literal[
+            "sum_count", "sum_view", "sum_sort_score", "sum_rank_score", "top_rank_score", "first_appear_order"
+        ] = "first_appear_order",  # Default: order by first appearance in ranked hits
     ) -> dict:
         """KNN-based explore using text embeddings instead of keyword matching.
 
         This method performs vector similarity search using the text_emb field,
         while still supporting all DSL filter expressions (date, stat, user, etc.).
 
+        IMPORTANT: For vector search, relevance is the ONLY metric that matters.
+        Results are ranked purely by vector similarity score - no stats/pubdate weighting.
+        This ensures the most semantically relevant results appear first.
+
         The workflow is:
         1. Extract filters from DSL query (non-word expressions)
         2. Convert query words to embedding vector via TEI
         3. Perform KNN search with filters
         4. Fetch full documents for top results
-        5. Group results by owner (UP主)
+        5. Group results by owner (UP主) - ordered by first appearance in hits
 
         Args:
             query: Query string (can include DSL filter expressions).
@@ -660,7 +699,12 @@ class VideoExplorer(VideoSearcherV2):
         self.merge_scores_into_hits(full_hits, knn_hits)
 
         # Re-apply ranking after merging scores
-        if rank_method == "rrf":
+        # For KNN explore, "relevance" is the preferred method - pure vector similarity ranking
+        if rank_method == "relevance":
+            full_doc_search_res = self.hit_ranker.relevance_rank(
+                full_doc_search_res, top_k=rank_top_k
+            )
+        elif rank_method == "rrf":
             full_doc_search_res = self.hit_ranker.rrf_rank(
                 full_doc_search_res, top_k=rank_top_k
             )
@@ -685,6 +729,7 @@ class VideoExplorer(VideoSearcherV2):
         step_results.append(knn_search_result)
 
         # Step 3: Group hits by owner
+        # For KNN explore, use top_rank_score to find authors with highest relevance hits
         step_idx += 1
         step_name = "group_hits_by_owner"
         step_str = logstr.note(brk(f"Step {step_idx}"))
@@ -692,6 +737,7 @@ class VideoExplorer(VideoSearcherV2):
 
         group_hits_by_owner_params = {
             "search_res": full_doc_search_res,
+            "sort_field": group_sort_field,
             "limit": group_owner_limit,
         }
 
@@ -700,7 +746,7 @@ class VideoExplorer(VideoSearcherV2):
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
             "status": "running",
-            "input": {"limit": group_owner_limit},
+            "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
             "output": {},
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
@@ -731,18 +777,25 @@ class VideoExplorer(VideoSearcherV2):
         fusion_method: Literal["rrf", "weighted"] = "rrf",
         # Explore params
         most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
         rank_top_k: int = 400,
         group_owner_limit: int = 20,
+        group_sort_field: Literal[
+            "sum_count", "sum_view", "sum_sort_score", "sum_rank_score", "top_rank_score", "first_appear_order"
+        ] = "first_appear_order",  # Default: order by first appearance in ranked hits
     ) -> dict:
         """Hybrid explore combining word-based and vector-based retrieval.
 
-        This method:
-        1. Performs word-based search
-        2. Performs KNN vector search
-        3. Fuses results using RRF
-        4. Fetches full documents for top results
-        5. Groups results by owner (UP主)
+        This method prioritizes RELEVANCE over popularity/recency.
+        Results are ranked by vector similarity first, ensuring the most
+        semantically relevant content appears at the top.
+
+        Workflow:
+        1. Performs word-based search (for keyword matching)
+        2. Performs KNN vector search (for semantic similarity)
+        3. Fuses results using RRF, with vector scores weighted higher
+        4. Ranks by pure relevance score (no stats/pubdate weighting)
+        5. Groups results by owner (UP主) using top relevance score
 
         Args:
             query: Query string (can include DSL filter expressions).
@@ -755,9 +808,10 @@ class VideoExplorer(VideoSearcherV2):
             rrf_k: K parameter for RRF fusion.
             fusion_method: "rrf" or "weighted".
             most_relevant_limit: Max docs for searches.
-            rank_method: Ranking method for results.
+            rank_method: Ranking method ("relevance" recommended for vector search).
             rank_top_k: Top-k for final ranking.
             group_owner_limit: Max groups for owner aggregation.
+            group_sort_field: Field to sort author groups by.
 
         Returns:
             dict: {
@@ -877,7 +931,12 @@ class VideoExplorer(VideoSearcherV2):
         self.merge_scores_into_hits(full_hits, hybrid_hits)
 
         # Re-apply ranking after merging scores
-        if rank_method == "rrf":
+        # For hybrid explore, "relevance" is the preferred method - uses hybrid_score
+        if rank_method == "relevance":
+            full_doc_search_res = self.hit_ranker.relevance_rank(
+                full_doc_search_res, top_k=rank_top_k, score_field="hybrid_score"
+            )
+        elif rank_method == "rrf":
             full_doc_search_res = self.hit_ranker.rrf_rank(
                 full_doc_search_res, top_k=rank_top_k
             )
@@ -916,6 +975,7 @@ class VideoExplorer(VideoSearcherV2):
         step_results.append(hybrid_search_result)
 
         # Step 3: Group hits by owner
+        # For hybrid explore, use top_rank_score to find authors with highest relevance hits
         step_idx += 1
         step_name = "group_hits_by_owner"
         step_str = logstr.note(brk(f"Step {step_idx}"))
@@ -923,6 +983,7 @@ class VideoExplorer(VideoSearcherV2):
 
         group_hits_by_owner_params = {
             "search_res": full_doc_search_res,
+            "sort_field": group_sort_field,
             "limit": group_owner_limit,
         }
 
@@ -931,7 +992,7 @@ class VideoExplorer(VideoSearcherV2):
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
             "status": "running",
-            "input": {"limit": group_owner_limit},
+            "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
             "output": {},
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
@@ -1009,6 +1070,8 @@ class VideoExplorer(VideoSearcherV2):
 
         if is_hybrid:
             # Hybrid mode (both word and vector)
+            # For hybrid mode, force relevance ranking to prioritize semantic relevance
+            hybrid_rank_method = "relevance"
             result = self.hybrid_explore(
                 query=query,
                 extra_filters=extra_filters,
@@ -1018,7 +1081,7 @@ class VideoExplorer(VideoSearcherV2):
                 knn_k=knn_k,
                 knn_num_candidates=knn_num_candidates,
                 most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
+                rank_method=hybrid_rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
             )
@@ -1026,6 +1089,10 @@ class VideoExplorer(VideoSearcherV2):
 
         elif has_vector:
             # Vector-only mode
+            # IMPORTANT: For vector search, ALWAYS use relevance ranking
+            # This ensures "综合排序" and "最高相关" produce identical results
+            # because relevance IS the only meaningful metric for vector search
+            vector_rank_method = "relevance"
             result = self.knn_explore(
                 query=query,
                 extra_filters=extra_filters,
@@ -1034,7 +1101,7 @@ class VideoExplorer(VideoSearcherV2):
                 knn_k=knn_k,
                 knn_num_candidates=knn_num_candidates,
                 most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
+                rank_method=vector_rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
             )

@@ -4,6 +4,7 @@ import math
 from tclogger import dict_get
 
 from elastics.videos.constants import RANK_TOP_K
+from elastics.videos.constants import RELEVANCE_MIN_SCORE, RELEVANCE_SCORE_POWER
 
 # RRF weights of fields
 RRF_WEIGHTS = {
@@ -99,12 +100,14 @@ def transform_relevance_score(
 
     # Apply power transform to stretch distribution
     # This makes high scores much higher relative to medium scores
-    transformed = normalized ** power
+    transformed = normalized**power
 
     # Apply extra boost for very high relevance scores
     if normalized >= high_threshold:
         # Additional boost that increases with how far above threshold
-        boost_factor = 1.0 + (high_boost - 1.0) * ((normalized - high_threshold) / (1.0 - high_threshold))
+        boost_factor = 1.0 + (high_boost - 1.0) * (
+            (normalized - high_threshold) / (1.0 - high_threshold)
+        )
         transformed *= boost_factor
 
     return transformed
@@ -390,4 +393,85 @@ class VideoHitsRanker:
         hits_info["hits"] = top_hits
         hits_info["return_hits"] = len(top_hits)
         hits_info["rank_method"] = "stats"
+        return hits_info
+
+    def relevance_rank(
+        self,
+        hits_info: dict,
+        top_k: int = RANK_TOP_K,
+        min_score: float = RELEVANCE_MIN_SCORE,
+        score_power: float = RELEVANCE_SCORE_POWER,
+        score_field: str = "score",
+    ) -> dict:
+        """Rank hits purely by relevance score (vector similarity).
+
+        This is the preferred ranking method for vector search results.
+        It does NOT use stats (view, favorite, etc.) or pubdate weighting.
+        Only the vector similarity score matters - ensuring the most relevant
+        results appear first regardless of popularity or recency.
+
+        The method:
+        1. Filters out hits below the minimum relevance threshold
+        2. Applies power transform to amplify score differences
+        3. Sorts purely by transformed relevance score
+
+        Args:
+            hits_info: Dict containing hits list and metadata.
+            top_k: Maximum number of results to return.
+            min_score: Minimum relevance score threshold (0-1).
+                       Hits below this are considered irrelevant noise.
+            score_power: Power for score transformation.
+                         Higher values = more separation between high/low scores.
+            score_field: Field name containing the relevance score.
+
+        Returns:
+            hits_info with filtered and sorted hits.
+        """
+        hits: list[dict] = hits_info.get("hits", [])
+        if not hits:
+            hits_info["rank_method"] = "relevance"
+            return hits_info
+
+        # Get max score for normalization
+        scores = [dict_get(hit, score_field, 0.0) or 0.0 for hit in hits]
+        max_score = max(scores) if scores else 1.0
+        if max_score <= 0:
+            max_score = 1.0
+
+        # Calculate relative min_score threshold based on max_score
+        # If max_score is 0.7 and min_score is 0.5, relative threshold = 0.5/0.7 = 0.71
+        relative_min = min_score / max_score if max_score > 0 else min_score
+
+        # Filter and transform scores
+        filtered_hits = []
+        for hit in hits:
+            score = dict_get(hit, score_field, 0.0) or 0.0
+
+            # Normalize score to 0-1 based on max_score
+            normalized = score / max_score if max_score > 0 else 0.0
+
+            # Skip hits below relative minimum threshold
+            if normalized < relative_min:
+                continue
+
+            # Apply power transform to amplify differences
+            # This makes the gap between 0.9 and 0.8 much larger than 0.5 and 0.4
+            transformed = normalized**score_power
+
+            hit["rank_score"] = round(transformed, 6)
+            hit["normalized_score"] = round(normalized, 4)
+            filtered_hits.append(hit)
+
+        # Sort by rank_score (transformed relevance)
+        filtered_hits.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
+
+        # Take top_k
+        top_k = min(top_k, len(filtered_hits))
+        top_hits = filtered_hits[:top_k]
+
+        hits_info["hits"] = top_hits
+        hits_info["return_hits"] = len(top_hits)
+        hits_info["filtered_count"] = len(hits) - len(filtered_hits)
+        hits_info["rank_method"] = "relevance"
+
         return hits_info

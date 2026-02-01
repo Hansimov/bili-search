@@ -981,8 +981,10 @@ class VideoSearcherV2:
                 limit=limit,
                 verbose=verbose,
             )
-            # Apply ranking
-            if rank_method == "rrf":
+            # Apply ranking - for KNN search, "relevance" is the default and preferred method
+            if rank_method == "relevance":
+                parse_res = self.hit_ranker.relevance_rank(parse_res, top_k=rank_top_k)
+            elif rank_method == "rrf":
                 parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
             elif rank_method == "stats":
                 parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
@@ -1195,7 +1197,12 @@ class VideoSearcherV2:
         }
 
         # Apply final ranking
-        if rank_method == "rrf":
+        if rank_method == "relevance":
+            # For relevance ranking, use hybrid_score (from fusion) as the score field
+            parse_res = self.hit_ranker.relevance_rank(
+                parse_res, top_k=rank_top_k, score_field="hybrid_score"
+            )
+        elif rank_method == "rrf":
             parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
         elif rank_method == "stats":
             parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
