@@ -6,7 +6,7 @@ from copy import deepcopy
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 from tclogger import TCLogger, dict_to_str
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from configs.envs import SEARCH_APP_ENVS
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -18,6 +18,7 @@ from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
 from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
+from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
 
@@ -92,11 +93,24 @@ class SearchApp:
     def explore(
         self,
         query: str = Body(...),
+        qmod: Optional[Union[str, list[str]]] = Body(None),
         suggest_info: Optional[dict] = Body({}),
         verbose: Optional[bool] = Body(False),
     ):
-        result = self.video_explorer.explore(
+        """Explore videos with automatic query mode detection.
+
+        Query mode (qmod) can be:
+        - "w" or "word" or ["word"]: Word-based search
+        - "v" or "vector" or ["vector"]: Vector-based KNN search (default)
+        - "wv" or ["word", "vector"]: Hybrid search (word + vector)
+
+        The mode can be specified via:
+        1. The qmod parameter
+        2. DSL in query (e.g., "黑神话 q=v" or "q=wv")
+        """
+        result = self.video_explorer.unified_explore(
             query=query,
+            qmod=qmod,
             suggest_info=suggest_info,
             verbose=verbose,
         )
@@ -165,6 +179,44 @@ class SearchApp:
         )
         return doc
 
+    def knn_search(
+        self,
+        query: str = Body(...),
+        source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
+        limit: Optional[int] = Body(SEARCH_LIMIT),
+        verbose: Optional[bool] = Body(False),
+    ):
+        """Perform KNN vector search using text embeddings."""
+        results = self.video_searcher.knn_search(
+            query=query,
+            source_fields=source_fields,
+            rank_method=rank_method,
+            limit=limit,
+            verbose=verbose,
+        )
+        return results
+
+    def hybrid_search(
+        self,
+        query: str = Body(...),
+        source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
+        suggest_info: Optional[dict] = Body({}),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
+        limit: Optional[int] = Body(SEARCH_LIMIT),
+        verbose: Optional[bool] = Body(False),
+    ):
+        """Perform hybrid search combining word-based and vector-based retrieval."""
+        results = self.video_searcher.hybrid_search(
+            query=query,
+            source_fields=source_fields,
+            suggest_info=suggest_info,
+            rank_method=rank_method,
+            limit=limit,
+            verbose=verbose,
+        )
+        return results
+
     def setup_routes(self):
         self.app.post(
             "/suggest",
@@ -195,6 +247,16 @@ class SearchApp:
             "/doc",
             summary="Get video details by bvid",
         )(self.doc)
+
+        self.app.post(
+            "/knn_search",
+            summary="KNN vector search using text embeddings",
+        )(self.knn_search)
+
+        self.app.post(
+            "/hybrid_search",
+            summary="Hybrid search combining word and vector retrieval",
+        )(self.hybrid_search)
 
 
 class SearchAppArgParser(argparse.ArgumentParser):

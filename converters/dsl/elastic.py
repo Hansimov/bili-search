@@ -14,6 +14,7 @@ from converters.dsl.fields.umid import UmidExprElasticConverter
 from converters.dsl.fields.word import WordExprElasticConverter
 from converters.dsl.fields.word import WordNodeToExprConstructor
 from converters.dsl.fields.bool import BoolElasticReducer
+from converters.dsl.fields.qmod import QmodExprElasticConverter
 from elastics.videos.constants import SEARCH_MATCH_TYPE, QUERY_TYPE_DEFAULT
 
 BMM = BM_MAP[QUERY_TYPE_DEFAULT]["BM"]
@@ -34,6 +35,7 @@ class DslExprToElasticConverter:
         self.stat_converter = StatExprElasticConverter()
         self.dura_converter = DuraExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
+        self.qmod_converter = QmodExprElasticConverter()
         self.verbose = verbose
 
     def atom_node_to_elastic_dict(self, node: DslExprNode) -> dict:
@@ -52,6 +54,9 @@ class DslExprToElasticConverter:
             return self.umid_converter.convert(node)
         elif expr_node.is_key("word_expr"):
             return self.word_converter.convert(node)
+        elif expr_node.is_key("qmod_expr"):
+            # qmod_expr doesn't produce ES filters, returns empty dict
+            return self.qmod_converter.convert(node)
         else:
             logger.warn(f"× Unknown atom_node: <{expr_node.key}>", verbose=self.verbose)
             return {}

@@ -13,8 +13,11 @@ from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
+from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
+from elastics.videos.constants import HYBRID_RRF_K
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
+from converters.dsl.fields.qmod import extract_qmod_from_expr_tree, is_hybrid_qmod
 
 STEP_ZH_NAMES = {
     "init": {
@@ -38,6 +41,10 @@ STEP_ZH_NAMES = {
     },
     "knn_search": {
         "name_zh": "向量搜索",
+        "output_type": "hits",
+    },
+    "hybrid_search": {
+        "name_zh": "混合搜索",
         "output_type": "hits",
     },
     "most_popular_search": {
@@ -235,6 +242,59 @@ class VideoExplorer(VideoSearcherV2):
 
     def is_status_timedout(self, result: dict) -> bool:
         return result.get("status", None) == "timedout"
+
+    def merge_scores_into_hits(
+        self,
+        full_hits: list[dict],
+        score_hits: list[dict],
+        score_fields: list[str] = None,
+    ) -> list[dict]:
+        """Merge score fields from score_hits into full_hits by bvid.
+
+        This is used to preserve original scores (from KNN/hybrid search)
+        when fetching full documents by bvid.
+
+        Args:
+            full_hits: Full document hits (from bvid-based search).
+            score_hits: Hits with score information (from KNN/hybrid search).
+            score_fields: List of score field names to merge.
+                         Defaults to ["score", "hybrid_score", "word_rank", "knn_rank"].
+
+        Returns:
+            full_hits with score fields merged in.
+        """
+        if not score_hits:
+            return full_hits
+
+        if score_fields is None:
+            score_fields = [
+                "score",
+                "hybrid_score",
+                "word_rank",
+                "knn_rank",
+                "rank_score",
+                "sort_score",
+            ]
+
+        # Build bvid -> score data mapping
+        score_map = {}
+        for hit in score_hits:
+            bvid = hit.get("bvid")
+            if bvid:
+                score_data = {}
+                for field in score_fields:
+                    if field in hit:
+                        score_data[field] = hit[field]
+                if score_data:
+                    score_map[bvid] = score_data
+
+        # Merge scores into full_hits
+        for hit in full_hits:
+            bvid = hit.get("bvid")
+            if bvid and bvid in score_map:
+                hit.update(score_map[bvid])
+
+        return full_hits
 
     def explore(
         self,
@@ -512,6 +572,7 @@ class VideoExplorer(VideoSearcherV2):
             "query_vector_len": len(query_vector),
             "filter_count": len(filter_clauses),
             "filters": filter_clauses[:3] if filter_clauses else [],  # Show first 3
+            "qmod": ["vector"],  # vector-only mode
         }
 
         knn_query_result = {
@@ -537,7 +598,7 @@ class VideoExplorer(VideoSearcherV2):
             "source_fields": ["bvid", "stat", "pubdate", "duration"],  # Minimal fields
             "extra_filters": extra_filters,
             "knn_field": knn_field,
-            "k": min(knn_k, most_relevant_limit),
+            "k": most_relevant_limit,  # Use most_relevant_limit to get enough candidates
             "num_candidates": knn_num_candidates,
             "similarity": similarity,
             "add_region_info": False,
@@ -577,22 +638,34 @@ class VideoExplorer(VideoSearcherV2):
             logger.exit_quiet(not verbose)
             return {"query": query, "status": final_status, "data": step_results}
 
-        bvid_filter = bvids_to_filter(bvids)
+        # Use fetch_docs_by_bvids to get full docs without word matching
+        full_doc_search_res = self.fetch_docs_by_bvids(
+            bvids=bvids,
+            add_region_info=True,
+            limit=len(bvids),
+            timeout=EXPLORE_TIMEOUT,
+            verbose=verbose,
+        )
 
-        # Use regular search to fetch full docs with the bvid filter
-        full_doc_search_params = {
-            "query": query,
-            "extra_filters": extra_filters + [bvid_filter],
-            "rank_method": rank_method,
-            "is_highlight": False,  # KNN doesn't use keyword highlights
-            "add_region_info": True,
-            "add_highlights_info": False,
-            "limit": len(bvids),
-            "timeout": EXPLORE_TIMEOUT,
-            "verbose": verbose,
-        }
+        # Merge KNN scores from original search into full doc hits
+        knn_hits = knn_search_res.get("hits", [])
+        full_hits = full_doc_search_res.get("hits", [])
+        self.merge_scores_into_hits(full_hits, knn_hits)
 
-        full_doc_search_res = self.search(**full_doc_search_params)
+        # Re-apply ranking after merging scores
+        if rank_method == "rrf":
+            full_doc_search_res = self.hit_ranker.rrf_rank(
+                full_doc_search_res, top_k=rank_top_k
+            )
+        elif rank_method == "stats":
+            full_doc_search_res = self.hit_ranker.stats_rank(
+                full_doc_search_res, top_k=rank_top_k
+            )
+        else:  # "heads"
+            full_doc_search_res = self.hit_ranker.heads(
+                full_doc_search_res, top_k=rank_top_k
+            )
+
         full_doc_search_res["total_hits"] = knn_search_res.get("total_hits", 0)
         self.update_step_output(knn_search_result, step_output=full_doc_search_res)
 
@@ -634,3 +707,345 @@ class VideoExplorer(VideoSearcherV2):
 
         logger.exit_quiet(not verbose)
         return {"query": query, "status": final_status, "data": step_results}
+
+    def hybrid_explore(
+        self,
+        # Query and filter params
+        query: str,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
+        verbose: bool = False,
+        # KNN params
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        knn_k: int = KNN_K,
+        knn_num_candidates: int = KNN_NUM_CANDIDATES,
+        # Hybrid params
+        rrf_k: int = HYBRID_RRF_K,
+        fusion_method: Literal["rrf", "weighted"] = "rrf",
+        # Explore params
+        most_relevant_limit: int = 10000,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_top_k: int = 400,
+        group_owner_limit: int = 20,
+    ) -> dict:
+        """Hybrid explore combining word-based and vector-based retrieval.
+
+        This method:
+        1. Performs word-based search
+        2. Performs KNN vector search
+        3. Fuses results using RRF
+        4. Fetches full documents for top results
+        5. Groups results by owner (UP主)
+
+        Args:
+            query: Query string (can include DSL filter expressions).
+            extra_filters: Additional filter clauses.
+            suggest_info: Suggestion info.
+            verbose: Enable verbose logging.
+            knn_field: Dense vector field for KNN search.
+            knn_k: Number of nearest neighbors.
+            knn_num_candidates: Candidates per shard.
+            rrf_k: K parameter for RRF fusion.
+            fusion_method: "rrf" or "weighted".
+            most_relevant_limit: Max docs for searches.
+            rank_method: Ranking method for results.
+            rank_top_k: Top-k for final ranking.
+            group_owner_limit: Max groups for owner aggregation.
+
+        Returns:
+            dict: {
+                "query": str,
+                "status": "finished" | "timedout" | "error",
+                "data": list[dict]  # list of step results, qmod in first step's output
+            }
+        """
+        logger.enter_quiet(not verbose)
+
+        step_results = []
+        final_status = "finished"
+
+        # Step 0: Parse query and extract info
+        step_idx = 0
+        step_name = "construct_query_dsl_dict"
+        logger.hint("> [step 0] Query constructing ...")
+
+        query_info = self.query_rewriter.get_query_info(query)
+        query_dsl_dict_result = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "finished",
+            "input": {"query": query},
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "output": {
+                "words_expr": query_info.get("words_expr", ""),
+                "keywords_body": query_info.get("keywords_body", []),
+                "qmod": ["word", "vector"],  # hybrid mode
+            },
+            "comment": "",
+        }
+        step_results.append(query_dsl_dict_result)
+
+        # Step 1: Hybrid search
+        step_idx += 1
+        step_name = "hybrid_search"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Hybrid search (word + KNN)")
+
+        hybrid_search_params = {
+            "query": query,
+            "source_fields": ["bvid", "stat", "pubdate", "duration"],  # Minimal fields
+            "extra_filters": extra_filters,
+            "suggest_info": suggest_info,
+            "knn_field": knn_field,
+            "knn_k": most_relevant_limit,  # Use most_relevant_limit for k to get enough candidates
+            "knn_num_candidates": knn_num_candidates,
+            "rrf_k": rrf_k,
+            "fusion_method": fusion_method,
+            "add_region_info": False,
+            "add_highlights_info": False,
+            "is_highlight": False,
+            "rank_method": rank_method,
+            "limit": most_relevant_limit,
+            "rank_top_k": rank_top_k,
+            "timeout": EXPLORE_TIMEOUT,
+            "verbose": verbose,
+        }
+
+        hybrid_search_result = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": hybrid_search_params,
+            "output": {},
+            "output_type": "hits",
+            "comment": "",
+        }
+
+        hybrid_search_res = self.hybrid_search(**hybrid_search_params)
+        self.update_step_output(hybrid_search_result, step_output=hybrid_search_res)
+
+        if self.is_status_timedout(hybrid_search_result):
+            final_status = "timedout"
+            step_results.append(hybrid_search_result)
+            logger.exit_quiet(not verbose)
+            return {
+                "query": query,
+                "status": final_status,
+                "data": step_results,
+            }
+
+        # Step 2: Fetch full docs for ranked results
+        bvids = [hit.get("bvid", None) for hit in hybrid_search_res.get("hits", [])]
+        if not bvids:
+            logger.warn("× No results from hybrid search")
+            step_results.append(hybrid_search_result)
+            logger.exit_quiet(not verbose)
+            return {
+                "query": query,
+                "status": final_status,
+                "data": step_results,
+            }
+
+        bvid_filter = bvids_to_filter(bvids)
+
+        full_doc_search_params = {
+            "query": query,
+            "extra_filters": extra_filters + [bvid_filter],
+            "rank_method": "heads",  # Use heads to preserve order, we'll merge scores
+            "is_highlight": True,
+            "add_region_info": True,
+            "add_highlights_info": True,
+            "limit": len(bvids),
+            "timeout": EXPLORE_TIMEOUT,
+            "verbose": verbose,
+        }
+
+        full_doc_search_res = self.search(**full_doc_search_params)
+
+        # Merge hybrid scores from original search into full doc hits
+        hybrid_hits = hybrid_search_res.get("hits", [])
+        full_hits = full_doc_search_res.get("hits", [])
+        self.merge_scores_into_hits(full_hits, hybrid_hits)
+
+        # Re-apply ranking after merging scores
+        if rank_method == "rrf":
+            full_doc_search_res = self.hit_ranker.rrf_rank(
+                full_doc_search_res, top_k=rank_top_k
+            )
+        elif rank_method == "stats":
+            full_doc_search_res = self.hit_ranker.stats_rank(
+                full_doc_search_res, top_k=rank_top_k
+            )
+        else:  # "heads"
+            full_doc_search_res = self.hit_ranker.heads(
+                full_doc_search_res, top_k=rank_top_k
+            )
+
+        full_doc_search_res["total_hits"] = hybrid_search_res.get("total_hits", 0)
+        full_doc_search_res["fusion_method"] = hybrid_search_res.get(
+            "fusion_method", fusion_method
+        )
+        full_doc_search_res["word_hits_count"] = hybrid_search_res.get(
+            "word_hits_count", 0
+        )
+        full_doc_search_res["knn_hits_count"] = hybrid_search_res.get(
+            "knn_hits_count", 0
+        )
+
+        self.update_step_output(hybrid_search_result, step_output=full_doc_search_res)
+
+        if self.is_status_timedout(hybrid_search_result):
+            final_status = "timedout"
+            step_results.append(hybrid_search_result)
+            logger.exit_quiet(not verbose)
+            return {
+                "query": query,
+                "status": final_status,
+                "data": step_results,
+            }
+
+        step_results.append(hybrid_search_result)
+
+        # Step 3: Group hits by owner
+        step_idx += 1
+        step_name = "group_hits_by_owner"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Group hits by owner")
+
+        group_hits_by_owner_params = {
+            "search_res": full_doc_search_res,
+            "limit": group_owner_limit,
+        }
+
+        group_hits_by_owner_result = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": {"limit": group_owner_limit},
+            "output": {},
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "comment": "",
+        }
+
+        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
+        self.update_step_output(
+            group_hits_by_owner_result, step_output=group_res, field="authors"
+        )
+        step_results.append(group_hits_by_owner_result)
+
+        logger.exit_quiet(not verbose)
+        return {
+            "query": query,
+            "status": final_status,
+            "data": step_results,
+        }
+
+    def unified_explore(
+        self,
+        query: str,
+        qmod: Union[str, list[str]] = None,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
+        verbose: bool = False,
+        # Common explore params
+        most_relevant_limit: int = 10000,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_top_k: int = 400,
+        group_owner_limit: int = 20,
+        # KNN/Hybrid specific params
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        knn_k: int = KNN_K,
+        knn_num_candidates: int = KNN_NUM_CANDIDATES,
+    ) -> dict:
+        """Unified explore that automatically selects search method based on query mode.
+
+        The query mode can be specified via:
+        1. The qmod parameter (str or list[str])
+        2. DSL expression in query (e.g., "黑神话 q=v" or "q=wv")
+
+        Args:
+            query: Query string.
+            qmod: Override mode(s). Can be:
+                - str: "w", "v", "wv" (shorthand) or "word", "vector"
+                - list[str]: ["word"], ["vector"], ["word", "vector"]
+                If None, extracted from query.
+            extra_filters: Additional filter clauses.
+            suggest_info: Suggestion info.
+            verbose: Enable verbose logging.
+            most_relevant_limit: Max docs for searches.
+            rank_method: Ranking method.
+            rank_top_k: Top-k for ranking.
+            group_owner_limit: Max owner groups.
+            knn_field: Dense vector field.
+            knn_k: KNN neighbors count.
+            knn_num_candidates: KNN candidates per shard.
+
+        Returns:
+            Explore results dict (qmod is in first step_result's output).
+        """
+        from converters.dsl.fields.qmod import normalize_qmod
+
+        # Extract query mode from query if not provided
+        if qmod is None:
+            qmod = self.get_qmod_from_query(query)
+        else:
+            qmod = normalize_qmod(qmod)
+
+        logger.hint(f"> Query mode (qmod): {qmod}", verbose=verbose)
+
+        is_hybrid = is_hybrid_qmod(qmod)
+        has_word = "word" in qmod
+        has_vector = "vector" in qmod
+
+        if is_hybrid:
+            # Hybrid mode (both word and vector)
+            result = self.hybrid_explore(
+                query=query,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                knn_field=knn_field,
+                knn_k=knn_k,
+                knn_num_candidates=knn_num_candidates,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+            )
+            return result
+
+        elif has_vector:
+            # Vector-only mode
+            result = self.knn_explore(
+                query=query,
+                extra_filters=extra_filters,
+                verbose=verbose,
+                knn_field=knn_field,
+                knn_k=knn_k,
+                knn_num_candidates=knn_num_candidates,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+            )
+            return result
+
+        else:
+            # Word-only mode
+            result = self.explore(
+                query=query,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+            )
+            # Add qmod to first step's output for word-only mode
+            if result.get("data") and len(result["data"]) > 0:
+                result["data"][0]["output"]["qmod"] = ["word"]
+            return result

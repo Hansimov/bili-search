@@ -4,6 +4,7 @@ OP_REL_TYPE = Literal["eqs", "neqs", "lt", "gt", "leqs", "geqs"]
 
 USER_OPS = ["eq", "neq", "at_eq", "at_neq"]
 WORD_OPS = ["eq", "neq", "pl", "mi", "nq", "qs", "fz"]
+QMOD_CHARS = ["w", "v"]  # word, vector (extensible for future modes)
 
 START_EXPR = "start"
 MAIN_EXPRS = ["expr", "expr_with_error"]
@@ -13,9 +14,10 @@ BOOL_EXPRS = ["and_expr", "or_expr", "co_expr"]
 BOOL_OPS = ["or", "and", "co", "pa"]
 
 WORD_EXPRS = ["word_expr"]
+QMOD_EXPRS = ["qmod_expr"]
 FILTER_EXPRS = [
     *["bvid_expr", "date_expr", "user_expr", "uid_expr"],
-    *["stat_expr", "dura_expr", "region_expr"],
+    *["stat_expr", "dura_expr", "region_expr", "qmod_expr"],
 ]
 ITEM_EXPRS = [*FILTER_EXPRS, *WORD_EXPRS]
 TEXT_TYPES = ["text_quoted", "text_strict", "text_plain"]

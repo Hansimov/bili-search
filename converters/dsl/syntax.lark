@@ -7,7 +7,7 @@ start: expr | expr_with_error
         co_expr: expr+
         and_expr: expr (and expr)+
         pa_expr: lp expr? rp
-        atom_expr: bvid_expr | date_expr | user_expr | uid_expr | stat_expr | dura_expr | region_expr | word_expr | text_expr
+        atom_expr: bvid_expr | date_expr | user_expr | uid_expr | stat_expr | dura_expr | region_expr | qmod_expr | word_expr | text_expr
     ?expr_with_error: (expr | expr_error)+
         expr_error: text_catch
 
@@ -154,6 +154,15 @@ uid_expr: colon? uid_key uid_op uid_val
         uid_val_single: digits
         uid_val_list: lb_comma (uid_val_single)? (comma uid_val_single)* comma_rb
 
+// ---------- ugid exprs ---------- //
+ugid_expr: colon? ugid_key ugid_op ugid_val
+    ugid_key: /(?i:(ugid|g))/
+    ugid_op: op_eqs
+    ugid_val: ugid_val_single | ugid_val_list
+        ugid_val_single: ugid_str
+        ugid_val_list: lb_comma (ugid_val_single)? (comma ugid_val_single)* comma_rb
+
+ugid_str: /[a-zA-Z0-9_]+/
 
 // ---------- avid/bvid exprs ---------- //
 bvid_expr: colon? bvid_key bvid_op bvid_val
@@ -205,6 +214,20 @@ region_expr: colon? region_key region_op region_val
         region_val_single: digits | text_strict
         region_val_list: lb_comma (region_val_single)? (comma region_val_single)* comma_rb
 
+// ---------- scope exprs ---------- //
+scope_expr: colon? scope_key scope_op scope_val
+    scope_key: /(?i:(scope|s))/
+    scope_op: eq | neq
+    scope_val: /(?i:[tgnd]+)/
+    // t:title, g:tags, n:owner.name, d:desc
+
+// ---------- qmod exprs ---------- //
+// q=w (word), q=v (vector), q=wv (word+vector hybrid)
+qmod_expr: colon? qmod_key qmod_op qmod_val
+    qmod_key: /(?i:(qmod|qm|q))/
+    qmod_op: eqs
+    qmod_val: /(?i:[wv]+)/
+    // w: word-based retrieval, v: vector-based KNN retrieval
 
 // ---------- word exprs ---------- //
 word_expr: colon? word_key_op_val

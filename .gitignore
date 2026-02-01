@@ -4,5 +4,6 @@ secrets.json
 *.crt
 *.pem
 logs/
+*.log
 *.lm
 tests/

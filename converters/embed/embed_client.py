@@ -14,6 +14,9 @@ from configs.envs import TEI_CLIENTS_ENDPOINTS
 # Default LSH bit count - should match text_emb dims in ES index
 KNN_LSH_BITN = 2048
 
+# Default cache size for embedding results
+EMBEDDING_CACHE_SIZE = 1024
+
 
 def get_tei_endpoints() -> list[str]:
     """Get TEI client endpoints from secrets config."""
@@ -54,6 +57,8 @@ class TextEmbedSearchClient:
         self.bitn = bitn
         self._clients = None
         self._initialized = False
+        self._cache = {}  # Simple cache for text -> hex mappings
+        self._cache_max_size = EMBEDDING_CACHE_SIZE
 
         if not lazy_init:
             self._ensure_initialized()
@@ -84,11 +89,33 @@ class TextEmbedSearchClient:
         """Check if the client is available and ready."""
         return self._ensure_initialized()
 
-    def text_to_hex(self, text: str) -> str:
+    def _compute_lsh(self, text: str) -> str:
+        """Internal method to compute LSH."""
+        try:
+            results = self._clients.lsh([text], bitn=self.bitn)
+            return results[0] if results else ""
+        except Exception as e:
+            logger.warn(f"× Failed to compute LSH for text: {e}")
+            return ""
+
+    def _get_from_cache(self, text: str) -> str:
+        """Get cached result if available."""
+        return self._cache.get(text)
+
+    def _add_to_cache(self, text: str, hex_result: str) -> None:
+        """Add result to cache with simple LRU-like eviction."""
+        if len(self._cache) >= self._cache_max_size:
+            # Remove oldest item (first key in dict - Python 3.7+ maintains order)
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+        self._cache[text] = hex_result
+
+    def text_to_hex(self, text: str, use_cache: bool = True) -> str:
         """Convert a single text to LSH hex string.
 
         Args:
             text: Input text to convert.
+            use_cache: Whether to use cache for repeated queries.
 
         Returns:
             Hex string representation of the LSH bit vector.
@@ -97,12 +124,19 @@ class TextEmbedSearchClient:
         if not self._ensure_initialized():
             return ""
 
-        try:
-            results = self._clients.lsh([text], bitn=self.bitn)
-            return results[0] if results else ""
-        except Exception as e:
-            logger.warn(f"× Failed to compute LSH for text: {e}")
-            return ""
+        if use_cache:
+            # Check cache first
+            cached = self._get_from_cache(text)
+            if cached is not None:
+                return cached
+
+            # Compute and cache
+            result = self._compute_lsh(text)
+            if result:
+                self._add_to_cache(text, result)
+            return result
+        else:
+            return self._compute_lsh(text)
 
     def texts_to_hex(self, texts: list[str]) -> list[str]:
         """Convert multiple texts to LSH hex strings.

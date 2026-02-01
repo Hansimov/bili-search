@@ -357,6 +357,99 @@ def test_embed_client():
     client.close()
 
 
+# Query mode / hybrid search test queries
+hybrid_queries = [
+    "黑神话 q=wv",
+    "影视飓风 q=v d>2024",
+    "deepseek q=wv v>1k",
+    "q=wv 游戏",
+]
+
+
+def test_hybrid_search():
+    """Test hybrid search functionality."""
+    searcher = VideoSearcherV2(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+    for query in hybrid_queries:
+        logger.note("> Hybrid searching:", end=" ")
+        logger.file(f"[{query}]")
+        res = searcher.hybrid_search(query, limit=50, verbose=True)
+        hits = res.get("hits", [])
+        logger.success(f"Total hits: {res.get('total_hits', 0)}")
+        logger.success(f"Word hits: {res.get('word_hits_count', 0)}")
+        logger.success(f"KNN hits: {res.get('knn_hits_count', 0)}")
+        logger.success(f"Fusion method: {res.get('fusion_method', 'N/A')}")
+        for idx, hit in enumerate(hits[:3]):
+            logger.note(f"* Hit {idx}:")
+            hybrid_score = hit.get("hybrid_score", 0)
+            logger.mesg(f"  hybrid_score: {hybrid_score:.4f}")
+            logger.file(dict_to_str(hit, align_list=False), indent=4)
+
+
+def test_unified_explore():
+    """Test unified explore with automatic query mode detection."""
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+    test_queries = [
+        ("黑神话 悟空", None),  # Should default to ["vector"]
+        ("黑神话 q=v", None),  # Should use ["vector"] from query
+        ("影视飓风 q=wv d>2024", None),  # Should use ["word", "vector"] from query
+        ("deepseek", ["vector"]),  # Explicit mode override
+        ("游戏", ["word", "vector"]),  # Explicit mode override
+    ]
+    for query, mode in test_queries:
+        logger.note(f"> Unified exploring: [{query}] qmod={mode}")
+        explore_res = explorer.unified_explore(
+            query=query,
+            qmod=mode,
+            rank_top_k=50,
+            group_owner_limit=10,
+            verbose=True,
+        )
+        logger.success(f"Status: {explore_res.get('status', 'N/A')}")
+        # qmod is now in the first step's output
+        first_step = explore_res.get("data", [{}])[0]
+        qmod_from_output = first_step.get("output", {}).get("qmod", "N/A")
+        logger.success(f"Query mode (from step output): {qmod_from_output}")
+        for step_res in explore_res.get("data", []):
+            stage_name = step_res["name"]
+            logger.hint(f"* stage: {logstr.mesg(brk(stage_name))}")
+
+
+def test_qmod_parser():
+    """Test qmod parsing from DSL."""
+    from converters.dsl.fields.qmod import (
+        extract_qmod_from_expr_tree,
+        QMOD_DEFAULT,
+    )
+    from converters.dsl.elastic import DslExprToElasticConverter
+
+    converter = DslExprToElasticConverter()
+    test_cases = [
+        ("q=w", ["word"]),
+        ("q=v", ["vector"]),
+        ("q=wv", ["word", "vector"]),
+        ("q=vw", ["word", "vector"]),  # normalized order
+        ("qm=w", ["word"]),
+        ("qmod=v", ["vector"]),
+        ("黑神话 q=v", ["vector"]),
+        ("黑神话 q=wv v>1w", ["word", "vector"]),
+        ("黑神话 悟空", ["vector"]),  # default is vector
+    ]
+
+    logger.note("> Testing qmod parser...")
+    for query, expected in test_cases:
+        try:
+            expr_tree = converter.construct_expr_tree(query)
+            mode = extract_qmod_from_expr_tree(expr_tree)
+            status = "✓" if mode == expected else "×"
+            logger.mesg(f"  {status} [{query}] -> {mode} (expected: {expected})")
+        except Exception as e:
+            logger.warn(f"  × [{query}] -> ERROR: {e}")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -369,7 +462,10 @@ if __name__ == "__main__":
     # test_categorize()
     # test_embed_client()
     # test_knn_search()
-    test_knn_search_with_filters()
+    # test_knn_search_with_filters()
     # test_knn_explore()
+    # test_hybrid_search()
+    # test_unified_explore()
+    test_qmod_parser()
 
     # python -m elastics.videos.tests

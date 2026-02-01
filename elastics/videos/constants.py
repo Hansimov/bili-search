@@ -154,6 +154,17 @@ USE_SCRIPT_SCORE_DEFAULT = False
 RANK_METHOD_TYPE = Literal["heads", "rrf", "stats"]
 RANK_METHOD_DEFAULT = "stats"
 
+# Query mode (qmod): controls word/vector/hybrid search
+# Each character represents a mode: w=word, v=vector
+# Multiple chars enable hybrid search (e.g., "wv" = word+vector)
+QMOD_SINGLE_TYPE = Literal["word", "vector"]
+QMOD_DEFAULT = "vector"  # default to vector-based retrieval
+
+# Hybrid search settings
+HYBRID_WORD_WEIGHT = 0.5  # weight for word-based score in hybrid mode
+HYBRID_VECTOR_WEIGHT = 0.5  # weight for vector-based score in hybrid mode
+HYBRID_RRF_K = 60  # k parameter for RRF fusion
+
 TRACK_TOTAL_HITS = True
 IS_HIGHLIGHT = True
 

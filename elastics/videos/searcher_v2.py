@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from sedb import MongoOperator, ElasticOperator
 from tclogger import logger, dict_to_str, get_now, tcdatetime
@@ -34,9 +35,13 @@ from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD, KNN_K, KNN_NUM_CANDIDATES
 from elastics.videos.constants import KNN_TIMEOUT
+from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
+from elastics.videos.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT
+from elastics.videos.constants import HYBRID_RRF_K
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.videos.ranker import VideoHitsRanker
 from converters.embed import TextEmbedSearchClient
+from converters.dsl.fields.qmod import extract_qmod_from_expr_tree
 
 
 class VideoSearcherV2:
@@ -314,6 +319,78 @@ class VideoSearcherV2:
         logger.exit_quiet(not verbose)
         return res_dict
 
+    def fetch_docs_by_bvids(
+        self,
+        bvids: list[str],
+        source_fields: list[str] = SOURCE_FIELDS,
+        add_region_info: bool = True,
+        limit: int = None,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
+        verbose: bool = False,
+    ) -> dict:
+        """Fetch documents by bvid list without word matching.
+
+        This method retrieves full documents using only bvid filter,
+        without any query matching. Useful for fetching KNN/hybrid results.
+
+        Args:
+            bvids: List of bvids to fetch.
+            source_fields: Fields to include in results.
+            add_region_info: Whether to add region info.
+            limit: Maximum results (defaults to len(bvids)).
+            timeout: Search timeout.
+            verbose: Enable verbose logging.
+
+        Returns:
+            Search results dict with hits.
+        """
+        logger.enter_quiet(not verbose)
+
+        if not bvids:
+            logger.exit_quiet(not verbose)
+            return {
+                "timed_out": False,
+                "total_hits": 0,
+                "return_hits": 0,
+                "hits": [],
+            }
+
+        if limit is None:
+            limit = len(bvids)
+
+        # Build search body with only bvid filter (no query matching)
+        search_body = {
+            "query": {"bool": {"filter": [{"terms": {"bvid.keyword": bvids}}]}},
+            "_source": source_fields,
+            "size": limit,
+            "track_total_hits": True,
+        }
+        search_body = set_timeout(search_body, timeout=timeout)
+
+        logger.mesg(f"> Fetching {len(bvids)} docs by bvid", verbose=verbose)
+
+        # Submit to ES
+        res_dict = self.submit_to_es(search_body)
+
+        # Parse results
+        parse_res = self.hit_parser.parse(
+            query_info={},
+            match_fields=[],
+            res_dict=res_dict,
+            request_type="search",
+            drop_no_highlights=False,
+            add_region_info=add_region_info,
+            add_highlights_info=False,
+            match_type="cross_fields",
+            match_operator="or",
+            detail_level=-1,
+            limit=limit,
+            verbose=verbose,
+        )
+
+        logger.exit_quiet(not verbose)
+        return parse_res
+
     def rewrite_by_suggest(
         self,
         query_info: dict,
@@ -384,6 +461,44 @@ class VideoSearcherV2:
         return_res["query_info"].pop("query_expr_tree", None)
         return_res["rewrite_info"].pop("rewrited_expr_trees", None)
         return return_res
+
+    def sanitize_search_body_for_client(self, search_body: dict) -> dict:
+        """Remove large filter terms from search_body before returning to client.
+
+        This reduces network payload by removing bvid terms filter arrays which
+        can contain hundreds of ids, while preserving the rest of the query structure.
+
+        Args:
+            search_body: The search body dict to sanitize.
+
+        Returns:
+            A sanitized copy with large terms arrays replaced by placeholders.
+        """
+        if not search_body:
+            return search_body
+
+        sanitized = deepcopy(search_body)
+
+        def sanitize_terms(obj: dict, max_terms: int = 10) -> None:
+            """Recursively find and truncate large terms arrays."""
+            if not isinstance(obj, dict):
+                return
+            for key, value in obj.items():
+                if key == "terms" and isinstance(value, dict):
+                    # Found a terms filter, check each field
+                    for field, terms_list in value.items():
+                        if isinstance(terms_list, list) and len(terms_list) > max_terms:
+                            # Replace with count indicator
+                            value[field] = f"[{len(terms_list)} items omitted]"
+                elif isinstance(value, dict):
+                    sanitize_terms(value, max_terms)
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict):
+                            sanitize_terms(item, max_terms)
+
+        sanitize_terms(sanitized)
+        return sanitized
 
     def construct_agg_body_of_percentile(
         self,
@@ -631,7 +746,8 @@ class VideoSearcherV2:
             return_res=parse_res,
         )
         return_res = self.post_process_return_res(parse_res)
-        return_res["search_body"] = search_body
+        # Sanitize search_body to reduce network payload (removes large terms arrays)
+        return_res["search_body"] = self.sanitize_search_body_for_client(search_body)
         logger.exit_quiet(not verbose)
         return return_res
 
@@ -881,7 +997,8 @@ class VideoSearcherV2:
             "query_info": query_info,
             "suggest_info": {},
             "rewrite_info": {},
-            "search_body": search_body,
+            # Sanitize search_body to reduce network payload
+            "search_body": self.sanitize_search_body_for_client(search_body),
         }
 
         # Clean up non-jsonable items
@@ -889,3 +1006,345 @@ class VideoSearcherV2:
 
         logger.exit_quiet(not verbose)
         return return_res
+
+    def get_qmod_from_query(self, query: str) -> list[str]:
+        """Extract query mode (qmod) from query string.
+
+        Parses the query for q=w/v/wv expression and returns the mode list.
+
+        Args:
+            query: Query string that may contain q=w/v/wv.
+
+        Returns:
+            List of query modes, e.g. ["word"], ["vector"], ["word", "vector"].
+        """
+        try:
+            expr_tree = self.elastic_converter.construct_expr_tree(query)
+            return extract_qmod_from_expr_tree(expr_tree)
+        except Exception as e:
+            logger.warn(f"× Failed to parse qmod: {e}")
+            return [QMOD_DEFAULT]
+
+    def hybrid_search(
+        self,
+        query: str,
+        source_fields: list[str] = SOURCE_FIELDS,
+        match_fields: list[str] = SEARCH_MATCH_FIELDS,
+        match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
+        # Word search params
+        boost: bool = True,
+        boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
+        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        # KNN params
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        knn_k: int = KNN_K,
+        knn_num_candidates: int = KNN_NUM_CANDIDATES,
+        # Hybrid fusion params
+        word_weight: float = HYBRID_WORD_WEIGHT,
+        vector_weight: float = HYBRID_VECTOR_WEIGHT,
+        rrf_k: int = HYBRID_RRF_K,
+        fusion_method: Literal["rrf", "weighted"] = "rrf",
+        # Common params
+        parse_hits: bool = True,
+        add_region_info: bool = True,
+        add_highlights_info: bool = True,
+        is_highlight: bool = IS_HIGHLIGHT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        limit: int = SEARCH_LIMIT,
+        rank_top_k: int = RANK_TOP_K,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
+        verbose: bool = False,
+    ) -> dict:
+        """Perform hybrid search combining word-based and vector-based retrieval.
+
+        This method:
+        1. Performs word-based search using traditional ES query
+        2. Performs KNN vector search using text embeddings
+        3. Fuses results using RRF or weighted combination
+
+        Args:
+            query: Query string (can include DSL expressions).
+            source_fields: Fields to include in results.
+            match_fields: Fields for word matching.
+            match_type: Type of matching for word search.
+            extra_filters: Additional filter clauses.
+            suggest_info: Suggestion info from previous searches.
+            boost: Whether to boost fields.
+            boosted_fields: Field boost weights.
+            use_script_score: Whether to use script scoring.
+            knn_field: Dense vector field for KNN.
+            knn_k: Number of KNN neighbors.
+            knn_num_candidates: KNN candidates per shard.
+            word_weight: Weight for word-based scores (weighted fusion).
+            vector_weight: Weight for vector-based scores (weighted fusion).
+            rrf_k: K parameter for RRF fusion.
+            fusion_method: "rrf" or "weighted".
+            parse_hits: Whether to parse hits.
+            add_region_info: Whether to add region info.
+            add_highlights_info: Whether to add highlight info.
+            is_highlight: Whether to highlight matches.
+            rank_method: Final ranking method.
+            limit: Maximum results.
+            rank_top_k: Top-k for ranking.
+            timeout: Search timeout.
+            verbose: Enable verbose logging.
+
+        Returns:
+            Search results with fused hits from both methods.
+        """
+        logger.enter_quiet(not verbose)
+
+        # Get query info
+        query_info = self.query_rewriter.get_query_info(query)
+
+        # Execute word search and KNN search in parallel
+        logger.hint("> Hybrid: Running word search and KNN search in parallel ...")
+
+        # Cap word search limit to avoid excessive results (max 2000 for word search)
+        word_limit = min(limit, 2000)
+        word_search_params = {
+            "query": query,
+            "source_fields": source_fields,
+            "match_fields": match_fields,
+            "match_type": match_type,
+            "extra_filters": extra_filters,
+            "suggest_info": suggest_info,
+            "boost": boost,
+            "boosted_fields": boosted_fields,
+            "use_script_score": use_script_score,
+            "parse_hits": True,
+            "add_region_info": add_region_info,
+            "add_highlights_info": add_highlights_info,
+            "is_highlight": is_highlight,
+            "rank_method": "heads",  # Use heads, we'll re-rank after fusion
+            "limit": word_limit,
+            "rank_top_k": word_limit,
+            "timeout": timeout,
+            "verbose": verbose,
+        }
+
+        # KNN k must not exceed num_candidates, and we cap limit to avoid excessive results
+        knn_limit = min(limit, knn_num_candidates)
+        knn_search_params = {
+            "query": query,
+            "source_fields": source_fields,
+            "extra_filters": extra_filters,
+            "knn_field": knn_field,
+            "k": knn_limit,  # k must be <= num_candidates
+            "num_candidates": knn_num_candidates,
+            "parse_hits": True,
+            "add_region_info": add_region_info,
+            "rank_method": "heads",  # Use heads, we'll re-rank after fusion
+            "limit": knn_limit,
+            "rank_top_k": knn_limit,
+            "timeout": timeout,
+            "verbose": verbose,
+        }
+
+        # Use ThreadPoolExecutor to run both searches in parallel
+        word_search_res = {}
+        knn_search_res = {}
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Submit both search tasks
+            word_future = executor.submit(self.search, **word_search_params)
+            knn_future = executor.submit(self.knn_search, **knn_search_params)
+
+            # Wait for both to complete
+            word_search_res = word_future.result()
+            knn_search_res = knn_future.result()
+
+        logger.hint("> Hybrid: Both searches completed")
+
+        # Fuse results
+        logger.hint("> Hybrid: Fusing results ...")
+        word_hits = word_search_res.get("hits", [])
+        knn_hits = knn_search_res.get("hits", [])
+
+        # Use capped limit for fusion to avoid excessive results
+        fusion_limit = min(limit, max(len(word_hits), len(knn_hits), 1000))
+
+        if fusion_method == "rrf":
+            fused_hits = self._rrf_fusion(
+                word_hits, knn_hits, k=rrf_k, limit=fusion_limit
+            )
+        else:
+            fused_hits = self._weighted_fusion(
+                word_hits,
+                knn_hits,
+                word_weight=word_weight,
+                vector_weight=vector_weight,
+                limit=fusion_limit,
+            )
+
+        # Build result dict
+        parse_res = {
+            "timed_out": word_search_res.get("timed_out", False)
+            or knn_search_res.get("timed_out", False),
+            "total_hits": max(
+                word_search_res.get("total_hits", 0),
+                knn_search_res.get("total_hits", 0),
+            ),
+            "return_hits": len(fused_hits),
+            "hits": fused_hits,
+            "word_hits_count": len(word_hits),
+            "knn_hits_count": len(knn_hits),
+            "fusion_method": fusion_method,
+        }
+
+        # Apply final ranking
+        if rank_method == "rrf":
+            parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
+        elif rank_method == "stats":
+            parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
+        else:  # "heads"
+            parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
+
+        # Build return result
+        return_res = {
+            **parse_res,
+            "query_info": query_info,
+            "suggest_info": word_search_res.get("suggest_info", {}),
+            "rewrite_info": word_search_res.get("rewrite_info", {}),
+        }
+
+        # Clean up non-jsonable items
+        return_res["query_info"].pop("query_expr_tree", None)
+
+        logger.exit_quiet(not verbose)
+        return return_res
+
+    def _rrf_fusion(
+        self,
+        word_hits: list[dict],
+        knn_hits: list[dict],
+        k: int = HYBRID_RRF_K,
+        limit: int = SEARCH_LIMIT,
+    ) -> list[dict]:
+        """Fuse results using Reciprocal Rank Fusion (RRF).
+
+        RRF score = sum(1 / (k + rank)) for each result list.
+
+        Args:
+            word_hits: Hits from word-based search.
+            knn_hits: Hits from KNN search.
+            k: RRF k parameter (default 60).
+            limit: Maximum results to return.
+
+        Returns:
+            Fused and sorted list of hits.
+        """
+        # Build bvid -> hit mapping and calculate RRF scores
+        hit_map = {}  # bvid -> hit dict
+        rrf_scores = {}  # bvid -> rrf score
+
+        # Process word hits
+        for rank, hit in enumerate(word_hits, start=1):
+            bvid = hit.get("bvid")
+            if not bvid:
+                continue
+            hit_map[bvid] = hit
+            rrf_scores[bvid] = rrf_scores.get(bvid, 0) + 1 / (k + rank)
+            hit_map[bvid]["word_rank"] = rank
+
+        # Process KNN hits
+        for rank, hit in enumerate(knn_hits, start=1):
+            bvid = hit.get("bvid")
+            if not bvid:
+                continue
+            if bvid not in hit_map:
+                hit_map[bvid] = hit
+            rrf_scores[bvid] = rrf_scores.get(bvid, 0) + 1 / (k + rank)
+            hit_map[bvid]["knn_rank"] = rank
+
+        # Sort by RRF score
+        sorted_bvids = sorted(
+            rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True
+        )
+
+        # Build result list
+        fused_hits = []
+        for bvid in sorted_bvids[:limit]:
+            hit = hit_map[bvid]
+            hit["hybrid_score"] = rrf_scores[bvid]
+            hit["fusion_method"] = "rrf"
+            fused_hits.append(hit)
+
+        return fused_hits
+
+    def _weighted_fusion(
+        self,
+        word_hits: list[dict],
+        knn_hits: list[dict],
+        word_weight: float = HYBRID_WORD_WEIGHT,
+        vector_weight: float = HYBRID_VECTOR_WEIGHT,
+        limit: int = SEARCH_LIMIT,
+    ) -> list[dict]:
+        """Fuse results using weighted score combination.
+
+        Args:
+            word_hits: Hits from word-based search.
+            knn_hits: Hits from KNN search.
+            word_weight: Weight for word scores.
+            vector_weight: Weight for vector scores.
+            limit: Maximum results.
+
+        Returns:
+            Fused and sorted list of hits.
+        """
+        # Normalize weights
+        total_weight = word_weight + vector_weight
+        word_weight = word_weight / total_weight
+        vector_weight = vector_weight / total_weight
+
+        # Get max scores for normalization
+        word_max_score = (
+            max((h.get("score", 0) or 0 for h in word_hits), default=1) or 1
+        )
+        knn_max_score = max((h.get("score", 0) or 0 for h in knn_hits), default=1) or 1
+
+        # Build mappings
+        hit_map = {}  # bvid -> hit
+        word_scores = {}  # bvid -> normalized word score
+        knn_scores = {}  # bvid -> normalized knn score
+
+        for hit in word_hits:
+            bvid = hit.get("bvid")
+            if not bvid:
+                continue
+            hit_map[bvid] = hit
+            word_scores[bvid] = (hit.get("score", 0) or 0) / word_max_score
+
+        for hit in knn_hits:
+            bvid = hit.get("bvid")
+            if not bvid:
+                continue
+            if bvid not in hit_map:
+                hit_map[bvid] = hit
+            knn_scores[bvid] = (hit.get("score", 0) or 0) / knn_max_score
+
+        # Calculate weighted scores
+        weighted_scores = {}
+        for bvid in hit_map:
+            w_score = word_scores.get(bvid, 0)
+            k_score = knn_scores.get(bvid, 0)
+            weighted_scores[bvid] = word_weight * w_score + vector_weight * k_score
+
+        # Sort by weighted score
+        sorted_bvids = sorted(
+            weighted_scores.keys(), key=lambda x: weighted_scores[x], reverse=True
+        )
+
+        # Build result list
+        fused_hits = []
+        for bvid in sorted_bvids[:limit]:
+            hit = hit_map[bvid]
+            hit["hybrid_score"] = weighted_scores[bvid]
+            hit["word_score_norm"] = word_scores.get(bvid, 0)
+            hit["knn_score_norm"] = knn_scores.get(bvid, 0)
+            hit["fusion_method"] = "weighted"
+            fused_hits.append(hit)
+
+        return fused_hits
