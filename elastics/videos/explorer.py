@@ -15,6 +15,7 @@ from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
 from elastics.videos.constants import HYBRID_RRF_K
+from elastics.videos.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from converters.dsl.fields.qmod import extract_qmod_from_expr_tree, is_hybrid_qmod
@@ -350,8 +351,8 @@ class VideoExplorer(VideoSearcherV2):
         # `explore` related params
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
-        rank_top_k: int = 400,
-        group_owner_limit: int = 20,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
     ) -> dict:
         """Explore and return all step results in a single response.
 
@@ -471,9 +472,10 @@ class VideoExplorer(VideoSearcherV2):
         step_idx += 1
         step_name = "group_hits_by_owner"
         step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Group hits by owner, sort by sum of view")
+        logger.hint(f"> {step_str} Group hits by owner, sorted by first appearance")
         group_hits_by_owner_params = {
             "search_res": full_doc_search_res,
+            "sort_field": "first_appear_order",  # Match video result order
             "limit": group_owner_limit,
         }
         group_hits_by_owner_result = {
@@ -481,7 +483,7 @@ class VideoExplorer(VideoSearcherV2):
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
             "status": "running",
-            "input": {"limit": group_owner_limit},
+            "input": {"limit": group_owner_limit, "sort_field": "first_appear_order"},
             "output": {},
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
@@ -509,8 +511,8 @@ class VideoExplorer(VideoSearcherV2):
         # Explore params
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
-        rank_top_k: int = 400,
-        group_owner_limit: int = 20,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         group_sort_field: Literal[
             "sum_count",
             "sum_view",
@@ -806,8 +808,8 @@ class VideoExplorer(VideoSearcherV2):
         # Explore params
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
-        rank_top_k: int = 400,
-        group_owner_limit: int = 20,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         group_sort_field: Literal[
             "sum_count",
             "sum_view",
@@ -1076,8 +1078,8 @@ class VideoExplorer(VideoSearcherV2):
         # Common explore params
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
-        rank_top_k: int = 400,
-        group_owner_limit: int = 25,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         # KNN/Hybrid specific params
         knn_field: str = KNN_TEXT_EMB_FIELD,
         knn_k: int = KNN_K,

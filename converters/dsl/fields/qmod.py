@@ -24,8 +24,8 @@ from converters.dsl.constants import QMOD_CHARS
 # Single query mode types
 QMOD_SINGLE_TYPE = Literal["word", "vector"]
 
-# Default query mode
-QMOD_DEFAULT = "vector"
+# Default query mode - hybrid search for best results
+QMOD_DEFAULT = ["word", "vector"]
 
 # Character to mode name mapping
 QMOD_CHAR_MAP = {
@@ -56,7 +56,7 @@ def parse_qmod_str(mode_str: str) -> list[str]:
             modes.add(mode_name)
 
     if not modes:
-        return [QMOD_DEFAULT]
+        return QMOD_DEFAULT.copy()
 
     # Return in canonical order: word, vector
     canonical_order = ["word", "vector"]
@@ -87,9 +87,9 @@ def normalize_qmod(modes: Union[str, list[str]]) -> list[str]:
                 mode_name = QMOD_CHAR_MAP[mode]
                 if mode_name not in valid_modes:
                     valid_modes.append(mode_name)
-        return valid_modes if valid_modes else [QMOD_DEFAULT]
+        return valid_modes if valid_modes else QMOD_DEFAULT.copy()
     else:
-        return [QMOD_DEFAULT]
+        return QMOD_DEFAULT.copy()
 
 
 def qmod_to_str(modes: list[str]) -> str:
@@ -134,11 +134,11 @@ class QmodExprParser:
         """
         qmod_node = node.find_child_with_key("qmod_expr")
         if not qmod_node:
-            return [QMOD_DEFAULT]
+            return QMOD_DEFAULT.copy()
 
         val_node = qmod_node.find_child_with_key("qmod_val")
         if not val_node:
-            return [QMOD_DEFAULT]
+            return QMOD_DEFAULT.copy()
 
         mode_str = val_node.get_deepest_node_value().lower()
         return parse_qmod_str(mode_str)
@@ -199,7 +199,7 @@ def extract_qmod_from_expr_tree(expr_tree: DslExprNode) -> list[str]:
 
     qmod_nodes = expr_tree.find_all_childs_with_key("qmod_expr")
     if not qmod_nodes:
-        return [QMOD_DEFAULT]
+        return QMOD_DEFAULT.copy()
 
     # Use the last qmod_expr found (if multiple are specified)
     for node in reversed(qmod_nodes):
@@ -207,7 +207,7 @@ def extract_qmod_from_expr_tree(expr_tree: DslExprNode) -> list[str]:
         if modes:
             return modes
 
-    return [QMOD_DEFAULT]
+    return QMOD_DEFAULT.copy()
 
 
 def test_qmod_parser():

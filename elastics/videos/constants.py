@@ -155,6 +155,15 @@ RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance"]
 RANK_METHOD_DEFAULT = "stats"
 
 # =============================================================================
+# Explore Settings
+# =============================================================================
+
+# Explore result limits
+EXPLORE_RANK_TOP_K = 400  # max results to return after ranking
+EXPLORE_GROUP_OWNER_LIMIT = 25  # max author groups to return
+EXPLORE_MOST_RELEVANT_LIMIT = 10000  # max docs to scan for relevance
+
+# =============================================================================
 # Ranking Configuration
 # =============================================================================
 
@@ -192,7 +201,7 @@ RELATE_SCORE_POWER = 4  # power transform for relevance score
 # Each character represents a mode: w=word, v=vector
 # Multiple chars enable hybrid search (e.g., "wv" = word+vector)
 QMOD_SINGLE_TYPE = Literal["word", "vector"]
-QMOD_DEFAULT = "vector"  # default to vector-based retrieval
+QMOD_DEFAULT = ["word", "vector"]  # default to hybrid search for best results
 
 # Hybrid search settings
 HYBRID_WORD_WEIGHT = 0.35  # weight for word-based score in hybrid mode

@@ -233,14 +233,14 @@ class ScoreFuser:
     def calc_fuse_score_by_prod(
         self, stats_score: float, pubdate_score: float, relate_score: float
     ) -> float:
-        """Fuse scores using product formula with relevance emphasis.
+        """Fuse scores using product formula with strong relevance emphasis.
 
-        The formula is: stats_score * pubdate_score * (relate_score ^ 2)
-        The square on relate_score makes it dominate the ranking when
-        there are large differences in relevance.
+        The formula is: stats_score * pubdate_score * (relate_score ^ 3)
+        The cube on relate_score makes relevance strongly dominate the ranking,
+        ensuring highly relevant results appear first even if less popular.
         """
-        # Square relate_score to amplify its importance
-        relate_emphasis = relate_score**2
+        # Cube relate_score to strongly amplify its importance
+        relate_emphasis = relate_score**3
         return round(stats_score * pubdate_score * relate_emphasis, 6)
 
     def fuse(

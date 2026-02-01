@@ -1029,7 +1029,11 @@ class VideoSearcherV2:
             return extract_qmod_from_expr_tree(expr_tree)
         except Exception as e:
             logger.warn(f"× Failed to parse qmod: {e}")
-            return [QMOD_DEFAULT]
+            return (
+                QMOD_DEFAULT.copy()
+                if isinstance(QMOD_DEFAULT, list)
+                else [QMOD_DEFAULT]
+            )
 
     def hybrid_search(
         self,
