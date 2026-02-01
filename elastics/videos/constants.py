@@ -161,8 +161,8 @@ QMOD_SINGLE_TYPE = Literal["word", "vector"]
 QMOD_DEFAULT = "vector"  # default to vector-based retrieval
 
 # Hybrid search settings
-HYBRID_WORD_WEIGHT = 0.5  # weight for word-based score in hybrid mode
-HYBRID_VECTOR_WEIGHT = 0.5  # weight for vector-based score in hybrid mode
+HYBRID_WORD_WEIGHT = 0.35  # weight for word-based score in hybrid mode
+HYBRID_VECTOR_WEIGHT = 0.65  # weight for vector-based score in hybrid mode
 HYBRID_RRF_K = 60  # k parameter for RRF fusion
 
 TRACK_TOTAL_HITS = True

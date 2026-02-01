@@ -7,14 +7,25 @@ from elastics.videos.constants import RANK_TOP_K
 
 # RRF weights of fields
 RRF_WEIGHTS = {
-    "pubdate": 3.0,  # publish date timestamp
+    "pubdate": 2.0,  # publish date timestamp
     "stat.view": 1.0,
     "stat.favorite": 1.0,
     "stat.coin": 1.0,
-    "score": 3.0,  # relevance score calculated by ES
+    "score": 5.0,  # relevance score calculated by ES (increased weight)
 }
 # RRF constant (k)
 RRF_K = 60.0
+
+# Score transformation parameters for vector search
+# Uses power transform: transformed = ((score - min) / (max - min)) ^ power
+SCORE_TRANSFORM_POWER = 3.0  # higher = more emphasis on top scores
+SCORE_TRANSFORM_MIN = 0.4  # scores below this are treated as 0
+SCORE_TRANSFORM_MAX = 1.0  # max possible score
+
+# High relevance boost threshold and multiplier
+# Scores above this threshold get extra boost to ensure they rank first
+HIGH_RELEVANCE_THRESHOLD = 0.85  # top 15% of normalized score range
+HIGH_RELEVANCE_BOOST = 2.0  # multiplier for high relevance scores
 # speed up rank, by only covering top hits for each metric
 RRF_HEAP_SIZE = 2000
 # heap_size = max(input heap_size, top_k * RRF_HEAP_RATIO)
@@ -42,17 +53,61 @@ STAT_LOGX_OFFSETS = {
     "share": 2,
     "danmaku": 2,
 }
-# relate gate ratio
-RELATE_GATE_RATIO = 0.6
+# relate gate ratio (lower = more selective, keep more relevant results)
+RELATE_GATE_RATIO = 0.4
 # relate gate count
 RELATE_GATE_COUNT = 2000
-# relate score power
-RELATE_SCORE_POWER = 4
+# relate score power (higher = more emphasis on high relevance)
+RELATE_SCORE_POWER = 5
 
 
 def log_x(x: int, base: float = 10.0, offset: int = 10) -> float:
     x = max(x, 0)
     return math.log(x + offset, base)
+
+
+def transform_relevance_score(
+    score: float,
+    min_score: float = SCORE_TRANSFORM_MIN,
+    max_score: float = SCORE_TRANSFORM_MAX,
+    power: float = SCORE_TRANSFORM_POWER,
+    high_threshold: float = HIGH_RELEVANCE_THRESHOLD,
+    high_boost: float = HIGH_RELEVANCE_BOOST,
+) -> float:
+    """Transform relevance score to amplify differences between high and low scores.
+
+    Uses a power transform to stretch the score distribution, then applies
+    an additional boost to scores above the high relevance threshold.
+
+    Args:
+        score: Raw relevance score (typically 0-1 for vector search).
+        min_score: Scores below this are treated as 0.
+        max_score: Maximum possible score for normalization.
+        power: Exponent for power transform (higher = more emphasis on top scores).
+        high_threshold: Scores above this get extra boost.
+        high_boost: Multiplier for high relevance scores.
+
+    Returns:
+        Transformed score with amplified differences.
+    """
+    if score <= min_score:
+        return 0.0
+
+    # Normalize to 0-1 range
+    normalized = (score - min_score) / (max_score - min_score)
+    normalized = min(max(normalized, 0.0), 1.0)
+
+    # Apply power transform to stretch distribution
+    # This makes high scores much higher relative to medium scores
+    transformed = normalized ** power
+
+    # Apply extra boost for very high relevance scores
+    if normalized >= high_threshold:
+        # Additional boost that increases with how far above threshold
+        boost_factor = 1.0 + (high_boost - 1.0) * ((normalized - high_threshold) / (1.0 - high_threshold))
+        transformed *= boost_factor
+
+    return transformed
 
 
 class StatsScorer:
@@ -292,18 +347,39 @@ class VideoHitsRanker:
         relate_list = [dict_get(hit, "score", 0.0) for hit in hits]
         return stats_list, pubdate_list, relate_list
 
-    def stats_rank(self, hits_info: dict, top_k: int = RANK_TOP_K):
+    def stats_rank(
+        self,
+        hits_info: dict,
+        top_k: int = RANK_TOP_K,
+        apply_score_transform: bool = True,
+    ):
         hits: list[dict] = hits_info.get("hits", [])
         hits_num = len(hits)
         top_k = min(top_k, hits_num)
         stats_list, pubdate_list, relate_list = self.get_hits_metrics(hits)
         self.relate_scorer.update_relate_gate(relate_list)
+
+        # Get max relate for normalization in transform
+        max_relate = max(relate_list) if relate_list else 1.0
+        if max_relate <= 0:
+            max_relate = 1.0
+
         for hit, stats, pubdate, relate in zip(
             hits, stats_list, pubdate_list, relate_list
         ):
             stats_score = self.stats_scorer.calc(stats)
             pubdate_score = self.pubdate_scorer.calc(pubdate)
             relate_score = self.relate_scorer.calc(relate)
+
+            # Apply score transformation to amplify high-relevance items
+            if apply_score_transform:
+                transformed_relate = transform_relevance_score(
+                    relate, max_score=max_relate
+                )
+                # Blend transformed relate with gate-based relate_score
+                # Use transformed_relate to boost high-relevance items
+                relate_score = max(relate_score, transformed_relate)
+
             rank_score = self.score_fuser.fuse(
                 stats_score=stats_score,
                 pubdate_score=pubdate_score,

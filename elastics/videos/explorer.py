@@ -189,9 +189,13 @@ class VideoExplorer(VideoSearcherV2):
         self,
         search_res: dict,
         sort_field: Literal[
-            "sum_count", "sum_view", "sum_sort_score", "sum_rank_score"
+            "sum_count",
+            "sum_view",
+            "sum_sort_score",
+            "sum_rank_score",
+            "top_rank_score",
         ] = "sum_rank_score",
-        limit: int = 10,
+        limit: int = 25,
     ) -> dict:
         group_res = {}
         for hit in search_res.get("hits", []):
@@ -212,6 +216,7 @@ class VideoExplorer(VideoSearcherV2):
                     "sum_view": view,
                     "sum_sort_score": sort_score,
                     "sum_rank_score": rank_score,
+                    "top_rank_score": rank_score,
                     "sum_count": 0,
                     "hits": [],
                 }
@@ -223,9 +228,11 @@ class VideoExplorer(VideoSearcherV2):
                 sum_view = group_res[mid]["sum_view"] or 0
                 sum_sort_score = group_res[mid]["sum_sort_score"] or 0
                 sum_rank_score = group_res[mid]["sum_rank_score"] or 0
+                top_rank_score = group_res[mid]["top_rank_score"] or 0
                 group_res[mid]["sum_view"] = sum_view + view
                 group_res[mid]["sum_sort_score"] = sum_sort_score + sort_score
                 group_res[mid]["sum_rank_score"] = sum_rank_score + rank_score
+                group_res[mid]["top_rank_score"] = max(top_rank_score, rank_score)
             group_res[mid]["hits"].append(hit)
             group_res[mid]["sum_count"] += len(group_res[mid]["hits"])
         # sort by sort_field, and limit to top N
@@ -954,7 +961,7 @@ class VideoExplorer(VideoSearcherV2):
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
         rank_top_k: int = 400,
-        group_owner_limit: int = 20,
+        group_owner_limit: int = 25,
         # KNN/Hybrid specific params
         knn_field: str = KNN_TEXT_EMB_FIELD,
         knn_k: int = KNN_K,
