@@ -246,15 +246,130 @@ def test_categorize():
         logger.success(dict_to_str(res, add_quotes=True), indent=2)
 
 
+knn_queries = [
+    "红警08 小块地",
+    # "deepseek v3 0324",
+    # "影视飓风 罗永浩",
+]
+
+
+def test_knn_search():
+    """Test KNN search functionality."""
+    searcher = VideoSearcherV2(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+    for query in knn_queries:
+        logger.note("> KNN searching:", end=" ")
+        logger.file(f"[{query}]")
+        res = searcher.knn_search(
+            query=query,
+            limit=10,
+            rank_top_k=10,
+            verbose=True,
+        )
+        hits = res.pop("hits", [])
+        logger.success(f"Total hits: {res.get('total_hits', 0)}")
+        logger.success(f"Return hits: {res.get('return_hits', 0)}")
+        for idx, hit in enumerate(hits[:3]):
+            logger.note(f"* Hit {idx}:")
+            logger.file(dict_to_str(hit, align_list=False), indent=4)
+
+
+knn_queries_with_filter = [
+    "donk 高光集锦 d>2024-01-01 v>1w",
+]
+
+
+def test_knn_search_with_filters():
+    """Test KNN search with DSL filters."""
+    searcher = VideoSearcherV2(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+    # KNN search with DSL filters
+    query = knn_queries_with_filter[0]
+    logger.note("> KNN searching with filters:", end=" ")
+    logger.file(f"[{query}]")
+    res = searcher.knn_search(
+        query=query,
+        limit=10,
+        rank_top_k=10,
+        verbose=True,
+    )
+    hits = res.pop("hits", [])
+    logger.success(f"Total hits: {res.get('total_hits', 0)}")
+    logger.success(f"Return hits: {res.get('return_hits', 0)}")
+    for idx, hit in enumerate(hits[:3]):
+        logger.note(f"* Hit {idx}:")
+        logger.file(dict_to_str(hit, align_list=False), indent=4)
+
+
+def test_knn_explore():
+    """Test KNN explore functionality."""
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+    for query in knn_queries:
+        logger.note("> KNN exploring:", end=" ")
+        logger.file(f"[{query}]")
+        explore_res = explorer.knn_explore(
+            query=query,
+            rank_top_k=50,
+            group_owner_limit=10,
+            verbose=True,
+        )
+        logger.success(f"Status: {explore_res.get('status', 'N/A')}")
+        for step_res in explore_res.get("data", []):
+            stage_name = step_res["name"]
+            logger.hint(f"* stage result of {(logstr.mesg(brk(stage_name)))}:")
+            if stage_name != "group_hits_by_owner":
+                logger.mesg(dict_to_str(step_res, align_list=False), indent=2)
+
+
+def test_embed_client():
+    """Test embed client functionality."""
+    from converters.embed import TextEmbedSearchClient
+
+    logger.note("> Testing embed client...")
+    client = TextEmbedSearchClient()
+
+    if not client.is_available():
+        logger.warn("× Embed client not available, skipping test")
+        return
+
+    # Test single text embedding
+    logger.hint("Test: Single text embedding")
+    hex_str = client.text_to_hex("红警HBK08 游戏视频")
+    if hex_str:
+        logger.okay(f"Hex string length: {len(hex_str)}")
+        logger.mesg(f"First 64 chars: {hex_str[:64]}...")
+    else:
+        logger.warn("× Failed to get hex string")
+
+    # Test hex to byte array conversion
+    logger.hint("Test: Hex to byte array")
+    byte_array = client.hex_to_byte_array(hex_str)
+    if byte_array:
+        logger.okay(f"Byte array length: {len(byte_array)}")
+        logger.mesg(f"First 10 bytes: {byte_array[:10]}")
+    else:
+        logger.warn("× Failed to convert hex to byte array")
+
+    client.close()
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
     # test_suggest()
     # test_multi_level_search()
-    test_search()
+    # test_search()
     # test_agg()
     # test_explore()
     # test_split()
     # test_categorize()
+    # test_embed_client()
+    # test_knn_search()
+    test_knn_search_with_filters()
+    # test_knn_explore()
 
     # python -m elastics.videos.tests

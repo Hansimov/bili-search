@@ -223,6 +223,16 @@ SUGGEST_TIMEOUT = 1.5
 AGG_TIMEOUT = 3
 TERMINATE_AFTER = 2000000
 
+# KNN search settings
+# text_emb is a 2048-bit vector stored as dense_vector with element_type="bit"
+KNN_TEXT_EMB_FIELD = "text_emb"
+KNN_K = 100  # number of nearest neighbors to return
+KNN_NUM_CANDIDATES = 10000  # number of candidates to consider per shard
+KNN_TIMEOUT = 3  # timeout in seconds for KNN search
+KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
+KNN_SIMILARITY_DEFAULT = "hamming"  # for bit vectors, hamming is most efficient
+KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
+
 # aggregation
 AGG_PERCENTS = [0, 1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 99.9, 99.99, 100]
 AGG_SORT_FIELD = "_score"

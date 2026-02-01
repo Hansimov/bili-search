@@ -11,6 +11,8 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE
 from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
+from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
+from elastics.videos.constants import KNN_TEXT_EMB_FIELD
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
 
@@ -22,12 +24,20 @@ STEP_ZH_NAMES = {
         "name_zh": "解析查询",
         "output_type": "info",
     },
+    "construct_knn_query": {
+        "name_zh": "构建向量查询",
+        "output_type": "info",
+    },
     "aggregation": {
         "name_zh": "聚合",
         "output_type": "info",
     },
     "most_relevant_search": {
         "name_zh": "搜索相关",
+        "output_type": "hits",
+    },
+    "knn_search": {
+        "name_zh": "向量搜索",
         "output_type": "hits",
     },
     "most_popular_search": {
@@ -377,6 +387,245 @@ class VideoExplorer(VideoSearcherV2):
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
         }
+        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
+        self.update_step_output(
+            group_hits_by_owner_result, step_output=group_res, field="authors"
+        )
+        step_results.append(group_hits_by_owner_result)
+
+        logger.exit_quiet(not verbose)
+        return {"query": query, "status": final_status, "data": step_results}
+
+    def knn_explore(
+        self,
+        # Query and filter params
+        query: str,
+        extra_filters: list[dict] = [],
+        verbose: bool = False,
+        # KNN-specific params
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        knn_k: int = KNN_K,
+        knn_num_candidates: int = KNN_NUM_CANDIDATES,
+        similarity: float = None,
+        # Explore params
+        most_relevant_limit: int = 10000,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_top_k: int = 400,
+        group_owner_limit: int = 20,
+    ) -> dict:
+        """KNN-based explore using text embeddings instead of keyword matching.
+
+        This method performs vector similarity search using the text_emb field,
+        while still supporting all DSL filter expressions (date, stat, user, etc.).
+
+        The workflow is:
+        1. Extract filters from DSL query (non-word expressions)
+        2. Convert query words to embedding vector via TEI
+        3. Perform KNN search with filters
+        4. Fetch full documents for top results
+        5. Group results by owner (UP主)
+
+        Args:
+            query: Query string (can include DSL filter expressions).
+            extra_filters: Additional filter clauses.
+            verbose: Enable verbose logging.
+            knn_field: Dense vector field for KNN search.
+            knn_k: Number of nearest neighbors.
+            knn_num_candidates: Candidates per shard.
+            similarity: Minimum similarity threshold.
+            most_relevant_limit: Max docs for initial KNN search.
+            rank_method: Ranking method for results.
+            rank_top_k: Top-k for final ranking.
+            group_owner_limit: Max groups for owner aggregation.
+
+        Returns:
+            dict: {
+                "query": str,
+                "status": "finished" | "timedout" | "error",
+                "data": list[dict]  # list of step results
+            }
+        """
+        logger.enter_quiet(not verbose)
+
+        step_results = []
+        final_status = "finished"
+
+        # Step 0: Construct KNN query info
+        step_idx = 0
+        step_name = "construct_knn_query"
+        logger.hint("> [step 0] KNN query constructing ...")
+
+        # Extract filters and query info
+        query_info, filter_clauses = self.get_filters_from_query(
+            query=query,
+            extra_filters=extra_filters,
+        )
+
+        # Get query words for embedding
+        words_expr = query_info.get("words_expr", "")
+        keywords_body = query_info.get("keywords_body", [])
+
+        if keywords_body:
+            embed_text = " ".join(keywords_body)
+        else:
+            embed_text = words_expr or query
+
+        # Check embed client availability
+        if not self.embed_client.is_available():
+            logger.warn("× Embed client not available, KNN explore cannot proceed")
+            error_result = {
+                "step": step_idx,
+                "name": step_name,
+                "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                "status": "error",
+                "input": {"query": query},
+                "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                "output": {"error": "Embed client not available"},
+                "comment": "TEI服务不可用",
+            }
+            step_results.append(error_result)
+            logger.exit_quiet(not verbose)
+            return {"query": query, "status": "error", "data": step_results}
+
+        # Convert query to embedding
+        query_hex = self.embed_client.text_to_hex(embed_text)
+        if not query_hex:
+            logger.warn("× Failed to get embedding for query")
+            error_result = {
+                "step": step_idx,
+                "name": step_name,
+                "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                "status": "error",
+                "input": {"query": query, "embed_text": embed_text},
+                "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                "output": {"error": "Failed to compute embedding"},
+                "comment": "无法计算查询向量",
+            }
+            step_results.append(error_result)
+            logger.exit_quiet(not verbose)
+            return {"query": query, "status": "error", "data": step_results}
+
+        query_vector = self.embed_client.hex_to_byte_array(query_hex)
+
+        knn_query_info = {
+            "embed_text": embed_text,
+            "query_vector_len": len(query_vector),
+            "filter_count": len(filter_clauses),
+            "filters": filter_clauses[:3] if filter_clauses else [],  # Show first 3
+        }
+
+        knn_query_result = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "finished",
+            "input": {"query": query, "extra_filters": extra_filters},
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "output": knn_query_info,
+            "comment": "",
+        }
+        step_results.append(knn_query_result)
+
+        # Step 1: KNN search for most relevant docs
+        step_idx += 1
+        step_name = "knn_search"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} KNN search for relevant docs")
+
+        knn_search_params = {
+            "query": query,
+            "source_fields": ["bvid", "stat", "pubdate", "duration"],  # Minimal fields
+            "extra_filters": extra_filters,
+            "knn_field": knn_field,
+            "k": min(knn_k, most_relevant_limit),
+            "num_candidates": knn_num_candidates,
+            "similarity": similarity,
+            "add_region_info": False,
+            "is_explain": False,
+            "rank_method": rank_method,
+            "limit": most_relevant_limit,
+            "rank_top_k": rank_top_k,
+            "timeout": KNN_TIMEOUT,
+            "verbose": verbose,
+        }
+
+        knn_search_result = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": knn_search_params,
+            "output": {},
+            "output_type": "hits",
+            "comment": "",
+        }
+
+        knn_search_res = self.knn_search(**knn_search_params)
+        self.update_step_output(knn_search_result, step_output=knn_search_res)
+
+        if self.is_status_timedout(knn_search_result):
+            final_status = "timedout"
+            step_results.append(knn_search_result)
+            logger.exit_quiet(not verbose)
+            return {"query": query, "status": final_status, "data": step_results}
+
+        # Step 2: Fetch full docs for ranked results
+        bvids = [hit.get("bvid", None) for hit in knn_search_res.get("hits", [])]
+        if not bvids:
+            logger.warn("× No results from KNN search")
+            step_results.append(knn_search_result)
+            logger.exit_quiet(not verbose)
+            return {"query": query, "status": final_status, "data": step_results}
+
+        bvid_filter = bvids_to_filter(bvids)
+
+        # Use regular search to fetch full docs with the bvid filter
+        full_doc_search_params = {
+            "query": query,
+            "extra_filters": extra_filters + [bvid_filter],
+            "rank_method": rank_method,
+            "is_highlight": False,  # KNN doesn't use keyword highlights
+            "add_region_info": True,
+            "add_highlights_info": False,
+            "limit": len(bvids),
+            "timeout": EXPLORE_TIMEOUT,
+            "verbose": verbose,
+        }
+
+        full_doc_search_res = self.search(**full_doc_search_params)
+        full_doc_search_res["total_hits"] = knn_search_res.get("total_hits", 0)
+        self.update_step_output(knn_search_result, step_output=full_doc_search_res)
+
+        if self.is_status_timedout(knn_search_result):
+            final_status = "timedout"
+            step_results.append(knn_search_result)
+            logger.exit_quiet(not verbose)
+            return {"query": query, "status": final_status, "data": step_results}
+
+        step_results.append(knn_search_result)
+
+        # Step 3: Group hits by owner
+        step_idx += 1
+        step_name = "group_hits_by_owner"
+        step_str = logstr.note(brk(f"Step {step_idx}"))
+        logger.hint(f"> {step_str} Group hits by owner")
+
+        group_hits_by_owner_params = {
+            "search_res": full_doc_search_res,
+            "limit": group_owner_limit,
+        }
+
+        group_hits_by_owner_result = {
+            "step": step_idx,
+            "name": step_name,
+            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+            "status": "running",
+            "input": {"limit": group_owner_limit},
+            "output": {},
+            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+            "comment": "",
+        }
+
         group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
         self.update_step_output(
             group_hits_by_owner_result, step_output=group_res, field="authors"

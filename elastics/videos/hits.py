@@ -10,6 +10,9 @@ from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 
+# Extended request type to include KNN search
+KNN_REQUEST_TYPE = Literal["search", "suggest", "knn_search", "random", "latest"]
+
 
 class VideoHitsParser:
     def __init__(self):

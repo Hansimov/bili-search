@@ -11,6 +11,7 @@ from converters.dsl.filter import QueryDslDictFilterMerger
 from elastics.structure import get_highlight_settings, construct_boosted_fields
 from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
+from elastics.structure import construct_knn_query, construct_knn_search_body
 from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -31,8 +32,11 @@ from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.constants import TERMINATE_AFTER
+from elastics.videos.constants import KNN_TEXT_EMB_FIELD, KNN_K, KNN_NUM_CANDIDATES
+from elastics.videos.constants import KNN_TIMEOUT
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.videos.ranker import VideoHitsRanker
+from converters.embed import TextEmbedSearchClient
 
 
 class VideoSearcherV2:
@@ -75,6 +79,15 @@ class VideoSearcherV2:
         self.elastic_converter = DslExprToElasticConverter()
         self.filter_merger = QueryDslDictFilterMerger()
         self.suggest_parser = SuggestInfoParser("v2")
+        # Lazy-initialized embed client for KNN search
+        self._embed_client = None
+
+    @property
+    def embed_client(self) -> TextEmbedSearchClient:
+        """Lazy-initialized embed client for KNN search."""
+        if self._embed_client is None:
+            self._embed_client = TextEmbedSearchClient(lazy_init=True)
+        return self._embed_client
 
     def submit_to_es(self, body: dict) -> dict:
         try:
@@ -619,5 +632,260 @@ class VideoSearcherV2:
         )
         return_res = self.post_process_return_res(parse_res)
         return_res["search_body"] = search_body
+        logger.exit_quiet(not verbose)
+        return return_res
+
+    def get_filters_from_query(
+        self,
+        query: str,
+        extra_filters: list[dict] = [],
+    ) -> tuple[dict, list[dict]]:
+        """Extract filter clauses from DSL query expression.
+
+        This extracts non-word filters (date, stat, user, etc.) from the query
+        and combines them with extra_filters for use in KNN search.
+
+        Args:
+            query: The query string (may contain DSL expressions like "d>2024-01-01").
+            extra_filters: Additional filter clauses to include.
+
+        Returns:
+            Tuple of (query_info, filter_clauses).
+        """
+        query_info = self.query_rewriter.get_query_info(query)
+        expr_tree = query_info.get("query_expr_tree", None)
+
+        if expr_tree is None:
+            return query_info, extra_filters
+
+        # Extract filter atoms (non-word expressions) from expr_tree
+        filter_expr_tree = expr_tree.filter_atoms_by_keys(exclude_keys=["word_expr"])
+
+        # Convert filter expr_tree to elastic filter dict
+        if filter_expr_tree and filter_expr_tree.children:
+            self.elastic_converter.word_converter.switch_mode(
+                match_fields=[],
+                date_match_fields=[],
+                match_type="cross_fields",
+            )
+            filter_dict = self.elastic_converter.expr_tree_to_dict(filter_expr_tree)
+
+            # Extract filter clauses from the dict
+            filter_clauses = self.filter_merger.get_query_filters_from_query_dsl_dict(
+                filter_dict
+            )
+        else:
+            filter_clauses = []
+
+        # Combine with extra_filters
+        all_filters = filter_clauses + list(extra_filters)
+        return query_info, all_filters
+
+    def construct_knn_search_body(
+        self,
+        query_vector: list[int],
+        filter_clauses: list[dict] = None,
+        source_fields: list[str] = SOURCE_FIELDS,
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        k: int = KNN_K,
+        num_candidates: int = KNN_NUM_CANDIDATES,
+        similarity: float = None,
+        limit: int = SEARCH_LIMIT,
+        timeout: Union[int, float, str] = KNN_TIMEOUT,
+        is_explain: bool = False,
+    ) -> dict:
+        """Construct KNN search body.
+
+        Args:
+            query_vector: Query vector as byte array (signed int8 list).
+            filter_clauses: Filter clauses to apply during KNN search.
+            source_fields: Fields to include in _source.
+            knn_field: The dense_vector field to search.
+            k: Number of nearest neighbors to return.
+            num_candidates: Number of candidates to consider per shard.
+            similarity: Minimum similarity threshold.
+            limit: Maximum number of results.
+            timeout: Search timeout.
+            is_explain: Whether to include explanation.
+
+        Returns:
+            Complete search body dict.
+        """
+        knn_query = construct_knn_query(
+            query_vector=query_vector,
+            field=knn_field,
+            k=k,
+            num_candidates=num_candidates,
+            filter_clauses=filter_clauses,
+            similarity=similarity,
+        )
+
+        search_body = construct_knn_search_body(
+            knn_query=knn_query,
+            source_fields=source_fields,
+            size=limit,
+            timeout=timeout,
+            track_total_hits=TRACK_TOTAL_HITS,
+            is_explain=is_explain,
+        )
+
+        return search_body
+
+    def knn_search(
+        self,
+        query: str,
+        source_fields: list[str] = SOURCE_FIELDS,
+        extra_filters: list[dict] = [],
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        k: int = KNN_K,
+        num_candidates: int = KNN_NUM_CANDIDATES,
+        similarity: float = None,
+        parse_hits: bool = True,
+        add_region_info: bool = True,
+        is_explain: bool = False,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        limit: int = SEARCH_LIMIT,
+        rank_top_k: int = RANK_TOP_K,
+        timeout: Union[int, float, str] = KNN_TIMEOUT,
+        verbose: bool = False,
+    ) -> Union[dict, list[dict]]:
+        """Perform KNN search using text embeddings.
+
+        This method:
+        1. Extracts filter clauses from DSL query (date, stat, user filters)
+        2. Extracts query words and converts them to embedding vector
+        3. Performs KNN search on text_emb field with filters
+        4. Parses and ranks the results
+
+        Args:
+            query: Query string (can include DSL expressions for filtering).
+            source_fields: Fields to include in results.
+            extra_filters: Additional filter clauses.
+            knn_field: The dense_vector field to search.
+            k: Number of nearest neighbors.
+            num_candidates: Candidates per shard.
+            similarity: Minimum similarity threshold.
+            parse_hits: Whether to parse hits into structured format.
+            add_region_info: Whether to add region info to results.
+            is_explain: Whether to include ES explanation.
+            rank_method: Ranking method ("heads", "rrf", "stats").
+            limit: Maximum results to return.
+            rank_top_k: Top-k for ranking.
+            timeout: Search timeout.
+            verbose: Enable verbose logging.
+
+        Returns:
+            Search results dict with hits and metadata.
+        """
+        logger.enter_quiet(not verbose)
+
+        # Extract query info and filter clauses from DSL query
+        query_info, filter_clauses = self.get_filters_from_query(
+            query=query,
+            extra_filters=extra_filters,
+        )
+
+        # Get query words for embedding
+        words_expr = query_info.get("words_expr", "")
+        keywords_body = query_info.get("keywords_body", [])
+
+        # Build text for embedding from query words
+        if keywords_body:
+            embed_text = " ".join(keywords_body)
+        else:
+            embed_text = words_expr or query
+
+        # Convert query text to embedding vector
+        if not self.embed_client.is_available():
+            logger.warn("× Embed client not available, KNN search cannot proceed")
+            logger.exit_quiet(not verbose)
+            return {
+                "query": query,
+                "request_type": "knn_search",
+                "timed_out": True,
+                "total_hits": 0,
+                "return_hits": 0,
+                "hits": [],
+                "query_info": query_info,
+                "error": "Embed client not available",
+            }
+
+        query_hex = self.embed_client.text_to_hex(embed_text)
+        if not query_hex:
+            logger.warn("× Failed to get embedding for query")
+            logger.exit_quiet(not verbose)
+            return {
+                "query": query,
+                "request_type": "knn_search",
+                "timed_out": True,
+                "total_hits": 0,
+                "return_hits": 0,
+                "hits": [],
+                "query_info": query_info,
+                "error": "Failed to compute embedding",
+            }
+
+        # Convert hex string to byte array for ES
+        query_vector = self.embed_client.hex_to_byte_array(query_hex)
+
+        # Construct KNN search body
+        search_body = self.construct_knn_search_body(
+            query_vector=query_vector,
+            filter_clauses=filter_clauses if filter_clauses else None,
+            source_fields=source_fields,
+            knn_field=knn_field,
+            k=k,
+            num_candidates=num_candidates,
+            similarity=similarity,
+            limit=limit,
+            timeout=timeout,
+            is_explain=is_explain,
+        )
+
+        logger.mesg(
+            dict_to_str(search_body, add_quotes=True), indent=2, verbose=verbose
+        )
+
+        # Submit to ES
+        es_res_dict = self.submit_to_es(search_body)
+
+        # Parse results
+        if parse_hits:
+            parse_res = self.hit_parser.parse(
+                query_info,
+                match_fields=[],  # No highlight for KNN search
+                res_dict=es_res_dict,
+                request_type="knn_search",
+                drop_no_highlights=False,
+                add_region_info=add_region_info,
+                add_highlights_info=False,  # KNN search doesn't use keyword highlights
+                match_type="cross_fields",
+                match_operator="or",
+                detail_level=-1,
+                limit=limit,
+                verbose=verbose,
+            )
+            # Apply ranking
+            if rank_method == "rrf":
+                parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
+            elif rank_method == "stats":
+                parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
+            else:  # "heads"
+                parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
+        else:
+            parse_res = es_res_dict
+
+        # Build return result
+        return_res = {
+            **(parse_res if isinstance(parse_res, dict) else {}),
+            "query_info": query_info,
+            "suggest_info": {},
+            "rewrite_info": {},
+            "search_body": search_body,
+        }
+
+        # Clean up non-jsonable items
+        return_res["query_info"].pop("query_expr_tree", None)
+
         logger.exit_quiet(not verbose)
         return return_res

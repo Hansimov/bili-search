@@ -103,6 +103,91 @@ def set_profile(body: dict, profile: bool = None):
     return body
 
 
+def construct_knn_query(
+    query_vector: list[int],
+    field: str = "text_emb",
+    k: int = 100,
+    num_candidates: int = 1000,
+    filter_clauses: list[dict] = None,
+    similarity: float = None,
+) -> dict:
+    """Construct a KNN query for Elasticsearch.
+
+    Args:
+        query_vector: The query vector as a byte array (signed int8 list).
+        field: The dense_vector field name to search.
+        k: Number of nearest neighbors to return.
+        num_candidates: Number of candidates to consider per shard.
+        filter_clauses: Optional list of filter clauses to apply.
+        similarity: Optional minimum similarity threshold.
+
+    Returns:
+        KNN query dict for use in ES search body.
+
+    Note:
+        For bit vectors (element_type="bit"), Elasticsearch uses Hamming distance.
+        The score is calculated as: (num_bits - hamming_distance) / num_bits
+        So higher scores mean more similar vectors.
+    """
+    knn_query = {
+        "field": field,
+        "query_vector": query_vector,
+        "k": k,
+        "num_candidates": num_candidates,
+    }
+
+    if filter_clauses:
+        # Combine filters into a bool query
+        if len(filter_clauses) == 1:
+            knn_query["filter"] = filter_clauses[0]
+        else:
+            knn_query["filter"] = {"bool": {"filter": filter_clauses}}
+
+    if similarity is not None:
+        knn_query["similarity"] = similarity
+
+    return knn_query
+
+
+def construct_knn_search_body(
+    knn_query: dict,
+    source_fields: list[str] = None,
+    size: int = 50,
+    timeout: Union[int, float, str] = None,
+    track_total_hits: bool = True,
+    is_explain: bool = False,
+) -> dict:
+    """Construct a complete search body with KNN query.
+
+    Args:
+        knn_query: The KNN query dict from construct_knn_query().
+        source_fields: Fields to include in _source.
+        size: Number of results to return (overrides k if larger).
+        timeout: Search timeout.
+        track_total_hits: Whether to track total hits.
+        is_explain: Whether to include explanation.
+
+    Returns:
+        Complete search body dict for ES client.
+    """
+    body = {
+        "knn": knn_query,
+        "track_total_hits": track_total_hits,
+        "explain": is_explain,
+    }
+
+    if source_fields:
+        body["_source"] = source_fields
+
+    if size:
+        body["size"] = size
+
+    if timeout is not None:
+        body = set_timeout(body, timeout=timeout)
+
+    return body
+
+
 if __name__ == "__main__":
     d = {
         "owner": {"name": {"space": "value1"}},
