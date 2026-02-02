@@ -1,7 +1,11 @@
 from btok import SentenceCategorizer
 from tclogger import logger, logstr, dict_to_str, brk
 
-from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
+from elastics.videos.constants import (
+    ELASTIC_VIDEOS_DEV_INDEX,
+    ELASTIC_VIDEOS_PRO_INDEX,
+    ELASTIC_DEV,
+)
 from elastics.videos.searcher import VideoSearcherV1
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
@@ -450,6 +454,164 @@ def test_qmod_parser():
             logger.warn(f"  × [{query}] -> ERROR: {e}")
 
 
+def test_rrf_fusion_fill():
+    """Test fill-and-supplement RRF fusion logic to ensure 400 results."""
+    logger.note("> Testing RRF fusion fill-and-supplement strategy...")
+
+    # Use DEV index and environment
+    searcher = VideoSearcherV2(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test Case 1: Simulate scenario with sufficient data
+    # When word + knn have enough unique bvids, fusion should return limit results
+    logger.note("\n> Test Case 1: Simulating word=300, knn=300, overlap=50")
+
+    # Create 300 word hits
+    word_hits = [{"bvid": f"BV_word_{i}", "score": 30 - i * 0.05} for i in range(300)]
+
+    # Create 300 knn hits with 50 overlapping bvids
+    knn_hits = []
+    # First 50 overlap with word
+    for i in range(50):
+        knn_hits.append({"bvid": f"BV_word_{i}", "score": 0.95 - i * 0.005})
+    # Remaining 250 are unique
+    for i in range(250):
+        knn_hits.append({"bvid": f"BV_knn_{i}", "score": 0.90 - i * 0.003})
+
+    # Total unique = 300 + 250 = 550 > 400
+    # Call _rrf_fusion with limit=400
+    fused = searcher._rrf_fusion(word_hits, knn_hits, limit=400)
+
+    # Verify result count
+    expected = 400
+    actual = len(fused)
+    status = "✓" if actual == expected else "×"
+    logger.mesg(f"  {status} Result count: {actual} (expected: {expected})")
+
+    # Check selection tiers
+    tier_counts = {}
+    for hit in fused:
+        tier = hit.get("selection_tier", "unknown")
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+    logger.mesg(f"  Selection tiers: {tier_counts}")
+    logger.mesg(f"    - word_top: {tier_counts.get('word_top', 0)}")
+    logger.mesg(f"    - knn_top: {tier_counts.get('knn_top', 0)}")
+    logger.mesg(f"    - word_knn_top: {tier_counts.get('word_knn_top', 0)}")
+    logger.mesg(f"    - fusion_fill: {tier_counts.get('fusion_fill', 0)}")
+
+    # Test Case 2: Real search with q=vw
+    logger.note("\n> Test Case 2: Real hybrid search with q=vw")
+    search_res = searcher.hybrid_search(
+        "红警08 q=vw",
+        limit=400,
+        rank_top_k=400,
+        timeout=10,
+        verbose=True,
+    )
+
+    result_count = search_res.get("return_hits", 0)
+    word_count = search_res.get("word_hits_count", 0)
+    knn_count = search_res.get("knn_hits_count", 0)
+
+    status = "✓" if result_count == 400 else "×"
+    logger.mesg(
+        f"  {status} Hybrid search returned: {result_count} results (expected: 400)"
+    )
+    logger.mesg(f"    - Word hits: {word_count}")
+    logger.mesg(f"    - KNN hits: {knn_count}")
+
+    if search_res.get("hits"):
+        # Check selection tier distribution
+        tier_counts = {}
+        for hit in search_res["hits"]:
+            tier = hit.get("selection_tier", "unknown")
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+        logger.mesg(f"  Selection tier distribution:")
+        for tier, count in sorted(tier_counts.items()):
+            logger.mesg(f"    - {tier}: {count}")
+
+        # Show first few results
+        logger.mesg(f"\n  First 5 results:")
+        for i, hit in enumerate(search_res["hits"][:5]):
+            logger.mesg(
+                f"    [{i+1}] {hit.get('bvid')} "
+                f"hybrid={hit.get('hybrid_score', 0):.2f} "
+                f"tier={hit.get('selection_tier')} "
+                f"word_rank={hit.get('word_rank')} "
+                f"knn_rank={hit.get('knn_rank')}"
+            )
+
+    # Test Case 3: Compare with q=w and q=v
+    logger.note("\n> Test Case 3: Comparing q=w, q=v, q=vw")
+
+    queries = [
+        ("红警08 q=w", "word-only"),
+        ("红警08 q=v", "vector-only"),
+        ("红警08 q=vw", "hybrid"),
+    ]
+
+    for query, desc in queries:
+        if "q=w" in query:
+            res = searcher.search(query, limit=400, rank_top_k=400, timeout=10)
+        elif "q=v" in query:
+            res = searcher.knn_search(
+                query, k=400, limit=400, rank_top_k=400, timeout=10
+            )
+        else:
+            res = searcher.hybrid_search(query, limit=400, rank_top_k=400, timeout=10)
+
+        count = res.get("return_hits", 0)
+        status = "✓" if count == 400 else "×"
+        logger.mesg(f"  {status} {desc:12} [{query}] -> {count} results")
+
+    logger.success("> RRF fusion test completed!")
+
+
+def test_hybrid_explore_count():
+    """Test that hybrid_explore returns 400 results correctly."""
+    logger.note("> Testing hybrid_explore result count...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test unified_explore with q=vw
+    result = explorer.unified_explore(
+        query="苏神神了 q=vw",
+        verbose=True,
+        rank_top_k=400,
+    )
+
+    logger.mesg(f"Status: {result.get('status')}")
+
+    # Find the hybrid_search step
+    for step in result.get("data", []):
+        step_name = step.get("name")
+        output = step.get("output", {})
+
+        if step_name == "hybrid_search":
+            return_hits = output.get("return_hits", 0)
+            word_hits = output.get("word_hits_count", 0)
+            knn_hits = output.get("knn_hits_count", 0)
+            status = "✓" if return_hits == 400 else "×"
+            logger.mesg(
+                f"  {status} hybrid_search: return_hits={return_hits} (expected: 400)"
+            )
+            logger.mesg(f"      word_hits_count={word_hits}, knn_hits_count={knn_hits}")
+
+        elif step_name == "group_hits_by_owner":
+            authors = output.get("authors", {})
+            total_videos = sum(
+                len(author.get("videos", [])) for author in authors.values()
+            )
+            logger.mesg(
+                f"  group_hits_by_owner: {len(authors)} authors, {total_videos} total videos"
+            )
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -466,6 +628,8 @@ if __name__ == "__main__":
     # test_knn_explore()
     # test_hybrid_search()
     # test_unified_explore()
-    test_qmod_parser()
+    # test_qmod_parser()
+    test_rrf_fusion_fill()
+    test_hybrid_explore_count()
 
     # python -m elastics.videos.tests

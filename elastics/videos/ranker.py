@@ -11,6 +11,12 @@ from elastics.videos.constants import (
     RELATE_GATE_COUNT,
     RELATE_SCORE_POWER,
 )
+from elastics.videos.constants import (
+    TIERED_HIGH_RELEVANCE_THRESHOLD,
+    TIERED_SIMILARITY_THRESHOLD,
+    TIERED_STATS_WEIGHT,
+    TIERED_RECENCY_WEIGHT,
+)
 
 # Score transformation parameters for vector search
 # Uses power transform: transformed = ((score - min) / (max - min)) ^ power
@@ -461,5 +467,178 @@ class VideoHitsRanker:
         hits_info["return_hits"] = len(top_hits)
         hits_info["filtered_count"] = len(hits) - len(filtered_hits)
         hits_info["rank_method"] = "relevance"
+
+        return hits_info
+
+    def tiered_rank(
+        self,
+        hits_info: dict,
+        top_k: int = RANK_TOP_K,
+        relevance_field: str = "hybrid_score",
+        high_relevance_threshold: float = TIERED_HIGH_RELEVANCE_THRESHOLD,
+        similarity_threshold: float = TIERED_SIMILARITY_THRESHOLD,
+        stats_weight: float = TIERED_STATS_WEIGHT,
+        recency_weight: float = TIERED_RECENCY_WEIGHT,
+    ) -> dict:
+        """Tiered ranking: high-relevance zone gets popularity boost, rest by relevance.
+
+        This ranking method divides results into two zones:
+        1. HIGH RELEVANCE ZONE: score >= high_relevance_threshold * max_score
+           - Within this zone, results are sorted by (stats + recency) weighted score
+           - This allows popular/recent content to surface among highly relevant results
+        2. LOW RELEVANCE ZONE: score < threshold
+           - Strictly sorted by relevance score
+           - No popularity boost for less relevant content
+
+        Algorithm:
+        1. Normalize all scores by max_score
+        2. Split into high/low relevance zones based on threshold
+        3. High zone: sort by (stats_weight * stats_score + recency_weight * recency_score)
+        4. Low zone: sort by relevance score
+        5. Concatenate: high zone first, then low zone
+
+        Score Display:
+        - The score field is set to the original hybrid_score (preserving word score magnitude)
+        - This provides consistent display across word-only and hybrid searches
+
+        Args:
+            hits_info: Dict containing hits list and metadata.
+            top_k: Maximum number of results to return.
+            relevance_field: Field containing relevance score (default: hybrid_score).
+            high_relevance_threshold: Only items with normalized score >= this get boost.
+            similarity_threshold: Within high zone, items within this diff are "equal".
+            stats_weight: Weight for popularity score.
+            recency_weight: Weight for recency score.
+
+        Returns:
+            hits_info with tiered-ranked hits.
+        """
+        hits: list[dict] = hits_info.get("hits", [])
+        if not hits:
+            hits_info["rank_method"] = "tiered"
+            return hits_info
+
+        # Step 1: Get max score and normalize
+        scores = [hit.get(relevance_field, 0) or 0 for hit in hits]
+        max_score = max(scores) if scores else 1.0
+        if max_score <= 0:
+            max_score = 1.0
+
+        # Calculate threshold score for high relevance zone
+        threshold_score = max_score * high_relevance_threshold
+
+        # Step 2: Calculate scores and split into zones
+        high_zone = []  # High relevance items (get popularity boost)
+        low_zone = []  # Low relevance items (sorted by relevance only)
+
+        for hit in hits:
+            rel_score = hit.get(relevance_field, 0) or 0
+            rel_norm = rel_score / max_score if max_score > 0 else 0
+            hit["relevance_norm"] = round(rel_norm, 4)
+            hit["relevance_score_raw"] = rel_score
+
+            # Calculate stats score (popularity)
+            stats = hit.get("stat", {})
+            stats_score = self.stats_scorer.calc(stats)
+            hit["stats_score"] = stats_score
+
+            # Calculate recency score
+            pubdate = hit.get("pubdate", 0)
+            recency_score = self.pubdate_scorer.calc(pubdate)
+            hit["recency_score"] = recency_score
+
+            # Normalize stats_score (typically ranges 1-1000+)
+            # Use log scale for better distribution
+            stats_norm = math.log10(stats_score + 1) / 3.0  # ~0-1 for stats 1-1000
+            recency_norm = recency_score / 4.0  # recency_score is ~0-4
+
+            # Combined secondary score for high relevance zone
+            hit["secondary_score"] = (
+                stats_weight * stats_norm + recency_weight * recency_norm
+            )
+
+            # Split into zones
+            if rel_score >= threshold_score:
+                high_zone.append(hit)
+            else:
+                low_zone.append(hit)
+
+        # Step 3: Sort high zone by secondary_score (popularity + recency)
+        # But first sort by relevance to establish sub-tiers, then by secondary within tiers
+        high_zone.sort(key=lambda x: x.get("relevance_norm", 0), reverse=True)
+
+        # Within high zone, group by similarity and sort by secondary
+        if high_zone and similarity_threshold > 0:
+            sorted_high = []
+            tier_start = 0
+            tier_base = high_zone[0].get("relevance_norm", 1)
+
+            for i, hit in enumerate(high_zone):
+                rel_norm = hit.get("relevance_norm", 0)
+                rel_diff = (tier_base - rel_norm) / tier_base if tier_base > 0 else 1
+
+                if rel_diff > similarity_threshold:
+                    # New tier: sort previous tier by secondary_score
+                    tier = high_zone[tier_start:i]
+                    tier.sort(key=lambda x: x.get("secondary_score", 0), reverse=True)
+                    for t_hit in tier:
+                        t_hit["zone"] = "high"
+                    sorted_high.extend(tier)
+
+                    # Start new tier
+                    tier_start = i
+                    tier_base = rel_norm
+
+            # Don't forget the last tier
+            tier = high_zone[tier_start:]
+            tier.sort(key=lambda x: x.get("secondary_score", 0), reverse=True)
+            for t_hit in tier:
+                t_hit["zone"] = "high"
+            sorted_high.extend(tier)
+
+            high_zone = sorted_high
+        else:
+            # No similarity threshold: just sort by secondary
+            high_zone.sort(key=lambda x: x.get("secondary_score", 0), reverse=True)
+            for hit in high_zone:
+                hit["zone"] = "high"
+
+        # Step 4: Sort low zone strictly by relevance
+        low_zone.sort(key=lambda x: x.get("relevance_norm", 0), reverse=True)
+        for hit in low_zone:
+            hit["zone"] = "low"
+
+        # Step 5: Concatenate zones
+        result_hits = high_zone + low_zone
+
+        # Take top_k
+        top_k = min(top_k, len(result_hits))
+        top_hits = result_hits[:top_k]
+
+        # Set rank_score for sorting and score for display
+        # Score preserves the original hybrid_score magnitude (similar to word search scores)
+        for i, hit in enumerate(top_hits):
+            rel_norm = hit.get("relevance_norm", 0)
+            rel_raw = hit.get("relevance_score_raw", 0)
+            secondary = hit.get("secondary_score", 0)
+
+            # rank_score: combines relevance with secondary for internal sorting reference
+            # High zone items get boosted base score
+            if hit.get("zone") == "high":
+                hit["rank_score"] = round(rel_norm + 0.1 * secondary, 6)
+            else:
+                hit["rank_score"] = round(rel_norm, 6)
+
+            # Set display score to preserve original hybrid_score magnitude
+            # hybrid_score is already in word-search score range (e.g., 0-30)
+            # This provides consistent scoring across word-only and hybrid searches
+            hit["score"] = round(rel_raw, 2)
+
+        hits_info["hits"] = top_hits
+        hits_info["return_hits"] = len(top_hits)
+        hits_info["high_zone_count"] = len(high_zone)
+        hits_info["low_zone_count"] = len(low_zone)
+        hits_info["max_relevance_score"] = round(max_score, 2)
+        hits_info["rank_method"] = "tiered"
 
         return hits_info

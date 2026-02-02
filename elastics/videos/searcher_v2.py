@@ -733,7 +733,12 @@ class VideoSearcherV2:
                 limit=limit,
                 verbose=verbose,
             )
-            if rank_method == "rrf":
+            if rank_method == "tiered":
+                # Tiered ranking with word-search score as relevance
+                parse_res = self.hit_ranker.tiered_rank(
+                    parse_res, top_k=rank_top_k, relevance_field="score"
+                )
+            elif rank_method == "rrf":
                 parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
             elif rank_method == "stats":
                 parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
@@ -986,7 +991,12 @@ class VideoSearcherV2:
                 verbose=verbose,
             )
             # Apply ranking - for KNN search, "relevance" is the default and preferred method
-            if rank_method == "relevance":
+            if rank_method == "tiered":
+                # Tiered ranking with KNN score as relevance
+                parse_res = self.hit_ranker.tiered_rank(
+                    parse_res, top_k=rank_top_k, relevance_field="score"
+                )
+            elif rank_method == "relevance":
                 parse_res = self.hit_ranker.relevance_rank(parse_res, top_k=rank_top_k)
             elif rank_method == "rrf":
                 parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
@@ -1112,8 +1122,12 @@ class VideoSearcherV2:
         # Execute word search and KNN search in parallel
         logger.hint("> Hybrid: Running word search and KNN search in parallel ...")
 
-        # Cap word search limit to avoid excessive results (max 2000 for word search)
-        word_limit = min(limit, 2000)
+        # IMPORTANT: Search with higher limit than rank_top_k to ensure enough results
+        # after fusion. Use at least 3x rank_top_k for each source to account for:
+        # 1. Overlap between word and KNN results
+        # 2. Filtering that may reduce results
+        search_limit = max(limit, rank_top_k * 3, 1500)
+        word_limit = min(search_limit, 2000)  # Cap word search at 2000
         word_search_params = {
             "query": query,
             "source_fields": source_fields,
@@ -1135,8 +1149,9 @@ class VideoSearcherV2:
             "verbose": verbose,
         }
 
-        # KNN k must not exceed num_candidates, and we cap limit to avoid excessive results
-        knn_limit = min(limit, knn_num_candidates)
+        # KNN search: use same search_limit for consistency
+        # k must not exceed num_candidates
+        knn_limit = min(search_limit, knn_num_candidates)
         knn_search_params = {
             "query": query,
             "source_fields": source_fields,
@@ -1173,8 +1188,11 @@ class VideoSearcherV2:
         word_hits = word_search_res.get("hits", [])
         knn_hits = knn_search_res.get("hits", [])
 
-        # Use capped limit for fusion to avoid excessive results
-        fusion_limit = min(limit, max(len(word_hits), len(knn_hits), 1000))
+        # fusion_limit: target number of results to return after fusion
+        # Use the maximum of rank_top_k and limit to ensure enough results
+        # for subsequent ranking. The fill-and-supplement strategy in _rrf_fusion
+        # will ensure we return exactly this many results when both sources have data.
+        fusion_limit = max(rank_top_k, limit)
 
         if fusion_method == "rrf":
             fused_hits = self._rrf_fusion(
@@ -1206,8 +1224,13 @@ class VideoSearcherV2:
 
         # Apply final ranking
         # For hybrid search, RRF fusion already produces a well-ranked list
-        # So we use "heads" to preserve the RRF order, not "relevance" which would filter incorrectly
-        if rank_method == "relevance":
+        # Tiered ranking adds stats/recency tie-breaking within relevance tiers
+        if rank_method == "tiered":
+            # Tiered ranking: relevance-first with stats/recency tie-breaking
+            parse_res = self.hit_ranker.tiered_rank(
+                parse_res, top_k=rank_top_k, relevance_field="hybrid_score"
+            )
+        elif rank_method == "relevance":
             # For hybrid search with relevance ranking, just take top-k by hybrid_score
             # Don't apply min_score filtering because hybrid_score has different scale
             parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
@@ -1240,9 +1263,23 @@ class VideoSearcherV2:
         k: int = HYBRID_RRF_K,
         limit: int = SEARCH_LIMIT,
     ) -> list[dict]:
-        """Fuse results using Reciprocal Rank Fusion (RRF).
+        """Fuse results using fill-and-supplement approach with RRF scoring.
 
-        RRF score = sum(1 / (k + rank)) for each result list.
+        Strategy (fill-and-supplement):
+        1. Take top N results from word search (by word rank)
+        2. Take top N results from KNN search (by knn rank)
+        3. Merge with deduplication (overlapping items count once)
+        4. Fill remaining slots from unused results by RRF fusion score
+
+        This ensures we always return `limit` results when both sources have
+        sufficient data, prioritizing top results from each source.
+
+        Score composition:
+        - word_score: Original BM25 score from word search (typically 1-30)
+        - knn_score: Original Hamming similarity from KNN search (0-1)
+        - hybrid_score: Combined score preserving word score magnitude
+        - rrf_rank_score: Pure RRF score for ranking
+        - selection_tier: 'word_top', 'knn_top', or 'fusion_fill'
 
         Args:
             word_hits: Hits from word-based search.
@@ -1251,11 +1288,29 @@ class VideoSearcherV2:
             limit: Maximum results to return.
 
         Returns:
-            Fused and sorted list of hits.
+            Fused and sorted list of hits with exactly `limit` results
+            (when both sources have sufficient data).
         """
-        # Build bvid -> hit mapping and calculate RRF scores
+        # Priority slots for each source (half of limit each)
+        priority_slots = limit // 2  # 200 for word, 200 for knn
+
+        # Build bvid -> hit mapping and calculate scores
         hit_map = {}  # bvid -> hit dict
         rrf_scores = {}  # bvid -> rrf score
+        word_scores_raw = {}  # bvid -> original word score
+        knn_scores_raw = {}  # bvid -> original knn score
+        word_ranks = {}  # bvid -> word rank
+        knn_ranks = {}  # bvid -> knn rank
+
+        # Get max scores for normalization
+        word_max_score = (
+            max((h.get("score", 0) or 0 for h in word_hits), default=1) or 1
+        )
+        knn_max_score = max((h.get("score", 0) or 0 for h in knn_hits), default=1) or 1
+
+        # Weight for each source (balanced 0.5:0.5)
+        word_weight = 0.5
+        knn_weight = 0.5
 
         # Process word hits
         for rank, hit in enumerate(word_hits, start=1):
@@ -1263,8 +1318,9 @@ class VideoSearcherV2:
             if not bvid:
                 continue
             hit_map[bvid] = hit
-            rrf_scores[bvid] = rrf_scores.get(bvid, 0) + 1 / (k + rank)
-            hit_map[bvid]["word_rank"] = rank
+            rrf_scores[bvid] = rrf_scores.get(bvid, 0) + word_weight / (k + rank)
+            word_ranks[bvid] = rank
+            word_scores_raw[bvid] = hit.get("score", 0) or 0
 
         # Process KNN hits
         for rank, hit in enumerate(knn_hits, start=1):
@@ -1273,20 +1329,81 @@ class VideoSearcherV2:
                 continue
             if bvid not in hit_map:
                 hit_map[bvid] = hit
-            rrf_scores[bvid] = rrf_scores.get(bvid, 0) + 1 / (k + rank)
-            hit_map[bvid]["knn_rank"] = rank
+            rrf_scores[bvid] = rrf_scores.get(bvid, 0) + knn_weight / (k + rank)
+            knn_ranks[bvid] = rank
+            knn_scores_raw[bvid] = hit.get("score", 0) or 0
 
-        # Sort by RRF score
-        sorted_bvids = sorted(
-            rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True
+        # === Fill-and-Supplement Strategy ===
+        selected_bvids = set()
+        selection_tier = {}  # bvid -> tier name
+
+        # Step 1: Take top N from word search
+        word_top_bvids = sorted(
+            [bvid for bvid in word_ranks.keys()], key=lambda x: word_ranks[x]
+        )[:priority_slots]
+        for bvid in word_top_bvids:
+            selected_bvids.add(bvid)
+            selection_tier[bvid] = "word_top"
+
+        # Step 2: Take top N from KNN search (may overlap with word)
+        knn_top_bvids = sorted(
+            [bvid for bvid in knn_ranks.keys()], key=lambda x: knn_ranks[x]
+        )[:priority_slots]
+        for bvid in knn_top_bvids:
+            if bvid not in selected_bvids:
+                selected_bvids.add(bvid)
+                selection_tier[bvid] = "knn_top"
+            else:
+                # Already selected from word, mark as both
+                selection_tier[bvid] = "word_knn_top"
+
+        # Step 3: Fill remaining slots from unused results by RRF score
+        remaining_slots = limit - len(selected_bvids)
+        if remaining_slots > 0:
+            # Get all bvids not yet selected, sorted by RRF score
+            remaining_bvids = sorted(
+                [bvid for bvid in rrf_scores.keys() if bvid not in selected_bvids],
+                key=lambda x: rrf_scores[x],
+                reverse=True,
+            )
+            for bvid in remaining_bvids[:remaining_slots]:
+                selected_bvids.add(bvid)
+                selection_tier[bvid] = "fusion_fill"
+
+        # Sort all selected results by RRF score for final ordering
+        sorted_selected = sorted(
+            selected_bvids, key=lambda x: rrf_scores.get(x, 0), reverse=True
         )
 
-        # Build result list
+        # Build result list with meaningful hybrid_score
         fused_hits = []
-        for bvid in sorted_bvids[:limit]:
+        for bvid in sorted_selected:
             hit = hit_map[bvid]
-            hit["hybrid_score"] = rrf_scores[bvid]
-            hit["fusion_method"] = "rrf"
+
+            # Store raw scores
+            w_score_raw = word_scores_raw.get(bvid, 0)
+            k_score_raw = knn_scores_raw.get(bvid, 0)
+
+            # Normalize scores to 0-1 range
+            w_score_norm = w_score_raw / word_max_score if word_max_score > 0 else 0
+            k_score_norm = k_score_raw / knn_max_score if knn_max_score > 0 else 0
+
+            # Calculate hybrid_score that preserves word score magnitude
+            # Formula: (normalized_word * 0.5 + normalized_knn * 0.5) * word_max_score
+            # This keeps the score in a similar range as word search scores
+            hybrid_relevance = word_weight * w_score_norm + knn_weight * k_score_norm
+            hybrid_score = hybrid_relevance * word_max_score
+
+            hit["word_score"] = round(w_score_raw, 4)
+            hit["knn_score"] = round(k_score_raw, 4)
+            hit["word_score_norm"] = round(w_score_norm, 4)
+            hit["knn_score_norm"] = round(k_score_norm, 4)
+            hit["hybrid_score"] = round(hybrid_score, 4)
+            hit["rrf_rank_score"] = round(rrf_scores[bvid], 6)
+            hit["word_rank"] = word_ranks.get(bvid)
+            hit["knn_rank"] = knn_ranks.get(bvid)
+            hit["selection_tier"] = selection_tier[bvid]
+            hit["fusion_method"] = "rrf_fill"
             fused_hits.append(hit)
 
         return fused_hits

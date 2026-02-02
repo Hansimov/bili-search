@@ -472,10 +472,10 @@ class VideoExplorer(VideoSearcherV2):
         step_idx += 1
         step_name = "group_hits_by_owner"
         step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Group hits by owner, sorted by first appearance")
+        logger.hint(f"> {step_str} Group hits by owner, sorted by sum_rank_score")
         group_hits_by_owner_params = {
             "search_res": full_doc_search_res,
-            "sort_field": "first_appear_order",  # Match video result order
+            "sort_field": "sum_rank_score",  # Sum of rank_scores to find active/popular authors
             "limit": group_owner_limit,
         }
         group_hits_by_owner_result = {
@@ -483,7 +483,7 @@ class VideoExplorer(VideoSearcherV2):
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
             "status": "running",
-            "input": {"limit": group_owner_limit, "sort_field": "first_appear_order"},
+            "input": {"limit": group_owner_limit, "sort_field": "sum_rank_score"},
             "output": {},
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
@@ -520,7 +520,7 @@ class VideoExplorer(VideoSearcherV2):
             "sum_rank_score",
             "top_rank_score",
             "first_appear_order",
-        ] = "first_appear_order",  # Default: order by first appearance in ranked hits
+        ] = "sum_rank_score",  # Default: sum of rank_scores to find active/popular authors
     ) -> dict:
         """KNN-based explore using text embeddings instead of keyword matching.
 
@@ -807,7 +807,7 @@ class VideoExplorer(VideoSearcherV2):
         fusion_method: Literal["rrf", "weighted"] = "rrf",
         # Explore params
         most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
+        rank_method: RANK_METHOD_TYPE = "tiered",  # Default to tiered: relevance-first with stats/recency tie-breaking
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         group_sort_field: Literal[
@@ -817,13 +817,14 @@ class VideoExplorer(VideoSearcherV2):
             "sum_rank_score",
             "top_rank_score",
             "first_appear_order",
-        ] = "first_appear_order",  # Default: order by first appearance in ranked hits
+        ] = "sum_rank_score",  # Default: sum of rank_scores to find active/popular authors
     ) -> dict:
         """Hybrid explore combining word-based and vector-based retrieval.
 
-        This method prioritizes RELEVANCE over popularity/recency.
-        Results are ranked by vector similarity first, ensuring the most
-        semantically relevant content appears at the top.
+        This method uses tiered ranking by default: relevance-first,
+        with popularity/recency tie-breaking within same-relevance tiers.
+        This ensures highly relevant content ranks first, while allowing
+        popular/recent content to surface among similarly relevant results.
 
         Workflow:
         1. Performs word-based search (for keyword matching)
@@ -965,19 +966,23 @@ class VideoExplorer(VideoSearcherV2):
 
         bvid_filter = bvids_to_filter(bvids)
 
-        full_doc_search_params = {
-            "query": query,
-            "extra_filters": extra_filters + [bvid_filter],
-            "rank_method": "heads",  # Use heads to preserve order, we'll merge scores
-            "is_highlight": True,
-            "add_region_info": True,
-            "add_highlights_info": True,
-            "limit": len(bvids),
-            "timeout": EXPLORE_TIMEOUT,
-            "verbose": verbose,
-        }
+        # Step 2 (hidden): Fetch full docs for ranked results
+        # IMPORTANT: For hybrid search, we must NOT filter by keywords again,
+        # because vector search results may not contain the query keywords
+        # (they are semantically similar but not lexically matching).
+        # We only use bvid filter to fetch full docs.
+        step_str = logstr.note(brk(f"Step (full docs)"))
+        logger.hint(f"> {step_str} Fetch full docs by bvids (no keyword filter)")
 
-        full_doc_search_res = self.search(**full_doc_search_params)
+        # Use fetch_docs_by_bvids which uses match_all + bvid filter
+        # This ensures we get ALL results from hybrid_search, not just keyword-matched ones
+        full_doc_search_res = self.fetch_docs_by_bvids(
+            bvids=bvids,
+            add_region_info=True,
+            limit=len(bvids),
+            timeout=EXPLORE_TIMEOUT,
+            verbose=verbose,
+        )
 
         # Merge hybrid scores from original search into full doc hits
         hybrid_hits = hybrid_search_res.get("hits", [])
@@ -985,10 +990,18 @@ class VideoExplorer(VideoSearcherV2):
         self.merge_scores_into_hits(full_hits, hybrid_hits)
 
         # Re-apply ranking after merging scores
-        # For hybrid explore, RRF fusion already produced well-ranked results
-        # Use heads to preserve RRF order, set rank_score = hybrid_score for consistency
-        if rank_method == "relevance":
-            # Preserve RRF fusion order, just set rank_score for downstream use
+        # For hybrid explore, use tiered ranking by default:
+        # - Group by relevance tiers
+        # - Within each tier, sort by popularity/recency
+        if rank_method == "tiered":
+            # Tiered ranking: relevance-first with stats/recency tie-breaking
+            full_doc_search_res = self.hit_ranker.tiered_rank(
+                full_doc_search_res,
+                top_k=rank_top_k,
+                relevance_field="hybrid_score",
+            )
+        elif rank_method == "relevance":
+            # Pure relevance ranking, just set rank_score for downstream use
             for hit in full_hits:
                 hit["rank_score"] = hit.get("hybrid_score", 0) or 0
             full_hits.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
@@ -1127,8 +1140,9 @@ class VideoExplorer(VideoSearcherV2):
 
         if is_hybrid:
             # Hybrid mode (both word and vector)
-            # For hybrid mode, force relevance ranking to prioritize semantic relevance
-            hybrid_rank_method = "relevance"
+            # Use tiered ranking: relevance-first with stats/recency tie-breaking
+            # This allows popular/recent content to surface among similarly relevant results
+            hybrid_rank_method = "tiered"
             result = self.hybrid_explore(
                 query=query,
                 extra_filters=extra_filters,

@@ -151,7 +151,7 @@ SEARCH_MATCH_OPERATOR = "or"
 SUGGEST_MATCH_OPERATOR = SEARCH_MATCH_OPERATOR
 
 USE_SCRIPT_SCORE_DEFAULT = False
-RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance"]
+RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance", "tiered"]
 RANK_METHOD_DEFAULT = "stats"
 
 # =============================================================================
@@ -194,6 +194,29 @@ RELATE_GATE_COUNT = 2000  # max results to keep
 RELATE_SCORE_POWER = 4  # power transform for relevance score
 
 # =============================================================================
+# Tiered Ranking (Hybrid Search)
+# =============================================================================
+# Tiered ranking for hybrid search:
+# - High relevance zone: sort by stats/recency (热度+最新)
+# - Low relevance zone: sort strictly by relevance
+#
+# ONLY results in the high relevance zone get popularity/recency boost.
+# This prevents low-relevance but high-popularity content from ranking too high.
+
+# High relevance threshold: only items with score >= threshold * max_score
+# get the stats/recency boost. Items below this are sorted by relevance only.
+# 0.7 means only top 30% by relevance score qualify for popularity boost
+TIERED_HIGH_RELEVANCE_THRESHOLD = 0.7
+
+# Within high relevance zone, further group by similarity for tie-breaking
+# Items within this relative diff are considered "equally relevant"
+TIERED_SIMILARITY_THRESHOLD = 0.05  # 5% relative difference
+
+# Weights for secondary sort within high relevance zone
+TIERED_STATS_WEIGHT = 0.7  # weight for popularity (view, coin, etc.)
+TIERED_RECENCY_WEIGHT = 0.3  # weight for recency (pubdate)
+
+# =============================================================================
 # Query Mode Settings
 # =============================================================================
 
@@ -204,8 +227,10 @@ QMOD_SINGLE_TYPE = Literal["word", "vector"]
 QMOD_DEFAULT = ["word", "vector"]  # default to hybrid search for best results
 
 # Hybrid search settings
-HYBRID_WORD_WEIGHT = 0.35  # weight for word-based score in hybrid mode
-HYBRID_VECTOR_WEIGHT = 0.65  # weight for vector-based score in hybrid mode
+# Word and vector weights are balanced 0.5:0.5 for fair fusion
+# RRF fusion is rank-based, so these weights are used for weighted fusion mode
+HYBRID_WORD_WEIGHT = 0.5  # weight for word-based score in hybrid mode
+HYBRID_VECTOR_WEIGHT = 0.5  # weight for vector-based score in hybrid mode
 HYBRID_RRF_K = 60  # k parameter for RRF fusion
 
 TRACK_TOTAL_HITS = True
@@ -280,9 +305,15 @@ TERMINATE_AFTER = 2000000
 # KNN search settings
 # text_emb is a 2048-bit vector stored as dense_vector with element_type="bit"
 KNN_TEXT_EMB_FIELD = "text_emb"
-KNN_K = 2000  # number of nearest neighbors to return (balanced for speed and recall)
-KNN_NUM_CANDIDATES = 10000  # candidates per shard (reduced for faster search)
-KNN_TIMEOUT = 8  # timeout in seconds for KNN search
+# KNN_K: Number of nearest neighbors to return from each shard
+# Higher values improve recall but increase latency
+# For bit vectors with Hamming distance, larger K is needed for good recall
+KNN_K = 3000  # increased for better recall, especially with filters
+# KNN_NUM_CANDIDATES: Candidates to consider per shard before selecting top K
+# Should be significantly larger than K for good recall
+# For 2048-bit vectors, more candidates help find relevant items
+KNN_NUM_CANDIDATES = 10000  # doubled for better recall with filters
+KNN_TIMEOUT = 10  # increased timeout for larger candidate pool
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
 KNN_SIMILARITY_DEFAULT = "hamming"  # for bit vectors, hamming is most efficient
 KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
