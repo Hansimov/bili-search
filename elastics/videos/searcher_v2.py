@@ -40,6 +40,7 @@ from elastics.videos.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT
 from elastics.videos.constants import HYBRID_RRF_K
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.videos.ranker import VideoHitsRanker
+from elastics.es_logger import get_es_debug_logger
 from converters.embed import TextEmbedSearchClient
 from converters.dsl.fields.qmod import extract_qmod_from_expr_tree
 
@@ -94,12 +95,20 @@ class VideoSearcherV2:
             self._embed_client = TextEmbedSearchClient(lazy_init=True)
         return self._embed_client
 
-    def submit_to_es(self, body: dict) -> dict:
+    def submit_to_es(self, body: dict, context: str = None) -> dict:
         try:
             res = self.es.client.search(index=self.index_name, body=body)
             res_dict = res.body
         except Exception as e:
             logger.warn(f"× Error: {e}")
+            # Log detailed error info to logs/es.log
+            es_logger = get_es_debug_logger()
+            es_logger.log_error(
+                request_body=body,
+                error=e,
+                index_name=self.index_name,
+                context=context,
+            )
             res_dict = {}
         return res_dict
 
@@ -370,7 +379,7 @@ class VideoSearcherV2:
         logger.mesg(f"> Fetching {len(bvids)} docs by bvid", verbose=verbose)
 
         # Submit to ES
-        res_dict = self.submit_to_es(search_body)
+        res_dict = self.submit_to_es(search_body, context="fetch_docs_by_bvids")
 
         # Parse results
         parse_res = self.hit_parser.parse(
@@ -390,6 +399,126 @@ class VideoSearcherV2:
 
         logger.exit_quiet(not verbose)
         return parse_res
+
+    def filter_only_search(
+        self,
+        query: str,
+        source_fields: list[str] = SOURCE_FIELDS,
+        extra_filters: list[dict] = [],
+        parse_hits: bool = True,
+        add_region_info: bool = True,
+        add_highlights_info: bool = False,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        limit: int = SEARCH_LIMIT,
+        rank_top_k: int = RANK_TOP_K,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
+        verbose: bool = False,
+    ) -> dict:
+        """Search using only filters without text matching.
+
+        This method is used when a query contains only filter expressions
+        (like u=xxx, d>xxx, v>xxx) without any search keywords.
+        It uses match_all with filters instead of text search or KNN search.
+
+        Args:
+            query: Query string (used to extract filters).
+            source_fields: Fields to include in results.
+            extra_filters: Additional filter clauses.
+            parse_hits: Whether to parse hits.
+            add_region_info: Whether to add region info.
+            add_highlights_info: Whether to add highlight info.
+            rank_method: Ranking method.
+            limit: Maximum results.
+            rank_top_k: Top-k for ranking.
+            timeout: Search timeout.
+            verbose: Enable verbose logging.
+
+        Returns:
+            Search results dict with hits.
+        """
+        logger.enter_quiet(not verbose)
+
+        # Extract filters from query
+        query_info, filter_clauses = self.get_filters_from_query(
+            query=query,
+            extra_filters=extra_filters,
+        )
+
+        # Build search body with match_all + filters
+        if filter_clauses:
+            search_body = {
+                "query": {"bool": {"filter": filter_clauses}},
+                "_source": source_fields,
+                "size": limit,
+                "track_total_hits": True,
+                # Sort by pubdate desc for filter-only queries (most recent first)
+                "sort": [{"pubdate": {"order": "desc"}}],
+            }
+        else:
+            # No filters at all, just match_all with pubdate sort
+            search_body = {
+                "query": {"match_all": {}},
+                "_source": source_fields,
+                "size": limit,
+                "track_total_hits": True,
+                "sort": [{"pubdate": {"order": "desc"}}],
+            }
+
+        search_body = set_timeout(search_body, timeout=timeout)
+
+        logger.hint(f"> Filter-only search (no keywords)", verbose=verbose)
+        logger.mesg(
+            dict_to_str(search_body, add_quotes=True), indent=2, verbose=verbose
+        )
+
+        # Submit to ES
+        res_dict = self.submit_to_es(search_body, context="filter_only_search")
+
+        # Parse results
+        if parse_hits:
+            parse_res = self.hit_parser.parse(
+                query_info=query_info,
+                match_fields=[],
+                res_dict=res_dict,
+                request_type="search",
+                drop_no_highlights=False,
+                add_region_info=add_region_info,
+                add_highlights_info=add_highlights_info,
+                match_type="cross_fields",
+                match_operator="or",
+                detail_level=-1,
+                limit=limit,
+                verbose=verbose,
+            )
+            # For filter-only search, we use pubdate sorting in ES query,
+            # so just use heads to limit results (no score-based ranking)
+            # stats_rank and rrf_rank require relevance scores which we don't have
+            parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
+        else:
+            parse_res = res_dict
+
+        parse_res["query_info"] = query_info
+        parse_res["rewrite_info"] = {}  # Empty rewrite_info for filter-only search
+        parse_res["filter_only"] = True
+
+        # Remove non-jsonable items (like query_expr_tree) to avoid serialization errors
+        parse_res = self.post_process_return_res(parse_res)
+
+        logger.exit_quiet(not verbose)
+        return parse_res
+
+    def has_search_keywords(self, query: str) -> bool:
+        """Check if query contains actual search keywords (not just filters).
+
+        Args:
+            query: Query string.
+
+        Returns:
+            True if query has search keywords, False if only filters.
+        """
+        query_info = self.query_rewriter.get_query_info(query)
+        keywords_body = query_info.get("keywords_body", [])
+        return len(keywords_body) > 0
 
     def rewrite_by_suggest(
         self,
@@ -632,7 +761,7 @@ class VideoSearcherV2:
             logger.hint("> agg_body:")
             logger.mesg(dict_to_str(agg_body, add_quotes=True, align_list=False))
         # submit agg_body to es client
-        es_res_dict = self.submit_to_es(agg_body)
+        es_res_dict = self.submit_to_es(agg_body, context="agg")
         return es_res_dict
 
     def search(
@@ -669,6 +798,29 @@ class VideoSearcherV2:
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         logger.enter_quiet(not verbose)
+
+        # Check if there are actual search keywords
+        # If no keywords, fall back to filter-only search
+        if not self.has_search_keywords(query):
+            logger.hint(
+                "> No search keywords found, falling back to filter-only search",
+                verbose=verbose,
+            )
+            logger.exit_quiet(not verbose)
+            return self.filter_only_search(
+                query=query,
+                source_fields=source_fields,
+                extra_filters=extra_filters,
+                parse_hits=parse_hits,
+                add_region_info=add_region_info,
+                add_highlights_info=add_highlights_info,
+                rank_method=rank_method,
+                limit=limit,
+                rank_top_k=rank_top_k,
+                timeout=timeout,
+                verbose=verbose,
+            )
+
         # init params by detail_level
         if detail_level in detail_levels:
             match_detail = detail_levels[detail_level]
@@ -716,7 +868,7 @@ class VideoSearcherV2:
             dict_to_str(search_body, add_quotes=True), indent=2, verbose=verbose
         )
         # submit search_body to es client
-        es_res_dict = self.submit_to_es(search_body)
+        es_res_dict = self.submit_to_es(search_body, context="search")
         # parse results
         if parse_hits:
             parse_res = self.hit_parser.parse(
@@ -914,11 +1066,30 @@ class VideoSearcherV2:
         words_expr = query_info.get("words_expr", "")
         keywords_body = query_info.get("keywords_body", [])
 
+        # Check if there are actual search keywords
+        # If no keywords, fall back to filter-only search
+        if not keywords_body:
+            logger.hint(
+                "> No search keywords found, falling back to filter-only search",
+                verbose=verbose,
+            )
+            logger.exit_quiet(not verbose)
+            return self.filter_only_search(
+                query=query,
+                source_fields=source_fields,
+                extra_filters=extra_filters,
+                parse_hits=parse_hits,
+                add_region_info=add_region_info,
+                add_highlights_info=False,
+                rank_method=rank_method,
+                limit=limit,
+                rank_top_k=rank_top_k,
+                timeout=timeout,
+                verbose=verbose,
+            )
+
         # Build text for embedding from query words
-        if keywords_body:
-            embed_text = " ".join(keywords_body)
-        else:
-            embed_text = words_expr or query
+        embed_text = " ".join(keywords_body)
 
         # Convert query text to embedding vector
         if not self.embed_client.is_available():
@@ -972,7 +1143,7 @@ class VideoSearcherV2:
         )
 
         # Submit to ES
-        es_res_dict = self.submit_to_es(search_body)
+        es_res_dict = self.submit_to_es(search_body, context="knn_search")
 
         # Parse results
         if parse_hits:
@@ -1116,8 +1287,31 @@ class VideoSearcherV2:
         """
         logger.enter_quiet(not verbose)
 
-        # Get query info
+        # Get query info and check for keywords
         query_info = self.query_rewriter.get_query_info(query)
+        keywords_body = query_info.get("keywords_body", [])
+
+        # Check if there are actual search keywords
+        # If no keywords, fall back to filter-only search
+        if not keywords_body:
+            logger.hint(
+                "> No search keywords found, falling back to filter-only search",
+                verbose=verbose,
+            )
+            logger.exit_quiet(not verbose)
+            return self.filter_only_search(
+                query=query,
+                source_fields=source_fields,
+                extra_filters=extra_filters,
+                parse_hits=parse_hits,
+                add_region_info=add_region_info,
+                add_highlights_info=add_highlights_info,
+                rank_method=rank_method,
+                limit=limit,
+                rank_top_k=rank_top_k,
+                timeout=timeout,
+                verbose=verbose,
+            )
 
         # Execute word search and KNN search in parallel
         logger.hint("> Hybrid: Running word search and KNN search in parallel ...")

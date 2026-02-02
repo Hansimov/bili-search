@@ -560,6 +560,31 @@ class VideoExplorer(VideoSearcherV2):
         """
         logger.enter_quiet(not verbose)
 
+        # Check if there are actual search keywords
+        # If no keywords, fall back to word-only explore (which uses filter_only_search)
+        if not self.has_search_keywords(query):
+            logger.hint(
+                "> No search keywords found, falling back to word-only explore",
+                verbose=verbose,
+            )
+            logger.exit_quiet(not verbose)
+            result = self.explore(
+                query=query,
+                extra_filters=extra_filters,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+            )
+            # Mark that this was a filter-only fallback and add qmod
+            if result.get("data") and len(result["data"]) > 0:
+                result["data"][0]["output"]["qmod"] = [
+                    "vector"
+                ]  # Original requested mode
+                result["data"][0]["output"]["filter_only"] = True
+            return result
+
         step_results = []
         final_status = "finished"
 
@@ -857,6 +882,33 @@ class VideoExplorer(VideoSearcherV2):
             }
         """
         logger.enter_quiet(not verbose)
+
+        # Check if there are actual search keywords
+        # If no keywords, fall back to word-only explore (which uses filter_only_search)
+        if not self.has_search_keywords(query):
+            logger.hint(
+                "> No search keywords found, falling back to word-only explore",
+                verbose=verbose,
+            )
+            logger.exit_quiet(not verbose)
+            result = self.explore(
+                query=query,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+            )
+            # Mark that this was a filter-only fallback and add qmod
+            if result.get("data") and len(result["data"]) > 0:
+                result["data"][0]["output"]["qmod"] = [
+                    "word",
+                    "vector",
+                ]  # Original requested mode
+                result["data"][0]["output"]["filter_only"] = True
+            return result
 
         step_results = []
         final_status = "finished"

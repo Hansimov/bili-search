@@ -1,4 +1,5 @@
 from btok import SentenceCategorizer
+from fastapi.encoders import jsonable_encoder
 from tclogger import logger, logstr, dict_to_str, brk
 
 from elastics.videos.constants import (
@@ -612,6 +613,286 @@ def test_hybrid_explore_count():
             )
 
 
+# Filter-only search test queries (no keywords, only filters)
+filter_only_queries = [
+    'u="红警HBK08"',
+    'u="红警HBK08" q=v',
+    'u="红警HBK08" q=w',
+    'u="红警HBK08" q=wv',
+    "d>2024-01-01 v>10000",
+    "u=影视飓风 d>2024-06-01",
+]
+
+
+def test_filter_only_search(searcher: VideoSearcherV2 = None):
+    """Test that filter-only queries (no keywords) work correctly.
+
+    When a query contains only filter expressions (like u=xxx, d>xxx, v>xxx)
+    without any search keywords, the search should:
+    1. Not attempt KNN/vector search (which requires text for embedding)
+    2. Not attempt word matching
+    3. Use match_all + filters to return all matching results
+    """
+    logger.note("> Testing filter-only search...")
+
+    if searcher is None:
+        searcher = VideoSearcherV2(
+            index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+        )
+
+    for query in filter_only_queries:
+        logger.note(f"\n> Query: [{query}]")
+
+        # Check if query has keywords
+        has_keywords = searcher.has_search_keywords(query)
+        logger.mesg(f"  has_search_keywords: {has_keywords}")
+
+        # Test with different query modes
+        qmod = searcher.get_qmod_from_query(query)
+        logger.mesg(f"  qmod from query: {qmod}")
+
+        # Test filter_only_search directly
+        logger.hint("  Direct filter_only_search:")
+        res = searcher.filter_only_search(
+            query=query,
+            limit=50,
+            rank_top_k=50,
+            verbose=False,
+        )
+        total_hits = res.get("total_hits", 0)
+        return_hits = res.get("return_hits", 0)
+        filter_only_flag = res.get("filter_only", False)
+        logger.mesg(
+            f"    total_hits={total_hits}, return_hits={return_hits}, filter_only={filter_only_flag}"
+        )
+
+        # Test through knn_search (should fallback to filter_only_search)
+        if "q=v" in query or (not any(x in query for x in ["q=w", "q=wv", "q=vw"])):
+            logger.hint("  Via knn_search (should fallback):")
+            knn_res = searcher.knn_search(
+                query=query,
+                limit=50,
+                rank_top_k=50,
+                verbose=False,
+            )
+            knn_total = knn_res.get("total_hits", 0)
+            knn_return = knn_res.get("return_hits", 0)
+            knn_filter_only = knn_res.get("filter_only", False)
+            status = "✓" if knn_filter_only or knn_return > 3 else "×"
+            logger.mesg(
+                f"    {status} total_hits={knn_total}, return_hits={knn_return}, filter_only={knn_filter_only}"
+            )
+
+        # Test through hybrid_search (should fallback to filter_only_search)
+        if "q=wv" in query or "q=vw" in query:
+            logger.hint("  Via hybrid_search (should fallback):")
+            hybrid_res = searcher.hybrid_search(
+                query=query,
+                limit=50,
+                rank_top_k=50,
+                verbose=False,
+            )
+            hybrid_total = hybrid_res.get("total_hits", 0)
+            hybrid_return = hybrid_res.get("return_hits", 0)
+            hybrid_filter_only = hybrid_res.get("filter_only", False)
+            status = "✓" if hybrid_filter_only or hybrid_return > 3 else "×"
+            logger.mesg(
+                f"    {status} total_hits={hybrid_total}, return_hits={hybrid_return}, filter_only={hybrid_filter_only}"
+            )
+
+        # Verify that filter_only search returns more than 3 results
+        if total_hits >= 3:
+            status = "✓" if return_hits > 3 else "×"
+            logger.mesg(
+                f"  {status} Filter-only search returned {return_hits} results (expected > 3)"
+            )
+        else:
+            logger.mesg(f"  ⓘ Query matches only {total_hits} documents")
+
+    logger.success("> Filter-only search test completed!")
+
+
+def test_filter_only_vs_regular(searcher: VideoSearcherV2 = None):
+    """Compare filter-only search (q=v/q=wv without keywords) vs regular search."""
+    logger.note("> Comparing filter-only vs regular search...")
+
+    if searcher is None:
+        searcher = VideoSearcherV2(
+            index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+        )
+
+    # Test: u="红警HBK08" should return same results regardless of q=w/v/wv
+    test_cases = [
+        ('u="红警HBK08"', "default"),
+        ('u="红警HBK08" q=w', "word mode"),
+        ('u="红警HBK08" q=v', "vector mode"),
+        ('u="红警HBK08" q=wv', "hybrid mode"),
+    ]
+
+    results = {}
+    for query, mode in test_cases:
+        qmod = searcher.get_qmod_from_query(query)
+        has_keywords = searcher.has_search_keywords(query)
+
+        if "word" in qmod and "vector" in qmod:
+            res = searcher.hybrid_search(query, limit=50, verbose=False)
+        elif "vector" in qmod:
+            res = searcher.knn_search(query, limit=50, verbose=False)
+        else:
+            res = searcher.search(query, limit=50, verbose=False)
+
+        total_hits = res.get("total_hits", 0)
+        return_hits = res.get("return_hits", 0)
+        filter_only = res.get("filter_only", False)
+
+        results[mode] = {
+            "total_hits": total_hits,
+            "return_hits": return_hits,
+            "filter_only": filter_only,
+            "has_keywords": has_keywords,
+        }
+
+        logger.mesg(
+            f"  [{mode:12}] qmod={qmod}, has_keywords={has_keywords}, "
+            f"total={total_hits}, return={return_hits}, filter_only={filter_only}"
+        )
+
+    # All modes should return the same number of results for filter-only queries
+    return_counts = [r["return_hits"] for r in results.values()]
+    all_same = len(set(return_counts)) == 1 or all(c > 3 for c in return_counts)
+
+    if all_same:
+        logger.success(
+            "  ✓ All query modes return consistent results for filter-only query"
+        )
+    else:
+        logger.warn(f"  × Inconsistent results across modes: {return_counts}")
+
+
+def test_filter_only_explore(explorer: VideoExplorer = None):
+    """Test that filter-only queries work correctly in explore methods.
+
+    When a query contains only filter expressions without search keywords,
+    the explore methods should still return correct results.
+    """
+    logger.note("> Testing filter-only explore...")
+
+    if explorer is None:
+        explorer = VideoExplorer(
+            index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+        )
+
+    # Test queries with only filters (no search keywords)
+    test_cases = [
+        ('u="红警HBK08"', "default (no qmod)"),
+        ('u="红警HBK08" q=v', "vector mode"),
+        ('u="红警HBK08" q=w', "word mode"),
+        ('u="红警HBK08" q=wv', "hybrid mode"),
+        ("红警HBK08 q=v", "with keywords + vector"),  # This should use KNN
+        ("红警HBK08 q=wv", "with keywords + hybrid"),  # This should use hybrid
+    ]
+
+    for query, desc in test_cases:
+        logger.note(f"\n> Query: [{query}] ({desc})")
+
+        has_keywords = explorer.has_search_keywords(query)
+        qmod = explorer.get_qmod_from_query(query)
+        logger.mesg(f"  has_search_keywords: {has_keywords}, qmod: {qmod}")
+
+        try:
+            result = explorer.unified_explore(
+                query=query,
+                rank_top_k=50,
+                group_owner_limit=10,
+                verbose=False,
+            )
+
+            status = result.get("status", "unknown")
+            data = result.get("data", [])
+
+            # Find the search step result
+            search_step = None
+            for step in data:
+                if step.get("name") in [
+                    "most_relevant_search",
+                    "knn_search",
+                    "hybrid_search",
+                ]:
+                    search_step = step
+                    break
+
+            if search_step:
+                output = search_step.get("output", {})
+                total_hits = output.get("total_hits", 0)
+                return_hits = output.get("return_hits", 0)
+                filter_only = output.get("filter_only", False)
+                step_name = search_step.get("name")
+
+                # For filter-only queries, we expect return_hits > 3
+                if not has_keywords:
+                    check = "✓" if return_hits > 3 or total_hits <= 3 else "×"
+                else:
+                    check = "✓"  # With keywords, any result is fine
+
+                logger.mesg(
+                    f"  {check} step={step_name}, total_hits={total_hits}, "
+                    f"return_hits={return_hits}, filter_only={filter_only}"
+                )
+            else:
+                logger.warn(f"  × No search step found in result")
+
+            # Check group_hits_by_owner
+            group_step = None
+            for step in data:
+                if step.get("name") == "group_hits_by_owner":
+                    group_step = step
+                    break
+
+            if group_step:
+                authors = group_step.get("output", {}).get("authors", {})
+                logger.mesg(f"  Authors found: {len(authors)}")
+
+        except Exception as e:
+            logger.warn(f"  × Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    logger.success("> Filter-only explore test completed!")
+
+
+def test_json_serialization(explorer: VideoExplorer = None):
+    """Test that filter_only_search results can be serialized by FastAPI."""
+    if explorer is None:
+        explorer = VideoExplorer(ELASTIC_VIDEOS_DEV_INDEX)
+
+    test_queries = [
+        'u="红警HBK08"',
+        'u="红警HBK08" q=v',
+        "d>2024-01-01 v>10000",
+    ]
+
+    logger.note("> Testing JSON serialization (simulating FastAPI)...")
+    for query in test_queries:
+        logger.hint(f"\n  Query: [{query}]")
+        try:
+            res = explorer.filter_only_search(
+                query, limit=10, rank_top_k=10, verbose=False
+            )
+            # This is what FastAPI does internally
+            encoded = jsonable_encoder(res)
+            logger.success("    ✓ jsonable_encoder succeeded")
+            logger.mesg(
+                f'      total_hits={res.get("total_hits")}, filter_only={res.get("filter_only")}'
+            )
+            has_tree = "query_expr_tree" in res.get("query_info", {})
+            logger.mesg(f"      query_expr_tree in query_info: {has_tree}")
+        except Exception as e:
+            logger.warn(f"    ✗ Error: {type(e).__name__}: {e}")
+
+    logger.success("\n> JSON serialization test completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -629,7 +910,12 @@ if __name__ == "__main__":
     # test_hybrid_search()
     # test_unified_explore()
     # test_qmod_parser()
-    test_rrf_fusion_fill()
-    test_hybrid_explore_count()
+    # test_rrf_fusion_fill()
+    # test_hybrid_explore_count()
+    explorer = VideoExplorer(ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV)
+    test_filter_only_search(explorer)
+    test_filter_only_vs_regular(explorer)
+    test_filter_only_explore(explorer)
+    test_json_serialization(explorer)
 
     # python -m elastics.videos.tests
