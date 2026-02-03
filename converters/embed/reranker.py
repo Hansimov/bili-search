@@ -18,12 +18,12 @@ Key improvement over old implementation:
 - New: 1 network call total via tfmx.rerank() (server-side computation)
 
 Performance optimizations:
-- Passage truncation: Long passages are truncated to save memory/bandwidth
-- Efficient text extraction: Pre-compute and cache field access
+- Passage construction: Following TextDocItem pattern for consistent text building
+- Efficient text extraction: Using dict_get for nested field access
 - Memory management: Clear intermediate data structures promptly
+- Keyword extraction: Use DSL parser instead of regex for accuracy
 """
 
-import re
 import time
 from tclogger import logger, dict_get
 
@@ -31,8 +31,11 @@ from converters.embed.embed_client import TextEmbedClient, get_embed_client
 
 # Performance tuning constants
 MAX_PASSAGE_LENGTH = 4096  # Truncate passages longer than this (chars)
-MAX_FIELD_LENGTH = 150  # Max length per text field before truncation
 RERANK_TIMEOUT = 30  # Timeout in seconds for rerank operation
+
+# Score constants for non-reranked hits
+# Non-reranked hits get a score penalty to ensure they rank below reranked ones
+NON_RERANKED_SCORE_PENALTY = 0.01  # Score assigned to non-reranked hits
 
 
 def check_keyword_match(
@@ -61,88 +64,83 @@ def check_keyword_match(
     return match_count > 0, match_count
 
 
-def extract_keywords(query: str) -> list[str]:
-    """Extract keywords from query string.
+def extract_keywords_from_expr_tree(expr_tree) -> list[str]:
+    """Extract keywords from DSL expression tree.
 
-    Performs simple tokenization to extract meaningful keywords.
-    Filters out DSL expressions (e.g., q=v, date=2024).
+    Uses the DSL parser's word_expr nodes to extract actual search keywords,
+    avoiding false positives from filter expressions like q=v, date=2024.
 
     Args:
-        query: Query string, possibly with DSL expressions.
+        expr_tree: DslExprNode tree from DSL parser.
 
     Returns:
-        List of keywords for matching.
+        List of keyword strings for matching.
     """
-    # Remove patterns like q=xxx, date=xxx, etc.
-    cleaned = re.sub(r"\b\w+=[^\s]+", "", query)
+    if expr_tree is None:
+        return []
 
-    # Split by whitespace and punctuation
-    tokens = re.split(r"[\s,;，；、]+", cleaned)
+    keywords = []
+    word_expr_nodes = expr_tree.find_all_childs_with_key("word_expr")
 
-    # Filter empty and very short tokens
-    keywords = [t.strip() for t in tokens if t.strip() and len(t.strip()) >= 2]
+    for word_expr_node in word_expr_nodes:
+        # Get word_val_single nodes (the actual word values)
+        word_val_nodes = word_expr_node.find_all_childs_with_key("word_val_single")
+        for word_val_node in word_val_nodes:
+            # Skip date-formatted words (they're filter conditions, not keywords)
+            if word_val_node.extras.get("is_date_format", False):
+                continue
+            word = word_val_node.get_deepest_node_value()
+            if word and len(word.strip()) >= 2:
+                keywords.append(word.strip())
 
     return keywords
 
 
-def _get_nested_field(hit: dict, field: str) -> str:
-    """Extract a nested field value from hit dict.
-
-    Args:
-        hit: Hit document dict.
-        field: Field name, can be nested like "owner.name".
-
-    Returns:
-        Field value as string, or empty string if not found.
-    """
-    value = hit
-    for part in field.split("."):
-        if isinstance(value, dict):
-            value = value.get(part, "")
-        else:
-            return ""
-    if isinstance(value, str):
-        return value.strip()
-    return ""
-
-
 def compute_passage(
     hit: dict,
-    text_fields: list[str],
     max_passage_len: int = MAX_PASSAGE_LENGTH,
-    max_field_len: int = MAX_FIELD_LENGTH,
 ) -> str:
     """Extract and combine text from a hit for embedding.
 
-    Optimized for minimal memory allocation and fast execution.
+    Following TextDocItem.build_sentence() pattern for consistent text building.
+    Uses dict_get for safe nested field access.
 
     Args:
         hit: Hit document with text fields.
-        text_fields: Fields to extract text from.
         max_passage_len: Maximum total passage length.
-        max_field_len: Maximum length per field.
 
     Returns:
         Combined text string for embedding.
     """
     parts = []
-    total_len = 0
 
-    for field in text_fields:
-        value = _get_nested_field(hit, field)
-        if not value:
-            continue
+    # owner.name - with semantic tag like TextDocItem
+    owner_name = dict_get(hit, "owner.name", default="", sep=".")
+    if isinstance(owner_name, str):
+        owner_name = owner_name.strip()
+        if owner_name:
+            parts.append(f"<UP主>{owner_name}</UP主>")
 
-        # Truncate field if needed
-        if len(value) > max_field_len:
-            value = value[:max_field_len]
+    # title - core content
+    title = dict_get(hit, "title", default="", sep=".")
+    if isinstance(title, str):
+        title = title.strip()
+        if title:
+            parts.append(title)
 
-        parts.append(value)
-        total_len += len(value) + 1  # +1 for space
+    # tags - wrapped in parentheses like TextDocItem
+    tags = dict_get(hit, "tags", default="", sep=".")
+    if isinstance(tags, str):
+        tags = tags.strip()
+        if tags:
+            parts.append(f"({tags})")
 
-        # Early exit if we have enough text
-        if total_len >= max_passage_len:
-            break
+    # desc - skip if just "-"
+    desc = dict_get(hit, "desc", default="", sep=".")
+    if isinstance(desc, str):
+        desc = desc.strip()
+        if desc and desc != "-":
+            parts.append(desc)
 
     if not parts:
         # Fallback to bvid
@@ -171,12 +169,17 @@ class EmbeddingReranker:
     to compute correct global rankings. Batch splitting would break
     ranking consistency.
 
+    Score normalization:
+    - Reranked hits: cosine_similarity * keyword_boost (typically 0.3-1.5)
+    - Non-reranked hits: assigned NON_RERANKED_SCORE_PENALTY (0.01)
+    - This ensures reranked hits always rank above non-reranked ones
+
     Example:
         reranker = EmbeddingReranker()
         reranked_hits = reranker.rerank(
             query="基洛夫",
             hits=initial_hits,
-            text_fields=["title", "tags", "desc"],
+            keywords=["基洛夫"],  # From DSL parser
             keyword_boost=2.0,
         )
     """
@@ -210,7 +213,8 @@ class EmbeddingReranker:
         self,
         query: str,
         hits: list[dict],
-        text_fields: list[str] = None,
+        keywords: list[str] = None,
+        expr_tree=None,
         keyword_boost: float = 1.5,
         title_keyword_boost: float = 2.0,
         max_rerank: int = 1000,
@@ -229,23 +233,26 @@ class EmbeddingReranker:
         call to ensure correct global ranking. Batch splitting is NOT used
         as it would break ranking consistency.
 
+        Score normalization:
+        - Reranked hits get scores from 0.0 to ~3.0 (cosine * boost)
+        - Non-reranked hits (beyond max_rerank) get NON_RERANKED_SCORE_PENALTY
+        - This ensures proper ordering: all reranked > all non-reranked
+
         Args:
-            query: Original query string.
+            query: Original query string (used for embedding).
             hits: List of hit documents to rerank.
-            text_fields: Fields to use for computing document text.
-                        Defaults to ["title", "tags", "desc"].
+            keywords: Pre-extracted keywords from DSL parser. If None, will
+                     try to extract from expr_tree, otherwise uses query.
+            expr_tree: DslExprNode tree for keyword extraction. Optional.
             keyword_boost: Boost factor when keywords match in tags/desc.
             title_keyword_boost: Boost factor when keywords match in title.
-            max_rerank: Maximum number of hits to rerank.
+            max_rerank: Maximum number of hits to rerank (default 1000).
             score_field: Field name to store the rerank score.
             verbose: Enable verbose logging.
 
         Returns:
             Tuple of (reranked hits, perf_info dict with timing details).
         """
-        if text_fields is None:
-            text_fields = ["title", "tags", "desc"]
-
         perf_info = {
             "total_ms": 0,
             "passage_prep_ms": 0,
@@ -266,22 +273,30 @@ class EmbeddingReranker:
             logger.warn("× Reranker not available, returning original order")
             return hits, perf_info
 
+        # Extract keywords: prefer provided keywords > expr_tree > query
+        if keywords is None:
+            if expr_tree is not None:
+                keywords = extract_keywords_from_expr_tree(expr_tree)
+            else:
+                # Fallback: simple split on whitespace
+                keywords = [w.strip() for w in query.split() if len(w.strip()) >= 2]
+
         # Limit hits to rerank
         hits_to_rerank = hits[:max_rerank]
         remaining_hits = hits[max_rerank:]
         perf_info["reranked_count"] = len(hits_to_rerank)
 
-        # Step 1: Prepare passages efficiently
+        # Step 1: Prepare passages - build list directly without intermediate storage
         step_start = time.perf_counter()
 
-        passages = []
         valid_indices = []
+        valid_passages = []
 
         for i, hit in enumerate(hits_to_rerank):
-            passage = compute_passage(hit, text_fields)
-            passages.append(passage)
+            passage = compute_passage(hit)
             if passage:
                 valid_indices.append(i)
+                valid_passages.append(passage)
 
         perf_info["passage_prep_ms"] = round(
             (time.perf_counter() - step_start) * 1000, 2
@@ -292,14 +307,15 @@ class EmbeddingReranker:
             logger.warn("× No valid passages to rerank")
             return hits, perf_info
 
-        # Extract only valid passages for API call
-        valid_passages = [passages[i] for i in valid_indices]
-
         # Step 2: Call tfmx.rerank() - SINGLE call for all passages
         # This is critical for correct global ranking
         step_start = time.perf_counter()
 
-        rankings = self.embed_client.rerank(query, valid_passages)
+        try:
+            rankings = self.embed_client.rerank(query, valid_passages)
+        finally:
+            # Immediately release passage memory after API call
+            del valid_passages
 
         perf_info["rerank_call_ms"] = round(
             (time.perf_counter() - step_start) * 1000, 2
@@ -316,8 +332,9 @@ class EmbeddingReranker:
                 _, sim_score = rankings[valid_list_idx]
                 similarity_scores[original_idx] = sim_score
 
-        # Extract keywords once for all hits
-        keywords = extract_keywords(query)
+        # Clear rankings to release memory
+        del rankings
+        del valid_indices
 
         # Step 3: Apply keyword boosts and assign scores
         step_start = time.perf_counter()
@@ -330,22 +347,25 @@ class EmbeddingReranker:
             boost = 1.0
 
             # Title match (highest priority)
-            title = hit.get("title", "")
-            title_match, title_count = check_keyword_match(title, keywords)
-            if title_match:
-                boost *= 1 + title_keyword_boost * title_count
+            title = dict_get(hit, "title", default="", sep=".")
+            if isinstance(title, str):
+                title_match, title_count = check_keyword_match(title, keywords)
+                if title_match:
+                    boost *= 1 + title_keyword_boost * title_count
 
             # Tags match
-            tags = hit.get("tags", "")
-            tags_match, tags_count = check_keyword_match(tags, keywords)
-            if tags_match:
-                boost *= 1 + keyword_boost * tags_count * 0.8
+            tags = dict_get(hit, "tags", default="", sep=".")
+            if isinstance(tags, str):
+                tags_match, tags_count = check_keyword_match(tags, keywords)
+                if tags_match:
+                    boost *= 1 + keyword_boost * tags_count * 0.8
 
             # Desc match (lower priority)
-            desc = hit.get("desc", "")
-            desc_match, desc_count = check_keyword_match(desc, keywords)
-            if desc_match:
-                boost *= 1 + keyword_boost * desc_count * 0.3
+            desc = dict_get(hit, "desc", default="", sep=".")
+            if isinstance(desc, str):
+                desc_match, desc_count = check_keyword_match(desc, keywords)
+                if desc_match:
+                    boost *= 1 + keyword_boost * desc_count * 0.3
 
             # Final score
             rerank_score = similarity * boost
@@ -356,6 +376,10 @@ class EmbeddingReranker:
             hit["keyword_boost"] = round(boost, 4)
             hit["rank_score"] = round(rerank_score, 6)
             hit["score"] = round(rerank_score, 6)
+            hit["reranked"] = True  # Mark as reranked
+
+        # Clear similarity scores
+        del similarity_scores
 
         perf_info["keyword_scoring_ms"] = round(
             (time.perf_counter() - step_start) * 1000, 2
@@ -366,21 +390,21 @@ class EmbeddingReranker:
         hits_to_rerank.sort(key=lambda x: x.get(score_field, 0), reverse=True)
         perf_info["sorting_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
 
-        # Mark remaining hits with zero scores
+        # Mark remaining hits with penalty scores
+        # CRITICAL: Non-reranked hits must have lower scores than all reranked hits
+        # to avoid incorrect ordering when merged
         for hit in remaining_hits:
-            hit[score_field] = 0.0
-            hit["rank_score"] = 0.0
-            hit["score"] = 0.0
+            hit[score_field] = NON_RERANKED_SCORE_PENALTY
+            hit["rank_score"] = NON_RERANKED_SCORE_PENALTY
+            hit["score"] = NON_RERANKED_SCORE_PENALTY
+            hit["cosine_similarity"] = 0.0
+            hit["keyword_boost"] = 0.0
+            hit["reranked"] = False  # Mark as not reranked
 
         perf_info["total_ms"] = round((time.perf_counter() - total_start) * 1000, 2)
 
         if verbose:
             logger.mesg(f"  Rerank perf: {perf_info}")
-
-        # Clear intermediate data to help GC
-        del passages
-        del valid_passages
-        del similarity_scores
 
         return hits_to_rerank + remaining_hits, perf_info
 

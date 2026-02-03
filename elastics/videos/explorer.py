@@ -498,16 +498,18 @@ class VideoExplorer(VideoSearcherV2):
                 full_hits = full_doc_search_res.get("hits", [])
                 original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
 
-                # Get query words for reranking
+                # Get query words for reranking using DSL parser
                 query_info = self.query_rewriter.get_query_info(query)
                 keywords_body = query_info.get("keywords_body", [])
+                rerank_expr_tree = query_info.get("query_expr_tree", None)
                 embed_text = " ".join(keywords_body) if keywords_body else query
 
-                # Perform reranking
+                # Perform reranking with DSL-extracted keywords
                 reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=full_hits[:rerank_max_hits],
-                    text_fields=rerank_text_fields,
+                    keywords=keywords_body,
+                    expr_tree=rerank_expr_tree,
                     keyword_boost=rerank_keyword_boost,
                     title_keyword_boost=rerank_title_keyword_boost,
                     max_rerank=rerank_max_hits,
@@ -879,11 +881,17 @@ class VideoExplorer(VideoSearcherV2):
                 # Get original scores before rerank
                 original_top_bvids = [h.get("bvid") for h in knn_hits[:10]]
 
+                # Get keywords from query_info for keyword boosting
+                # This uses DSL-parsed keywords for accurate matching
+                rerank_keywords = query_info.get("keywords_body", [])
+                rerank_expr_tree = query_info.get("query_expr_tree", None)
+
                 # Perform reranking
                 reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=knn_hits,
-                    text_fields=rerank_text_fields,
+                    keywords=rerank_keywords,
+                    expr_tree=rerank_expr_tree,
                     keyword_boost=rerank_keyword_boost,
                     title_keyword_boost=rerank_title_keyword_boost,
                     max_rerank=rerank_max_hits,
@@ -1318,11 +1326,15 @@ class VideoExplorer(VideoSearcherV2):
             if reranker.is_available():
                 original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
 
-                # Perform reranking
+                # Get expr_tree for keyword extraction
+                rerank_expr_tree = query_info.get("query_expr_tree", None)
+
+                # Perform reranking with DSL-extracted keywords
                 reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=full_hits[:rerank_max_hits],
-                    text_fields=rerank_text_fields,
+                    keywords=keywords_body,
+                    expr_tree=rerank_expr_tree,
                     keyword_boost=rerank_keyword_boost,
                     title_keyword_boost=rerank_title_keyword_boost,
                     max_rerank=rerank_max_hits,
