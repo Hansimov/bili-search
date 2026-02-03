@@ -5,14 +5,22 @@ Parses expressions like:
 - q=v     (vector-based KNN retrieval only)
 - qm=wv   (word + vector, hybrid)
 - qmod=vw (vector + word, same as wv)
+- q=wr    (word + rerank with embeddings)
+- q=vr    (vector + rerank)
+- q=wvr   (word + vector + rerank)
 
 Each character represents an independent mode that can be combined:
 - w: word-based retrieval
 - v: vector-based KNN retrieval
-- (future modes can be added, e.g., x for some other retrieval method)
+- r: rerank results using float embeddings for precise similarity
 
-When multiple modes are specified (e.g., "wv"), results from all modes
-are fused together using RRF or weighted combination.
+Valid combinations require at least 'w' or 'v':
+- w, v, wv: retrieval modes without reranking
+- wr, vr, wvr: retrieval modes with reranking
+
+When multiple retrieval modes are specified (e.g., "wv"), results from all modes
+are fused together using RRF or weighted combination. The 'r' mode applies
+reranking to the fused results for improved precision.
 """
 
 from typing import Literal, Union
@@ -21,16 +29,20 @@ from converters.dsl.node import DslExprNode
 from converters.dsl.constants import QMOD_CHARS
 
 
-# Single query mode types
-QMOD_SINGLE_TYPE = Literal["word", "vector"]
+# Single query mode types (retrieval modes)
+QMOD_RETRIEVAL_TYPE = Literal["word", "vector"]
 
-# Default query mode - hybrid search for best results
+# All mode types including rerank
+QMOD_SINGLE_TYPE = Literal["word", "vector", "rerank"]
+
+# Default query mode - hybrid search for best results (without rerank for speed)
 QMOD_DEFAULT = ["word", "vector"]
 
 # Character to mode name mapping
 QMOD_CHAR_MAP = {
     "w": "word",
     "v": "vector",
+    "r": "rerank",
 }
 
 # Mode name to character mapping (reverse)
@@ -41,11 +53,12 @@ def parse_qmod_str(mode_str: str) -> list[str]:
     """Parse qmod string into list of mode names.
 
     Args:
-        mode_str: Raw mode string like "w", "v", "wv", "vw".
+        mode_str: Raw mode string like "w", "v", "wv", "vw", "wr", "vr", "wvr".
 
     Returns:
-        List of mode names like ["word"], ["vector"], ["word", "vector"].
-        Always in canonical order: word before vector.
+        List of mode names like ["word"], ["vector"], ["word", "vector"], ["word", "rerank"].
+        Always in canonical order: word, vector, rerank.
+        Returns default (["word", "vector"]) if no valid retrieval mode is specified.
     """
     mode_str = mode_str.lower().strip()
     modes = set()
@@ -55,11 +68,13 @@ def parse_qmod_str(mode_str: str) -> list[str]:
             mode_name = QMOD_CHAR_MAP[char]
             modes.add(mode_name)
 
-    if not modes:
+    # Validate: must have at least 'w' or 'v' for retrieval
+    has_retrieval = "word" in modes or "vector" in modes
+    if not has_retrieval:
         return QMOD_DEFAULT.copy()
 
-    # Return in canonical order: word, vector
-    canonical_order = ["word", "vector"]
+    # Return in canonical order: word, vector, rerank
+    canonical_order = ["word", "vector", "rerank"]
     return [m for m in canonical_order if m in modes]
 
 
@@ -67,10 +82,10 @@ def normalize_qmod(modes: Union[str, list[str]]) -> list[str]:
     """Normalize qmod to list of mode names.
 
     Args:
-        modes: String like "wv" or list like ["word", "vector"].
+        modes: String like "wv" or "wvr" or list like ["word", "vector"].
 
     Returns:
-        List of mode names.
+        List of mode names. Returns default if no valid retrieval mode.
     """
     if isinstance(modes, str):
         return parse_qmod_str(modes)
@@ -87,7 +102,13 @@ def normalize_qmod(modes: Union[str, list[str]]) -> list[str]:
                 mode_name = QMOD_CHAR_MAP[mode]
                 if mode_name not in valid_modes:
                     valid_modes.append(mode_name)
-        return valid_modes if valid_modes else QMOD_DEFAULT.copy()
+        # Validate: must have at least 'w' or 'v' for retrieval
+        has_retrieval = "word" in valid_modes or "vector" in valid_modes
+        if not has_retrieval:
+            return QMOD_DEFAULT.copy()
+        # Return in canonical order
+        canonical_order = ["word", "vector", "rerank"]
+        return [m for m in canonical_order if m in valid_modes]
     else:
         return QMOD_DEFAULT.copy()
 
@@ -109,15 +130,39 @@ def qmod_to_str(modes: list[str]) -> str:
 
 
 def is_hybrid_qmod(modes: list[str]) -> bool:
-    """Check if qmod represents hybrid search (multiple modes).
+    """Check if qmod represents hybrid search (multiple retrieval modes).
 
     Args:
         modes: List of mode names.
 
     Returns:
-        True if more than one mode is specified.
+        True if both word and vector retrieval modes are specified.
     """
-    return len(modes) > 1
+    return "word" in modes and "vector" in modes
+
+
+def has_rerank_qmod(modes: list[str]) -> bool:
+    """Check if qmod includes rerank mode.
+
+    Args:
+        modes: List of mode names.
+
+    Returns:
+        True if rerank mode is specified.
+    """
+    return "rerank" in modes
+
+
+def get_retrieval_modes(modes: list[str]) -> list[str]:
+    """Get only the retrieval modes (excluding rerank).
+
+    Args:
+        modes: List of all mode names.
+
+    Returns:
+        List of retrieval mode names (word and/or vector only).
+    """
+    return [m for m in modes if m in ["word", "vector"]]
 
 
 class QmodExprParser:
@@ -221,12 +266,18 @@ def test_qmod_parser():
         ("q=w", ["word"]),
         ("q=v", ["vector"]),
         ("q=wv", ["word", "vector"]),
-        ("q=vw", ["vector", "word"]),
+        ("q=vw", ["word", "vector"]),  # canonical order
         ("qm=w", ["word"]),
         ("qmod=v", ["vector"]),
         ("黑神话 q=v", ["vector"]),
         ("黑神话 q=wv v>1w", ["word", "vector"]),
-        ("黑神话 悟空", ["word"]),  # default
+        ("黑神话 悟空", ["word", "vector"]),  # default is hybrid
+        # New rerank mode tests
+        ("q=wr", ["word", "rerank"]),
+        ("q=vr", ["vector", "rerank"]),
+        ("q=wvr", ["word", "vector", "rerank"]),
+        ("q=rvw", ["word", "vector", "rerank"]),  # canonical order
+        ("q=r", ["word", "vector"]),  # r alone invalid, returns default
     ]
 
     for test_str, expected in test_cases:

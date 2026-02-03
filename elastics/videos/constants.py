@@ -220,11 +220,12 @@ TIERED_RECENCY_WEIGHT = 0.3  # weight for recency (pubdate)
 # Query Mode Settings
 # =============================================================================
 
-# Query mode (qmod): controls word/vector/hybrid search
-# Each character represents a mode: w=word, v=vector
+# Query mode (qmod): controls word/vector/rerank search
+# Each character represents a mode: w=word, v=vector, r=rerank
 # Multiple chars enable hybrid search (e.g., "wv" = word+vector)
-QMOD_SINGLE_TYPE = Literal["word", "vector"]
-QMOD_DEFAULT = ["word", "vector"]  # default to hybrid search for best results
+# Rerank mode (r) enables float embedding reranking for precise similarity
+QMOD_SINGLE_TYPE = Literal["word", "vector", "rerank"]
+QMOD_DEFAULT = ["word", "vector"]  # default to hybrid search (no rerank for speed)
 
 # Hybrid search settings
 # Word and vector weights are balanced 0.5:0.5 for fair fusion
@@ -308,15 +309,38 @@ KNN_TEXT_EMB_FIELD = "text_emb"
 # KNN_K: Number of nearest neighbors to return from each shard
 # Higher values improve recall but increase latency
 # For bit vectors with Hamming distance, larger K is needed for good recall
-KNN_K = 3000  # increased for better recall, especially with filters
+KNN_K = 2000  # increased for better recall, rerank needs 2000+ candidates
 # KNN_NUM_CANDIDATES: Candidates to consider per shard before selecting top K
 # Should be significantly larger than K for good recall
 # For 2048-bit vectors, more candidates help find relevant items
-KNN_NUM_CANDIDATES = 10000  # doubled for better recall with filters
+# Higher values improve recall but increase latency - ES does internal oversampling
+KNN_NUM_CANDIDATES = 10000  # 5x of K for good bit vector recall
 KNN_TIMEOUT = 10  # increased timeout for larger candidate pool
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
 KNN_SIMILARITY_DEFAULT = "hamming"  # for bit vectors, hamming is most efficient
 KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
+
+# =============================================================================
+# KNN Reranking Settings
+# =============================================================================
+# Reranking uses float embeddings for precise similarity calculation
+# This compensates for precision loss in LSH bit vector quantization
+
+# Whether to enable reranking by default for KNN search
+KNN_RERANK_ENABLED = True
+
+# Maximum number of hits to rerank (trade-off between quality and latency)
+# Set to 0 to disable reranking
+# Higher values improve recall at cost of embedding API calls
+KNN_RERANK_MAX_HITS = 1000
+
+# Boost factors for keyword matching during rerank
+# These help surface results that contain exact query terms
+KNN_RERANK_KEYWORD_BOOST = 1.5  # Boost when keyword found in tags/desc
+KNN_RERANK_TITLE_KEYWORD_BOOST = 2.5  # Higher boost for title matches
+
+# Text fields to use for document embedding during rerank
+KNN_RERANK_TEXT_FIELDS = ["title", "tags", "desc", "owner.name"]
 
 # aggregation
 AGG_PERCENTS = [0, 1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 99.9, 99.99, 100]

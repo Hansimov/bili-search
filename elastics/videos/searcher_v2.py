@@ -1023,6 +1023,7 @@ class VideoSearcherV2:
         rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
         limit: int = SEARCH_LIMIT,
         rank_top_k: int = RANK_TOP_K,
+        skip_ranking: bool = False,
         timeout: Union[int, float, str] = KNN_TIMEOUT,
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
@@ -1048,6 +1049,7 @@ class VideoSearcherV2:
             rank_method: Ranking method ("heads", "rrf", "stats").
             limit: Maximum results to return.
             rank_top_k: Top-k for ranking.
+            skip_ranking: If True, skip ranking step (caller will do reranking).
             timeout: Search timeout.
             verbose: Enable verbose logging.
 
@@ -1162,19 +1164,23 @@ class VideoSearcherV2:
                 verbose=verbose,
             )
             # Apply ranking - for KNN search, "relevance" is the default and preferred method
-            if rank_method == "tiered":
-                # Tiered ranking with KNN score as relevance
-                parse_res = self.hit_ranker.tiered_rank(
-                    parse_res, top_k=rank_top_k, relevance_field="score"
-                )
-            elif rank_method == "relevance":
-                parse_res = self.hit_ranker.relevance_rank(parse_res, top_k=rank_top_k)
-            elif rank_method == "rrf":
-                parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
-            elif rank_method == "stats":
-                parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
-            else:  # "heads"
-                parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
+            # If skip_ranking is True, caller will do reranking later
+            if not skip_ranking:
+                if rank_method == "tiered":
+                    # Tiered ranking with KNN score as relevance
+                    parse_res = self.hit_ranker.tiered_rank(
+                        parse_res, top_k=rank_top_k, relevance_field="score"
+                    )
+                elif rank_method == "relevance":
+                    parse_res = self.hit_ranker.relevance_rank(
+                        parse_res, top_k=rank_top_k
+                    )
+                elif rank_method == "rrf":
+                    parse_res = self.hit_ranker.rrf_rank(parse_res, top_k=rank_top_k)
+                elif rank_method == "stats":
+                    parse_res = self.hit_ranker.stats_rank(parse_res, top_k=rank_top_k)
+                else:  # "heads"
+                    parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
         else:
             parse_res = es_res_dict
 

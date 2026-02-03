@@ -4,7 +4,7 @@ OP_REL_TYPE = Literal["eqs", "neqs", "lt", "gt", "leqs", "geqs"]
 
 USER_OPS = ["eq", "neq", "at_eq", "at_neq"]
 WORD_OPS = ["eq", "neq", "pl", "mi", "nq", "qs", "fz"]
-QMOD_CHARS = ["w", "v"]  # word, vector (extensible for future modes)
+QMOD_CHARS = ["w", "v", "r"]  # word, vector, rerank (extensible for future modes)
 
 START_EXPR = "start"
 MAIN_EXPRS = ["expr", "expr_with_error"]

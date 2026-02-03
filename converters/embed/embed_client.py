@@ -91,6 +91,8 @@ class TextEmbedSearchClient:
 
     def _compute_lsh(self, text: str) -> str:
         """Internal method to compute LSH."""
+        if not text or not text.strip():
+            return ""
         try:
             results = self._clients.lsh([text], bitn=self.bitn)
             return results[0] if results else ""
@@ -146,6 +148,7 @@ class TextEmbedSearchClient:
 
         Returns:
             List of hex string representations.
+            Returns empty string for empty/whitespace-only texts.
             Returns empty list if client is not available.
         """
         if not texts:
@@ -154,15 +157,38 @@ class TextEmbedSearchClient:
         if not self._ensure_initialized():
             return [""] * len(texts)
 
+        # Filter out empty texts and track their positions
+        # TEI service will error on empty strings: "inputs cannot be empty"
+        non_empty_indices = []
+        non_empty_texts = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+
+        # If all texts are empty, return empty strings
+        if not non_empty_texts:
+            return [""] * len(texts)
+
         try:
-            results = self._clients.lsh(texts, bitn=self.bitn)
-            return results
+            results = self._clients.lsh(non_empty_texts, bitn=self.bitn)
+
+            # Reconstruct full result list with empty strings for empty texts
+            full_results = [""] * len(texts)
+            for result_idx, original_idx in enumerate(non_empty_indices):
+                if result_idx < len(results):
+                    full_results[original_idx] = results[result_idx]
+
+            return full_results
         except Exception as e:
             logger.warn(f"× Failed to compute LSH for texts: {e}")
             return [""] * len(texts)
 
     async def text_to_hex_async(self, text: str) -> str:
         """Async version of text_to_hex."""
+        if not text or not text.strip():
+            return ""
+
         if not self._ensure_initialized():
             return ""
 
@@ -181,12 +207,149 @@ class TextEmbedSearchClient:
         if not self._ensure_initialized():
             return [""] * len(texts)
 
+        # Filter out empty texts and track their positions
+        non_empty_indices = []
+        non_empty_texts = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+
+        if not non_empty_texts:
+            return [""] * len(texts)
+
         try:
-            results = await self._clients.lsh_async(texts, bitn=self.bitn)
-            return results
+            results = await self._clients.lsh_async(non_empty_texts, bitn=self.bitn)
+
+            full_results = [""] * len(texts)
+            for result_idx, original_idx in enumerate(non_empty_indices):
+                if result_idx < len(results):
+                    full_results[original_idx] = results[result_idx]
+
+            return full_results
         except Exception as e:
             logger.warn(f"× Failed to compute LSH for texts: {e}")
             return [""] * len(texts)
+
+    def text_to_embedding(self, text: str) -> list[float]:
+        """Convert text to dense float embedding vector.
+
+        This returns the original float embedding, NOT the LSH bit vector.
+        Float embeddings have much higher precision for similarity calculation.
+
+        Args:
+            text: Input text to embed.
+
+        Returns:
+            List of floats representing the embedding vector.
+            Returns empty list if client is not available or text is empty.
+        """
+        if not text or not text.strip():
+            return []
+
+        if not self._ensure_initialized():
+            return []
+
+        try:
+            results = self._clients.embed([text])
+            return results[0] if results else []
+        except Exception as e:
+            logger.warn(f"× Failed to compute embedding for text: {e}")
+            return []
+
+    def texts_to_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Convert multiple texts to dense float embedding vectors.
+
+        This returns the original float embeddings, NOT the LSH bit vectors.
+        Float embeddings have much higher precision for similarity calculation.
+
+        Args:
+            texts: List of input texts to embed.
+
+        Returns:
+            List of embedding vectors (each is a list of floats).
+            Returns empty list for empty/whitespace-only texts.
+            Returns empty list if client is not available.
+        """
+        if not texts:
+            return []
+
+        if not self._ensure_initialized():
+            return [[] for _ in texts]
+
+        # Filter out empty texts and track their positions
+        # TEI service will error on empty strings: "inputs cannot be empty"
+        non_empty_indices = []
+        non_empty_texts = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+
+        # If all texts are empty, return empty embeddings
+        if not non_empty_texts:
+            return [[] for _ in texts]
+
+        try:
+            results = self._clients.embed(non_empty_texts)
+
+            # Reconstruct full result list with empty embeddings for empty texts
+            full_results = [[] for _ in texts]
+            for result_idx, original_idx in enumerate(non_empty_indices):
+                if result_idx < len(results):
+                    full_results[original_idx] = results[result_idx]
+
+            return full_results
+        except Exception as e:
+            logger.warn(f"× Failed to compute embeddings for texts: {e}")
+            return [[] for _ in texts]
+
+    async def text_to_embedding_async(self, text: str) -> list[float]:
+        """Async version of text_to_embedding."""
+        if not text or not text.strip():
+            return []
+
+        if not self._ensure_initialized():
+            return []
+
+        try:
+            results = await self._clients.embed_async([text])
+            return results[0] if results else []
+        except Exception as e:
+            logger.warn(f"× Failed to compute embedding for text: {e}")
+            return []
+
+    async def texts_to_embeddings_async(self, texts: list[str]) -> list[list[float]]:
+        """Async version of texts_to_embeddings."""
+        if not texts:
+            return []
+
+        if not self._ensure_initialized():
+            return [[] for _ in texts]
+
+        # Filter out empty texts and track their positions
+        non_empty_indices = []
+        non_empty_texts = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+
+        if not non_empty_texts:
+            return [[] for _ in texts]
+
+        try:
+            results = await self._clients.embed_async(non_empty_texts)
+
+            full_results = [[] for _ in texts]
+            for result_idx, original_idx in enumerate(non_empty_indices):
+                if result_idx < len(results):
+                    full_results[original_idx] = results[result_idx]
+
+            return full_results
+        except Exception as e:
+            logger.warn(f"× Failed to compute embeddings for texts: {e}")
+            return [[] for _ in texts]
 
     def hex_to_byte_array(self, hex_str: str) -> list[int]:
         """Convert hex string to byte array for Elasticsearch.

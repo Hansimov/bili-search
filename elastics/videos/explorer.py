@@ -6,6 +6,8 @@ from tclogger import logstr, logger, brk
 from typing import Union, Literal
 
 from converters.dsl.fields.bvid import bvids_to_filter
+from converters.embed.reranker import EmbeddingReranker, get_reranker
+from converters.highlight.char_match import get_char_highlighter
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
 from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
@@ -13,12 +15,23 @@ from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
+from elastics.videos.constants import KNN_RERANK_ENABLED, KNN_RERANK_MAX_HITS
+from elastics.videos.constants import (
+    KNN_RERANK_KEYWORD_BOOST,
+    KNN_RERANK_TITLE_KEYWORD_BOOST,
+)
+from elastics.videos.constants import KNN_RERANK_TEXT_FIELDS
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
 from elastics.videos.constants import HYBRID_RRF_K
 from elastics.videos.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
-from converters.dsl.fields.qmod import extract_qmod_from_expr_tree, is_hybrid_qmod
+from converters.dsl.fields.qmod import (
+    extract_qmod_from_expr_tree,
+    is_hybrid_qmod,
+    has_rerank_qmod,
+    get_retrieval_modes,
+)
 
 STEP_ZH_NAMES = {
     "init": {
@@ -43,6 +56,10 @@ STEP_ZH_NAMES = {
     "knn_search": {
         "name_zh": "向量搜索",
         "output_type": "hits",
+    },
+    "rerank": {
+        "name_zh": "精排重排",
+        "output_type": "info",
     },
     "hybrid_search": {
         "name_zh": "混合搜索",
@@ -353,6 +370,12 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
+        # Rerank params (for q=wr mode)
+        enable_rerank: bool = False,
+        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
+        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
+        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
+        rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
     ) -> dict:
         """Explore and return all step results in a single response.
 
@@ -460,7 +483,89 @@ class VideoExplorer(VideoSearcherV2):
         )
         full_doc_search_res = self.search(**full_doc_search_params)
         full_doc_search_res["total_hits"] = relevant_search_res.get("total_hits", 0)
+
+        # Optional rerank step for q=wr mode
+        rerank_performed = False
+        rerank_info = {}
+        if enable_rerank:
+            step_idx += 1
+            step_name = "rerank"
+            step_str = logstr.note(brk(f"Step {step_idx}"))
+            logger.hint(f"> {step_str} Reranking with float embeddings")
+
+            reranker = get_reranker()
+            if reranker.is_available():
+                full_hits = full_doc_search_res.get("hits", [])
+                original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
+
+                # Get query words for reranking
+                query_info = self.query_rewriter.get_query_info(query)
+                keywords_body = query_info.get("keywords_body", [])
+                embed_text = " ".join(keywords_body) if keywords_body else query
+
+                # Perform reranking
+                reranked_hits = reranker.rerank(
+                    query=embed_text,
+                    hits=full_hits[:rerank_max_hits],
+                    text_fields=rerank_text_fields,
+                    keyword_boost=rerank_keyword_boost,
+                    title_keyword_boost=rerank_title_keyword_boost,
+                    max_rerank=rerank_max_hits,
+                    score_field="rerank_score",
+                    verbose=verbose,
+                )
+
+                # Add remaining hits not reranked
+                if len(full_hits) > rerank_max_hits:
+                    reranked_hits.extend(full_hits[rerank_max_hits:])
+
+                full_doc_search_res["hits"] = reranked_hits[:rank_top_k]
+                full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
+                full_doc_search_res["rank_method"] = "rerank"
+                rerank_performed = True
+
+                # Get new top bvids after rerank
+                reranked_top_bvids = [h.get("bvid") for h in reranked_hits[:10]]
+                position_changes = sum(
+                    1
+                    for i, bvid in enumerate(reranked_top_bvids)
+                    if i >= len(original_top_bvids) or bvid != original_top_bvids[i]
+                )
+
+                rerank_info = {
+                    "reranked_count": min(len(full_hits), rerank_max_hits),
+                    "keyword_boost": rerank_keyword_boost,
+                    "title_keyword_boost": rerank_title_keyword_boost,
+                    "top10_position_changes": position_changes,
+                }
+
+                rerank_result = {
+                    "step": step_idx,
+                    "name": step_name,
+                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                    "status": "finished",
+                    "input": {
+                        "max_hits": rerank_max_hits,
+                        "keyword_boost": rerank_keyword_boost,
+                    },
+                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                    "output": rerank_info,
+                    "comment": f"重排了 {rerank_info['reranked_count']} 个结果",
+                }
+                step_results.append(rerank_result)
+
+                logger.mesg(
+                    f"  Reranked {rerank_info['reranked_count']} hits, "
+                    f"{position_changes} position changes in top 10",
+                    verbose=verbose,
+                )
+            else:
+                logger.warn("× Reranker not available, skipping rerank step")
+                rerank_info = {"skipped": True, "reason": "Reranker not available"}
+
         self.update_step_output(relevant_search_result, step_output=full_doc_search_res)
+        if rerank_performed:
+            relevant_search_result["output"]["rerank_info"] = rerank_info
         if self.is_status_timedout(relevant_search_result):
             final_status = "timedout"
             step_results.append(relevant_search_result)
@@ -508,6 +613,12 @@ class VideoExplorer(VideoSearcherV2):
         knn_k: int = KNN_K,
         knn_num_candidates: int = KNN_NUM_CANDIDATES,
         similarity: float = None,
+        # Rerank params
+        enable_rerank: bool = KNN_RERANK_ENABLED,
+        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
+        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
+        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
+        rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
         # Explore params
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
@@ -533,10 +644,11 @@ class VideoExplorer(VideoSearcherV2):
 
         The workflow is:
         1. Extract filters from DSL query (non-word expressions)
-        2. Convert query words to embedding vector via TEI
-        3. Perform KNN search with filters
-        4. Fetch full documents for top results
-        5. Group results by owner (UP主) - ordered by first appearance in hits
+        2. Convert query words to embedding vector via TEI (LSH bit vector)
+        3. Perform KNN search with filters (coarse recall)
+        4. Rerank using float embeddings for precise similarity (fine ranking)
+        5. Fetch full documents for top results
+        6. Group results by owner (UP主) - ordered by first appearance in hits
 
         Args:
             query: Query string (can include DSL filter expressions).
@@ -671,15 +783,24 @@ class VideoExplorer(VideoSearcherV2):
         step_str = logstr.note(brk(f"Step {step_idx}"))
         logger.hint(f"> {step_str} KNN search for relevant docs")
 
+        # Build source fields for KNN search - minimal fields for efficiency
+        # Only include fields needed for reranking; full docs fetched later
+        knn_source_fields = [
+            "bvid",  # Required for identifying docs
+        ]
+        # Add rerank text fields if reranking is enabled
+        if enable_rerank and rerank_text_fields:
+            for field in rerank_text_fields:
+                if field not in knn_source_fields:
+                    knn_source_fields.append(field)
+
+        # When reranking is enabled, skip the first ranking pass
+        # to allow more candidates for reranking
+        skip_first_ranking = enable_rerank and rerank_max_hits > 0
+
         knn_search_params = {
             "query": query,
-            "source_fields": [
-                "bvid",
-                "owner",
-                "stat",
-                "pubdate",
-                "duration",
-            ],  # Include owner for author grouping
+            "source_fields": knn_source_fields,
             "extra_filters": extra_filters,
             "knn_field": knn_field,
             "k": knn_k,  # Use knn_k parameter for KNN search
@@ -688,8 +809,9 @@ class VideoExplorer(VideoSearcherV2):
             "add_region_info": False,
             "is_explain": False,
             "rank_method": rank_method,
-            "limit": knn_k,  # Limit to k results
-            "rank_top_k": rank_top_k,
+            "limit": knn_k,  # Get all k results for reranking
+            "rank_top_k": rerank_max_hits if skip_first_ranking else rank_top_k,
+            "skip_ranking": skip_first_ranking,  # Skip ranking if reranking later
             "timeout": KNN_TIMEOUT,
             "verbose": verbose,
         }
@@ -712,12 +834,13 @@ class VideoExplorer(VideoSearcherV2):
         if self.is_status_timedout(knn_search_result):
             final_status = "timedout"
 
-        # Step 2: Fetch full docs for ranked results
-        bvids = [hit.get("bvid", None) for hit in knn_search_res.get("hits", [])]
-        if not bvids:
+        step_results.append(knn_search_result)
+
+        # Check if we have any results to process
+        knn_hits = knn_search_res.get("hits", [])
+        if not knn_hits:
             # No results - still need to add empty group_hits_by_owner step for frontend
             logger.warn("× No results from KNN search")
-            step_results.append(knn_search_result)
             # Add empty group_hits_by_owner result with appropriate comment
             step_idx += 1
             # Distinguish between timeout and normal no-results
@@ -739,6 +862,86 @@ class VideoExplorer(VideoSearcherV2):
             logger.exit_quiet(not verbose)
             return {"query": query, "status": final_status, "data": step_results}
 
+        # Step 2: Rerank using float embeddings for precise similarity
+        # This addresses the precision loss from LSH bit vector quantization
+        rerank_performed = False
+        rerank_info = {}
+
+        if enable_rerank and rerank_max_hits > 0:
+            step_idx += 1
+            step_name = "rerank"
+            step_str = logstr.note(brk(f"Step {step_idx}"))
+            logger.hint(f"> {step_str} Reranking with float embeddings")
+
+            reranker = get_reranker()
+            if reranker.is_available():
+                # Get original scores before rerank
+                original_top_bvids = [h.get("bvid") for h in knn_hits[:10]]
+
+                # Perform reranking
+                reranked_hits = reranker.rerank(
+                    query=embed_text,
+                    hits=knn_hits,
+                    text_fields=rerank_text_fields,
+                    keyword_boost=rerank_keyword_boost,
+                    title_keyword_boost=rerank_title_keyword_boost,
+                    max_rerank=rerank_max_hits,
+                    score_field="rerank_score",
+                    verbose=verbose,
+                )
+
+                # Update knn_search_res with reranked hits
+                knn_search_res["hits"] = reranked_hits
+                knn_hits = reranked_hits
+                rerank_performed = True
+
+                # Get new top bvids after rerank
+                reranked_top_bvids = [h.get("bvid") for h in reranked_hits[:10]]
+
+                # Calculate how many positions changed
+                position_changes = sum(
+                    1
+                    for i, bvid in enumerate(reranked_top_bvids)
+                    if i >= len(original_top_bvids) or bvid != original_top_bvids[i]
+                )
+
+                rerank_info = {
+                    "reranked_count": min(len(knn_hits), rerank_max_hits),
+                    "keyword_boost": rerank_keyword_boost,
+                    "title_keyword_boost": rerank_title_keyword_boost,
+                    "top10_position_changes": position_changes,
+                    "original_top3": original_top_bvids[:3],
+                    "reranked_top3": reranked_top_bvids[:3],
+                }
+
+                rerank_result = {
+                    "step": step_idx,
+                    "name": step_name,
+                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                    "status": "finished",
+                    "input": {
+                        "max_hits": rerank_max_hits,
+                        "keyword_boost": rerank_keyword_boost,
+                        "title_keyword_boost": rerank_title_keyword_boost,
+                    },
+                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                    "output": rerank_info,
+                    "comment": f"重排了 {rerank_info['reranked_count']} 个结果",
+                }
+                step_results.append(rerank_result)
+
+                logger.mesg(
+                    f"  Reranked {rerank_info['reranked_count']} hits, "
+                    f"{position_changes} position changes in top 10",
+                    verbose=verbose,
+                )
+            else:
+                logger.warn("× Reranker not available, skipping rerank step")
+                rerank_info = {"skipped": True, "reason": "Reranker not available"}
+
+        # Step 3: Fetch full docs for ranked results (using reranked order if available)
+        bvids = [hit.get("bvid", None) for hit in knn_hits]
+
         # Use fetch_docs_by_bvids to get full docs without word matching
         full_doc_search_res = self.fetch_docs_by_bvids(
             bvids=bvids,
@@ -748,40 +951,62 @@ class VideoExplorer(VideoSearcherV2):
             verbose=verbose,
         )
 
-        # Merge KNN scores from original search into full doc hits
-        knn_hits = knn_search_res.get("hits", [])
+        # Merge scores from KNN search (and rerank if performed) into full doc hits
         full_hits = full_doc_search_res.get("hits", [])
-        self.merge_scores_into_hits(full_hits, knn_hits)
+
+        # Build a score map from knn_hits that includes rerank_score if available
+        score_fields = ["score", "rank_score", "sort_score"]
+        if rerank_performed:
+            score_fields.extend(["rerank_score", "cosine_similarity", "keyword_boost"])
+        self.merge_scores_into_hits(full_hits, knn_hits, score_fields=score_fields)
+
+        # Add char-level highlighting for vector search results
+        # Since ES keyword highlighting isn't available for KNN search,
+        # we use simple char-level matching to highlight query keywords
+        char_highlighter = get_char_highlighter()
+        char_highlighter.add_highlights_to_hits(
+            hits=full_hits,
+            keywords=embed_text,  # Use the same text used for embedding
+            fields=["title", "tags", "desc", "owner.name"],
+            tag="hit",
+        )
 
         # Re-apply ranking after merging scores
-        # For KNN explore, "relevance" is the preferred method - pure vector similarity ranking
-        if rank_method == "relevance":
-            full_doc_search_res = self.hit_ranker.relevance_rank(
-                full_doc_search_res, top_k=rank_top_k
-            )
-        elif rank_method == "rrf":
-            full_doc_search_res = self.hit_ranker.rrf_rank(
-                full_doc_search_res, top_k=rank_top_k
-            )
-        elif rank_method == "stats":
-            full_doc_search_res = self.hit_ranker.stats_rank(
-                full_doc_search_res, top_k=rank_top_k
-            )
-        else:  # "heads"
-            full_doc_search_res = self.hit_ranker.heads(
-                full_doc_search_res, top_k=rank_top_k
-            )
+        # If rerank was performed, use rerank_score; otherwise use original score
+        if rerank_performed:
+            # Sort by rerank_score which already incorporates cosine similarity and keyword boost
+            full_hits.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
+            full_doc_search_res["hits"] = full_hits[:rank_top_k]
+            full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
+            full_doc_search_res["rank_method"] = "rerank"
+        else:
+            # For KNN explore, "relevance" is the preferred method - pure vector similarity ranking
+            if rank_method == "relevance":
+                full_doc_search_res = self.hit_ranker.relevance_rank(
+                    full_doc_search_res, top_k=rank_top_k
+                )
+            elif rank_method == "rrf":
+                full_doc_search_res = self.hit_ranker.rrf_rank(
+                    full_doc_search_res, top_k=rank_top_k
+                )
+            elif rank_method == "stats":
+                full_doc_search_res = self.hit_ranker.stats_rank(
+                    full_doc_search_res, top_k=rank_top_k
+                )
+            else:  # "heads"
+                full_doc_search_res = self.hit_ranker.heads(
+                    full_doc_search_res, top_k=rank_top_k
+                )
 
         full_doc_search_res["total_hits"] = knn_search_res.get("total_hits", 0)
-        self.update_step_output(knn_search_result, step_output=full_doc_search_res)
 
-        # Track if any step timed out, but continue to group_hits_by_owner if we have hits
-        if self.is_status_timedout(knn_search_result):
-            final_status = "timedout"
+        # Update the knn_search step output with final results
+        # Note: We update the existing step rather than creating a new one
+        knn_search_result["output"] = full_doc_search_res
+        if rerank_performed:
+            knn_search_result["output"]["rerank_info"] = rerank_info
 
-        step_results.append(knn_search_result)
-
-        # Step 3: Group hits by owner
+        # Step 4: Group hits by owner
         # IMPORTANT: Always execute this step even if previous steps timed out,
         # as long as we have some hits to group. This ensures "相关作者" is always populated.
         # For KNN explore, use top_rank_score to find authors with highest relevance hits
@@ -843,6 +1068,12 @@ class VideoExplorer(VideoSearcherV2):
             "top_rank_score",
             "first_appear_order",
         ] = "sum_rank_score",  # Default: sum of rank_scores to find active/popular authors
+        # Rerank params (for q=wvr mode)
+        enable_rerank: bool = False,
+        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
+        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
+        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
+        rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
     ) -> dict:
         """Hybrid explore combining word-based and vector-based retrieval.
 
@@ -855,8 +1086,9 @@ class VideoExplorer(VideoSearcherV2):
         1. Performs word-based search (for keyword matching)
         2. Performs KNN vector search (for semantic similarity)
         3. Fuses results using RRF, with vector scores weighted higher
-        4. Ranks by pure relevance score (no stats/pubdate weighting)
-        5. Groups results by owner (UP主) using top relevance score
+        4. Optionally reranks with float embeddings (if q=wvr)
+        5. Ranks by pure relevance score (no stats/pubdate weighting)
+        6. Groups results by owner (UP主) using top relevance score
 
         Args:
             query: Query string (can include DSL filter expressions).
@@ -1041,37 +1273,125 @@ class VideoExplorer(VideoSearcherV2):
         full_hits = full_doc_search_res.get("hits", [])
         self.merge_scores_into_hits(full_hits, hybrid_hits)
 
-        # Re-apply ranking after merging scores
+        # Add char-level highlighting for hybrid search results
+        # Word search provides ES highlighting, but KNN results need char-level matching
+        query_info = self.query_rewriter.get_query_info(query)
+        keywords_body = query_info.get("keywords_body", [])
+        embed_text = " ".join(keywords_body) if keywords_body else query
+        char_highlighter = get_char_highlighter()
+        char_highlighter.add_highlights_to_hits(
+            hits=full_hits,
+            keywords=embed_text,
+            fields=["title", "tags", "desc", "owner.name"],
+            tag="hit",
+        )
+
+        # Optional rerank step for q=wvr mode
+        rerank_performed = False
+        rerank_info = {}
+        if enable_rerank:
+            step_idx += 1
+            step_name = "rerank"
+            step_str = logstr.note(brk(f"Step {step_idx}"))
+            logger.hint(f"> {step_str} Reranking with float embeddings")
+
+            reranker = get_reranker()
+            if reranker.is_available():
+                original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
+
+                # Perform reranking
+                reranked_hits = reranker.rerank(
+                    query=embed_text,
+                    hits=full_hits[:rerank_max_hits],
+                    text_fields=rerank_text_fields,
+                    keyword_boost=rerank_keyword_boost,
+                    title_keyword_boost=rerank_title_keyword_boost,
+                    max_rerank=rerank_max_hits,
+                    score_field="rerank_score",
+                    verbose=verbose,
+                )
+
+                # Add remaining hits not reranked
+                if len(full_hits) > rerank_max_hits:
+                    reranked_hits.extend(full_hits[rerank_max_hits:])
+
+                full_doc_search_res["hits"] = reranked_hits[:rank_top_k]
+                full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
+                full_doc_search_res["rank_method"] = "rerank"
+                rerank_performed = True
+                full_hits = full_doc_search_res["hits"]
+
+                # Get new top bvids after rerank
+                reranked_top_bvids = [h.get("bvid") for h in reranked_hits[:10]]
+                position_changes = sum(
+                    1
+                    for i, bvid in enumerate(reranked_top_bvids)
+                    if i >= len(original_top_bvids) or bvid != original_top_bvids[i]
+                )
+
+                rerank_info = {
+                    "reranked_count": min(len(full_hits), rerank_max_hits),
+                    "keyword_boost": rerank_keyword_boost,
+                    "title_keyword_boost": rerank_title_keyword_boost,
+                    "top10_position_changes": position_changes,
+                }
+
+                rerank_result = {
+                    "step": step_idx,
+                    "name": step_name,
+                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                    "status": "finished",
+                    "input": {
+                        "max_hits": rerank_max_hits,
+                        "keyword_boost": rerank_keyword_boost,
+                    },
+                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                    "output": rerank_info,
+                    "comment": f"重排了 {rerank_info['reranked_count']} 个结果",
+                }
+                step_results.append(rerank_result)
+
+                logger.mesg(
+                    f"  Reranked {rerank_info['reranked_count']} hits, "
+                    f"{position_changes} position changes in top 10",
+                    verbose=verbose,
+                )
+            else:
+                logger.warn("× Reranker not available, skipping rerank step")
+                rerank_info = {"skipped": True, "reason": "Reranker not available"}
+
+        # Re-apply ranking after merging scores (if not reranked)
         # For hybrid explore, use tiered ranking by default:
         # - Group by relevance tiers
         # - Within each tier, sort by popularity/recency
-        if rank_method == "tiered":
-            # Tiered ranking: relevance-first with stats/recency tie-breaking
-            full_doc_search_res = self.hit_ranker.tiered_rank(
-                full_doc_search_res,
-                top_k=rank_top_k,
-                relevance_field="hybrid_score",
-            )
-        elif rank_method == "relevance":
-            # Pure relevance ranking, just set rank_score for downstream use
-            for hit in full_hits:
-                hit["rank_score"] = hit.get("hybrid_score", 0) or 0
-            full_hits.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
-            full_doc_search_res["hits"] = full_hits[:rank_top_k]
-            full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
-            full_doc_search_res["rank_method"] = "relevance"
-        elif rank_method == "rrf":
-            full_doc_search_res = self.hit_ranker.rrf_rank(
-                full_doc_search_res, top_k=rank_top_k
-            )
-        elif rank_method == "stats":
-            full_doc_search_res = self.hit_ranker.stats_rank(
-                full_doc_search_res, top_k=rank_top_k
-            )
-        else:  # "heads"
-            full_doc_search_res = self.hit_ranker.heads(
-                full_doc_search_res, top_k=rank_top_k
-            )
+        if not rerank_performed:
+            if rank_method == "tiered":
+                # Tiered ranking: relevance-first with stats/recency tie-breaking
+                full_doc_search_res = self.hit_ranker.tiered_rank(
+                    full_doc_search_res,
+                    top_k=rank_top_k,
+                    relevance_field="hybrid_score",
+                )
+            elif rank_method == "relevance":
+                # Pure relevance ranking, just set rank_score for downstream use
+                for hit in full_hits:
+                    hit["rank_score"] = hit.get("hybrid_score", 0) or 0
+                full_hits.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
+                full_doc_search_res["hits"] = full_hits[:rank_top_k]
+                full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
+                full_doc_search_res["rank_method"] = "relevance"
+            elif rank_method == "rrf":
+                full_doc_search_res = self.hit_ranker.rrf_rank(
+                    full_doc_search_res, top_k=rank_top_k
+                )
+            elif rank_method == "stats":
+                full_doc_search_res = self.hit_ranker.stats_rank(
+                    full_doc_search_res, top_k=rank_top_k
+                )
+            else:  # "heads"
+                full_doc_search_res = self.hit_ranker.heads(
+                    full_doc_search_res, top_k=rank_top_k
+                )
 
         full_doc_search_res["total_hits"] = hybrid_search_res.get("total_hits", 0)
         full_doc_search_res["fusion_method"] = hybrid_search_res.get(
@@ -1085,6 +1405,8 @@ class VideoExplorer(VideoSearcherV2):
         )
 
         self.update_step_output(hybrid_search_result, step_output=full_doc_search_res)
+        if rerank_performed:
+            hybrid_search_result["output"]["rerank_info"] = rerank_info
 
         # Track if any step timed out, but continue to group_hits_by_owner if we have hits
         if self.is_status_timedout(hybrid_search_result):
@@ -1154,13 +1476,26 @@ class VideoExplorer(VideoSearcherV2):
 
         The query mode can be specified via:
         1. The qmod parameter (str or list[str])
-        2. DSL expression in query (e.g., "黑神话 q=v" or "q=wv")
+        2. DSL expression in query (e.g., "黑神话 q=v" or "q=wv" or "q=wvr")
+
+        Query modes:
+        - w: word-based retrieval (ES text search)
+        - v: vector-based KNN retrieval (embedding similarity)
+        - r: rerank with float embeddings for precise similarity
+
+        Valid combinations (must have at least w or v):
+        - q=w: word only
+        - q=v: vector only (fast, no rerank)
+        - q=wv: hybrid word+vector (RRF fusion)
+        - q=wr: word + rerank
+        - q=vr: vector + rerank (slower but more precise)
+        - q=wvr: hybrid + rerank (slowest but most precise)
 
         Args:
             query: Query string.
             qmod: Override mode(s). Can be:
-                - str: "w", "v", "wv" (shorthand) or "word", "vector"
-                - list[str]: ["word"], ["vector"], ["word", "vector"]
+                - str: "w", "v", "wv", "wr", "vr", "wvr"
+                - list[str]: ["word"], ["vector", "rerank"], etc.
                 If None, extracted from query.
             extra_filters: Additional filter clauses.
             suggest_info: Suggestion info.
@@ -1186,9 +1521,12 @@ class VideoExplorer(VideoSearcherV2):
 
         logger.hint(f"> Query mode (qmod): {qmod}", verbose=verbose)
 
+        # Check mode flags
+        retrieval_modes = get_retrieval_modes(qmod)
         is_hybrid = is_hybrid_qmod(qmod)
         has_word = "word" in qmod
         has_vector = "vector" in qmod
+        enable_rerank = has_rerank_qmod(qmod)
 
         if is_hybrid:
             # Hybrid mode (both word and vector)
@@ -1207,14 +1545,17 @@ class VideoExplorer(VideoSearcherV2):
                 rank_method=hybrid_rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
+                enable_rerank=enable_rerank,  # Pass rerank flag
             )
+            # Update qmod in result to include full mode info
+            if result.get("data") and len(result["data"]) > 0:
+                result["data"][0]["output"]["qmod"] = qmod
             return result
 
         elif has_vector:
-            # Vector-only mode
+            # Vector-only mode (q=v or q=vr)
             # IMPORTANT: For vector search, ALWAYS use relevance ranking
-            # This ensures "综合排序" and "最高相关" produce identical results
-            # because relevance IS the only meaningful metric for vector search
+            # Rerank is controlled by enable_rerank flag (q=vr enables it)
             vector_rank_method = "relevance"
             result = self.knn_explore(
                 query=query,
@@ -1227,11 +1568,15 @@ class VideoExplorer(VideoSearcherV2):
                 rank_method=vector_rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
+                enable_rerank=enable_rerank,  # Only rerank if q=vr
             )
+            # Update qmod in result
+            if result.get("data") and len(result["data"]) > 0:
+                result["data"][0]["output"]["qmod"] = qmod
             return result
 
         else:
-            # Word-only mode
+            # Word-only mode (q=w or q=wr)
             result = self.explore(
                 query=query,
                 extra_filters=extra_filters,
@@ -1241,8 +1586,9 @@ class VideoExplorer(VideoSearcherV2):
                 rank_method=rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
+                enable_rerank=enable_rerank,  # Pass rerank flag for word search
             )
             # Add qmod to first step's output for word-only mode
             if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = ["word"]
+                result["data"][0]["output"]["qmod"] = qmod
             return result

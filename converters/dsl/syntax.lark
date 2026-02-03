@@ -223,11 +223,12 @@ scope_expr: colon? scope_key scope_op scope_val
 
 // ---------- qmod exprs ---------- //
 // q=w (word), q=v (vector), q=wv (word+vector hybrid)
+// q=r (rerank), q=wr (word+rerank), q=vr (vector+rerank), q=wvr (hybrid+rerank)
 qmod_expr: colon? qmod_key qmod_op qmod_val
     qmod_key: /(?i:(qmod|qm|q))/
     qmod_op: eqs
-    qmod_val: /(?i:[wv]+)/
-    // w: word-based retrieval, v: vector-based KNN retrieval
+    qmod_val: /(?i:[wvr]+)/
+    // w: word-based retrieval, v: vector-based KNN retrieval, r: rerank with embeddings
 
 // ---------- word exprs ---------- //
 word_expr: colon? word_key_op_val
