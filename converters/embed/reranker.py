@@ -16,6 +16,7 @@ The solution:
 """
 
 import math
+import time
 from typing import Union
 from tclogger import logger
 
@@ -163,7 +164,7 @@ class EmbeddingReranker:
         max_rerank: int = 200,
         score_field: str = "rerank_score",
         verbose: bool = False,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict]:
         """Rerank hits using float embeddings and optional keyword matching.
 
         The reranking formula:
@@ -184,35 +185,63 @@ class EmbeddingReranker:
             verbose: Enable verbose logging.
 
         Returns:
-            Reranked list of hits sorted by rerank_score descending.
+            Tuple of (reranked hits, perf_info dict with timing details).
         """
+        perf_info = {
+            "total_ms": 0,
+            "query_embed_ms": 0,
+            "doc_text_extract_ms": 0,
+            "doc_embed_ms": 0,
+            "scoring_ms": 0,
+            "sorting_ms": 0,
+            "hits_count": len(hits),
+            "reranked_count": 0,
+        }
+
+        total_start = time.perf_counter()
+
         if not hits:
-            return hits
+            return hits, perf_info
 
         if not self.is_available():
             logger.warn("× Reranker not available, returning original order")
-            return hits
+            return hits, perf_info
 
         # Limit hits to rerank for efficiency
         hits_to_rerank = hits[:max_rerank]
         remaining_hits = hits[max_rerank:]
+        perf_info["reranked_count"] = len(hits_to_rerank)
 
-        # Get query embedding
+        # Step 1: Get query embedding
+        step_start = time.perf_counter()
         query_embedding = self.embed_client.text_to_embedding(query)
+        perf_info["query_embed_ms"] = round(
+            (time.perf_counter() - step_start) * 1000, 2
+        )
+
         if not query_embedding:
             logger.warn("× Failed to get query embedding, returning original order")
-            return hits
+            return hits, perf_info
 
         # Extract keywords from query (simple tokenization)
         keywords = self._extract_keywords(query)
 
-        # Compute document embeddings in batch for efficiency
+        # Step 2: Extract doc texts for embedding
+        step_start = time.perf_counter()
         doc_texts = [
             self.compute_text_for_hit(hit, text_fields) for hit in hits_to_rerank
         ]
-        doc_embeddings = self.embed_client.texts_to_embeddings(doc_texts)
+        perf_info["doc_text_extract_ms"] = round(
+            (time.perf_counter() - step_start) * 1000, 2
+        )
 
-        # Compute rerank scores
+        # Step 3: Compute document embeddings in batch
+        step_start = time.perf_counter()
+        doc_embeddings = self.embed_client.texts_to_embeddings(doc_texts)
+        perf_info["doc_embed_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
+
+        # Step 4: Compute rerank scores
+        step_start = time.perf_counter()
         for i, hit in enumerate(hits_to_rerank):
             doc_embedding = doc_embeddings[i] if i < len(doc_embeddings) else []
 
@@ -245,11 +274,14 @@ class EmbeddingReranker:
             if desc_match:
                 boost *= 1 + keyword_boost * desc_count * 0.3  # Much less than title
 
-            # Final score
+            # Final score - keep original rerank score (not normalized)
             rerank_score = similarity * boost
             hit[score_field] = round(rerank_score, 6)
             hit["cosine_similarity"] = round(similarity, 6)
             hit["keyword_boost"] = round(boost, 4)
+            # Use rerank_score directly for ranking (no normalization)
+            hit["rank_score"] = round(rerank_score, 6)
+            hit["score"] = round(rerank_score, 6)
 
             if verbose:
                 has_match = title_match or tags_match or desc_match
@@ -258,36 +290,25 @@ class EmbeddingReranker:
                     f"score={rerank_score:.4f} match={has_match} "
                     f"title={title[:30]}..."
                 )
+        perf_info["scoring_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
 
-        # Sort by rerank score
+        # Step 5: Sort by rerank score
+        step_start = time.perf_counter()
         hits_to_rerank.sort(key=lambda x: x.get(score_field, 0), reverse=True)
+        perf_info["sorting_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
 
-        # Normalize rerank scores to 0-1 range and update rank_score AND score
-        # - rank_score: used by UI for sorting ("综合排序")
-        # - score: displayed in UI as the relevance score (left corner of video card)
-        if hits_to_rerank:
-            max_score = max(h.get(score_field, 0) for h in hits_to_rerank)
-            min_score = min(h.get(score_field, 0) for h in hits_to_rerank)
-            score_range = max_score - min_score if max_score > min_score else 1.0
-
-            for i, hit in enumerate(hits_to_rerank):
-                raw_score = hit.get(score_field, 0)
-                # Normalize to 0.5-1.0 range (reranked hits should be higher than non-reranked)
-                normalized = 0.5 + 0.5 * (raw_score - min_score) / score_range
-                hit["rank_score"] = round(normalized, 6)
-                # Also update 'score' field for UI display
-                hit["score"] = round(normalized, 6)
-
-        # Append remaining hits with lower priority
-        # Give them scores in 0-0.5 range based on their position
+        # Append remaining hits with lower priority (mark as not reranked)
         for i, hit in enumerate(remaining_hits):
             hit[score_field] = 0.0  # Mark as not reranked
-            # Assign decreasing scores from 0.5 down to near 0
-            position_score = 0.5 * (1 - i / max(len(remaining_hits), 1))
-            hit["rank_score"] = round(position_score, 6)
-            hit["score"] = round(position_score, 6)
+            hit["rank_score"] = 0.0
+            hit["score"] = 0.0
 
-        return hits_to_rerank + remaining_hits
+        perf_info["total_ms"] = round((time.perf_counter() - total_start) * 1000, 2)
+
+        if verbose:
+            logger.mesg(f"  Rerank perf: {perf_info}")
+
+        return hits_to_rerank + remaining_hits, perf_info
 
     def _extract_keywords(self, query: str) -> list[str]:
         """Extract keywords from query string.
@@ -326,7 +347,7 @@ class EmbeddingReranker:
         popularity_weight: float = 0.3,
         max_rerank: int = 200,
         verbose: bool = False,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict]:
         """Rerank with both relevance and popularity considered.
 
         Uses a weighted combination of semantic relevance and popularity metrics.
@@ -345,10 +366,10 @@ class EmbeddingReranker:
             verbose: Enable verbose logging.
 
         Returns:
-            Reranked list of hits.
+            Tuple of (reranked hits, perf_info dict).
         """
         # First do semantic reranking
-        hits = self.rerank(
+        hits, perf_info = self.rerank(
             query=query,
             hits=hits,
             text_fields=text_fields,
@@ -359,7 +380,7 @@ class EmbeddingReranker:
             verbose=verbose,
         )
 
-        # Normalize rerank scores
+        # Normalize rerank scores for combining with popularity
         max_rerank_score = max(
             (h.get("rerank_score", 0) for h in hits[:max_rerank]), default=1.0
         )
@@ -398,7 +419,7 @@ class EmbeddingReranker:
             reverse=True,
         )
 
-        return hits
+        return hits, perf_info
 
 
 # Singleton instance

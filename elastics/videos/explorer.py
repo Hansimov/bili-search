@@ -504,7 +504,7 @@ class VideoExplorer(VideoSearcherV2):
                 embed_text = " ".join(keywords_body) if keywords_body else query
 
                 # Perform reranking
-                reranked_hits = reranker.rerank(
+                reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=full_hits[:rerank_max_hits],
                     text_fields=rerank_text_fields,
@@ -537,6 +537,7 @@ class VideoExplorer(VideoSearcherV2):
                     "keyword_boost": rerank_keyword_boost,
                     "title_keyword_boost": rerank_title_keyword_boost,
                     "top10_position_changes": position_changes,
+                    "perf": rerank_perf,  # Add perf info
                 }
 
                 rerank_result = {
@@ -879,7 +880,7 @@ class VideoExplorer(VideoSearcherV2):
                 original_top_bvids = [h.get("bvid") for h in knn_hits[:10]]
 
                 # Perform reranking
-                reranked_hits = reranker.rerank(
+                reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=knn_hits,
                     text_fields=rerank_text_fields,
@@ -912,6 +913,7 @@ class VideoExplorer(VideoSearcherV2):
                     "top10_position_changes": position_changes,
                     "original_top3": original_top_bvids[:3],
                     "reranked_top3": reranked_top_bvids[:3],
+                    "perf": rerank_perf,  # Add perf info
                 }
 
                 rerank_result = {
@@ -1173,6 +1175,15 @@ class VideoExplorer(VideoSearcherV2):
         step_str = logstr.note(brk(f"Step {step_idx}"))
         logger.hint(f"> {step_str} Hybrid search (word + KNN)")
 
+        # When rerank is enabled, we use hybrid search just for candidate collection
+        # and skip fusion-based scoring (rerank will do the scoring)
+        if enable_rerank:
+            hybrid_rank_method = "heads"  # Just collect candidates, no fusion scoring
+            hybrid_rank_top_k = rerank_max_hits  # Get more candidates for reranking
+        else:
+            hybrid_rank_method = rank_method
+            hybrid_rank_top_k = rank_top_k
+
         hybrid_search_params = {
             "query": query,
             "source_fields": [
@@ -1192,9 +1203,9 @@ class VideoExplorer(VideoSearcherV2):
             "add_region_info": False,
             "add_highlights_info": False,
             "is_highlight": False,
-            "rank_method": rank_method,
+            "rank_method": hybrid_rank_method,  # Use heads when rerank enabled
             "limit": min(most_relevant_limit, 2000),  # Cap limit for faster search
-            "rank_top_k": rank_top_k,
+            "rank_top_k": hybrid_rank_top_k,  # Get more candidates when rerank enabled
             "timeout": EXPLORE_TIMEOUT,
             "verbose": verbose,
         }
@@ -1300,7 +1311,7 @@ class VideoExplorer(VideoSearcherV2):
                 original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
 
                 # Perform reranking
-                reranked_hits = reranker.rerank(
+                reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=full_hits[:rerank_max_hits],
                     text_fields=rerank_text_fields,
@@ -1334,6 +1345,7 @@ class VideoExplorer(VideoSearcherV2):
                     "keyword_boost": rerank_keyword_boost,
                     "title_keyword_boost": rerank_title_keyword_boost,
                     "top10_position_changes": position_changes,
+                    "perf": rerank_perf,  # Add perf info
                 }
 
                 rerank_result = {

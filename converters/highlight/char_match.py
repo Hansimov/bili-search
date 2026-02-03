@@ -5,28 +5,122 @@ Elasticsearch keyword highlighting is not available.
 
 The approach:
 1. Extract keywords from the query (excluding DSL expressions)
-2. Find all occurrences of keywords in target text fields
-3. Wrap matches with <tag>...</tag> for display
+2. Tokenize keywords into units: each Chinese char is a unit, 
+   continuous alphanumeric sequences are units
+3. Find all occurrences of these units in target text
+4. Merge adjacent matches and wrap with <tag>...</tag>
 
-This is simpler than ES highlighting but effective for vector search
-where we just want to show which query terms appear in results.
+Example:
+    For query "红警hbk08", the units are: ["红", "警", "hbk", "08"]
+    For text "红警08", matches: "红", "警", "08"
+    Result: "<hit>红警08</hit>" (merged because adjacent)
 """
 
 import re
 from typing import Union
 
 
+def tokenize_to_units(text: str) -> list[str]:
+    """Tokenize text into matching units.
+
+    - Each Chinese character is an independent unit
+    - Continuous alphanumeric sequences are units
+    - Punctuation and whitespace are ignored
+
+    Args:
+        text: Input text to tokenize.
+
+    Returns:
+        List of units for matching.
+
+    Example:
+        "红警hbk08" -> ["红", "警", "hbk", "08"]
+        "黑神话悟空" -> ["黑", "神", "话", "悟", "空"]
+        "apex2024" -> ["apex", "2024"]
+    """
+    if not text:
+        return []
+
+    units = []
+    i = 0
+    n = len(text)
+
+    while i < n:
+        char = text[i]
+
+        # Check if Chinese character (CJK Unified Ideographs)
+        if "\u4e00" <= char <= "\u9fff":
+            units.append(char)
+            i += 1
+        # Check if alphanumeric
+        elif char.isalnum():
+            # Collect continuous alphanumeric sequence
+            # But separate letters from digits
+            if char.isdigit():
+                # Collect digits
+                start = i
+                while i < n and text[i].isdigit():
+                    i += 1
+                units.append(text[start:i])
+            else:
+                # Collect letters
+                start = i
+                while (
+                    i < n
+                    and text[i].isalpha()
+                    and not ("\u4e00" <= text[i] <= "\u9fff")
+                ):
+                    i += 1
+                units.append(text[start:i])
+        else:
+            # Skip punctuation, whitespace, etc.
+            i += 1
+
+    return units
+
+
+def merge_adjacent_tags(text: str, tag: str = "hit") -> str:
+    """Merge adjacent highlight tags.
+
+    Converts: <hit>红</hit><hit>警</hit><hit>08</hit>
+    To:       <hit>红警08</hit>
+
+    Args:
+        text: Text with potentially adjacent tags.
+        tag: The tag name used for highlighting.
+
+    Returns:
+        Text with merged adjacent tags.
+    """
+    # Pattern to match: </tag><tag> (with optional whitespace between)
+    # We merge tags that are directly adjacent
+    pattern = f"</{tag}><{tag}>"
+
+    # Keep merging until no more adjacent tags
+    while pattern in text:
+        text = text.replace(pattern, "")
+
+    return text
+
+
 class CharMatchHighlighter:
     """Highlighter using char-level keyword matching.
 
+    For Chinese characters, each character is matched independently.
+    For alphanumeric, continuous sequences are matched as units.
+    Adjacent matches are merged into a single highlight span.
+
     Example:
         highlighter = CharMatchHighlighter()
+
+        # Query "红警hbk08" matches "红警08"
+        # because units ["红", "警", "08"] all match
         result = highlighter.highlight(
-            text="红警HBK08 游戏视频",
-            keywords=["红警", "08"],
+            text="红警08 游戏视频",
+            keywords=["红警hbk08"],
             tag="hit"
         )
-        # Returns: "<hit>红警</hit>HBK<hit>08</hit> 游戏视频"
+        # Returns: "<hit>红警08</hit> 游戏视频"
     """
 
     def __init__(self, tag: str = "hit"):
@@ -50,19 +144,9 @@ class CharMatchHighlighter:
             return []
 
         # Remove common DSL patterns: key=value, key<value, key>value, etc.
-        # Patterns to remove:
-        # - qmod/q/qm expressions: q=w, q=v, q=wv, q=wvr, etc.
-        # - date expressions: date=xxx, d=xxx, d>xxx, d<xxx
-        # - stat expressions: v>1000, like>100, etc.
-        # - user expressions: u=xxx, @xxx
-        # - uid expressions: uid=xxx, mid=xxx
-        # - bvid expressions: bv=xxx, av=xxx
-        # - region expressions: rg=xxx, rid=xxx
-        # - duration expressions: t>xxx, dura=xxx
         cleaned = query
 
-        # Remove DSL key-value expressions (key=value, key>value, key<value, etc.)
-        # This pattern matches: word followed by operator followed by value
+        # Remove DSL key-value expressions
         dsl_pattern = r"\b(?:q|qm|qmod|date|dt|d|rq|view|vw|v|like|lk|l|coin|cn|c|fav|favorite|fv|sc|reply|rp|pl|danmaku|dm|share|sh|fx|user|up|u|uid|mid|ud|bvid|bv|avid|av|region|rid|rg|fq|duration|dura|dr|time|t|ugid|g)\s*[=<>!]+\s*[^\s,;，；]+\s*"
         cleaned = re.sub(dsl_pattern, " ", cleaned, flags=re.IGNORECASE)
 
@@ -70,14 +154,12 @@ class CharMatchHighlighter:
         cleaned = re.sub(r"@[^\s]+", " ", cleaned)
 
         # Remove quoted strings markers but keep content
-        # "xxx" -> xxx, 《xxx》-> xxx
         cleaned = re.sub(r'[""《》【】（）\[\]()]', " ", cleaned)
 
         # Split by whitespace and common punctuation
         tokens = re.split(r"[\s,;，；、:：]+", cleaned)
 
         # Filter: keep tokens with length >= 1 that are meaningful
-        # Remove very short tokens and pure punctuation/symbols
         keywords = []
         for token in tokens:
             token = token.strip()
@@ -86,14 +168,26 @@ class CharMatchHighlighter:
             # Skip pure punctuation/operators
             if re.match(r"^[+\-!<>=|&?~]+$", token):
                 continue
-            # Skip very short non-Chinese tokens (likely noise)
-            # Chinese characters are meaningful even at length 1
-            has_chinese = bool(re.search(r"[\u4e00-\u9fff]", token))
-            if not has_chinese and len(token) < 2:
-                continue
             keywords.append(token)
 
         return keywords
+
+    def extract_units_from_keywords(self, keywords: list[str]) -> list[str]:
+        """Extract all matching units from keywords.
+
+        Args:
+            keywords: List of keyword strings.
+
+        Returns:
+            List of unique units for matching (lowercase for case-insensitive).
+        """
+        all_units = set()
+        for keyword in keywords:
+            units = tokenize_to_units(keyword)
+            for unit in units:
+                # Store lowercase for case-insensitive matching
+                all_units.add(unit.lower())
+        return list(all_units)
 
     def highlight(
         self,
@@ -103,6 +197,11 @@ class CharMatchHighlighter:
         case_sensitive: bool = False,
     ) -> str:
         """Highlight keywords in text using char-level matching.
+
+        For each keyword:
+        - Chinese characters are matched individually
+        - Alphanumeric sequences are matched as units
+        - Adjacent matches are merged into single highlight spans
 
         Args:
             text: The text to highlight.
@@ -127,25 +226,28 @@ class CharMatchHighlighter:
         if not keywords:
             return text
 
-        # Find all keyword occurrences and their positions
-        # Track (start, end) tuples for each match
-        matches = []
+        # Extract all units from keywords
+        units = self.extract_units_from_keywords(keywords)
+        if not units:
+            return text
 
-        for keyword in keywords:
-            if not keyword:
+        # Find all unit occurrences and their positions
+        matches = []  # List of (start, end) tuples
+
+        for unit in units:
+            if not unit:
                 continue
 
-            # Escape special regex chars in keyword
-            escaped_keyword = re.escape(keyword)
+            # Escape special regex chars
+            escaped_unit = re.escape(unit)
 
             # Use case-insensitive matching by default
             flags = 0 if case_sensitive else re.IGNORECASE
 
             try:
-                for match in re.finditer(escaped_keyword, text, flags=flags):
+                for match in re.finditer(escaped_unit, text, flags=flags):
                     matches.append((match.start(), match.end()))
             except re.error:
-                # Skip invalid patterns
                 continue
 
         if not matches:
@@ -177,7 +279,12 @@ class CharMatchHighlighter:
         # Add remaining text
         result.append(text[last_pos:])
 
-        return "".join(result)
+        highlighted = "".join(result)
+
+        # Merge adjacent tags (should already be merged, but just in case)
+        highlighted = merge_adjacent_tags(highlighted, tag)
+
+        return highlighted
 
     def highlight_fields(
         self,
@@ -290,37 +397,65 @@ def get_char_highlighter() -> CharMatchHighlighter:
 
 
 if __name__ == "__main__":
-    from tclogger import logger, dict_to_str
+    from tclogger import logger
 
     highlighter = CharMatchHighlighter()
 
+    # Test tokenize_to_units
+    logger.note("Test tokenize_to_units:")
+    test_texts = [
+        "红警hbk08",
+        "黑神话悟空",
+        "apex2024",
+        "HBK08小块地",
+        "test123abc",
+    ]
+    for text in test_texts:
+        units = tokenize_to_units(text)
+        logger.mesg(f"  [{text}] -> {units}")
+
     # Test extract_keywords
+    logger.note("\nTest extract_keywords:")
     test_queries = [
         "红警08",
         "黑神话 悟空",
         "q=v 红警",
         "红警 v>1000 q=wv",
         "date=2024 黑神话 悟空",
-        "@UP主 视频",
-        '"精彩剪辑" 游戏',
     ]
-
-    logger.note("Test extract_keywords:")
     for query in test_queries:
         keywords = highlighter.extract_keywords(query)
         logger.mesg(f"  [{query}] -> {keywords}")
 
-    # Test highlight
-    logger.note("\nTest highlight:")
+    # Test highlight with char-level matching
+    logger.note("\nTest highlight (char-level):")
     test_cases = [
-        ("红警HBK08 游戏视频", ["红警", "08"]),
-        ("黑神话悟空精彩剪辑", ["黑神话", "悟空"]),
-        ("APEX传奇高手操作", ["apex", "传奇"]),  # case insensitive
+        # Query keywords, text, expected behavior
+        ("红警HBK08 游戏视频", ["红警", "08"], "红警 and 08 should match"),
+        ("红警08", ["红警hbk08"], "红警 and 08 should match (partial)"),
+        ("红警HBK08 游戏视频", ["红警hbk08"], "红, 警, hbk, 08 should match"),
+        ("黑神话悟空精彩剪辑", ["黑神话", "悟空"], "黑神话悟空 should match"),
+        ("APEX传奇高手操作", ["apex", "传奇"], "apex and 传奇 should match"),
+        ("测试abc123数据", ["abc", "123"], "abc and 123 should match"),
     ]
 
-    for text, keywords in test_cases:
+    for text, keywords, description in test_cases:
         result = highlighter.highlight(text, keywords)
         logger.mesg(f"  [{text}] + {keywords}")
         logger.success(f"    -> {result}")
+        logger.hint(f"    ({description})")
+
+    # Test that adjacent tags are merged
+    logger.note("\nTest adjacent tag merging:")
+    text = "红警08"
+    keywords = ["红", "警", "08"]
+    result = highlighter.highlight(text, keywords)
+    logger.mesg(f"  [{text}] + {keywords}")
+    logger.success(f"    -> {result}")
+    expected = "<hit>红警08</hit>"
+    if result == expected:
+        logger.okay(f"    ✓ Correctly merged to {expected}")
+    else:
+        logger.warn(f"    × Expected {expected}")
 
     # python -m converters.highlight.char_match
