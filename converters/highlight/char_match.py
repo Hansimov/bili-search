@@ -103,6 +103,46 @@ def merge_adjacent_tags(text: str, tag: str = "hit") -> str:
     return text
 
 
+def common_prefix_length(s1: str, s2: str) -> int:
+    """Calculate the length of common prefix between two strings.
+
+    Args:
+        s1: First string.
+        s2: Second string.
+
+    Returns:
+        Length of the common prefix.
+
+    Example:
+        common_prefix_length("mathematics", "mathematical") -> 10 ("mathematic")
+    """
+    min_len = min(len(s1), len(s2))
+    for i in range(min_len):
+        if s1[i] != s2[i]:
+            return i
+    return min_len
+
+
+def common_suffix_length(s1: str, s2: str) -> int:
+    """Calculate the length of common suffix between two strings.
+
+    Args:
+        s1: First string.
+        s2: Second string.
+
+    Returns:
+        Length of the common suffix.
+
+    Example:
+        common_suffix_length("unhappy", "happy") -> 5 ("happy")
+    """
+    min_len = min(len(s1), len(s2))
+    for i in range(1, min_len + 1):
+        if s1[-i] != s2[-i]:
+            return i - 1
+    return min_len
+
+
 class CharMatchHighlighter:
     """Highlighter using char-level keyword matching.
 
@@ -195,12 +235,13 @@ class CharMatchHighlighter:
         keywords: Union[str, list[str]],
         tag: str = None,
         case_sensitive: bool = False,
+        min_alpha_match: int = 3,
     ) -> str:
         """Highlight keywords in text using char-level matching.
 
         For each keyword:
-        - Chinese characters are matched individually
-        - Alphanumeric sequences are matched as units
+        - Chinese characters are matched individually (exact match)
+        - Alphanumeric sequences support prefix/suffix matching
         - Adjacent matches are merged into single highlight spans
 
         Args:
@@ -208,10 +249,15 @@ class CharMatchHighlighter:
             keywords: A single keyword string or list of keywords.
             tag: Tag name for highlighting (overrides instance default).
             case_sensitive: Whether matching is case-sensitive.
+            min_alpha_match: Minimum characters for prefix/suffix alpha match (default 3).
 
         Returns:
             Text with keywords wrapped in <tag>...</tag>.
             Returns original text if no keywords or no matches.
+
+        Example:
+            - "mathematical" matches "mathematics" (prefix "mathematic")
+            - "unhappy" matches "happy" (suffix "happy")
         """
         if not text or not keywords:
             return text
@@ -227,28 +273,60 @@ class CharMatchHighlighter:
             return text
 
         # Extract all units from keywords
-        units = self.extract_units_from_keywords(keywords)
-        if not units:
+        keyword_units = self.extract_units_from_keywords(keywords)
+        if not keyword_units:
             return text
 
-        # Find all unit occurrences and their positions
+        # Tokenize text to find positions of each unit
+        text_tokens = self._tokenize_with_positions(text)
+        if not text_tokens:
+            return text
+
+        # Find matches with prefix/suffix support for alpha units
         matches = []  # List of (start, end) tuples
 
-        for unit in units:
-            if not unit:
-                continue
+        for token_start, token_end, token_text in text_tokens:
+            token_lower = token_text.lower() if not case_sensitive else token_text
 
-            # Escape special regex chars
-            escaped_unit = re.escape(unit)
+            # Check each keyword unit for match
+            for unit in keyword_units:
+                unit_cmp = unit if case_sensitive else unit.lower()
 
-            # Use case-insensitive matching by default
-            flags = 0 if case_sensitive else re.IGNORECASE
+                if not unit_cmp:
+                    continue
 
-            try:
-                for match in re.finditer(escaped_unit, text, flags=flags):
-                    matches.append((match.start(), match.end()))
-            except re.error:
-                continue
+                # Check if this is a Chinese character (exact match only)
+                if len(unit_cmp) == 1 and "\u4e00" <= unit_cmp <= "\u9fff":
+                    if token_lower == unit_cmp:
+                        matches.append((token_start, token_end))
+                        break
+                # For digits, exact match only
+                elif unit_cmp.isdigit():
+                    if token_lower == unit_cmp:
+                        matches.append((token_start, token_end))
+                        break
+                # For alpha sequences, support prefix/suffix matching
+                elif unit_cmp.isalpha():
+                    # Exact match
+                    if token_lower == unit_cmp:
+                        matches.append((token_start, token_end))
+                        break
+
+                    # Prefix match: "mathematical" matches "mathematics"
+                    # Common prefix is "mathematic" (10 chars)
+                    prefix_len = common_prefix_length(token_lower, unit_cmp)
+                    if prefix_len >= min_alpha_match:
+                        # Highlight the common prefix portion
+                        matches.append((token_start, token_start + prefix_len))
+                        break
+
+                    # Suffix match: "unhappy" in text, "happy" as keyword
+                    # or "happy" in text, "unhappy" as keyword
+                    suffix_len = common_suffix_length(token_lower, unit_cmp)
+                    if suffix_len >= min_alpha_match:
+                        # Highlight the common suffix portion
+                        matches.append((token_end - suffix_len, token_end))
+                        break
 
         if not matches:
             return text
@@ -285,6 +363,55 @@ class CharMatchHighlighter:
         highlighted = merge_adjacent_tags(highlighted, tag)
 
         return highlighted
+
+    def _tokenize_with_positions(self, text: str) -> list[tuple[int, int, str]]:
+        """Tokenize text and return positions of each token.
+
+        Args:
+            text: Input text to tokenize.
+
+        Returns:
+            List of (start, end, token_text) tuples.
+        """
+        if not text:
+            return []
+
+        tokens = []
+        i = 0
+        n = len(text)
+
+        while i < n:
+            char = text[i]
+
+            # Check if Chinese character (CJK Unified Ideographs)
+            if "\u4e00" <= char <= "\u9fff":
+                tokens.append((i, i + 1, char))
+                i += 1
+            # Check if alphanumeric
+            elif char.isalnum():
+                # Collect continuous alphanumeric sequence
+                # But separate letters from digits
+                if char.isdigit():
+                    # Collect digits
+                    start = i
+                    while i < n and text[i].isdigit():
+                        i += 1
+                    tokens.append((start, i, text[start:i]))
+                else:
+                    # Collect letters
+                    start = i
+                    while (
+                        i < n
+                        and text[i].isalpha()
+                        and not ("\u4e00" <= text[i] <= "\u9fff")
+                    ):
+                        i += 1
+                    tokens.append((start, i, text[start:i]))
+            else:
+                # Skip punctuation, whitespace, etc.
+                i += 1
+
+        return tokens
 
     def highlight_fields(
         self,
@@ -457,5 +584,48 @@ if __name__ == "__main__":
         logger.okay(f"    ✓ Correctly merged to {expected}")
     else:
         logger.warn(f"    × Expected {expected}")
+
+    # Test prefix/suffix matching for alpha units
+    logger.note("\nTest prefix/suffix matching (alpha):")
+    prefix_suffix_cases = [
+        # (text, keywords, expected, description)
+        (
+            "mathematical analysis",
+            ["mathematics"],
+            "<hit>mathematic</hit>al analysis",
+            "prefix match: mathematic",
+        ),
+        (
+            "unhappy ending",
+            ["happy"],
+            "un<hit>happy</hit> ending",
+            "suffix match: happy",
+        ),
+        (
+            "preprocessing data",
+            ["process"],
+            "preprocessing data",
+            "no match: 'pr' prefix too short",
+        ),
+        (
+            "MATHEMATICAL",
+            ["math"],
+            "<hit>MATH</hit>EMATICAL",
+            "case-insensitive prefix",
+        ),
+        ("cat", ["category"], "<hit>cat</hit>", "short word full prefix match"),
+        ("ab", ["abc"], "ab", "too short to match (min 3)"),
+        ("testing", ["test"], "<hit>test</hit>ing", "prefix match: test"),
+        ("retest", ["test"], "re<hit>test</hit>", "suffix match: test"),
+    ]
+
+    for text, keywords, expected, description in prefix_suffix_cases:
+        result = highlighter.highlight(text, keywords)
+        logger.mesg(f"  [{text}] + {keywords}")
+        logger.success(f"    -> {result}")
+        if result == expected:
+            logger.okay(f"    ✓ {description}")
+        else:
+            logger.warn(f"    × Expected: {expected}")
 
     # python -m converters.highlight.char_match

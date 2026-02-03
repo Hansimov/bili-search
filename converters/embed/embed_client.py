@@ -1,7 +1,8 @@
-"""Text Embedding Client for KNN Search
+"""Text Embedding Client for KNN Search and Reranking
 
-This module provides a client for converting query text to LSH hex string
-for use with Elasticsearch KNN search on the text_emb field.
+This module provides a unified client for:
+1. Converting query text to LSH hex string for Elasticsearch KNN search
+2. Reranking search results using cosine similarity via tfmx.rerank()
 
 Uses TEIClients from tfmx library to connect to TEI (Text Embeddings Inference) services.
 """
@@ -14,8 +15,8 @@ from configs.envs import TEI_CLIENTS_ENDPOINTS
 # Default LSH bit count - should match text_emb dims in ES index
 KNN_LSH_BITN = 2048
 
-# Default cache size for embedding results
-EMBEDDING_CACHE_SIZE = 1024
+# Default cache size for LSH results
+LSH_CACHE_SIZE = 1024
 
 
 def get_tei_endpoints() -> list[str]:
@@ -25,19 +26,26 @@ def get_tei_endpoints() -> list[str]:
     return TEI_CLIENTS_ENDPOINTS
 
 
-class TextEmbedSearchClient:
-    """Client for converting query text to LSH hex string for KNN search.
+class TextEmbedClient:
+    """Unified client for text embedding operations.
 
-    Uses TEIClients to compute LSH (Locality Sensitive Hashing) of input text,
-    which produces a bit vector representation as a hex string.
+    Provides:
+    1. LSH (Locality Sensitive Hashing) for KNN vector search
+    2. Reranking via cosine similarity (single network call)
+    3. Float embeddings (if needed)
 
-    The hex string can be used directly with Elasticsearch's KNN search
-    on dense_vector fields with element_type="bit".
+    Uses TEIClients for efficient multi-machine distribution.
 
     Example:
-        client = TextEmbedSearchClient()
-        query_vector = client.text_to_hex("红警HBK08 游戏视频")
-        # query_vector: "a1b2c3d4..." (512 hex chars = 2048 bits)
+        client = TextEmbedClient()
+        
+        # For KNN search
+        hex_vector = client.text_to_hex("游戏视频")
+        
+        # For reranking (returns similarity scores directly)
+        rankings = client.rerank("红警", ["红警攻略", "星际争霸", "红警视频"])
+        # rankings: [(1, 0.85), (2, 0.45), (0, 0.92)]
+        # tuple is (rank_position, similarity_score)
     """
 
     def __init__(
@@ -58,7 +66,7 @@ class TextEmbedSearchClient:
         self._clients = None
         self._initialized = False
         self._cache = {}  # Simple cache for text -> hex mappings
-        self._cache_max_size = EMBEDDING_CACHE_SIZE
+        self._cache_max_size = LSH_CACHE_SIZE
 
         if not lazy_init:
             self._ensure_initialized()
@@ -69,7 +77,7 @@ class TextEmbedSearchClient:
             return True
 
         if not self.endpoints:
-            logger.warn("× Cannot initialize TextEmbedSearchClient: no endpoints")
+            logger.warn("× Cannot initialize TextEmbedClient: no endpoints")
             return False
 
         try:
@@ -79,7 +87,7 @@ class TextEmbedSearchClient:
             self._initialized = True
             return True
         except ImportError:
-            logger.warn("× tfmx library not installed. KNN search unavailable.")
+            logger.warn("× tfmx library not installed. Embedding features unavailable.")
             return False
         except Exception as e:
             logger.warn(f"× Failed to initialize TEIClients: {e}")
@@ -88,6 +96,8 @@ class TextEmbedSearchClient:
     def is_available(self) -> bool:
         """Check if the client is available and ready."""
         return self._ensure_initialized()
+
+    # ========== LSH Methods (for KNN Search) ==========
 
     def _compute_lsh(self, text: str) -> str:
         """Internal method to compute LSH."""
@@ -127,12 +137,9 @@ class TextEmbedSearchClient:
             return ""
 
         if use_cache:
-            # Check cache first
             cached = self._get_from_cache(text)
             if cached is not None:
                 return cached
-
-            # Compute and cache
             result = self._compute_lsh(text)
             if result:
                 self._add_to_cache(text, result)
@@ -149,7 +156,6 @@ class TextEmbedSearchClient:
         Returns:
             List of hex string representations.
             Returns empty string for empty/whitespace-only texts.
-            Returns empty list if client is not available.
         """
         if not texts:
             return []
@@ -158,7 +164,6 @@ class TextEmbedSearchClient:
             return [""] * len(texts)
 
         # Filter out empty texts and track their positions
-        # TEI service will error on empty strings: "inputs cannot be empty"
         non_empty_indices = []
         non_empty_texts = []
         for i, text in enumerate(texts):
@@ -166,14 +171,13 @@ class TextEmbedSearchClient:
                 non_empty_indices.append(i)
                 non_empty_texts.append(text)
 
-        # If all texts are empty, return empty strings
         if not non_empty_texts:
             return [""] * len(texts)
 
         try:
             results = self._clients.lsh(non_empty_texts, bitn=self.bitn)
 
-            # Reconstruct full result list with empty strings for empty texts
+            # Reconstruct full result list
             full_results = [""] * len(texts)
             for result_idx, original_idx in enumerate(non_empty_indices):
                 if result_idx < len(results):
@@ -184,101 +188,92 @@ class TextEmbedSearchClient:
             logger.warn(f"× Failed to compute LSH for texts: {e}")
             return [""] * len(texts)
 
-    async def text_to_hex_async(self, text: str) -> str:
-        """Async version of text_to_hex."""
-        if not text or not text.strip():
-            return ""
+    # ========== Rerank Methods ==========
 
-        if not self._ensure_initialized():
-            return ""
+    def rerank(
+        self,
+        query: str,
+        passages: list[str],
+    ) -> list[tuple[int, float]]:
+        """Rerank passages by cosine similarity to query.
 
-        try:
-            results = await self._clients.lsh_async([text], bitn=self.bitn)
-            return results[0] if results else ""
-        except Exception as e:
-            logger.warn(f"× Failed to compute LSH for text: {e}")
-            return ""
-
-    async def texts_to_hex_async(self, texts: list[str]) -> list[str]:
-        """Async version of texts_to_hex."""
-        if not texts:
-            return []
-
-        if not self._ensure_initialized():
-            return [""] * len(texts)
-
-        # Filter out empty texts and track their positions
-        non_empty_indices = []
-        non_empty_texts = []
-        for i, text in enumerate(texts):
-            if text and text.strip():
-                non_empty_indices.append(i)
-                non_empty_texts.append(text)
-
-        if not non_empty_texts:
-            return [""] * len(texts)
-
-        try:
-            results = await self._clients.lsh_async(non_empty_texts, bitn=self.bitn)
-
-            full_results = [""] * len(texts)
-            for result_idx, original_idx in enumerate(non_empty_indices):
-                if result_idx < len(results):
-                    full_results[original_idx] = results[result_idx]
-
-            return full_results
-        except Exception as e:
-            logger.warn(f"× Failed to compute LSH for texts: {e}")
-            return [""] * len(texts)
-
-    def text_to_embedding(self, text: str) -> list[float]:
-        """Convert text to dense float embedding vector.
-
-        This returns the original float embedding, NOT the LSH bit vector.
-        Float embeddings have much higher precision for similarity calculation.
+        Uses tfmx.rerank() for efficient server-side computation.
+        Single network call - embeds all texts and computes similarity matrix.
 
         Args:
-            text: Input text to embed.
+            query: Query text.
+            passages: List of passage texts to rank.
 
         Returns:
-            List of floats representing the embedding vector.
-            Returns empty list if client is not available or text is empty.
+            List of (rank_position, similarity_score) tuples in passage order.
+            rank_position: 0 = best match (highest similarity).
+            
+        Example:
+            rankings = client.rerank("红警", ["红警攻略", "星际争霸", "红警视频"])
+            # rankings[0] = (1, 0.85)  # "红警攻略" is rank 1 with score 0.85
+            # rankings[1] = (2, 0.45)  # "星际争霸" is rank 2 with score 0.45  
+            # rankings[2] = (0, 0.92)  # "红警视频" is rank 0 (best) with score 0.92
         """
-        if not text or not text.strip():
+        if not query or not passages:
             return []
 
         if not self._ensure_initialized():
             return []
 
         try:
-            results = self._clients.embed([text])
+            # tfmx.rerank returns list[list[tuple[int, float]]]
+            # We only have one query, so take the first result
+            results = self._clients.rerank([query], passages)
             return results[0] if results else []
         except Exception as e:
-            logger.warn(f"× Failed to compute embedding for text: {e}")
+            logger.warn(f"× Failed to rerank: {e}")
             return []
 
-    def texts_to_embeddings(self, texts: list[str]) -> list[list[float]]:
-        """Convert multiple texts to dense float embedding vectors.
-
-        This returns the original float embeddings, NOT the LSH bit vectors.
-        Float embeddings have much higher precision for similarity calculation.
+    def rerank_batch(
+        self,
+        queries: list[str],
+        passages: list[str],
+    ) -> list[list[tuple[int, float]]]:
+        """Rerank passages for multiple queries.
 
         Args:
-            texts: List of input texts to embed.
+            queries: List of query texts.
+            passages: List of passage texts to rank against each query.
 
         Returns:
-            List of embedding vectors (each is a list of floats).
-            Returns empty list for empty/whitespace-only texts.
-            Returns empty list if client is not available.
+            List of rankings per query. Each ranking is list of
+            (rank_position, similarity_score) tuples in passage order.
+        """
+        if not queries or not passages:
+            return []
+
+        if not self._ensure_initialized():
+            return []
+
+        try:
+            return self._clients.rerank(queries, passages)
+        except Exception as e:
+            logger.warn(f"× Failed to batch rerank: {e}")
+            return []
+
+    # ========== Embedding Methods (if needed) ==========
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Get float embeddings for texts.
+
+        Args:
+            texts: List of texts to embed.
+
+        Returns:
+            List of embedding vectors.
         """
         if not texts:
             return []
 
         if not self._ensure_initialized():
-            return [[] for _ in texts]
+            return []
 
-        # Filter out empty texts and track their positions
-        # TEI service will error on empty strings: "inputs cannot be empty"
+        # Filter out empty texts
         non_empty_indices = []
         non_empty_texts = []
         for i, text in enumerate(texts):
@@ -286,14 +281,13 @@ class TextEmbedSearchClient:
                 non_empty_indices.append(i)
                 non_empty_texts.append(text)
 
-        # If all texts are empty, return empty embeddings
         if not non_empty_texts:
             return [[] for _ in texts]
 
         try:
             results = self._clients.embed(non_empty_texts)
 
-            # Reconstruct full result list with empty embeddings for empty texts
+            # Reconstruct full result list
             full_results = [[] for _ in texts]
             for result_idx, original_idx in enumerate(non_empty_indices):
                 if result_idx < len(results):
@@ -301,55 +295,10 @@ class TextEmbedSearchClient:
 
             return full_results
         except Exception as e:
-            logger.warn(f"× Failed to compute embeddings for texts: {e}")
+            logger.warn(f"× Failed to embed texts: {e}")
             return [[] for _ in texts]
 
-    async def text_to_embedding_async(self, text: str) -> list[float]:
-        """Async version of text_to_embedding."""
-        if not text or not text.strip():
-            return []
-
-        if not self._ensure_initialized():
-            return []
-
-        try:
-            results = await self._clients.embed_async([text])
-            return results[0] if results else []
-        except Exception as e:
-            logger.warn(f"× Failed to compute embedding for text: {e}")
-            return []
-
-    async def texts_to_embeddings_async(self, texts: list[str]) -> list[list[float]]:
-        """Async version of texts_to_embeddings."""
-        if not texts:
-            return []
-
-        if not self._ensure_initialized():
-            return [[] for _ in texts]
-
-        # Filter out empty texts and track their positions
-        non_empty_indices = []
-        non_empty_texts = []
-        for i, text in enumerate(texts):
-            if text and text.strip():
-                non_empty_indices.append(i)
-                non_empty_texts.append(text)
-
-        if not non_empty_texts:
-            return [[] for _ in texts]
-
-        try:
-            results = await self._clients.embed_async(non_empty_texts)
-
-            full_results = [[] for _ in texts]
-            for result_idx, original_idx in enumerate(non_empty_indices):
-                if result_idx < len(results):
-                    full_results[original_idx] = results[result_idx]
-
-            return full_results
-        except Exception as e:
-            logger.warn(f"× Failed to compute embeddings for texts: {e}")
-            return [[] for _ in texts]
+    # ========== Utility Methods ==========
 
     def hex_to_byte_array(self, hex_str: str) -> list[int]:
         """Convert hex string to byte array for Elasticsearch.
@@ -366,9 +315,7 @@ class TextEmbedSearchClient:
             return []
 
         try:
-            # Convert hex string to bytes, then to signed int8 list
             byte_data = bytes.fromhex(hex_str)
-            # Convert to signed bytes (-128 to 127) as ES expects
             return [b if b < 128 else b - 256 for b in byte_data]
         except ValueError as e:
             logger.warn(f"× Invalid hex string: {e}")
@@ -391,13 +338,17 @@ class TextEmbedSearchClient:
         self.close()
 
 
-# Singleton instance for convenience
-_embed_client: TextEmbedSearchClient = None
+# Singleton instance
+_embed_client: TextEmbedClient = None
 
 
-def get_embed_client() -> TextEmbedSearchClient:
-    """Get or create a singleton TextEmbedSearchClient instance."""
+def get_embed_client() -> TextEmbedClient:
+    """Get or create a singleton TextEmbedClient instance."""
     global _embed_client
     if _embed_client is None:
-        _embed_client = TextEmbedSearchClient()
+        _embed_client = TextEmbedClient()
     return _embed_client
+
+
+# Legacy alias for backward compatibility
+TextEmbedSearchClient = TextEmbedClient

@@ -942,7 +942,12 @@ class VideoExplorer(VideoSearcherV2):
                 rerank_info = {"skipped": True, "reason": "Reranker not available"}
 
         # Step 3: Fetch full docs for ranked results (using reranked order if available)
-        bvids = [hit.get("bvid", None) for hit in knn_hits]
+        # Only fetch top_k docs to reduce memory and network overhead
+        top_k_hits = knn_hits[:rank_top_k]
+        bvids = [hit.get("bvid", None) for hit in top_k_hits]
+
+        # Clear knn_hits to release memory early (we only need top_k now)
+        del knn_hits
 
         # Use fetch_docs_by_bvids to get full docs without word matching
         full_doc_search_res = self.fetch_docs_by_bvids(
@@ -956,11 +961,14 @@ class VideoExplorer(VideoSearcherV2):
         # Merge scores from KNN search (and rerank if performed) into full doc hits
         full_hits = full_doc_search_res.get("hits", [])
 
-        # Build a score map from knn_hits that includes rerank_score if available
+        # Build a score map from top_k_hits that includes rerank_score if available
         score_fields = ["score", "rank_score", "sort_score"]
         if rerank_performed:
             score_fields.extend(["rerank_score", "cosine_similarity", "keyword_boost"])
-        self.merge_scores_into_hits(full_hits, knn_hits, score_fields=score_fields)
+        self.merge_scores_into_hits(full_hits, top_k_hits, score_fields=score_fields)
+
+        # Clear top_k_hits to release memory
+        del top_k_hits
 
         # Add char-level highlighting for vector search results
         # Since ES keyword highlighting isn't available for KNN search,
@@ -978,11 +986,11 @@ class VideoExplorer(VideoSearcherV2):
         if rerank_performed:
             # Sort by rerank_score which already incorporates cosine similarity and keyword boost
             full_hits.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
-            full_doc_search_res["hits"] = full_hits[:rank_top_k]
-            full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
+            full_doc_search_res["hits"] = full_hits
+            full_doc_search_res["return_hits"] = len(full_hits)
             full_doc_search_res["rank_method"] = "rerank"
         else:
-            # For KNN explore, "relevance" is the preferred method - pure vector similarity ranking
+            # For KNN explore without rerank, apply ranking method
             if rank_method == "relevance":
                 full_doc_search_res = self.hit_ranker.relevance_rank(
                     full_doc_search_res, top_k=rank_top_k

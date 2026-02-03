@@ -1,50 +1,38 @@
 """Embedding-based Reranker for KNN Search Results
 
-This module provides a reranker that uses float embeddings to refine
+This module provides a reranker that uses tfmx.rerank() to refine
 initial KNN search results obtained via LSH bit vectors.
 
 The problem with LSH bit vectors:
 - LSH compresses high-dimensional float embeddings into bit vectors
 - This introduces quantization noise and reduces precision
-- Similar concepts (e.g., "基洛夫", "斯大林", "朱可夫") become nearly indistinguishable
-- Typical symptom: all scores cluster around 0.7x with poor differentiation
+- Similar concepts become nearly indistinguishable in hamming distance
 
 The solution:
 - Use bit vector KNN for fast initial recall (coarse filtering)
-- Use float embeddings for precise reranking (fine ranking)
+- Use tfmx.rerank() for precise cosine similarity (fine ranking)
 - Optionally boost results that contain exact keyword matches
+
+Key improvement over old implementation:
+- Old: 1 network call for query embedding + 1 batch call for doc embeddings
+- New: 1 network call total via tfmx.rerank() (server-side computation)
+
+Performance optimizations:
+- Passage truncation: Long passages are truncated to save memory/bandwidth
+- Efficient text extraction: Pre-compute and cache field access
+- Memory management: Clear intermediate data structures promptly
 """
 
-import math
+import re
 import time
-from typing import Union
-from tclogger import logger
+from tclogger import logger, dict_get
 
-from converters.embed.embed_client import TextEmbedSearchClient, get_embed_client
+from converters.embed.embed_client import TextEmbedClient, get_embed_client
 
-
-def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
-    """Calculate cosine similarity between two vectors.
-
-    Args:
-        vec1: First embedding vector.
-        vec2: Second embedding vector.
-
-    Returns:
-        Cosine similarity score in range [-1, 1].
-        Returns 0.0 if either vector is empty or zero-norm.
-    """
-    if not vec1 or not vec2 or len(vec1) != len(vec2):
-        return 0.0
-
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
-    norm1 = math.sqrt(sum(a * a for a in vec1))
-    norm2 = math.sqrt(sum(b * b for b in vec2))
-
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-
-    return dot_product / (norm1 * norm2)
+# Performance tuning constants
+MAX_PASSAGE_LENGTH = 4096  # Truncate passages longer than this (chars)
+MAX_FIELD_LENGTH = 150  # Max length per text field before truncation
+RERANK_TIMEOUT = 30  # Timeout in seconds for rerank operation
 
 
 def check_keyword_match(
@@ -73,14 +61,115 @@ def check_keyword_match(
     return match_count > 0, match_count
 
 
-class EmbeddingReranker:
-    """Reranker using float embeddings for precise similarity calculation.
+def extract_keywords(query: str) -> list[str]:
+    """Extract keywords from query string.
 
-    This reranker is designed to improve recall@k for vector search:
-    1. Takes initial KNN results (from LSH bit vector search)
-    2. Computes precise cosine similarity using float embeddings
-    3. Optionally boosts results containing exact keyword matches
-    4. Returns reranked results with improved precision
+    Performs simple tokenization to extract meaningful keywords.
+    Filters out DSL expressions (e.g., q=v, date=2024).
+
+    Args:
+        query: Query string, possibly with DSL expressions.
+
+    Returns:
+        List of keywords for matching.
+    """
+    # Remove patterns like q=xxx, date=xxx, etc.
+    cleaned = re.sub(r"\b\w+=[^\s]+", "", query)
+
+    # Split by whitespace and punctuation
+    tokens = re.split(r"[\s,;，；、]+", cleaned)
+
+    # Filter empty and very short tokens
+    keywords = [t.strip() for t in tokens if t.strip() and len(t.strip()) >= 2]
+
+    return keywords
+
+
+def _get_nested_field(hit: dict, field: str) -> str:
+    """Extract a nested field value from hit dict.
+
+    Args:
+        hit: Hit document dict.
+        field: Field name, can be nested like "owner.name".
+
+    Returns:
+        Field value as string, or empty string if not found.
+    """
+    value = hit
+    for part in field.split("."):
+        if isinstance(value, dict):
+            value = value.get(part, "")
+        else:
+            return ""
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def compute_passage(
+    hit: dict,
+    text_fields: list[str],
+    max_passage_len: int = MAX_PASSAGE_LENGTH,
+    max_field_len: int = MAX_FIELD_LENGTH,
+) -> str:
+    """Extract and combine text from a hit for embedding.
+
+    Optimized for minimal memory allocation and fast execution.
+
+    Args:
+        hit: Hit document with text fields.
+        text_fields: Fields to extract text from.
+        max_passage_len: Maximum total passage length.
+        max_field_len: Maximum length per field.
+
+    Returns:
+        Combined text string for embedding.
+    """
+    parts = []
+    total_len = 0
+
+    for field in text_fields:
+        value = _get_nested_field(hit, field)
+        if not value:
+            continue
+
+        # Truncate field if needed
+        if len(value) > max_field_len:
+            value = value[:max_field_len]
+
+        parts.append(value)
+        total_len += len(value) + 1  # +1 for space
+
+        # Early exit if we have enough text
+        if total_len >= max_passage_len:
+            break
+
+    if not parts:
+        # Fallback to bvid
+        bvid = hit.get("bvid", "")
+        return f"video {bvid}" if bvid else ""
+
+    combined = " ".join(parts)
+
+    # Final truncation
+    if len(combined) > max_passage_len:
+        combined = combined[:max_passage_len]
+
+    return combined
+
+
+class EmbeddingReranker:
+    """Reranker using tfmx.rerank() for precise similarity calculation.
+
+    This reranker improves recall@k for vector search by:
+    1. Taking initial KNN results (from LSH bit vector search)
+    2. Computing precise cosine similarity via tfmx.rerank() (single call)
+    3. Optionally boosting results containing exact keyword matches
+    4. Returning reranked results with improved precision
+
+    IMPORTANT: tfmx.rerank() must process all passages in a single call
+    to compute correct global rankings. Batch splitting would break
+    ranking consistency.
 
     Example:
         reranker = EmbeddingReranker()
@@ -94,7 +183,7 @@ class EmbeddingReranker:
 
     def __init__(
         self,
-        embed_client: TextEmbedSearchClient = None,
+        embed_client: TextEmbedClient = None,
         lazy_init: bool = True,
     ):
         """Initialize the reranker.
@@ -107,7 +196,7 @@ class EmbeddingReranker:
         self._lazy_init = lazy_init
 
     @property
-    def embed_client(self) -> TextEmbedSearchClient:
+    def embed_client(self) -> TextEmbedClient:
         """Get or create embed client."""
         if self._embed_client is None:
             self._embed_client = get_embed_client()
@@ -117,43 +206,6 @@ class EmbeddingReranker:
         """Check if the reranker is available."""
         return self.embed_client.is_available()
 
-    def compute_text_for_hit(
-        self,
-        hit: dict,
-        text_fields: list[str] = None,
-    ) -> str:
-        """Extract and combine text from a hit for embedding.
-
-        Args:
-            hit: Hit document with text fields.
-            text_fields: Fields to extract text from.
-                        Defaults to ["title", "tags", "desc"].
-
-        Returns:
-            Combined text string for embedding.
-            Returns a placeholder if all fields are empty to avoid TEI errors.
-        """
-        if text_fields is None:
-            text_fields = ["title", "tags", "desc"]
-
-        texts = []
-        for field in text_fields:
-            value = hit.get(field, "")
-            if value and isinstance(value, str) and value.strip():
-                texts.append(value.strip())
-
-        combined = " ".join(texts)
-
-        # If no text found, use bvid as fallback to avoid empty input
-        # Empty strings cause TEI service errors
-        if not combined.strip():
-            bvid = hit.get("bvid", "")
-            if bvid:
-                return f"video {bvid}"
-            return ""
-
-        return combined
-
     def rerank(
         self,
         query: str,
@@ -161,41 +213,48 @@ class EmbeddingReranker:
         text_fields: list[str] = None,
         keyword_boost: float = 1.5,
         title_keyword_boost: float = 2.0,
-        max_rerank: int = 200,
+        max_rerank: int = 1000,
         score_field: str = "rerank_score",
         verbose: bool = False,
     ) -> tuple[list[dict], dict]:
-        """Rerank hits using float embeddings and optional keyword matching.
+        """Rerank hits using tfmx.rerank() and optional keyword matching.
 
         The reranking formula:
-            final_score = cosine_similarity * (1 + keyword_boost * has_keyword_match)
+            final_score = cosine_similarity * keyword_boost_multiplier
 
         For title matches, an additional boost is applied:
-            final_score *= (1 + title_keyword_boost) if title matches
+            boost *= (1 + title_keyword_boost * match_count)
+
+        IMPORTANT: All passages must be processed in a single tfmx.rerank()
+        call to ensure correct global ranking. Batch splitting is NOT used
+        as it would break ranking consistency.
 
         Args:
             query: Original query string.
             hits: List of hit documents to rerank.
-            text_fields: Fields to use for computing document embeddings.
+            text_fields: Fields to use for computing document text.
                         Defaults to ["title", "tags", "desc"].
-            keyword_boost: Boost factor when keywords match in any field.
-            title_keyword_boost: Additional boost when keywords match in title.
-            max_rerank: Maximum number of hits to rerank (for efficiency).
+            keyword_boost: Boost factor when keywords match in tags/desc.
+            title_keyword_boost: Boost factor when keywords match in title.
+            max_rerank: Maximum number of hits to rerank.
             score_field: Field name to store the rerank score.
             verbose: Enable verbose logging.
 
         Returns:
             Tuple of (reranked hits, perf_info dict with timing details).
         """
+        if text_fields is None:
+            text_fields = ["title", "tags", "desc"]
+
         perf_info = {
             "total_ms": 0,
-            "query_embed_ms": 0,
-            "doc_text_extract_ms": 0,
-            "doc_embed_ms": 0,
-            "scoring_ms": 0,
+            "passage_prep_ms": 0,
+            "rerank_call_ms": 0,
+            "keyword_scoring_ms": 0,
             "sorting_ms": 0,
             "hits_count": len(hits),
             "reranked_count": 0,
+            "valid_passages": 0,
         }
 
         total_start = time.perf_counter()
@@ -207,99 +266,109 @@ class EmbeddingReranker:
             logger.warn("× Reranker not available, returning original order")
             return hits, perf_info
 
-        # Limit hits to rerank for efficiency
+        # Limit hits to rerank
         hits_to_rerank = hits[:max_rerank]
         remaining_hits = hits[max_rerank:]
         perf_info["reranked_count"] = len(hits_to_rerank)
 
-        # Step 1: Get query embedding
+        # Step 1: Prepare passages efficiently
         step_start = time.perf_counter()
-        query_embedding = self.embed_client.text_to_embedding(query)
-        perf_info["query_embed_ms"] = round(
+
+        passages = []
+        valid_indices = []
+
+        for i, hit in enumerate(hits_to_rerank):
+            passage = compute_passage(hit, text_fields)
+            passages.append(passage)
+            if passage:
+                valid_indices.append(i)
+
+        perf_info["passage_prep_ms"] = round(
             (time.perf_counter() - step_start) * 1000, 2
         )
+        perf_info["valid_passages"] = len(valid_indices)
 
-        if not query_embedding:
-            logger.warn("× Failed to get query embedding, returning original order")
+        if not valid_indices:
+            logger.warn("× No valid passages to rerank")
             return hits, perf_info
 
-        # Extract keywords from query (simple tokenization)
-        keywords = self._extract_keywords(query)
+        # Extract only valid passages for API call
+        valid_passages = [passages[i] for i in valid_indices]
 
-        # Step 2: Extract doc texts for embedding
+        # Step 2: Call tfmx.rerank() - SINGLE call for all passages
+        # This is critical for correct global ranking
         step_start = time.perf_counter()
-        doc_texts = [
-            self.compute_text_for_hit(hit, text_fields) for hit in hits_to_rerank
-        ]
-        perf_info["doc_text_extract_ms"] = round(
+
+        rankings = self.embed_client.rerank(query, valid_passages)
+
+        perf_info["rerank_call_ms"] = round(
             (time.perf_counter() - step_start) * 1000, 2
         )
 
-        # Step 3: Compute document embeddings in batch
-        step_start = time.perf_counter()
-        doc_embeddings = self.embed_client.texts_to_embeddings(doc_texts)
-        perf_info["doc_embed_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
+        if not rankings:
+            logger.warn("× Rerank call returned no results")
+            return hits, perf_info
 
-        # Step 4: Compute rerank scores
+        # Build score map: original_hit_idx -> similarity_score
+        similarity_scores = {}
+        for valid_list_idx, original_idx in enumerate(valid_indices):
+            if valid_list_idx < len(rankings):
+                _, sim_score = rankings[valid_list_idx]
+                similarity_scores[original_idx] = sim_score
+
+        # Extract keywords once for all hits
+        keywords = extract_keywords(query)
+
+        # Step 3: Apply keyword boosts and assign scores
         step_start = time.perf_counter()
+
         for i, hit in enumerate(hits_to_rerank):
-            doc_embedding = doc_embeddings[i] if i < len(doc_embeddings) else []
+            # Get base similarity score
+            similarity = similarity_scores.get(i, 0.1)
 
-            # Cosine similarity between query and document
-            if doc_embedding:
-                similarity = cosine_similarity(query_embedding, doc_embedding)
-            else:
-                similarity = hit.get("score", 0.5)  # Fallback to original score
-
-            # Keyword matching boost
+            # Compute keyword boost
             boost = 1.0
 
-            # Check title match (highest priority)
+            # Title match (highest priority)
             title = hit.get("title", "")
             title_match, title_count = check_keyword_match(title, keywords)
             if title_match:
                 boost *= 1 + title_keyword_boost * title_count
 
-            # Check tags match
+            # Tags match
             tags = hit.get("tags", "")
             tags_match, tags_count = check_keyword_match(tags, keywords)
             if tags_match:
-                boost *= (
-                    1 + keyword_boost * tags_count * 0.8
-                )  # Slightly less than title
+                boost *= 1 + keyword_boost * tags_count * 0.8
 
-            # Check desc match (lower priority)
+            # Desc match (lower priority)
             desc = hit.get("desc", "")
             desc_match, desc_count = check_keyword_match(desc, keywords)
             if desc_match:
-                boost *= 1 + keyword_boost * desc_count * 0.3  # Much less than title
+                boost *= 1 + keyword_boost * desc_count * 0.3
 
-            # Final score - keep original rerank score (not normalized)
+            # Final score
             rerank_score = similarity * boost
+
+            # Update hit with scores (minimal fields to reduce memory)
             hit[score_field] = round(rerank_score, 6)
             hit["cosine_similarity"] = round(similarity, 6)
             hit["keyword_boost"] = round(boost, 4)
-            # Use rerank_score directly for ranking (no normalization)
             hit["rank_score"] = round(rerank_score, 6)
             hit["score"] = round(rerank_score, 6)
 
-            if verbose:
-                has_match = title_match or tags_match or desc_match
-                logger.mesg(
-                    f"  [{i}] sim={similarity:.4f} boost={boost:.2f} "
-                    f"score={rerank_score:.4f} match={has_match} "
-                    f"title={title[:30]}..."
-                )
-        perf_info["scoring_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
+        perf_info["keyword_scoring_ms"] = round(
+            (time.perf_counter() - step_start) * 1000, 2
+        )
 
-        # Step 5: Sort by rerank score
+        # Step 4: Sort by rerank score
         step_start = time.perf_counter()
         hits_to_rerank.sort(key=lambda x: x.get(score_field, 0), reverse=True)
         perf_info["sorting_ms"] = round((time.perf_counter() - step_start) * 1000, 2)
 
-        # Append remaining hits with lower priority (mark as not reranked)
-        for i, hit in enumerate(remaining_hits):
-            hit[score_field] = 0.0  # Mark as not reranked
+        # Mark remaining hits with zero scores
+        for hit in remaining_hits:
+            hit[score_field] = 0.0
             hit["rank_score"] = 0.0
             hit["score"] = 0.0
 
@@ -308,118 +377,12 @@ class EmbeddingReranker:
         if verbose:
             logger.mesg(f"  Rerank perf: {perf_info}")
 
+        # Clear intermediate data to help GC
+        del passages
+        del valid_passages
+        del similarity_scores
+
         return hits_to_rerank + remaining_hits, perf_info
-
-    def _extract_keywords(self, query: str) -> list[str]:
-        """Extract keywords from query string.
-
-        Performs simple tokenization to extract meaningful keywords.
-        Filters out DSL expressions (e.g., q=v, date=2024).
-
-        Args:
-            query: Query string, possibly with DSL expressions.
-
-        Returns:
-            List of keywords for matching.
-        """
-        # Remove common DSL patterns
-        import re
-
-        # Remove patterns like q=xxx, date=xxx, etc.
-        cleaned = re.sub(r"\b\w+=[^\s]+", "", query)
-
-        # Split by whitespace and punctuation
-        tokens = re.split(r"[\s,;，；、]+", cleaned)
-
-        # Filter empty and very short tokens
-        keywords = [t.strip() for t in tokens if t.strip() and len(t.strip()) >= 2]
-
-        return keywords
-
-    def rerank_with_stats(
-        self,
-        query: str,
-        hits: list[dict],
-        text_fields: list[str] = None,
-        keyword_boost: float = 1.5,
-        title_keyword_boost: float = 2.0,
-        relevance_weight: float = 0.7,
-        popularity_weight: float = 0.3,
-        max_rerank: int = 200,
-        verbose: bool = False,
-    ) -> tuple[list[dict], dict]:
-        """Rerank with both relevance and popularity considered.
-
-        Uses a weighted combination of semantic relevance and popularity metrics.
-
-        Final score = relevance_weight * rerank_score + popularity_weight * popularity_score
-
-        Args:
-            query: Original query string.
-            hits: List of hit documents to rerank.
-            text_fields: Fields for computing document embeddings.
-            keyword_boost: Boost for keyword matches.
-            title_keyword_boost: Boost for title keyword matches.
-            relevance_weight: Weight for semantic relevance (0-1).
-            popularity_weight: Weight for popularity score (0-1).
-            max_rerank: Maximum hits to rerank.
-            verbose: Enable verbose logging.
-
-        Returns:
-            Tuple of (reranked hits, perf_info dict).
-        """
-        # First do semantic reranking
-        hits, perf_info = self.rerank(
-            query=query,
-            hits=hits,
-            text_fields=text_fields,
-            keyword_boost=keyword_boost,
-            title_keyword_boost=title_keyword_boost,
-            max_rerank=max_rerank,
-            score_field="rerank_score",
-            verbose=verbose,
-        )
-
-        # Normalize rerank scores for combining with popularity
-        max_rerank_score = max(
-            (h.get("rerank_score", 0) for h in hits[:max_rerank]), default=1.0
-        )
-        if max_rerank_score <= 0:
-            max_rerank_score = 1.0
-
-        # Calculate popularity score and combine
-        for hit in hits[:max_rerank]:
-            stat = hit.get("stat", {})
-            view = stat.get("view", 0)
-            coin = stat.get("coin", 0)
-            favorite = stat.get("favorite", 0)
-
-            # Log-scaled popularity (avoids extreme values dominating)
-            popularity = (
-                math.log10(max(view, 1)) * 0.5
-                + math.log10(max(coin, 1) * 10) * 0.25
-                + math.log10(max(favorite, 1) * 5) * 0.25
-            )
-            # Normalize to roughly 0-1 range (assuming max ~10M views)
-            popularity_norm = min(popularity / 10.0, 1.0)
-
-            rerank_norm = hit.get("rerank_score", 0) / max_rerank_score
-
-            # Combined score
-            final_score = (
-                relevance_weight * rerank_norm + popularity_weight * popularity_norm
-            )
-            hit["final_score"] = round(final_score, 6)
-            hit["popularity_score"] = round(popularity_norm, 4)
-
-        # Sort by final score
-        hits[:max_rerank] = sorted(
-            hits[:max_rerank],
-            key=lambda x: x.get("final_score", 0),
-            reverse=True,
-        )
-
-        return hits, perf_info
 
 
 # Singleton instance

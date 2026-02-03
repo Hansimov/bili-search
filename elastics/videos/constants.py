@@ -309,13 +309,14 @@ KNN_TEXT_EMB_FIELD = "text_emb"
 # KNN_K: Number of nearest neighbors to return from each shard
 # Higher values improve recall but increase latency
 # For bit vectors with Hamming distance, larger K is needed for good recall
-KNN_K = 2000  # increased for better recall, rerank needs 2000+ candidates
+# Note: Should be >= KNN_RERANK_MAX_HITS for optimal reranking
+KNN_K = 1000  # Must match KNN_RERANK_MAX_HITS for full reranking
 # KNN_NUM_CANDIDATES: Candidates to consider per shard before selecting top K
 # Should be significantly larger than K for good recall
 # For 2048-bit vectors, more candidates help find relevant items
 # Higher values improve recall but increase latency - ES does internal oversampling
-KNN_NUM_CANDIDATES = 10000  # 5x of K for good bit vector recall
-KNN_TIMEOUT = 10  # increased timeout for larger candidate pool
+KNN_NUM_CANDIDATES = 4000  # 4x of K for good bit vector recall
+KNN_TIMEOUT = 8  # timeout for KNN search
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
 KNN_SIMILARITY_DEFAULT = "hamming"  # for bit vectors, hamming is most efficient
 KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
@@ -332,6 +333,7 @@ KNN_RERANK_ENABLED = True
 # Maximum number of hits to rerank (trade-off between quality and latency)
 # Set to 0 to disable reranking
 # Higher values improve recall at cost of embedding API calls
+# Note: Values over 200 significantly increase latency
 KNN_RERANK_MAX_HITS = 1000
 
 # Boost factors for keyword matching during rerank
