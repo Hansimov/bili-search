@@ -2,15 +2,9 @@ from btok import SentenceCategorizer
 from fastapi.encoders import jsonable_encoder
 from tclogger import logger, logstr, dict_to_str, brk
 
-from elastics.videos.constants import (
-    ELASTIC_VIDEOS_DEV_INDEX,
-    ELASTIC_VIDEOS_PRO_INDEX,
-    ELASTIC_DEV,
-)
-from elastics.videos.searcher import VideoSearcherV1
+from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
-from elastics.videos.splitter import QuerySplitter
 from converters.query.dsl import MultiMatchQueryDSLConstructor
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from converters.query.filter import QueryFilterExtractor
@@ -231,15 +225,6 @@ split_queries = [
     # "我想知道鸣潮的公式是啥意思",
     "原神,启动!是什么梗",
 ]
-
-
-def test_split():
-    splitter = QuerySplitter(ELASTIC_VIDEOS_DEV_INDEX)
-    for query in split_queries:
-        logger.note("> Splitting:", end=" ")
-        logger.file(f"[{query}]")
-        res = splitter.split(query)
-        logger.success(dict_to_str(res, add_quotes=True), indent=2)
 
 
 def test_categorize():
