@@ -878,6 +878,196 @@ def test_json_serialization(explorer: VideoExplorer = None):
     logger.success("\n> JSON serialization test completed!")
 
 
+def test_knn_explore_rerank_debug():
+    """Debug test for KNN explore with rerank (q=vr mode).
+
+    Tests different queries to identify memory/performance issues.
+    """
+    import time
+    import gc
+    import tracemalloc
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Queries to test - some might cause issues
+    test_queries = [
+        # These work fine
+        # "影视飓风 v>100",
+        # "马其顿 v>100",
+        # This causes memory issues
+        "圣甲虫 v>100",
+    ]
+
+    for query in test_queries:
+        logger.note(f"\n{'='*60}")
+        logger.note(f"> Testing q=vr mode with query: [{query}]")
+        logger.note(f"{'='*60}")
+
+        # Start memory tracking
+        gc.collect()
+        tracemalloc.start()
+        start_time = time.perf_counter()
+
+        try:
+            explore_res = explorer.knn_explore(
+                query=query,
+                enable_rerank=True,
+                rerank_max_hits=1000,
+                rank_top_k=50,
+                group_owner_limit=10,
+                verbose=True,
+            )
+
+            end_time = time.perf_counter()
+            current, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            logger.success(f"\n> Query completed!")
+            logger.mesg(f"  Status: {explore_res.get('status', 'N/A')}")
+            logger.mesg(f"  Total time: {end_time - start_time:.2f}s")
+            logger.mesg(f"  Memory current: {current / 1024 / 1024:.2f} MB")
+            logger.mesg(f"  Memory peak: {peak / 1024 / 1024:.2f} MB")
+
+            # Print step timings
+            for step_res in explore_res.get("data", []):
+                stage_name = step_res.get("name", "unknown")
+                output = step_res.get("output", {})
+                if isinstance(output, dict) and "perf" in output:
+                    perf = output["perf"]
+                    logger.hint(f"  {stage_name} perf: {perf}")
+
+        except Exception as e:
+            tracemalloc.stop()
+            logger.warn(f"× Query failed: {type(e).__name__}: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+        # Force garbage collection between queries
+        gc.collect()
+        logger.mesg("  GC collected")
+
+
+def test_rerank_step_by_step():
+    """Step-by-step test of the rerank process to identify bottleneck."""
+    import time
+    import gc
+
+    from converters.embed import get_embed_client, get_reranker
+    from converters.embed.reranker import compute_passage
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    test_query = "圣甲虫 v>100"
+
+    logger.note(f"> Step-by-step rerank test for: [{test_query}]")
+
+    # Step 1: Get query info and filters
+    logger.hint("\n[Step 1] Parse query and get filters...")
+    start = time.perf_counter()
+    query_info, filter_clauses = explorer.get_filters_from_query(
+        query=test_query,
+        extra_filters=[],
+    )
+    logger.mesg(f"  Time: {(time.perf_counter() - start)*1000:.2f}ms")
+
+    words_expr = query_info.get("words_expr", "")
+    keywords_body = query_info.get("keywords_body", [])
+    embed_text = " ".join(keywords_body) if keywords_body else words_expr or test_query
+
+    logger.mesg(f"  words_expr: {words_expr}")
+    logger.mesg(f"  keywords_body: {keywords_body}")
+    logger.mesg(f"  embed_text: {embed_text}")
+    logger.mesg(f"  filter_clauses: {len(filter_clauses)}")
+
+    # Step 2: Get embedding vector
+    logger.hint("\n[Step 2] Get embedding vector...")
+    start = time.perf_counter()
+    embed_client = get_embed_client()
+    query_hex = embed_client.text_to_hex(embed_text)
+    logger.mesg(f"  Time: {(time.perf_counter() - start)*1000:.2f}ms")
+    logger.mesg(f"  Hex length: {len(query_hex) if query_hex else 0}")
+
+    if not query_hex:
+        logger.warn("× Failed to get embedding")
+        return
+
+    query_vector = embed_client.hex_to_byte_array(query_hex)
+    logger.mesg(f"  Vector length: {len(query_vector)}")
+
+    # Step 3: KNN search
+    logger.hint("\n[Step 3] KNN search...")
+    start = time.perf_counter()
+    knn_res = explorer.knn_search(
+        query=test_query,
+        limit=1000,
+        rank_top_k=1000,
+        skip_ranking=True,
+        verbose=False,
+    )
+    logger.mesg(f"  Time: {(time.perf_counter() - start)*1000:.2f}ms")
+
+    knn_hits = knn_res.get("hits", [])
+    logger.mesg(f"  Total hits: {knn_res.get('total_hits', 0)}")
+    logger.mesg(f"  Return hits: {len(knn_hits)}")
+
+    if not knn_hits:
+        logger.warn("× No KNN results")
+        return
+
+    # Step 4: Prepare passages
+    logger.hint("\n[Step 4] Prepare passages...")
+    start = time.perf_counter()
+    valid_passages = []
+    valid_indices = []
+    for i, hit in enumerate(knn_hits):
+        passage = compute_passage(hit)
+        if passage:
+            valid_indices.append(i)
+            valid_passages.append(passage)
+    logger.mesg(f"  Time: {(time.perf_counter() - start)*1000:.2f}ms")
+    logger.mesg(f"  Valid passages: {len(valid_passages)}")
+
+    # Show passage length distribution
+    if valid_passages:
+        lengths = [len(p) for p in valid_passages]
+        logger.mesg(
+            f"  Passage length - min: {min(lengths)}, max: {max(lengths)}, avg: {sum(lengths)/len(lengths):.0f}"
+        )
+        total_chars = sum(lengths)
+        logger.mesg(f"  Total chars: {total_chars}")
+
+    # Step 5: Call rerank API
+    logger.hint("\n[Step 5] Call rerank API (THIS MAY HANG)...")
+    logger.warn("  If this hangs, the issue is in tfmx.rerank()")
+    start = time.perf_counter()
+
+    try:
+        rankings = embed_client.rerank(embed_text, valid_passages)
+        logger.mesg(f"  Time: {(time.perf_counter() - start)*1000:.2f}ms")
+        logger.mesg(f"  Rankings count: {len(rankings) if rankings else 0}")
+
+        if rankings:
+            # Show some sample rankings
+            logger.mesg(f"  First 3 rankings: {rankings[:3]}")
+    except Exception as e:
+        logger.warn(f"× Rerank failed: {type(e).__name__}: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+    # Cleanup
+    del valid_passages
+    del knn_hits
+    gc.collect()
+
+    logger.success("\n> Step-by-step test completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -897,10 +1087,9 @@ if __name__ == "__main__":
     # test_qmod_parser()
     # test_rrf_fusion_fill()
     # test_hybrid_explore_count()
-    explorer = VideoExplorer(ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV)
-    test_filter_only_search(explorer)
-    test_filter_only_vs_regular(explorer)
-    test_filter_only_explore(explorer)
-    test_json_serialization(explorer)
+
+    # Debug tests for memory issues
+    test_knn_explore_rerank_debug()
+    # test_rerank_step_by_step()
 
     # python -m elastics.videos.tests

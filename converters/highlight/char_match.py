@@ -62,8 +62,8 @@ def tokenize_to_units(text: str) -> list[str]:
                 while i < n and text[i].isdigit():
                     i += 1
                 units.append(text[start:i])
-            else:
-                # Collect letters
+            elif char.isalpha():
+                # Collect letters (non-CJK)
                 start = i
                 while (
                     i < n
@@ -72,12 +72,17 @@ def tokenize_to_units(text: str) -> list[str]:
                 ):
                     i += 1
                 units.append(text[start:i])
+            else:
+                # Other alnum chars (e.g., Roman numerals like Ⅱ)
+                # that are neither isdigit nor isalpha
+                # Treat as single unit
+                units.append(char)
+                i += 1
         else:
             # Skip punctuation, whitespace, etc.
             i += 1
 
     return units
-
 
 def merge_adjacent_tags(text: str, tag: str = "hit") -> str:
     """Merge adjacent highlight tags.
@@ -397,8 +402,8 @@ class CharMatchHighlighter:
                     while i < n and text[i].isdigit():
                         i += 1
                     tokens.append((start, i, text[start:i]))
-                else:
-                    # Collect letters
+                elif char.isalpha():
+                    # Collect letters (non-CJK)
                     start = i
                     while (
                         i < n
@@ -407,6 +412,12 @@ class CharMatchHighlighter:
                     ):
                         i += 1
                     tokens.append((start, i, text[start:i]))
+                else:
+                    # Other alnum chars (e.g., Roman numerals like Ⅱ)
+                    # that are neither isdigit nor isalpha
+                    # Treat as single token
+                    tokens.append((i, i + 1, char))
+                    i += 1
             else:
                 # Skip punctuation, whitespace, etc.
                 i += 1

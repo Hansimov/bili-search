@@ -234,7 +234,9 @@ class VideoExplorer(VideoSearcherV2):
         group_res = {}
         first_appear_idx = {}  # Track first appearance index for each author
 
-        for idx, hit in enumerate(search_res.get("hits", [])):
+        hits = search_res.get("hits", [])
+
+        for idx, hit in enumerate(hits):
             name = dict_get(hit, "owner.name", None)
             mid = dict_get(hit, "owner.mid", None)
             pubdate = dict_get(hit, "pubdate") or 0
@@ -293,8 +295,10 @@ class VideoExplorer(VideoSearcherV2):
         # add user faces
         mids = list(group_res.keys())
         user_docs = self.get_user_docs(mids)
+
         for mid, user_doc in user_docs.items():
             group_res[mid]["face"] = user_doc.get("face", "")
+
         return group_res
 
     def is_status_timedout(self, result: dict) -> bool:
@@ -1051,6 +1055,7 @@ class VideoExplorer(VideoSearcherV2):
         }
 
         group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
+
         self.update_step_output(
             group_hits_by_owner_result, step_output=group_res, field="authors"
         )
