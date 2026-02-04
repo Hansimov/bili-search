@@ -38,10 +38,10 @@ class TextEmbedClient:
 
     Example:
         client = TextEmbedClient()
-        
+
         # For KNN search
         hex_vector = client.text_to_hex("游戏视频")
-        
+
         # For reranking (returns similarity scores directly)
         rankings = client.rerank("红警", ["红警攻略", "星际争霸", "红警视频"])
         # rankings: [(1, 0.85), (2, 0.45), (0, 0.92)]
@@ -194,6 +194,7 @@ class TextEmbedClient:
         self,
         query: str,
         passages: list[str],
+        verbose: bool = False,
     ) -> list[tuple[int, float]]:
         """Rerank passages by cosine similarity to query.
 
@@ -203,27 +204,51 @@ class TextEmbedClient:
         Args:
             query: Query text.
             passages: List of passage texts to rank.
+            verbose: If True, log timing details.
 
         Returns:
             List of (rank_position, similarity_score) tuples in passage order.
             rank_position: 0 = best match (highest similarity).
-            
+
         Example:
             rankings = client.rerank("红警", ["红警攻略", "星际争霸", "红警视频"])
             # rankings[0] = (1, 0.85)  # "红警攻略" is rank 1 with score 0.85
-            # rankings[1] = (2, 0.45)  # "星际争霸" is rank 2 with score 0.45  
+            # rankings[1] = (2, 0.45)  # "星际争霸" is rank 2 with score 0.45
             # rankings[2] = (0, 0.92)  # "红警视频" is rank 0 (best) with score 0.92
         """
+        import time
+
         if not query or not passages:
             return []
+
+        t_start = time.perf_counter()
 
         if not self._ensure_initialized():
             return []
 
+        t_init = time.perf_counter()
+
         try:
             # tfmx.rerank returns list[list[tuple[int, float]]]
             # We only have one query, so take the first result
+            if verbose:
+                init_ms = (t_init - t_start) * 1000
+                logger.mesg(
+                    f"  [rerank] ensure_initialized: {init_ms:.2f}ms, "
+                    f"query_len={len(query)}, passages={len(passages)}"
+                )
+
+            t_call_start = time.perf_counter()
             results = self._clients.rerank([query], passages)
+            t_call_end = time.perf_counter()
+
+            if verbose:
+                call_ms = (t_call_end - t_call_start) * 1000
+                total_ms = (t_call_end - t_start) * 1000
+                logger.mesg(
+                    f"  [rerank] API call: {call_ms:.2f}ms, total: {total_ms:.2f}ms"
+                )
+
             return results[0] if results else []
         except Exception as e:
             logger.warn(f"× Failed to rerank: {e}")

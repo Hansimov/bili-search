@@ -312,7 +312,7 @@ class EmbeddingReranker:
         step_start = time.perf_counter()
 
         try:
-            rankings = self.embed_client.rerank(query, valid_passages)
+            rankings = self.embed_client.rerank(query, valid_passages, verbose=verbose)
         finally:
             # Immediately release passage memory after API call
             del valid_passages

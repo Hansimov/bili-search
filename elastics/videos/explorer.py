@@ -712,7 +712,22 @@ class VideoExplorer(VideoSearcherV2):
         step_name = "construct_knn_query"
         logger.hint("> [step 0] KNN query constructing ...")
 
+        # Performance tracking for the entire knn_explore flow
+        import time
+
+        perf_tracker = {
+            "query_parsing_ms": 0,
+            "lsh_embedding_ms": 0,  # Only for non-narrow-filter queries
+            "knn_search_ms": 0,
+            "filter_search_ms": 0,  # Only for narrow-filter queries
+            "rerank_ms": 0,
+            "fetch_docs_ms": 0,
+            "total_ms": 0,
+        }
+        explore_start = time.perf_counter()
+
         # Extract filters and query info
+        step_start = time.perf_counter()
         query_info, filter_clauses = self.get_filters_from_query(
             query=query,
             extra_filters=extra_filters,
@@ -721,13 +736,8 @@ class VideoExplorer(VideoSearcherV2):
         # Check for narrow filters (e.g., user filters) that would cause KNN
         # to return very few results. For such cases, use filter-first approach.
         has_narrow_filters = self.has_narrow_filters(filter_clauses)
-        if has_narrow_filters:
-            logger.hint(
-                "> Narrow filters detected (user/bvid), using filter-first approach",
-                verbose=verbose,
-            )
 
-        # Get query words for embedding
+        # Get query words for embedding (used for reranking even with narrow filters)
         words_expr = query_info.get("words_expr", "")
         keywords_body = query_info.get("keywords_body", [])
 
@@ -736,50 +746,81 @@ class VideoExplorer(VideoSearcherV2):
         else:
             embed_text = words_expr or query
 
-        # Check embed client availability
-        if not self.embed_client.is_available():
-            logger.warn("× Embed client not available, KNN explore cannot proceed")
-            error_result = {
-                "step": step_idx,
-                "name": step_name,
-                "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                "status": "error",
-                "input": {"query": query},
-                "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                "output": {"error": "Embed client not available"},
-                "comment": "TEI服务不可用",
-            }
-            step_results.append(error_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": "error", "data": step_results}
+        perf_tracker["query_parsing_ms"] = round(
+            (time.perf_counter() - step_start) * 1000, 2
+        )
 
-        # Convert query to embedding
-        query_hex = self.embed_client.text_to_hex(embed_text)
-        if not query_hex:
-            logger.warn("× Failed to get embedding for query")
-            error_result = {
-                "step": step_idx,
-                "name": step_name,
-                "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                "status": "error",
-                "input": {"query": query, "embed_text": embed_text},
-                "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                "output": {"error": "Failed to compute embedding"},
-                "comment": "无法计算查询向量",
-            }
-            step_results.append(error_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": "error", "data": step_results}
+        if has_narrow_filters:
+            logger.hint(
+                "> Narrow filters detected (user/bvid), using filter-first approach",
+                verbose=verbose,
+            )
+            logger.hint(
+                "> Skipping LSH embedding (not needed for filter-first + rerank)",
+                verbose=verbose,
+            )
 
-        query_vector = self.embed_client.hex_to_byte_array(query_hex)
+        # For narrow filters, we skip LSH embedding entirely:
+        # - LSH is only needed for ES KNN search
+        # - With narrow filters, we use filter-first approach (dual_sort_filter_search)
+        # - Then rerank directly using tfmx.rerank() for semantic similarity
+        # This optimization saves ~50-100ms per query with narrow filters
+        query_vector = None
+        if not has_narrow_filters:
+            # Check embed client availability (only needed for KNN search)
+            if not self.embed_client.is_available():
+                logger.warn("× Embed client not available, KNN explore cannot proceed")
+                error_result = {
+                    "step": step_idx,
+                    "name": step_name,
+                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                    "status": "error",
+                    "input": {"query": query},
+                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                    "output": {"error": "Embed client not available"},
+                    "comment": "TEI服务不可用",
+                }
+                step_results.append(error_result)
+                logger.exit_quiet(not verbose)
+                return {"query": query, "status": "error", "data": step_results}
+
+            # Convert query to embedding (LSH for KNN search)
+            step_start = time.perf_counter()
+            query_hex = self.embed_client.text_to_hex(embed_text)
+            perf_tracker["lsh_embedding_ms"] = round(
+                (time.perf_counter() - step_start) * 1000, 2
+            )
+
+            if not query_hex:
+                logger.warn("× Failed to get embedding for query")
+                error_result = {
+                    "step": step_idx,
+                    "name": step_name,
+                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                    "status": "error",
+                    "input": {"query": query, "embed_text": embed_text},
+                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                    "output": {"error": "Failed to compute embedding"},
+                    "comment": "无法计算查询向量",
+                }
+                step_results.append(error_result)
+                logger.exit_quiet(not verbose)
+                return {"query": query, "status": "error", "data": step_results}
+
+            query_vector = self.embed_client.hex_to_byte_array(query_hex)
 
         knn_query_info = {
             "embed_text": embed_text,
-            "query_vector_len": len(query_vector),
+            "query_vector_len": len(query_vector) if query_vector else 0,
             "filter_count": len(filter_clauses),
             "filters": filter_clauses[:3] if filter_clauses else [],  # Show first 3
             "qmod": ["vector"],  # vector-only mode
             "narrow_filters": has_narrow_filters,  # Track if using filter-first approach
+            "lsh_skipped": has_narrow_filters,  # Track if LSH was skipped
+            "perf": {
+                "query_parsing_ms": perf_tracker["query_parsing_ms"],
+                "lsh_embedding_ms": perf_tracker["lsh_embedding_ms"],
+            },
         }
 
         knn_query_result = {
@@ -790,7 +831,7 @@ class VideoExplorer(VideoSearcherV2):
             "input": {"query": query, "extra_filters": extra_filters},
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "output": knn_query_info,
-            "comment": "",
+            "comment": "跳过LSH向量(使用过滤优先策略)" if has_narrow_filters else "",
         }
         step_results.append(knn_query_result)
 
@@ -839,6 +880,7 @@ class VideoExplorer(VideoSearcherV2):
             # - 2000 * N most recent videos (by pubdate)
             # - 2000 * N most popular videos (by stat.view)
             # where N = number of owners in filter
+            step_start = time.perf_counter()
             filter_search_res = self.dual_sort_filter_search(
                 query=query,
                 source_fields=knn_source_fields,
@@ -851,9 +893,15 @@ class VideoExplorer(VideoSearcherV2):
                 timeout=KNN_TIMEOUT,
                 verbose=verbose,
             )
+            perf_tracker["filter_search_ms"] = round(
+                (time.perf_counter() - step_start) * 1000, 2
+            )
             # Use filter search results as knn_search_res
             knn_search_res = filter_search_res
             knn_search_res["narrow_filter_used"] = True
+            knn_search_res["perf"] = {
+                "filter_search_ms": perf_tracker["filter_search_ms"]
+            }
             knn_search_result["comment"] = "使用双排序过滤策略(最新+最热)"
 
             # Force enable reranking for narrow filters to compute semantic similarity
@@ -863,6 +911,7 @@ class VideoExplorer(VideoSearcherV2):
                 skip_first_ranking = True
         else:
             # Standard KNN search for broad queries
+            step_start = time.perf_counter()
             knn_search_params = {
                 "query": query,
                 "source_fields": knn_source_fields,
@@ -882,6 +931,10 @@ class VideoExplorer(VideoSearcherV2):
             }
             knn_search_result["input"] = knn_search_params
             knn_search_res = self.knn_search(**knn_search_params)
+            perf_tracker["knn_search_ms"] = round(
+                (time.perf_counter() - step_start) * 1000, 2
+            )
+            knn_search_res["perf"] = {"knn_search_ms": perf_tracker["knn_search_ms"]}
 
         self.update_step_output(knn_search_result, step_output=knn_search_res)
 
@@ -938,7 +991,8 @@ class VideoExplorer(VideoSearcherV2):
                 rerank_keywords = query_info.get("keywords_body", [])
                 rerank_expr_tree = query_info.get("query_expr_tree", None)
 
-                # Perform reranking
+                # Perform reranking with timing
+                step_start = time.perf_counter()
                 reranked_hits, rerank_perf = reranker.rerank(
                     query=embed_text,
                     hits=knn_hits,
@@ -949,6 +1003,9 @@ class VideoExplorer(VideoSearcherV2):
                     max_rerank=rerank_max_hits,
                     score_field="rerank_score",
                     verbose=verbose,
+                )
+                perf_tracker["rerank_ms"] = round(
+                    (time.perf_counter() - step_start) * 1000, 2
                 )
 
                 # Update knn_search_res with reranked hits
@@ -973,7 +1030,7 @@ class VideoExplorer(VideoSearcherV2):
                     "top10_position_changes": position_changes,
                     "original_top3": original_top_bvids[:3],
                     "reranked_top3": reranked_top_bvids[:3],
-                    "perf": rerank_perf,  # Add perf info
+                    "perf": rerank_perf,  # Add detailed perf info from reranker
                 }
 
                 rerank_result = {
@@ -1018,12 +1075,16 @@ class VideoExplorer(VideoSearcherV2):
         del knn_hits
 
         # Use fetch_docs_by_bvids to get full docs without word matching
+        step_start = time.perf_counter()
         full_doc_search_res = self.fetch_docs_by_bvids(
             bvids=bvids,
             add_region_info=True,
             limit=len(bvids),
             timeout=EXPLORE_TIMEOUT,
             verbose=verbose,
+        )
+        perf_tracker["fetch_docs_ms"] = round(
+            (time.perf_counter() - step_start) * 1000, 2
         )
 
         # Merge scores from KNN search (and rerank if performed) into full doc hits
@@ -1130,8 +1191,22 @@ class VideoExplorer(VideoSearcherV2):
         )
         step_results.append(group_hits_by_owner_result)
 
+        # Calculate total time and add performance summary
+        perf_tracker["total_ms"] = round(
+            (time.perf_counter() - explore_start) * 1000, 2
+        )
+
+        # Log performance summary
+        if verbose:
+            logger.mesg(f"  knn_explore perf: {perf_tracker}")
+
         logger.exit_quiet(not verbose)
-        return {"query": query, "status": final_status, "data": step_results}
+        return {
+            "query": query,
+            "status": final_status,
+            "data": step_results,
+            "perf": perf_tracker,  # Add overall performance tracker to result
+        }
 
     def hybrid_explore(
         self,

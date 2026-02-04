@@ -317,10 +317,10 @@ def test_knn_explore():
 
 def test_embed_client():
     """Test embed client functionality."""
-    from converters.embed import TextEmbedSearchClient
+    from converters.embed.embed_client import TextEmbedClient
 
     logger.note("> Testing embed client...")
-    client = TextEmbedSearchClient()
+    client = TextEmbedClient()
 
     if not client.is_available():
         logger.warn("× Embed client not available, skipping test")
@@ -1070,8 +1070,8 @@ def test_rerank_step_by_step():
     import time
     import gc
 
-    from converters.embed import get_embed_client, get_reranker
-    from converters.embed.reranker import compute_passage
+    from converters.embed.embed_client import get_embed_client
+    from converters.embed.reranker import get_reranker, compute_passage
 
     explorer = VideoExplorer(
         index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
@@ -1420,6 +1420,238 @@ def test_user_filter_coverage():
     logger.success("\n> User filter coverage test completed!")
 
 
+def test_vr_performance_with_narrow_filters():
+    """Test q=vr performance with narrow filters (user/bvid).
+
+    This test validates that:
+    1. LSH embedding is SKIPPED for narrow filter queries (saves ~50-100ms)
+    2. Performance tracking is properly captured at each step
+    3. The rerank step timing is captured correctly
+
+    The sample query `a7m3 u=["影视飓风","老师好我叫何同学"] q=vr` should:
+    - Skip LSH (lsh_embedding_ms should be 0)
+    - Use filter-first approach (dual_sort_filter_search)
+    - Rerank with float embeddings for semantic similarity
+    """
+    from tclogger import dict_to_str
+
+    logger.note("> Testing q=vr performance with narrow filters...")
+    logger.note("> This test validates LSH skip optimization for narrow filters")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test queries with narrow filters and q=vr
+    test_queries = [
+        # (query, description, expect_lsh_skip)
+        (
+            'a7m3 u=["影视飓风","老师好我叫何同学"] q=vr',
+            "narrow filter with multiple users",
+            True,
+        ),
+        ('相机 u="影视飓风" q=vr', "narrow filter with single user", True),
+        ("相机 q=vr", "broad query without user filter", False),
+        ('u="红警HBK08" q=vr', "only user filter (no keywords)", True),
+        ("红警08 q=vr", "broad query with keywords", False),
+    ]
+
+    for query, description, expect_lsh_skip in test_queries:
+        logger.hint(f"\n> Test: {description}")
+        logger.mesg(f"  Query: [{query}]")
+        logger.mesg(f"  Expected LSH skip: {expect_lsh_skip}")
+
+        result = explorer.unified_explore(
+            query=query,
+            rank_top_k=100,
+            group_owner_limit=10,
+            verbose=True,
+        )
+
+        status = result.get("status", "unknown")
+        perf = result.get("perf", {})
+
+        logger.mesg(f"  Status: {status}")
+        logger.mesg(f"  Overall perf: {perf}")
+
+        # Check if LSH was skipped for narrow filters
+        lsh_ms = perf.get("lsh_embedding_ms", 0)
+        filter_search_ms = perf.get("filter_search_ms", 0)
+        knn_search_ms = perf.get("knn_search_ms", 0)
+        rerank_ms = perf.get("rerank_ms", 0)
+        total_ms = perf.get("total_ms", 0)
+
+        if expect_lsh_skip:
+            if lsh_ms == 0:
+                logger.success(f"  ✓ LSH correctly skipped (0ms)")
+            else:
+                logger.warn(f"  ✗ LSH should be skipped but took {lsh_ms}ms")
+
+            if filter_search_ms > 0:
+                logger.success(f"  ✓ Filter-first search used ({filter_search_ms}ms)")
+            else:
+                logger.warn(f"  ✗ Filter-first search should be used")
+        else:
+            if lsh_ms > 0:
+                logger.success(f"  ✓ LSH computed as expected ({lsh_ms}ms)")
+            else:
+                logger.warn(f"  ⓘ LSH was 0ms (possibly cached)")
+
+            if knn_search_ms > 0:
+                logger.success(f"  ✓ KNN search used ({knn_search_ms}ms)")
+
+        # Check rerank timing
+        if rerank_ms > 0:
+            logger.mesg(f"  Rerank time: {rerank_ms}ms")
+        else:
+            logger.warn(f"  ⓘ Rerank time not captured or 0ms")
+
+        logger.mesg(f"  Total time: {total_ms}ms")
+
+        # Find the construct_knn_query step to check lsh_skipped flag
+        for step in result.get("data", []):
+            if step.get("name") == "construct_knn_query":
+                output = step.get("output", {})
+                lsh_skipped = output.get("lsh_skipped", False)
+                narrow_filters = output.get("narrow_filters", False)
+
+                if expect_lsh_skip:
+                    if lsh_skipped:
+                        logger.success(f"  ✓ lsh_skipped flag is True")
+                    else:
+                        logger.warn(f"  ✗ lsh_skipped flag should be True")
+
+                if narrow_filters == expect_lsh_skip:
+                    logger.success(
+                        f"  ✓ narrow_filters flag matches expectation: {narrow_filters}"
+                    )
+                else:
+                    logger.warn(
+                        f"  ✗ narrow_filters={narrow_filters}, expected={expect_lsh_skip}"
+                    )
+
+                step_perf = output.get("perf", {})
+                logger.mesg(f"  Step perf: {step_perf}")
+
+            # Check rerank step for detailed timing
+            elif step.get("name") == "rerank":
+                output = step.get("output", {})
+                rerank_perf = output.get("perf", {})
+                reranked_count = output.get("reranked_count", 0)
+
+                logger.mesg(f"  Rerank details:")
+                logger.mesg(f"    - Reranked count: {reranked_count}")
+                logger.mesg(f"    - Detailed perf: {rerank_perf}")
+
+                # Check for detailed timing breakdown
+                if rerank_perf:
+                    passage_prep = rerank_perf.get("passage_prep_ms", 0)
+                    rerank_call = rerank_perf.get("rerank_call_ms", 0)
+                    keyword_scoring = rerank_perf.get("keyword_scoring_ms", 0)
+
+                    logger.mesg(f"    - Passage prep: {passage_prep}ms")
+                    logger.mesg(f"    - Rerank API call: {rerank_call}ms")
+                    logger.mesg(f"    - Keyword scoring: {keyword_scoring}ms")
+
+    logger.success("\n> q=vr performance test completed!")
+
+
+def test_rerank_client_diagnostic():
+    """Diagnostic test to trace exactly where time is spent in rerank calls.
+
+    This test helps identify the 30x performance discrepancy:
+    - Server side: ~659ms for /rerank
+    - Client side: ~19,000ms for rerank_call_ms
+
+    Traces:
+    1. TEIClients initialization time
+    2. First call (cold) vs subsequent calls (warm)
+    3. Detailed timing within each call
+    """
+    import time
+
+    logger.note("> Rerank client diagnostic test...")
+
+    # Step 1: Test TEIClients initialization
+    logger.hint("\n> Step 1: Testing TEIClients initialization time")
+    from configs.envs import TEI_CLIENTS_ENDPOINTS
+
+    logger.mesg(f"  Endpoints: {TEI_CLIENTS_ENDPOINTS}")
+
+    t0 = time.perf_counter()
+    from tfmx import TEIClients
+
+    t1 = time.perf_counter()
+    logger.mesg(f"  Import time: {(t1 - t0) * 1000:.2f}ms")
+
+    t0 = time.perf_counter()
+    clients = TEIClients(endpoints=TEI_CLIENTS_ENDPOINTS)
+    t1 = time.perf_counter()
+    logger.mesg(f"  TEIClients init time: {(t1 - t0) * 1000:.2f}ms")
+
+    # Step 2: Test first rerank call (cold)
+    logger.hint("\n> Step 2: First rerank call (cold)")
+
+    # Create some sample passages
+    passages = [f"这是测试文本 {i}" for i in range(100)]
+    query = "测试查询"
+
+    t0 = time.perf_counter()
+    results = clients.rerank([query], passages)
+    t1 = time.perf_counter()
+    logger.mesg(f"  First rerank call (100 passages): {(t1 - t0) * 1000:.2f}ms")
+    logger.mesg(f"  Results count: {len(results[0]) if results else 0}")
+
+    # Step 3: Test second rerank call (warm)
+    logger.hint("\n> Step 3: Second rerank call (warm)")
+
+    t0 = time.perf_counter()
+    results = clients.rerank([query], passages)
+    t1 = time.perf_counter()
+    logger.mesg(f"  Second rerank call (100 passages): {(t1 - t0) * 1000:.2f}ms")
+
+    # Step 4: Test with more passages (like the real case)
+    logger.hint("\n> Step 4: Larger rerank (1000 passages)")
+
+    passages_large = [
+        f"这是测试文本，包含更多内容用于模拟真实场景 {i}" for i in range(1000)
+    ]
+
+    t0 = time.perf_counter()
+    results = clients.rerank([query], passages_large)
+    t1 = time.perf_counter()
+    logger.mesg(f"  Large rerank call (1000 passages): {(t1 - t0) * 1000:.2f}ms")
+
+    # Step 5: Test with TextEmbedClient wrapper
+    logger.hint("\n> Step 5: Using TextEmbedClient wrapper")
+    from converters.embed.embed_client import TextEmbedClient
+
+    t0 = time.perf_counter()
+    client = TextEmbedClient(lazy_init=False)
+    t1 = time.perf_counter()
+    logger.mesg(f"  TextEmbedClient init (lazy=False): {(t1 - t0) * 1000:.2f}ms")
+
+    t0 = time.perf_counter()
+    rankings = client.rerank(query, passages, verbose=True)
+    t1 = time.perf_counter()
+    logger.mesg(f"  TextEmbedClient.rerank (100 passages): {(t1 - t0) * 1000:.2f}ms")
+
+    # Step 6: Test LSH for comparison
+    logger.hint("\n> Step 6: LSH timing for comparison")
+
+    t0 = time.perf_counter()
+    hex_vec = client.text_to_hex("测试查询")
+    t1 = time.perf_counter()
+    logger.mesg(f"  LSH first call: {(t1 - t0) * 1000:.2f}ms")
+
+    t0 = time.perf_counter()
+    hex_vec = client.text_to_hex("另一个查询")
+    t1 = time.perf_counter()
+    logger.mesg(f"  LSH second call: {(t1 - t0) * 1000:.2f}ms")
+
+    logger.success("\n> Diagnostic test completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -1446,7 +1678,11 @@ if __name__ == "__main__":
 
     # Bug fix tests
     # test_knn_filter_bug()
-    test_highlight_bug()
-    test_user_filter_coverage()
+    # test_highlight_bug()
+    # test_user_filter_coverage()
+
+    # Performance tests
+    test_vr_performance_with_narrow_filters()
+    # test_rerank_client_diagnostic()
 
     # python -m elastics.videos.tests

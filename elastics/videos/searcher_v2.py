@@ -41,7 +41,7 @@ from elastics.videos.constants import HYBRID_RRF_K
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.videos.ranker import VideoHitsRanker
 from elastics.es_logger import get_es_debug_logger
-from converters.embed import TextEmbedSearchClient
+from converters.embed.embed_client import TextEmbedClient
 from converters.dsl.fields.qmod import extract_qmod_from_expr_tree
 
 
@@ -89,10 +89,10 @@ class VideoSearcherV2:
         self._embed_client = None
 
     @property
-    def embed_client(self) -> TextEmbedSearchClient:
+    def embed_client(self) -> TextEmbedClient:
         """Lazy-initialized embed client for KNN search."""
         if self._embed_client is None:
-            self._embed_client = TextEmbedSearchClient(lazy_init=True)
+            self._embed_client = TextEmbedClient(lazy_init=True)
         return self._embed_client
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
