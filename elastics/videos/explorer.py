@@ -827,7 +827,7 @@ class VideoExplorer(VideoSearcherV2):
         }
 
         # For narrow filters (user/bvid filters), use filter-first approach:
-        # 1. Get all docs matching the filter (these are few, e.g., 94 for a user)
+        # 1. Get all docs matching the filter using dual-sort (recent + popular)
         # 2. Always apply reranking to score by semantic similarity
         # This ensures all filtered docs are considered, not just those in global KNN top-k
         if has_narrow_filters:
@@ -835,24 +835,26 @@ class VideoExplorer(VideoSearcherV2):
                 "> Using filter-first approach for narrow filters",
                 verbose=verbose,
             )
-            # Step 1: Get all matching docs using filter-only search
-            filter_search_res = self.filter_only_search(
+            # Use dual-sort search to get comprehensive coverage:
+            # - 2000 * N most recent videos (by pubdate)
+            # - 2000 * N most popular videos (by stat.view)
+            # where N = number of owners in filter
+            filter_search_res = self.dual_sort_filter_search(
                 query=query,
                 source_fields=knn_source_fields,
                 extra_filters=extra_filters,
                 parse_hits=True,
                 add_region_info=False,
                 add_highlights_info=False,
-                rank_method="heads",  # Just get all, no ranking yet
-                limit=most_relevant_limit,  # Get up to limit docs
-                rank_top_k=most_relevant_limit,
+                per_owner_recent_limit=2000,
+                per_owner_popular_limit=2000,
                 timeout=KNN_TIMEOUT,
                 verbose=verbose,
             )
             # Use filter search results as knn_search_res
             knn_search_res = filter_search_res
             knn_search_res["narrow_filter_used"] = True
-            knn_search_result["comment"] = "使用过滤优先策略(用户/BV号过滤)"
+            knn_search_result["comment"] = "使用双排序过滤策略(最新+最热)"
 
             # Force enable reranking for narrow filters to compute semantic similarity
             if not enable_rerank:
@@ -1000,8 +1002,16 @@ class VideoExplorer(VideoSearcherV2):
                 rerank_info = {"skipped": True, "reason": "Reranker not available"}
 
         # Step 3: Fetch full docs for ranked results (using reranked order if available)
-        # Only fetch top_k docs to reduce memory and network overhead
-        top_k_hits = knn_hits[:rank_top_k]
+        # For narrow filters (user/bvid), return ALL matching docs, not just rank_top_k
+        # This ensures the full filtered set is available for semantic exploration
+        if knn_search_res.get("narrow_filter_used"):
+            # For narrow filters, use all returned hits (limited by dual_sort limits)
+            fetch_limit = len(knn_hits)
+        else:
+            # For broad queries, limit to rank_top_k
+            fetch_limit = min(len(knn_hits), rank_top_k)
+
+        top_k_hits = knn_hits[:fetch_limit]
         bvids = [hit.get("bvid", None) for hit in top_k_hits]
 
         # Clear knn_hits to release memory early (we only need top_k now)
@@ -1039,6 +1049,12 @@ class VideoExplorer(VideoSearcherV2):
             tag="hit",
         )
 
+        # Determine the limit for ranking
+        # For narrow filters (user/bvid), don't limit - return all matching docs
+        # For broad queries, limit to rank_top_k
+        is_narrow_filter = knn_search_res.get("narrow_filter_used", False)
+        ranking_top_k = len(full_hits) if is_narrow_filter else rank_top_k
+
         # Re-apply ranking after merging scores
         # If rerank was performed, use rerank_score; otherwise use original score
         if rerank_performed:
@@ -1051,22 +1067,29 @@ class VideoExplorer(VideoSearcherV2):
             # For KNN explore without rerank, apply ranking method
             if rank_method == "relevance":
                 full_doc_search_res = self.hit_ranker.relevance_rank(
-                    full_doc_search_res, top_k=rank_top_k
+                    full_doc_search_res, top_k=ranking_top_k
                 )
             elif rank_method == "rrf":
                 full_doc_search_res = self.hit_ranker.rrf_rank(
-                    full_doc_search_res, top_k=rank_top_k
+                    full_doc_search_res, top_k=ranking_top_k
                 )
             elif rank_method == "stats":
                 full_doc_search_res = self.hit_ranker.stats_rank(
-                    full_doc_search_res, top_k=rank_top_k
+                    full_doc_search_res, top_k=ranking_top_k
                 )
             else:  # "heads"
                 full_doc_search_res = self.hit_ranker.heads(
-                    full_doc_search_res, top_k=rank_top_k
+                    full_doc_search_res, top_k=ranking_top_k
                 )
 
         full_doc_search_res["total_hits"] = knn_search_res.get("total_hits", 0)
+
+        # Preserve filter-first approach info from knn_search_res
+        if knn_search_res.get("narrow_filter_used"):
+            full_doc_search_res["narrow_filter_used"] = True
+        if knn_search_res.get("dual_sort_used"):
+            full_doc_search_res["dual_sort_used"] = True
+            full_doc_search_res["dual_sort_info"] = knn_search_res.get("dual_sort_info")
 
         # Update the knn_search step output with final results
         # Note: We update the existing step rather than creating a new one

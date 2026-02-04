@@ -507,6 +507,252 @@ class VideoSearcherV2:
         logger.exit_quiet(not verbose)
         return parse_res
 
+    def get_narrow_filter_owner_count(self, filter_clauses: list[dict]) -> int:
+        """Count the number of distinct owners in narrow filter clauses.
+
+        For user filters like `u="A|B|C"`, this returns 3.
+        For single user like `u="A"`, this returns 1.
+
+        Args:
+            filter_clauses: List of filter clause dicts.
+
+        Returns:
+            Number of distinct owners, or 0 if no owner filter.
+        """
+        for clause in filter_clauses:
+            # Check for terms filter (multiple owners)
+            if "terms" in clause:
+                field = next(iter(clause["terms"]), None)
+                if field in ["owner.name.keyword", "owner.mid"]:
+                    values = clause["terms"][field]
+                    return len(values) if isinstance(values, list) else 1
+            # Check for term filter (single owner)
+            if "term" in clause:
+                field = next(iter(clause["term"]), None)
+                if field in ["owner.name.keyword", "owner.mid"]:
+                    return 1
+            # Check for bool.filter containing owner filters
+            if "bool" in clause:
+                bool_filter = clause["bool"].get("filter")
+                if bool_filter:
+                    if isinstance(bool_filter, list):
+                        count = self.get_narrow_filter_owner_count(bool_filter)
+                        if count > 0:
+                            return count
+                    elif isinstance(bool_filter, dict):
+                        count = self.get_narrow_filter_owner_count([bool_filter])
+                        if count > 0:
+                            return count
+        return 0
+
+    def dual_sort_filter_search(
+        self,
+        query: str,
+        source_fields: list[str] = SOURCE_FIELDS,
+        extra_filters: list[dict] = [],
+        parse_hits: bool = True,
+        add_region_info: bool = True,
+        add_highlights_info: bool = False,
+        per_owner_recent_limit: int = 2000,
+        per_owner_popular_limit: int = 2000,
+        timeout: Union[int, float, str] = SEARCH_TIMEOUT,
+        verbose: bool = False,
+    ) -> dict:
+        """Search using dual-sort approach for user/owner filters.
+
+        This method is designed for narrow filters (user/bvid) where we want
+        comprehensive coverage. It fetches:
+        1. Top N most recent videos (sorted by pubdate desc)
+        2. Top N most popular videos (sorted by stat.view desc)
+        Then merges and deduplicates the results.
+
+        This ensures we get both recent content and popular content from the
+        filtered set, providing better coverage for semantic search.
+
+        Args:
+            query: Query string (used to extract filters).
+            source_fields: Fields to include in results.
+            extra_filters: Additional filter clauses.
+            parse_hits: Whether to parse hits.
+            add_region_info: Whether to add region info.
+            add_highlights_info: Whether to add highlight info.
+            per_owner_recent_limit: Max recent videos per owner (default 2000).
+            per_owner_popular_limit: Max popular videos per owner (default 2000).
+            timeout: Search timeout.
+            verbose: Enable verbose logging.
+
+        Returns:
+            Search results dict with deduplicated hits from both sorts.
+        """
+        logger.enter_quiet(not verbose)
+
+        # Extract filters from query
+        query_info, filter_clauses = self.get_filters_from_query(
+            query=query,
+            extra_filters=extra_filters,
+        )
+
+        # Count number of owners in filter to scale the limits
+        owner_count = self.get_narrow_filter_owner_count(filter_clauses)
+        owner_count = max(owner_count, 1)  # At least 1
+
+        recent_limit = per_owner_recent_limit * owner_count
+        popular_limit = per_owner_popular_limit * owner_count
+
+        logger.hint(
+            f"> Dual-sort filter search (owners={owner_count}, "
+            f"recent={recent_limit}, popular={popular_limit})",
+            verbose=verbose,
+        )
+
+        # Build base query
+        if filter_clauses:
+            base_query = {"bool": {"filter": filter_clauses}}
+        else:
+            base_query = {"match_all": {}}
+
+        # Search 1: Most recent (by pubdate desc)
+        search_body_recent = {
+            "query": base_query,
+            "_source": source_fields,
+            "size": recent_limit,
+            "track_total_hits": True,
+            "sort": [{"pubdate": {"order": "desc"}}],
+        }
+        search_body_recent = set_timeout(search_body_recent, timeout=timeout)
+
+        logger.mesg("> Fetching most recent videos...", verbose=verbose)
+        res_recent = self.submit_to_es(search_body_recent, context="dual_sort_recent")
+
+        # Extract hits from recent search
+        recent_hits_raw = res_recent.get("hits", {}).get("hits", [])
+
+        # Get total hits count
+        total_hits = res_recent.get("hits", {}).get("total", {})
+        if isinstance(total_hits, dict):
+            total_hits = total_hits.get("value", 0)
+
+        # Optimization: If total docs <= recent_limit, we already have all docs
+        # No need to do the second (popular) query
+        if total_hits <= recent_limit:
+            # All docs already fetched, skip popular query
+            logger.mesg(
+                f"  Recent: {len(recent_hits_raw)}, Total: {total_hits} "
+                f"(all docs fetched, skipping popular query)",
+                verbose=verbose,
+            )
+            popular_hits_raw = []
+            merged_hits_raw = recent_hits_raw
+            skipped_popular = True
+        else:
+            # Need both recent and popular queries to get comprehensive coverage
+            # Search 2: Most popular (by stat.view desc)
+            search_body_popular = {
+                "query": base_query,
+                "_source": source_fields,
+                "size": popular_limit,
+                "track_total_hits": True,
+                "sort": [{"stat.view": {"order": "desc"}}],
+            }
+            search_body_popular = set_timeout(search_body_popular, timeout=timeout)
+
+            logger.mesg("> Fetching most popular videos...", verbose=verbose)
+            res_popular = self.submit_to_es(
+                search_body_popular, context="dual_sort_popular"
+            )
+
+            popular_hits_raw = res_popular.get("hits", {}).get("hits", [])
+
+            logger.mesg(
+                f"  Recent: {len(recent_hits_raw)}, Popular: {len(popular_hits_raw)}, "
+                f"Total in index: {total_hits}",
+                verbose=verbose,
+            )
+
+            # Merge and deduplicate by bvid
+            seen_bvids = set()
+            merged_hits_raw = []
+
+            # Add recent hits first (preserving recency priority)
+            for hit in recent_hits_raw:
+                bvid = hit.get("_source", {}).get("bvid")
+                if bvid and bvid not in seen_bvids:
+                    seen_bvids.add(bvid)
+                    merged_hits_raw.append(hit)
+
+            # Add popular hits that aren't already included
+            for hit in popular_hits_raw:
+                bvid = hit.get("_source", {}).get("bvid")
+                if bvid and bvid not in seen_bvids:
+                    seen_bvids.add(bvid)
+                    merged_hits_raw.append(hit)
+
+            skipped_popular = False
+
+        logger.mesg(
+            f"  After dedup: {len(merged_hits_raw)} unique videos",
+            verbose=verbose,
+        )
+
+        # Build merged result dict in ES response format
+        took_time = res_recent.get("took", 0)
+        timed_out = res_recent.get("timed_out", False)
+        if not skipped_popular:
+            took_time += res_popular.get("took", 0)
+            timed_out = timed_out or res_popular.get("timed_out", False)
+
+        merged_res_dict = {
+            "took": took_time,
+            "timed_out": timed_out,
+            "hits": {
+                "total": {"value": total_hits, "relation": "eq"},
+                "hits": merged_hits_raw,
+            },
+        }
+
+        # Parse results
+        if parse_hits:
+            parse_res = self.hit_parser.parse(
+                query_info=query_info,
+                match_fields=[],
+                res_dict=merged_res_dict,
+                request_type="search",
+                drop_no_highlights=False,
+                add_region_info=add_region_info,
+                add_highlights_info=add_highlights_info,
+                match_type="cross_fields",
+                match_operator="or",
+                detail_level=-1,
+                limit=len(merged_hits_raw),
+                verbose=verbose,
+            )
+            # Use heads since there's no relevance score
+            parse_res = self.hit_ranker.heads(parse_res, top_k=len(merged_hits_raw))
+        else:
+            parse_res = merged_res_dict
+
+        parse_res["query_info"] = query_info
+        parse_res["rewrite_info"] = {}
+        parse_res["filter_only"] = True
+        parse_res["dual_sort_used"] = (
+            not skipped_popular
+        )  # Only true if both queries ran
+        parse_res["dual_sort_info"] = {
+            "owner_count": owner_count,
+            "recent_limit": recent_limit,
+            "popular_limit": popular_limit,
+            "recent_fetched": len(recent_hits_raw),
+            "popular_fetched": len(popular_hits_raw),
+            "popular_skipped": skipped_popular,
+            "merged_unique": len(merged_hits_raw),
+        }
+
+        # Remove non-jsonable items
+        parse_res = self.post_process_return_res(parse_res)
+
+        logger.exit_quiet(not verbose)
+        return parse_res
+
     def has_search_keywords(self, query: str) -> bool:
         """Check if query contains actual search keywords (not just filters).
 

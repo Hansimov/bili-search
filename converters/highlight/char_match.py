@@ -84,6 +84,7 @@ def tokenize_to_units(text: str) -> list[str]:
 
     return units
 
+
 def merge_adjacent_tags(text: str, tag: str = "hit") -> str:
     """Merge adjacent highlight tags.
 
@@ -316,6 +317,26 @@ class CharMatchHighlighter:
                     if token_lower == unit_cmp:
                         matches.append((token_start, token_end))
                         break
+
+                    # For short keywords (< min_alpha_match), allow matching if keyword
+                    # is a complete prefix or suffix of the text token
+                    # e.g., keyword "go" (2 chars) matches text "gopro"
+                    unit_len = len(unit_cmp)
+                    if unit_len < min_alpha_match:
+                        # Short keyword: check if keyword is complete prefix of token
+                        if token_lower.startswith(unit_cmp):
+                            matches.append((token_start, token_start + unit_len))
+                            break
+                        # Short keyword: check if keyword is complete suffix of token
+                        if token_lower.endswith(unit_cmp):
+                            matches.append((token_end - unit_len, token_end))
+                            break
+                        # Also check if token is complete prefix/suffix of keyword
+                        # e.g., text "go" matches keyword "gopro"
+                        if unit_cmp.startswith(token_lower):
+                            matches.append((token_start, token_end))
+                            break
+                        continue  # Skip long-keyword prefix/suffix matching for short keywords
 
                     # Prefix match: "mathematical" matches "mathematics"
                     # Common prefix is "mathematic" (10 chars)

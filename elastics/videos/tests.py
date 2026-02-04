@@ -1183,6 +1183,243 @@ def test_rerank_step_by_step():
     logger.success("\n> Step-by-step test completed!")
 
 
+def test_highlight_bug():
+    """Test for the highlighting bug with short keywords.
+
+    Bug description:
+    - Query `go u="影视飓风" q=vr` returns results containing "GoPro"
+    - But "GoPro" is not highlighted with the "go" keyword
+
+    Root cause:
+    - The CharMatchHighlighter uses min_alpha_match=3 by default
+    - For keyword "go" (2 chars), prefix match with "gopro" only matches 2 chars
+    - 2 < 3 (min_alpha_match), so no match is found
+
+    Expected behavior:
+    - If keyword is shorter than min_alpha_match, and the keyword is a complete
+      prefix of the text token, it should still match
+    """
+    from tclogger import dict_to_str
+    from converters.highlight.char_match import CharMatchHighlighter, tokenize_to_units
+
+    logger.note("> Testing highlight bug with short keywords...")
+
+    highlighter = CharMatchHighlighter()
+
+    # Test 1: Short keyword "go" should match "GoPro"
+    test_cases = [
+        # (text, keywords_query, expected_contains, description)
+        ("GoPro运动相机", "go", "<hit>Go</hit>", "short keyword 'go' prefix match"),
+        ("GoPro Hero 12", ["go"], "<hit>Go</hit>", "list input with short keyword"),
+        ("gopro测试", "GO", "<hit>go</hit>", "case insensitive match"),
+        ("一个好相机GoPro", "go", "<hit>Go</hit>", "match in middle of text"),
+        ("hello world", "he", "<hit>he</hit>", "'he' should match 'hello'"),
+        (
+            "testing",
+            "test",
+            "<hit>test</hit>",
+            "'test' should match 'testing' (4 chars)",
+        ),
+    ]
+
+    passed = 0
+    failed = 0
+
+    for text, keywords, expected, description in test_cases:
+        result = highlighter.highlight(text, keywords)
+        if expected in result:
+            logger.success(f"  ✓ {description}")
+            logger.mesg(f"    Input: [{text}] + keywords={keywords}")
+            logger.mesg(f"    Output: {result}")
+            passed += 1
+        else:
+            logger.warn(f"  ✗ {description}")
+            logger.mesg(f"    Input: [{text}] + keywords={keywords}")
+            logger.mesg(f"    Output: {result}")
+            logger.mesg(f"    Expected to contain: {expected}")
+            failed += 1
+
+    # Test 2: Integrated test with knn_explore
+    logger.hint('\n> Testing with knn_explore (go u="影视飓风" q=vr)...')
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    query = 'go u="影视飓风" q=vr'
+    res = explorer.unified_explore(query, rank_top_k=50, verbose=False)
+
+    # Find the group_hits_by_owner step to check highlights
+    group_step = next(
+        (s for s in res.get("data", []) if s["name"] == "group_hits_by_owner"),
+        None,
+    )
+
+    if group_step:
+        authors = group_step.get("output", {}).get("authors", {})
+        gopro_found = False
+        gopro_highlighted = False
+
+        for author_name, author_data in authors.items():
+            hits = author_data.get("hits", [])
+            for hit in hits:
+                title = hit.get("title", "")
+                # Check if GoPro is in title
+                if "gopro" in title.lower() or "go pro" in title.lower():
+                    gopro_found = True
+                    # Check if it's highlighted
+                    highlights = hit.get("highlights", {})
+                    merged = highlights.get("merged", {})
+                    title_highlight = merged.get("title", [""])[0]
+                    if "<hit>" in title_highlight.lower():
+                        gopro_highlighted = True
+                        logger.mesg(f"    Found highlighted: {title_highlight}")
+                    else:
+                        logger.mesg(f"    Found but NOT highlighted: {title}")
+
+        if gopro_found:
+            if gopro_highlighted:
+                logger.success("  ✓ GoPro found and highlighted correctly!")
+                passed += 1
+            else:
+                logger.warn("  ✗ GoPro found but NOT highlighted (BUG!)")
+                failed += 1
+        else:
+            logger.hint("  ⓘ No GoPro videos found in results (can't verify)")
+    else:
+        logger.warn("  ✗ No group_hits_by_owner step found")
+        failed += 1
+
+    # Summary
+    logger.hint(f"\n> Summary: {passed} passed, {failed} failed")
+    if failed == 0:
+        logger.success("  ✓ All highlight tests passed!")
+    else:
+        logger.warn(f"  ✗ {failed} tests failed - bug needs fixing")
+
+
+def test_user_filter_coverage():
+    """Test for user filter coverage with dual-sort approach.
+
+    User request:
+    - For u=... filters, return 2000*N most recent (by pubdate) AND
+      2000*N highest views (by stat.view), where N = number of owners
+    - Deduplicate results since there's overlap
+
+    This test verifies that the filter-first approach returns enough videos
+    from a user to provide good coverage for semantic search.
+
+    Note: Dual-sort is only used when there ARE keywords in the query,
+    because that's when KNN search would be used and could miss documents.
+    """
+    from tclogger import dict_to_str
+
+    logger.note("> Testing user filter coverage with dual-sort approach...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test with a query that has KEYWORDS + user filter
+    # This triggers KNN search which uses dual_sort_filter_search for narrow filters
+    query = 'go u="影视飓风" q=vr'
+    logger.hint(f"\nTest query WITH keywords: [{query}]")
+
+    res = explorer.unified_explore(query, rank_top_k=100, verbose=True)
+
+    # Find knn_search step
+    knn_step = next(
+        (s for s in res.get("data", []) if s["name"] == "knn_search"),
+        None,
+    )
+
+    if knn_step:
+        output = knn_step.get("output", {})
+        total_hits = output.get("total_hits", 0)
+        return_hits = output.get("return_hits", 0)
+        narrow_filter_used = output.get("narrow_filter_used", False)
+        dual_sort_used = output.get("dual_sort_used", False)
+        dual_sort_info = output.get("dual_sort_info", {})
+
+        logger.mesg(f"  total_hits: {total_hits}")
+        logger.mesg(f"  return_hits: {return_hits}")
+        logger.mesg(f"  narrow_filter_used: {narrow_filter_used}")
+        logger.mesg(f"  dual_sort_used: {dual_sort_used}")
+        if dual_sort_info:
+            logger.mesg(f"  dual_sort_info: {dual_sort_info}")
+            # The real coverage is merged_unique / total_hits
+            merged_unique = dual_sort_info.get("merged_unique", 0)
+            popular_skipped = dual_sort_info.get("popular_skipped", False)
+            if total_hits > 0:
+                fetch_coverage = merged_unique / total_hits * 100
+                logger.mesg(
+                    f"  fetch_coverage: {fetch_coverage:.1f}% ({merged_unique}/{total_hits})"
+                )
+                if popular_skipped:
+                    logger.hint("  ⓘ Popular query skipped (all docs from recent)")
+                if fetch_coverage >= 90:
+                    logger.success(f"  ✓ Good fetch coverage ({fetch_coverage:.1f}%)")
+                elif fetch_coverage >= 50:
+                    logger.hint(f"  ⓘ Medium fetch coverage ({fetch_coverage:.1f}%)")
+                else:
+                    logger.warn(f"  ✗ Low fetch coverage ({fetch_coverage:.1f}%)")
+
+        if total_hits > 0:
+            # For narrow filters, return_hits should equal total_hits (no rank_top_k limit)
+            coverage = return_hits / total_hits * 100
+            if narrow_filter_used:
+                logger.mesg(
+                    f"  return_coverage: {coverage:.1f}% ({return_hits}/{total_hits})"
+                )
+                if return_hits == total_hits:
+                    logger.success(
+                        f"  ✓ All {total_hits} docs returned (no rank_top_k limit)"
+                    )
+                else:
+                    logger.warn(f"  ✗ Expected {total_hits} docs, got {return_hits}")
+            else:
+                logger.mesg(f"  display_coverage: {coverage:.1f}% (rank_top_k limited)")
+    else:
+        logger.warn("  ✗ No knn_search step found")
+
+    # Test with multiple users (also needs keywords to trigger KNN + dual-sort)
+    # Note: Use comma separator for multiple users in DSL, not pipe (|)
+    query2 = "相机 u=(影视飓风,老师好我叫何同学) q=vr"
+    logger.hint(f"\nTest query with multiple users: [{query2}]")
+
+    res2 = explorer.unified_explore(query2, rank_top_k=100, verbose=False)
+
+    knn_step2 = next(
+        (s for s in res2.get("data", []) if s["name"] == "knn_search"),
+        None,
+    )
+
+    if knn_step2:
+        output2 = knn_step2.get("output", {})
+        total_hits2 = output2.get("total_hits", 0)
+        return_hits2 = output2.get("return_hits", 0)
+        dual_sort_info2 = output2.get("dual_sort_info", {})
+        narrow_filter_used2 = output2.get("narrow_filter_used", False)
+        logger.mesg(f"  total_hits: {total_hits2}")
+        logger.mesg(f"  return_hits: {return_hits2}")
+        if dual_sort_info2:
+            logger.mesg(f"  dual_sort_info: {dual_sort_info2}")
+            owner_count = dual_sort_info2.get("owner_count", 0)
+            if owner_count == 2:
+                logger.success(f"  ✓ Correctly detected 2 owners, limits scaled")
+            else:
+                logger.warn(f"  ✗ Expected 2 owners, got {owner_count}")
+        # Verify all docs returned
+        if narrow_filter_used2 and return_hits2 == total_hits2:
+            logger.success(f"  ✓ All {total_hits2} docs returned for multi-user query")
+        elif narrow_filter_used2:
+            logger.warn(f"  ✗ Expected {total_hits2} docs, got {return_hits2}")
+    else:
+        logger.warn("  ✗ No knn_search step found for multi-user query")
+
+    logger.success("\n> User filter coverage test completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -1207,7 +1444,9 @@ if __name__ == "__main__":
     # test_knn_explore_rerank_debug()
     # test_rerank_step_by_step()
 
-    # Bug fix test
-    test_knn_filter_bug()
+    # Bug fix tests
+    # test_knn_filter_bug()
+    test_highlight_bug()
+    test_user_filter_coverage()
 
     # python -m elastics.videos.tests
