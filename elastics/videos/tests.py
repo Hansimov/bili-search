@@ -878,6 +878,121 @@ def test_json_serialization(explorer: VideoExplorer = None):
     logger.success("\n> JSON serialization test completed!")
 
 
+def test_knn_filter_bug():
+    """Test for the KNN filter bug reported by user.
+
+    Bug description:
+    - Query `u="红警HBK08" q=vr` returns 94 docs (all docs from user "红警HBK08")
+    - Query `一小块地 u="红警HBK08" q=vr` returns only 3 docs regardless of keywords
+
+    Root cause analysis:
+    When KNN search is done with filters, ES returns docs that are both:
+    1. Within the top-k nearest neighbors to the query vector
+    2. Match the filter criteria
+
+    If a user has 94 documents but only 3 are in the global top-k nearest neighbors
+    to the keyword embedding, only 3 are returned.
+
+    Solution:
+    For narrow filters (small result set), we should:
+    1. First fetch all matching doc IDs using filter-only search
+    2. Then compute vector similarity within that filtered set
+    """
+    from tclogger import dict_to_str
+
+    logger.note("> Testing KNN filter bug...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test 1: Filter only (no keywords) - should return all 94 docs
+    query1 = 'u="红警HBK08" q=vr'
+    logger.hint(f"\nTest 1: Filter only - [{query1}]")
+    res1 = explorer.unified_explore(query1, rank_top_k=100, verbose=False)
+    step1 = next(
+        (
+            s
+            for s in res1.get("data", [])
+            if s["name"] in ["knn_search", "most_relevant_search"]
+        ),
+        None,
+    )
+    if step1:
+        hits1 = step1.get("output", {}).get("return_hits", 0)
+        total1 = step1.get("output", {}).get("total_hits", 0)
+        filter_only1 = step1.get("output", {}).get("filter_only", False)
+        logger.mesg(
+            f"  total_hits={total1}, return_hits={hits1}, filter_only={filter_only1}"
+        )
+    else:
+        logger.warn("  No search step found")
+        hits1 = 0
+        total1 = 0
+
+    # Test 2: With keywords - currently returns only 3 docs (BUG)
+    query2 = '一小块地 u="红警HBK08" q=vr'
+    logger.hint(f"\nTest 2: With keywords - [{query2}]")
+    res2 = explorer.unified_explore(query2, rank_top_k=100, verbose=True)
+    step2 = next(
+        (
+            s
+            for s in res2.get("data", [])
+            if s["name"] in ["knn_search", "most_relevant_search"]
+        ),
+        None,
+    )
+    if step2:
+        hits2 = step2.get("output", {}).get("return_hits", 0)
+        total2 = step2.get("output", {}).get("total_hits", 0)
+        filter_only2 = step2.get("output", {}).get("filter_only", False)
+        logger.mesg(
+            f"  total_hits={total2}, return_hits={hits2}, filter_only={filter_only2}"
+        )
+    else:
+        logger.warn("  No search step found")
+        hits2 = 0
+        total2 = 0
+
+    # Test 3: With different keywords - should also return 3 docs if bug exists
+    query3 = '红警08 u="红警HBK08" q=vr'
+    logger.hint(f"\nTest 3: Different keywords - [{query3}]")
+    res3 = explorer.unified_explore(query3, rank_top_k=100, verbose=False)
+    step3 = next(
+        (
+            s
+            for s in res3.get("data", [])
+            if s["name"] in ["knn_search", "most_relevant_search"]
+        ),
+        None,
+    )
+    if step3:
+        hits3 = step3.get("output", {}).get("return_hits", 0)
+        total3 = step3.get("output", {}).get("total_hits", 0)
+        logger.mesg(f"  total_hits={total3}, return_hits={hits3}")
+    else:
+        logger.warn("  No search step found")
+        hits3 = 0
+        total3 = 0
+
+    # Summary and verification
+    logger.hint("\n> Summary:")
+    logger.mesg(f"  Filter only (no keywords): {total1} total hits, {hits1} returned")
+    logger.mesg(f"  With keywords '一小块地': {total2} total hits, {hits2} returned")
+    logger.mesg(f"  With keywords '红警08': {total3} total hits, {hits3} returned")
+
+    # The bug is confirmed if:
+    # 1. Filter only returns many docs (94+)
+    # 2. With keywords returns very few (3)
+    if total1 > 10 and total2 <= 10 and total1 != total2:
+        logger.warn("  × BUG CONFIRMED: Keywords cause significant result reduction")
+        logger.warn(f"    Expected: ~{total1} hits, Got: {total2} hits")
+    elif total1 > 10 and total2 > 10:
+        logger.success("  ✓ Bug appears to be fixed!")
+    else:
+        logger.mesg("  ⓘ Inconclusive - user may not have enough docs")
+
+
 def test_knn_explore_rerank_debug():
     """Debug test for KNN explore with rerank (q=vr mode).
 
@@ -1088,8 +1203,11 @@ if __name__ == "__main__":
     # test_rrf_fusion_fill()
     # test_hybrid_explore_count()
 
-    # Debug tests for memory issues
-    test_knn_explore_rerank_debug()
+    # Debug tests
+    # test_knn_explore_rerank_debug()
     # test_rerank_step_by_step()
+
+    # Bug fix test
+    test_knn_filter_bug()
 
     # python -m elastics.videos.tests

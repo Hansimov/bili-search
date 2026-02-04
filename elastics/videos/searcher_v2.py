@@ -958,6 +958,49 @@ class VideoSearcherV2:
         all_filters = filter_clauses + list(extra_filters)
         return query_info, all_filters
 
+    def has_narrow_filters(self, filter_clauses: list[dict]) -> bool:
+        """Check if filter clauses contain narrow filters that severely limit results.
+
+        Narrow filters include:
+        - User filters (owner.name.keyword, owner.mid)
+        - Specific bvid/aid filters
+
+        When narrow filters are present, approximate KNN with filter may return
+        very few results because it searches globally first then filters.
+        For such cases, we should use a different approach (filter first, then KNN).
+
+        Args:
+            filter_clauses: List of filter clause dicts.
+
+        Returns:
+            True if narrow filters are detected.
+        """
+        NARROW_FILTER_FIELDS = [
+            "owner.name.keyword",
+            "owner.mid",
+            "bvid.keyword",
+            "aid",
+        ]
+
+        for clause in filter_clauses:
+            # Check for term/terms filters
+            for filter_type in ["term", "terms"]:
+                if filter_type in clause:
+                    field = next(iter(clause[filter_type]), None)
+                    if field in NARROW_FILTER_FIELDS:
+                        return True
+            # Check for bool.filter containing narrow filters
+            if "bool" in clause:
+                bool_filter = clause["bool"].get("filter")
+                if bool_filter:
+                    if isinstance(bool_filter, list):
+                        if self.has_narrow_filters(bool_filter):
+                            return True
+                    elif isinstance(bool_filter, dict):
+                        if self.has_narrow_filters([bool_filter]):
+                            return True
+        return False
+
     def construct_knn_search_body(
         self,
         query_vector: list[int],
@@ -1064,6 +1107,15 @@ class VideoSearcherV2:
             extra_filters=extra_filters,
         )
 
+        # Check for narrow filters (user/bvid filters) that would cause
+        # approximate KNN to return very few results
+        has_narrow_filter = self.has_narrow_filters(filter_clauses)
+        if has_narrow_filter:
+            logger.hint(
+                "> Narrow filters detected in KNN search, will use higher k",
+                verbose=verbose,
+            )
+
         # Get query words for embedding
         words_expr = query_info.get("words_expr", "")
         keywords_body = query_info.get("keywords_body", [])
@@ -1125,6 +1177,21 @@ class VideoSearcherV2:
 
         # Convert hex string to byte array for ES
         query_vector = self.embed_client.hex_to_byte_array(query_hex)
+
+        # For narrow filters (user/bvid), increase k and num_candidates significantly
+        # This ensures ES brute-forces through all matching documents
+        # rather than finding top-k globally then filtering
+        if has_narrow_filter:
+            # Use very high values - ES will automatically switch to brute-force
+            # when filter reduces the set to less than num_candidates
+            k = max(k, 10000)
+            num_candidates = max(num_candidates, 50000)
+            # Also increase limit to get more results
+            limit = max(limit, k)
+            logger.hint(
+                f"> Boosted KNN params for narrow filter: k={k}, num_candidates={num_candidates}",
+                verbose=verbose,
+            )
 
         # Construct KNN search body
         search_body = self.construct_knn_search_body(

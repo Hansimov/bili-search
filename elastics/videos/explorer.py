@@ -718,6 +718,15 @@ class VideoExplorer(VideoSearcherV2):
             extra_filters=extra_filters,
         )
 
+        # Check for narrow filters (e.g., user filters) that would cause KNN
+        # to return very few results. For such cases, use filter-first approach.
+        has_narrow_filters = self.has_narrow_filters(filter_clauses)
+        if has_narrow_filters:
+            logger.hint(
+                "> Narrow filters detected (user/bvid), using filter-first approach",
+                verbose=verbose,
+            )
+
         # Get query words for embedding
         words_expr = query_info.get("words_expr", "")
         keywords_body = query_info.get("keywords_body", [])
@@ -770,6 +779,7 @@ class VideoExplorer(VideoSearcherV2):
             "filter_count": len(filter_clauses),
             "filters": filter_clauses[:3] if filter_clauses else [],  # Show first 3
             "qmod": ["vector"],  # vector-only mode
+            "narrow_filters": has_narrow_filters,  # Track if using filter-first approach
         }
 
         knn_query_result = {
@@ -805,36 +815,72 @@ class VideoExplorer(VideoSearcherV2):
         # to allow more candidates for reranking
         skip_first_ranking = enable_rerank and rerank_max_hits > 0
 
-        knn_search_params = {
-            "query": query,
-            "source_fields": knn_source_fields,
-            "extra_filters": extra_filters,
-            "knn_field": knn_field,
-            "k": knn_k,  # Use knn_k parameter for KNN search
-            "num_candidates": knn_num_candidates,
-            "similarity": similarity,
-            "add_region_info": False,
-            "is_explain": False,
-            "rank_method": rank_method,
-            "limit": knn_k,  # Get all k results for reranking
-            "rank_top_k": rerank_max_hits if skip_first_ranking else rank_top_k,
-            "skip_ranking": skip_first_ranking,  # Skip ranking if reranking later
-            "timeout": KNN_TIMEOUT,
-            "verbose": verbose,
-        }
-
         knn_search_result = {
             "step": step_idx,
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
             "status": "running",
-            "input": knn_search_params,
+            "input": {"query": query},
             "output": {},
             "output_type": "hits",
             "comment": "",
         }
 
-        knn_search_res = self.knn_search(**knn_search_params)
+        # For narrow filters (user/bvid filters), use filter-first approach:
+        # 1. Get all docs matching the filter (these are few, e.g., 94 for a user)
+        # 2. Always apply reranking to score by semantic similarity
+        # This ensures all filtered docs are considered, not just those in global KNN top-k
+        if has_narrow_filters:
+            logger.hint(
+                "> Using filter-first approach for narrow filters",
+                verbose=verbose,
+            )
+            # Step 1: Get all matching docs using filter-only search
+            filter_search_res = self.filter_only_search(
+                query=query,
+                source_fields=knn_source_fields,
+                extra_filters=extra_filters,
+                parse_hits=True,
+                add_region_info=False,
+                add_highlights_info=False,
+                rank_method="heads",  # Just get all, no ranking yet
+                limit=most_relevant_limit,  # Get up to limit docs
+                rank_top_k=most_relevant_limit,
+                timeout=KNN_TIMEOUT,
+                verbose=verbose,
+            )
+            # Use filter search results as knn_search_res
+            knn_search_res = filter_search_res
+            knn_search_res["narrow_filter_used"] = True
+            knn_search_result["comment"] = "使用过滤优先策略(用户/BV号过滤)"
+
+            # Force enable reranking for narrow filters to compute semantic similarity
+            if not enable_rerank:
+                enable_rerank = True
+                rerank_max_hits = max(rerank_max_hits, most_relevant_limit)
+                skip_first_ranking = True
+        else:
+            # Standard KNN search for broad queries
+            knn_search_params = {
+                "query": query,
+                "source_fields": knn_source_fields,
+                "extra_filters": extra_filters,
+                "knn_field": knn_field,
+                "k": knn_k,  # Use knn_k parameter for KNN search
+                "num_candidates": knn_num_candidates,
+                "similarity": similarity,
+                "add_region_info": False,
+                "is_explain": False,
+                "rank_method": rank_method,
+                "limit": knn_k,  # Get all k results for reranking
+                "rank_top_k": rerank_max_hits if skip_first_ranking else rank_top_k,
+                "skip_ranking": skip_first_ranking,  # Skip ranking if reranking later
+                "timeout": KNN_TIMEOUT,
+                "verbose": verbose,
+            }
+            knn_search_result["input"] = knn_search_params
+            knn_search_res = self.knn_search(**knn_search_params)
+
         self.update_step_output(knn_search_result, step_output=knn_search_res)
 
         # Track timeout status but continue processing if we have any hits
