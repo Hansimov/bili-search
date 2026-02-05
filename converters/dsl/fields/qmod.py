@@ -36,7 +36,7 @@ QMOD_RETRIEVAL_TYPE = Literal["word", "vector"]
 QMOD_SINGLE_TYPE = Literal["word", "vector", "rerank"]
 
 # Default query mode - hybrid search for best results (without rerank for speed)
-QMOD_DEFAULT = ["word", "vector"]
+QMOD = ["word", "vector"]
 
 # Character to mode name mapping
 QMOD_CHAR_MAP = {
@@ -71,7 +71,7 @@ def parse_qmod_str(mode_str: str) -> list[str]:
     # Validate: must have at least 'w' or 'v' for retrieval
     has_retrieval = "word" in modes or "vector" in modes
     if not has_retrieval:
-        return QMOD_DEFAULT.copy()
+        return QMOD.copy()
 
     # Return in canonical order: word, vector, rerank
     canonical_order = ["word", "vector", "rerank"]
@@ -105,12 +105,12 @@ def normalize_qmod(modes: Union[str, list[str]]) -> list[str]:
         # Validate: must have at least 'w' or 'v' for retrieval
         has_retrieval = "word" in valid_modes or "vector" in valid_modes
         if not has_retrieval:
-            return QMOD_DEFAULT.copy()
+            return QMOD.copy()
         # Return in canonical order
         canonical_order = ["word", "vector", "rerank"]
         return [m for m in canonical_order if m in valid_modes]
     else:
-        return QMOD_DEFAULT.copy()
+        return QMOD.copy()
 
 
 def qmod_to_str(modes: list[str]) -> str:
@@ -179,11 +179,11 @@ class QmodExprParser:
         """
         qmod_node = node.find_child_with_key("qmod_expr")
         if not qmod_node:
-            return QMOD_DEFAULT.copy()
+            return QMOD.copy()
 
         val_node = qmod_node.find_child_with_key("qmod_val")
         if not val_node:
-            return QMOD_DEFAULT.copy()
+            return QMOD.copy()
 
         mode_str = val_node.get_deepest_node_value().lower()
         return parse_qmod_str(mode_str)
@@ -244,7 +244,7 @@ def extract_qmod_from_expr_tree(expr_tree: DslExprNode) -> list[str]:
 
     qmod_nodes = expr_tree.find_all_childs_with_key("qmod_expr")
     if not qmod_nodes:
-        return QMOD_DEFAULT.copy()
+        return QMOD.copy()
 
     # Use the last qmod_expr found (if multiple are specified)
     for node in reversed(qmod_nodes):
@@ -252,7 +252,7 @@ def extract_qmod_from_expr_tree(expr_tree: DslExprNode) -> list[str]:
         if modes:
             return modes
 
-    return QMOD_DEFAULT.copy()
+    return QMOD.copy()
 
 
 def test_qmod_parser():

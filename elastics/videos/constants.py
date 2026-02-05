@@ -150,21 +150,11 @@ SUGGEST_MATCH_BOOL = SEARCH_MATCH_BOOL
 SEARCH_MATCH_OPERATOR = "or"
 SUGGEST_MATCH_OPERATOR = SEARCH_MATCH_OPERATOR
 
-USE_SCRIPT_SCORE_DEFAULT = False
-
-# NOTE: RANK_METHOD_TYPE and RANK_METHOD_DEFAULT have been moved to ranks/constants.py
-# For backward compatibility, you can still import them from here, but prefer:
-#   from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
-from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
+USE_SCRIPT_SCORE = False
 
 # =============================================================================
 # Explore Settings
 # =============================================================================
-
-# NOTE: These constants have been moved to ranks/constants.py
-# For backward compatibility, you can still import them from here, but prefer:
-#   from ranks.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
-from ranks.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
 
 EXPLORE_MOST_RELEVANT_LIMIT = 10000  # max docs to scan for relevance
 
@@ -177,12 +167,7 @@ EXPLORE_MOST_RELEVANT_LIMIT = 10000  # max docs to scan for relevance
 # Multiple chars enable hybrid search (e.g., "wv" = word+vector)
 # Rerank mode (r) enables float embedding reranking for precise similarity
 QMOD_SINGLE_TYPE = Literal["word", "vector", "rerank"]
-QMOD_DEFAULT = ["word", "vector"]  # default to hybrid search (no rerank for speed)
-
-# NOTE: Hybrid search weights have been moved to ranks/constants.py
-# For backward compatibility, you can still import them from here, but prefer:
-#   from ranks.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT, HYBRID_RRF_K
-from ranks.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT, HYBRID_RRF_K
+QMOD = ["word", "vector"]  # default to hybrid search (no rerank for speed)
 
 TRACK_TOTAL_HITS = True
 IS_HIGHLIGHT = True
@@ -245,11 +230,6 @@ SEARCH_LIMIT = 50
 SUGGEST_LIMIT = 10
 AGG_TOP_K = 1000
 
-# NOTE: RANK_TOP_K has been moved to ranks/constants.py
-# For backward compatibility, you can still import it from here, but prefer:
-#   from ranks.constants import RANK_TOP_K
-from ranks.constants import RANK_TOP_K
-
 # timeout
 SEARCH_TIMEOUT = 2
 EXPLORE_TIMEOUT = 5
@@ -272,22 +252,14 @@ KNN_K = 1000  # Must match KNN_RERANK_MAX_HITS for full reranking
 KNN_NUM_CANDIDATES = 4000  # 4x of K for good bit vector recall
 KNN_TIMEOUT = 8  # timeout for KNN search
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
-KNN_SIMILARITY_DEFAULT = "hamming"  # for bit vectors, hamming is most efficient
+KNN_SIMILARITY = "hamming"  # for bit vectors, hamming is most efficient
 KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
 
 # =============================================================================
 # KNN Reranking Settings
 # =============================================================================
-# NOTE: These constants have been moved to ranks/constants.py
-# For backward compatibility, you can still import them from here, but prefer:
-#   from ranks.constants import RERANK_ENABLED, RERANK_MAX_HITS, etc.
-
-# Whether to enable reranking by default for KNN search
-from ranks.constants import RERANK_ENABLED as KNN_RERANK_ENABLED
-from ranks.constants import RERANK_MAX_HITS as KNN_RERANK_MAX_HITS
-from ranks.constants import RERANK_KEYWORD_BOOST as KNN_RERANK_KEYWORD_BOOST
-from ranks.constants import RERANK_TITLE_KEYWORD_BOOST as KNN_RERANK_TITLE_KEYWORD_BOOST
-from ranks.constants import RERANK_TEXT_FIELDS as KNN_RERANK_TEXT_FIELDS
+# NOTE: Reranking constants have been moved to ranks/constants.py
+# Use direct imports: from ranks.constants import RERANK_ENABLED, RERANK_MAX_HITS, etc.
 
 # aggregation
 AGG_PERCENTS = [0, 1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 99.9, 99.99, 100]

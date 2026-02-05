@@ -24,7 +24,7 @@ from typing import Literal
 # =============================================================================
 
 RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance", "tiered"]
-RANK_METHOD_DEFAULT = "stats"
+RANK_METHOD = "stats"
 
 # =============================================================================
 # Ranking Limits
@@ -196,7 +196,7 @@ AUTHOR_SORT_FIELD_TYPE = Literal[
 
 # Default sort field for author grouping
 # "first_appear_order" ensures author order matches video list order
-AUTHOR_SORT_FIELD_DEFAULT = "first_appear_order"
+AUTHOR_SORT_FIELD = "first_appear_order"
 
 # Maximum authors to return
 AUTHOR_GROUP_LIMIT = 25

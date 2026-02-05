@@ -27,14 +27,14 @@ from elastics.videos.constants import SEARCH_DETAIL_LEVELS, SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT, AGG_TOP_K
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
-from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
+from elastics.videos.constants import USE_SCRIPT_SCORE
 from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD, KNN_K, KNN_NUM_CANDIDATES
 from elastics.videos.constants import KNN_TIMEOUT
-from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
+from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.es_logger import get_es_debug_logger
 from converters.embed.embed_client import TextEmbedClient
@@ -43,7 +43,7 @@ from converters.dsl.fields.qmod import extract_qmod_from_expr_tree
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
     RANK_METHOD_TYPE,
-    RANK_METHOD_DEFAULT,
+    RANK_METHOD,
     RANK_TOP_K,
     HYBRID_WORD_WEIGHT,
     HYBRID_VECTOR_WEIGHT,
@@ -128,7 +128,7 @@ class VideoSearcherV2:
         is_explain: bool = False,
         is_profile: bool = False,
         is_highlight: bool = IS_HIGHLIGHT,
-        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        use_script_score: bool = USE_SCRIPT_SCORE,
         score_threshold: float = None,
         limit: int = SEARCH_LIMIT,
         terminate_after: int = TERMINATE_AFTER,
@@ -184,7 +184,7 @@ class VideoSearcherV2:
         boost: bool = True,
         boosted_fields: dict = SUGGEST_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
-        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        use_script_score: bool = USE_SCRIPT_SCORE,
         use_pinyin: bool = True,
         detail_level: int = -1,
         detail_levels: dict = SUGGEST_DETAIL_LEVELS,
@@ -415,7 +415,7 @@ class VideoSearcherV2:
         parse_hits: bool = True,
         add_region_info: bool = True,
         add_highlights_info: bool = False,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         limit: int = SEARCH_LIMIT,
         rank_top_k: int = RANK_TOP_K,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
@@ -1038,8 +1038,8 @@ class VideoSearcherV2:
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
         combined_fields_list: list[list[str]] = [],
-        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        use_script_score: bool = USE_SCRIPT_SCORE,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         score_threshold: float = None,
         use_pinyin: bool = False,
         detail_level: int = -1,
@@ -1316,7 +1316,7 @@ class VideoSearcherV2:
         parse_hits: bool = True,
         add_region_info: bool = True,
         is_explain: bool = False,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         limit: int = SEARCH_LIMIT,
         rank_top_k: int = RANK_TOP_K,
         skip_ranking: bool = False,
@@ -1536,11 +1536,7 @@ class VideoSearcherV2:
             return extract_qmod_from_expr_tree(expr_tree)
         except Exception as e:
             logger.warn(f"× Failed to parse qmod: {e}")
-            return (
-                QMOD_DEFAULT.copy()
-                if isinstance(QMOD_DEFAULT, list)
-                else [QMOD_DEFAULT]
-            )
+            return QMOD.copy() if isinstance(QMOD, list) else [QMOD]
 
     def hybrid_search(
         self,
@@ -1553,7 +1549,7 @@ class VideoSearcherV2:
         # Word search params
         boost: bool = True,
         boosted_fields: dict = SEARCH_BOOSTED_FIELDS,
-        use_script_score: bool = USE_SCRIPT_SCORE_DEFAULT,
+        use_script_score: bool = USE_SCRIPT_SCORE,
         # KNN params
         knn_field: str = KNN_TEXT_EMB_FIELD,
         knn_k: int = KNN_K,
@@ -1568,7 +1564,7 @@ class VideoSearcherV2:
         add_region_info: bool = True,
         add_highlights_info: bool = True,
         is_highlight: bool = IS_HIGHLIGHT,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         limit: int = SEARCH_LIMIT,
         rank_top_k: int = RANK_TOP_K,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,

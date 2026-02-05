@@ -412,7 +412,7 @@ def test_qmod_parser():
     """Test qmod parsing from DSL."""
     from converters.dsl.fields.qmod import (
         extract_qmod_from_expr_tree,
-        QMOD_DEFAULT,
+        QMOD,
     )
     from converters.dsl.elastic import DslExprToElasticConverter
 
@@ -1969,7 +1969,13 @@ def test_ranks_imports():
     logger.note("> Testing ranks module imports...")
 
     # Test importing from submodules directly
-    from ranks.constants import RANK_METHOD_TYPE, RANK_TOP_K
+    from ranks.constants import (
+        RANK_METHOD_TYPE,
+        RANK_METHOD,  # renamed from RANK_METHOD_DEFAULT
+        RANK_TOP_K,
+        AUTHOR_SORT_FIELD_TYPE,
+        AUTHOR_SORT_FIELD,  # renamed from AUTHOR_SORT_FIELD_DEFAULT
+    )
     from ranks.ranker import VideoHitsRanker
     from ranks.reranker import get_reranker
     from ranks.grouper import AuthorGrouper
@@ -1978,9 +1984,15 @@ def test_ranks_imports():
 
     logger.success("  ✓ All submodule imports work")
 
-    # Verify some values
+    # Verify renamed constants
     assert RANK_TOP_K == 50, f"RANK_TOP_K should be 50, got {RANK_TOP_K}"
+    assert RANK_METHOD == "stats", f"RANK_METHOD should be 'stats', got {RANK_METHOD}"
+    assert (
+        AUTHOR_SORT_FIELD == "first_appear_order"
+    ), f"AUTHOR_SORT_FIELD should be 'first_appear_order', got {AUTHOR_SORT_FIELD}"
     logger.success(f"  ✓ RANK_TOP_K = {RANK_TOP_K}")
+    logger.success(f"  ✓ RANK_METHOD = {RANK_METHOD}")
+    logger.success(f"  ✓ AUTHOR_SORT_FIELD = {AUTHOR_SORT_FIELD}")
 
     # Test classes can be instantiated
     ranker = VideoHitsRanker()
@@ -1989,6 +2001,69 @@ def test_ranks_imports():
     logger.success("  ✓ All classes can be instantiated")
 
     logger.success("\n✓ Ranks module import tests completed!")
+
+
+def test_constants_refactoring():
+    """Test that constants refactoring is correct - _DEFAULT suffixes removed"""
+    from tclogger import logger
+
+    logger.note("> Testing constants refactoring...")
+
+    # Test ranks.constants renamed constants
+    from ranks.constants import (
+        RANK_METHOD,  # was RANK_METHOD_DEFAULT
+        AUTHOR_SORT_FIELD,  # was AUTHOR_SORT_FIELD_DEFAULT
+    )
+
+    assert RANK_METHOD == "stats"
+    assert AUTHOR_SORT_FIELD == "first_appear_order"
+    logger.success("  ✓ ranks.constants: RANK_METHOD, AUTHOR_SORT_FIELD")
+
+    # Test elastics.videos.constants renamed constants
+    from elastics.videos.constants import (
+        USE_SCRIPT_SCORE,  # was USE_SCRIPT_SCORE_DEFAULT
+        QMOD,  # was QMOD_DEFAULT
+        KNN_SIMILARITY,  # was KNN_SIMILARITY_DEFAULT
+    )
+
+    assert USE_SCRIPT_SCORE == False
+    assert QMOD == ["word", "vector"]
+    assert KNN_SIMILARITY == "hamming"
+    logger.success(
+        "  ✓ elastics.videos.constants: USE_SCRIPT_SCORE, QMOD, KNN_SIMILARITY"
+    )
+
+    # Test converters.dsl.fields.qmod renamed constants
+    from converters.dsl.fields.qmod import QMOD as QMOD_FROM_QMOD
+
+    assert QMOD_FROM_QMOD == ["word", "vector"]
+    logger.success("  ✓ converters.dsl.fields.qmod: QMOD")
+
+    # Test that old names no longer exist
+    try:
+        from ranks.constants import RANK_METHOD_DEFAULT
+
+        assert False, "RANK_METHOD_DEFAULT should not exist"
+    except ImportError:
+        logger.success("  ✓ RANK_METHOD_DEFAULT correctly removed")
+
+    try:
+        from ranks.constants import AUTHOR_SORT_FIELD_DEFAULT
+
+        assert False, "AUTHOR_SORT_FIELD_DEFAULT should not exist"
+    except ImportError:
+        logger.success("  ✓ AUTHOR_SORT_FIELD_DEFAULT correctly removed")
+
+    # Test that elastics.videos.constants no longer re-exports from ranks
+    from elastics.videos import constants as ev_constants
+
+    # These should NOT be attributes of ev_constants anymore
+    assert not hasattr(ev_constants, "RANK_TOP_K") or "RANK_TOP_K" not in dir(
+        ev_constants
+    ), "RANK_TOP_K should not be re-exported from elastics.videos.constants"
+    logger.success("  ✓ elastics.videos.constants cleaned of ranks re-exports")
+
+    logger.success("\n✓ Constants refactoring tests completed!")
 
 
 if __name__ == "__main__":
@@ -2027,6 +2102,7 @@ if __name__ == "__main__":
 
     # Ranks module refactoring tests
     test_ranks_imports()
+    test_constants_refactoring()
     test_author_grouper_unit()
     test_author_grouper_list()
 

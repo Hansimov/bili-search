@@ -13,7 +13,7 @@ from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
-from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
+from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from converters.dsl.fields.qmod import (
@@ -26,9 +26,9 @@ from converters.dsl.fields.qmod import (
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
     RANK_METHOD_TYPE,
-    RANK_METHOD_DEFAULT,
+    RANK_METHOD,
     AUTHOR_SORT_FIELD_TYPE,
-    AUTHOR_SORT_FIELD_DEFAULT,
+    AUTHOR_SORT_FIELD,
     EXPLORE_RANK_TOP_K,
     EXPLORE_GROUP_OWNER_LIMIT,
     HYBRID_RRF_K,
@@ -214,7 +214,7 @@ class VideoExplorer(VideoSearcherV2):
     def group_hits_by_owner(
         self,
         search_res: dict,
-        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,
+        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,
         limit: int = 25,
     ) -> list[dict]:
         """Group hits by owner (UP主) and sort by specified field.
@@ -323,7 +323,7 @@ class VideoExplorer(VideoSearcherV2):
         verbose: bool = False,
         # `explore` related params
         most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         # Rerank params (for q=wr mode)
@@ -583,7 +583,7 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,  # Match video list order
+        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,  # Match video list order
     ) -> dict:
         """KNN-based explore using text embeddings instead of keyword matching.
 
@@ -1175,7 +1175,7 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = "tiered",  # Default to tiered: relevance-first with stats/recency tie-breaking
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,  # Match video list order
+        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,  # Match video list order
         # Rerank params (for q=wvr mode)
         enable_rerank: bool = False,
         rerank_max_hits: int = KNN_RERANK_MAX_HITS,
@@ -1586,7 +1586,7 @@ class VideoExplorer(VideoSearcherV2):
         verbose: bool = False,
         # Common explore params
         most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD_DEFAULT,
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         # KNN/Hybrid specific params

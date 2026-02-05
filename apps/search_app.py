@@ -17,11 +17,11 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
 from elastics.videos.constants import MAX_SUGGEST_DETAIL_LEVEL
 from elastics.videos.constants import SUGGEST_LIMIT, SEARCH_LIMIT
-from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
-from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
+from elastics.videos.constants import USE_SCRIPT_SCORE
+from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.explorer import VideoExplorer
-from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
+from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD
 
 logger = TCLogger()
 
@@ -80,8 +80,8 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(SEARCH_MATCH_FIELDS),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SEARCH_MATCH_TYPE),
-        use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE_DEFAULT),
-        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
+        use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(MAX_SEARCH_DETAIL_LEVEL),
         limit: Optional[int] = Body(SEARCH_LIMIT),
@@ -134,8 +134,8 @@ class SearchApp:
         match_fields: Optional[list[str]] = Body(SUGGEST_MATCH_FIELDS),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         match_type: Optional[str] = Body(SUGGEST_MATCH_TYPE),
-        use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE_DEFAULT),
-        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
+        use_script_score: Optional[bool] = Body(USE_SCRIPT_SCORE),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD),
         use_pinyin: Optional[bool] = Body(True),
         detail_level: int = Body(-1),
         max_detail_level: int = Body(MAX_SUGGEST_DETAIL_LEVEL),
@@ -195,7 +195,7 @@ class SearchApp:
         self,
         query: str = Body(...),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
-        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD),
         limit: Optional[int] = Body(SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):
@@ -214,7 +214,7 @@ class SearchApp:
         query: str = Body(...),
         source_fields: Optional[list[str]] = Body(SOURCE_FIELDS),
         suggest_info: Optional[dict] = Body({}),
-        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD_DEFAULT),
+        rank_method: Optional[RANK_METHOD_TYPE] = Body(RANK_METHOD),
         limit: Optional[int] = Body(SEARCH_LIMIT),
         verbose: Optional[bool] = Body(False),
     ):

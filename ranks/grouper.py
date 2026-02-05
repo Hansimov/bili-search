@@ -24,7 +24,7 @@ from tclogger import dict_get
 
 from ranks.constants import (
     AUTHOR_SORT_FIELD_TYPE,
-    AUTHOR_SORT_FIELD_DEFAULT,
+    AUTHOR_SORT_FIELD,
     AUTHOR_GROUP_LIMIT,
 )
 
@@ -54,7 +54,7 @@ class AuthorGrouper:
     def group(
         self,
         hits: list[dict],
-        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,
+        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,
         limit: int = AUTHOR_GROUP_LIMIT,
     ) -> dict:
         """Group hits by author and sort by specified field.
@@ -163,7 +163,7 @@ class AuthorGrouper:
     def group_from_search_result(
         self,
         search_res: dict,
-        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,
+        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,
         limit: int = AUTHOR_GROUP_LIMIT,
     ) -> dict:
         """Group authors from a search result dict.
@@ -199,7 +199,7 @@ class AuthorGrouper:
     def group_as_list(
         self,
         hits: list[dict],
-        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,
+        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,
         limit: int = AUTHOR_GROUP_LIMIT,
     ) -> list[dict]:
         """Group hits by author and return as sorted list.
@@ -227,7 +227,7 @@ class AuthorGrouper:
     def group_from_search_result_as_list(
         self,
         search_res: dict,
-        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,
+        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,
         limit: int = AUTHOR_GROUP_LIMIT,
     ) -> list[dict]:
         """Group authors from search result and return as sorted list.
