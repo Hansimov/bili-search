@@ -1652,6 +1652,76 @@ def test_rerank_client_diagnostic():
     logger.success("\n> Diagnostic test completed!")
 
 
+def test_embed_client_keepalive():
+    """Test the keepalive functionality of TextEmbedClient.
+
+    This test verifies:
+    1. warmup() correctly initializes the connection
+    2. start_keepalive() starts the background thread
+    3. Activity time tracking works correctly
+    4. refresh_if_stale() detects stale connections
+    """
+    import time
+    from converters.embed.embed_client import (
+        TextEmbedClient,
+        KEEPALIVE_TIMEOUT,
+    )
+
+    logger.note("> Testing TextEmbedClient keepalive functionality...")
+
+    # Create a fresh client (not the singleton)
+    client = TextEmbedClient(lazy_init=True)
+
+    # Test 1: Warmup
+    logger.hint("\n> Test 1: Warmup")
+    t0 = time.time()
+    success = client.warmup(verbose=True)
+    t1 = time.time()
+    logger.mesg(f"  Warmup success: {success}, took {(t1-t0)*1000:.0f}ms")
+
+    # Test 2: Check stale detection
+    logger.hint("\n> Test 2: Stale detection")
+    is_stale = client._is_connection_stale()
+    logger.mesg(f"  Is stale immediately after warmup: {is_stale} (expected: False)")
+
+    # Manually make it look stale by setting old timestamp
+    client._last_activity_time = time.time() - KEEPALIVE_TIMEOUT - 10
+    is_stale = client._is_connection_stale()
+    logger.mesg(f"  Is stale after timeout: {is_stale} (expected: True)")
+
+    # Test 3: Refresh if stale
+    logger.hint("\n> Test 3: Refresh if stale")
+    t0 = time.time()
+    result = client.refresh_if_stale(verbose=True)
+    t1 = time.time()
+    logger.mesg(f"  Refresh result: {result}, took {(t1-t0)*1000:.0f}ms")
+
+    # Check if it's no longer stale
+    is_stale = client._is_connection_stale()
+    logger.mesg(f"  Is stale after refresh: {is_stale} (expected: False)")
+
+    # Test 4: Start keepalive thread
+    logger.hint("\n> Test 4: Keepalive thread")
+    client.start_keepalive()
+    logger.mesg("  Keepalive started")
+    logger.mesg(f"  Thread alive: {client._keepalive_thread.is_alive()}")
+
+    # Wait a bit and check if thread is still running
+    time.sleep(0.5)
+    logger.mesg(
+        f"  Thread still alive after 0.5s: {client._keepalive_thread.is_alive()}"
+    )
+
+    # Test 5: Stop keepalive
+    logger.hint("\n> Test 5: Stop keepalive")
+    client.stop_keepalive()
+    logger.mesg(f"  Thread stopped: {client._keepalive_thread is None}")
+
+    # Cleanup
+    client.close()
+    logger.success("\n> Keepalive test completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -1684,5 +1754,6 @@ if __name__ == "__main__":
     # Performance tests
     test_vr_performance_with_narrow_filters()
     # test_rerank_client_diagnostic()
+    # test_embed_client_keepalive()
 
     # python -m elastics.videos.tests

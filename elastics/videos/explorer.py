@@ -784,6 +784,9 @@ class VideoExplorer(VideoSearcherV2):
                 logger.exit_quiet(not verbose)
                 return {"query": query, "status": "error", "data": step_results}
 
+            # Refresh connection if stale (prevents cold start after idle)
+            self.embed_client.refresh_if_stale(verbose=verbose)
+
             # Convert query to embedding (LSH for KNN search)
             step_start = time.perf_counter()
             query_hex = self.embed_client.text_to_hex(embed_text)

@@ -5,10 +5,22 @@ This module provides a unified client for:
 2. Reranking search results using cosine similarity via tfmx.rerank()
 
 Uses TEIClients from tfmx library to connect to TEI (Text Embeddings Inference) services.
+
+Connection Keep-alive:
+    Long-running services should use the keep-alive feature to prevent
+    connection timeouts. HTTP connections typically close after 60-300 seconds
+    of inactivity. The keep-alive mechanism sends periodic health checks.
+
+    Example:
+        client = TextEmbedClient()
+        client.start_keepalive()  # Start background keep-alive
+        # ... use client normally ...
+        client.stop_keepalive()   # Stop before shutdown
 """
 
+import threading
+import time
 from tclogger import logger
-from typing import Union
 
 from configs.envs import TEI_CLIENTS_ENDPOINTS
 
@@ -17,6 +29,10 @@ KNN_LSH_BITN = 2048
 
 # Default cache size for LSH results
 LSH_CACHE_SIZE = 1024
+
+# Keep-alive settings
+KEEPALIVE_INTERVAL = 60  # Send keep-alive every 60 seconds
+KEEPALIVE_TIMEOUT = 300  # Consider connection stale after 5 minutes of no activity
 
 
 def get_tei_endpoints() -> list[str]:
@@ -68,8 +84,25 @@ class TextEmbedClient:
         self._cache = {}  # Simple cache for text -> hex mappings
         self._cache_max_size = LSH_CACHE_SIZE
 
+        # Keep-alive state
+        self._last_activity_time = 0.0
+        self._keepalive_thread: threading.Thread = None
+        self._keepalive_stop_event = threading.Event()
+        self._keepalive_lock = threading.Lock()
+
         if not lazy_init:
             self._ensure_initialized()
+
+    def _update_activity_time(self) -> None:
+        """Update the last activity timestamp."""
+        self._last_activity_time = time.time()
+
+    def _is_connection_stale(self) -> bool:
+        """Check if connection might be stale due to inactivity."""
+        if self._last_activity_time == 0:
+            return True  # Never used, needs warming up
+        elapsed = time.time() - self._last_activity_time
+        return elapsed > KEEPALIVE_TIMEOUT
 
     def _ensure_initialized(self) -> bool:
         """Ensure TEIClients is initialized. Returns True if ready."""
@@ -85,12 +118,151 @@ class TextEmbedClient:
 
             self._clients = TEIClients(endpoints=self.endpoints)
             self._initialized = True
+            self._update_activity_time()
             return True
         except ImportError:
             logger.warn("× tfmx library not installed. Embedding features unavailable.")
             return False
         except Exception as e:
             logger.warn(f"× Failed to initialize TEIClients: {e}")
+            return False
+
+    def warmup(self, verbose: bool = False) -> bool:
+        """Warmup the connection by sending a health check and test request.
+
+        This is useful to call before the first real request to avoid
+        cold-start latency. Should be called after long idle periods.
+
+        Args:
+            verbose: If True, log warmup details.
+
+        Returns:
+            True if warmup succeeded, False otherwise.
+        """
+        if not self._ensure_initialized():
+            return False
+
+        try:
+            t0 = time.time()
+
+            # Step 1: Health check to verify connectivity
+            # Note: TEIClients.health() returns ClientsHealthResponse with
+            # healthy_instances/total_instances (not healthy/total)
+            health = self._clients.health()
+            t1 = time.time()
+
+            if verbose:
+                logger.mesg(
+                    f"  [warmup] Health check: {(t1-t0)*1000:.0f}ms, "
+                    f"healthy_instances={health.healthy_instances}/{health.total_instances}"
+                )
+
+            # Step 2: Small LSH request to warm up the model
+            _ = self._clients.lsh(["warmup test"], bitn=self.bitn)
+            t2 = time.time()
+
+            if verbose:
+                logger.mesg(f"  [warmup] LSH test: {(t2-t1)*1000:.0f}ms")
+
+            self._update_activity_time()
+            return True
+
+        except Exception as e:
+            if verbose:
+                logger.warn(f"  [warmup] Failed: {e}")
+            return False
+
+    def _keepalive_worker(self) -> None:
+        """Background worker that sends periodic health checks."""
+        while not self._keepalive_stop_event.is_set():
+            # Wait for interval or stop signal
+            if self._keepalive_stop_event.wait(timeout=KEEPALIVE_INTERVAL):
+                break  # Stop event was set
+
+            # Check if we need to send keep-alive
+            with self._keepalive_lock:
+                if not self._initialized or self._clients is None:
+                    continue
+
+                elapsed = time.time() - self._last_activity_time
+                if elapsed < KEEPALIVE_INTERVAL:
+                    # Recent activity, no need for keep-alive
+                    continue
+
+                try:
+                    # Send health check to keep connection alive
+                    self._clients.health()
+                    self._update_activity_time()
+                except Exception:
+                    # Connection might be broken, will be refreshed on next use
+                    pass
+
+    def start_keepalive(self) -> None:
+        """Start background keep-alive thread.
+
+        This prevents HTTP connections from timing out during long idle periods.
+        Call stop_keepalive() before shutdown.
+        """
+        with self._keepalive_lock:
+            if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+                return  # Already running
+
+            self._keepalive_stop_event.clear()
+            self._keepalive_thread = threading.Thread(
+                target=self._keepalive_worker,
+                name="TextEmbedClient-keepalive",
+                daemon=True,  # Thread will be killed when main process exits
+            )
+            self._keepalive_thread.start()
+            logger.mesg("  [keepalive] Started background keep-alive thread")
+
+    def stop_keepalive(self) -> None:
+        """Stop background keep-alive thread."""
+        with self._keepalive_lock:
+            if self._keepalive_thread is None:
+                return
+
+            self._keepalive_stop_event.set()
+            self._keepalive_thread.join(timeout=5.0)
+            self._keepalive_thread = None
+            logger.mesg("  [keepalive] Stopped background keep-alive thread")
+
+    def refresh_if_stale(self, verbose: bool = False) -> bool:
+        """Refresh connection if it might be stale.
+
+        Call this before a request if the service has been idle for a while.
+        This is lighter than warmup() - just does a health check.
+
+        Args:
+            verbose: If True, log refresh details.
+
+        Returns:
+            True if connection is ready, False otherwise.
+        """
+        if not self._ensure_initialized():
+            return False
+
+        if not self._is_connection_stale():
+            return True  # Connection is fresh
+
+        try:
+            t0 = time.time()
+            # Note: TEIClients.health() returns ClientsHealthResponse
+            health = self._clients.health()
+            elapsed = (time.time() - t0) * 1000
+
+            if verbose:
+                logger.mesg(
+                    f"  [refresh] Health check: {elapsed:.0f}ms, "
+                    f"healthy_instances={health.healthy_instances}/{health.total_instances}"
+                )
+
+            self._update_activity_time()
+            return health.healthy_instances > 0
+
+        except Exception as e:
+            if verbose:
+                logger.warn(f"  [refresh] Failed: {e}")
             return False
 
     def is_available(self) -> bool:
@@ -105,6 +277,7 @@ class TextEmbedClient:
             return ""
         try:
             results = self._clients.lsh([text], bitn=self.bitn)
+            self._update_activity_time()
             return results[0] if results else ""
         except Exception as e:
             logger.warn(f"× Failed to compute LSH for text: {e}")
@@ -242,6 +415,8 @@ class TextEmbedClient:
             results = self._clients.rerank([query], passages)
             t_call_end = time.perf_counter()
 
+            self._update_activity_time()
+
             if verbose:
                 call_ms = (t_call_end - t_call_start) * 1000
                 total_ms = (t_call_end - t_start) * 1000
@@ -276,7 +451,9 @@ class TextEmbedClient:
             return []
 
         try:
-            return self._clients.rerank(queries, passages)
+            results = self._clients.rerank(queries, passages)
+            self._update_activity_time()
+            return results
         except Exception as e:
             logger.warn(f"× Failed to batch rerank: {e}")
             return []
@@ -347,7 +524,8 @@ class TextEmbedClient:
             return []
 
     def close(self):
-        """Close the underlying TEIClients connection."""
+        """Close the underlying TEIClients connection and stop keepalive."""
+        self.stop_keepalive()
         if self._clients is not None:
             try:
                 self._clients.close()
@@ -355,6 +533,7 @@ class TextEmbedClient:
                 pass
             self._clients = None
             self._initialized = False
+            self._last_activity_time = 0.0
 
     def __enter__(self):
         return self
@@ -367,12 +546,40 @@ class TextEmbedClient:
 _embed_client: TextEmbedClient = None
 
 
-def get_embed_client() -> TextEmbedClient:
-    """Get or create a singleton TextEmbedClient instance."""
+def get_embed_client(start_keepalive: bool = False) -> TextEmbedClient:
+    """Get or create a singleton TextEmbedClient instance.
+
+    Args:
+        start_keepalive: If True and this is the first call, start keepalive thread.
+                        Use this for long-running services like search_app.
+
+    Returns:
+        Singleton TextEmbedClient instance.
+    """
     global _embed_client
     if _embed_client is None:
         _embed_client = TextEmbedClient()
+        if start_keepalive:
+            _embed_client.start_keepalive()
     return _embed_client
+
+
+def init_embed_client_with_keepalive() -> TextEmbedClient:
+    """Initialize the singleton embed client with keepalive and warmup.
+
+    This is the recommended way to initialize the client for long-running
+    services like search_app. It:
+    1. Creates the singleton client
+    2. Warms up the connection (health check + test LSH)
+    3. Starts the keepalive background thread
+
+    Returns:
+        Initialized and warmed-up TextEmbedClient instance.
+    """
+    client = get_embed_client(start_keepalive=False)
+    client.warmup(verbose=True)
+    client.start_keepalive()
+    return client
 
 
 # Legacy alias for backward compatibility

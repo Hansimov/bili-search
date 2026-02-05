@@ -9,6 +9,7 @@ from tclogger import TCLogger, dict_to_str
 from typing import Optional, List, Union
 
 from configs.envs import SEARCH_APP_ENVS
+from converters.embed.embed_client import init_embed_client_with_keepalive
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS
@@ -37,6 +38,7 @@ class SearchApp:
         )
         self.app_envs = app_envs
         self.init_searchers()
+        self.init_embed_client()
         # self.allow_cors()
         self.setup_routes()
         logger.success(f"> {self.title} - v{self.version}")
@@ -51,6 +53,16 @@ class SearchApp:
         self.video_explorer = VideoExplorer(
             self.elastic_videos_index, elastic_env_name=self.elastic_env_name
         )
+
+    def init_embed_client(self):
+        """Initialize embed client with keepalive for long-running service.
+
+        This prevents connection timeouts during idle periods by:
+        1. Warming up the connection at startup
+        2. Starting a background keepalive thread
+        """
+        logger.hint("> Initializing embed client with keepalive...")
+        init_embed_client_with_keepalive()
 
     def allow_cors(self):
         self.app.add_middleware(

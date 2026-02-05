@@ -209,6 +209,17 @@ class EmbeddingReranker:
         """Check if the reranker is available."""
         return self.embed_client.is_available()
 
+    def refresh_connection_if_stale(self, verbose: bool = False) -> bool:
+        """Refresh connection if it might be stale due to inactivity.
+
+        Args:
+            verbose: If True, log refresh details.
+
+        Returns:
+            True if connection is ready, False otherwise.
+        """
+        return self.embed_client.refresh_if_stale(verbose=verbose)
+
     def rerank(
         self,
         query: str,
@@ -272,6 +283,9 @@ class EmbeddingReranker:
         if not self.is_available():
             logger.warn("× Reranker not available, returning original order")
             return hits, perf_info
+
+        # Refresh connection if stale (prevents cold start after idle)
+        self.refresh_connection_if_stale(verbose=verbose)
 
         # Extract keywords: prefer provided keywords > expr_tree > query
         if keywords is None:
