@@ -182,7 +182,11 @@ class VideoHitsParser:
         hits = []
         for hit in res_dict["hits"]["hits"]:
             source = hit["_source"]
+            # Ensure score is never None (ES returns null for sort-only queries)
+            # Use 0.0 as default for filter-only/sort-only searches
             score = hit["_score"]
+            if score is None:
+                score = 0.0
             sort_score = hit.get("sort", [None])[0]
             if add_region_info:
                 self.add_region_info_to_source(source)

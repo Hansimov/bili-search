@@ -156,7 +156,7 @@ RERANK_MAX_HITS = 1000
 
 # Boost factors for keyword matching during rerank
 RERANK_KEYWORD_BOOST = 1.5  # Boost when keyword found in tags/desc
-RERANK_TITLE_KEYWORD_BOOST = 2.5  # Higher boost for title matches
+RERANK_TITLE_KEYWORD_BOOST = 2.0  # Higher boost for title matches
 
 # Text fields to use for document embedding during rerank
 RERANK_TEXT_FIELDS = ["title", "tags", "desc", "owner.name"]

@@ -88,6 +88,57 @@ class VideoHitsRanker:
             hits_info["rank_method"] = "heads"
         return hits_info
 
+    def filter_only_rank(self, hits_info: dict, top_k: int = RANK_TOP_K) -> dict:
+        """Rank filter-only search results using stats + pubdate scoring.
+
+        For filter-only searches (no keywords), we don't have relevance scores.
+        This method computes a meaningful score based on popularity (stats)
+        and recency (pubdate), then uses this for ranking.
+
+        The score is set in the "score" field so the frontend can display it.
+
+        Args:
+            hits_info: Dict with "hits" list.
+            top_k: Number of top results to return.
+
+        Returns:
+            hits_info with stats+pubdate ranked hits.
+        """
+        hits: list[dict] = hits_info.get("hits", [])
+        if not hits:
+            hits_info["rank_method"] = "filter_only"
+            return hits_info
+
+        hits_num = len(hits)
+        top_k = min(top_k, hits_num)
+
+        # Calculate stats and pubdate scores for each hit
+        for hit in hits:
+            stats = dict_get(hit, "stat", {})
+            pubdate = dict_get(hit, "pubdate", 0)
+
+            # Calculate component scores
+            stats_score = self.stats_scorer.calc(stats)
+            pubdate_score = self.pubdate_scorer.calc(pubdate)
+
+            # For filter-only search, combine stats and pubdate with no relevance
+            # Using weighted combination: stats dominates with pubdate as tie-breaker
+            # Stats score is typically in range [100, 1000], pubdate in [0.2, 4]
+            rank_score = stats_score + pubdate_score * 10  # Amplify pubdate effect
+
+            # Set both rank_score (for ranking) and score (for display)
+            hit["rank_score"] = rank_score
+            # Set display score as normalized stats_score (divide by 10 for ~[10, 100] range)
+            hit["score"] = round(stats_score / 10, 1)
+
+        # Sort by rank_score and take top_k
+        top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
+        hits_info["hits"] = top_hits
+        hits_info["return_hits"] = len(top_hits)
+        hits_info["rank_method"] = "filter_only"
+
+        return hits_info
+
     def get_top_hits(
         self, hits: list[dict], top_k: int, sort_field: str = "rank_score"
     ) -> list[dict]:

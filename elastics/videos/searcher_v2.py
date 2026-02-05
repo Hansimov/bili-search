@@ -451,6 +451,10 @@ class VideoSearcherV2:
             extra_filters=extra_filters,
         )
 
+        # Check for narrow filters (user/bvid filters)
+        # For narrow filters, we want to return ALL matching docs, not just rank_top_k
+        has_narrow_filter = self.has_narrow_filters(filter_clauses)
+
         # Build search body with match_all + filters
         if filter_clauses:
             search_body = {
@@ -473,7 +477,10 @@ class VideoSearcherV2:
 
         search_body = set_timeout(search_body, timeout=timeout)
 
-        logger.hint(f"> Filter-only search (no keywords)", verbose=verbose)
+        logger.hint(
+            f"> Filter-only search (no keywords, narrow_filter={has_narrow_filter})",
+            verbose=verbose,
+        )
         logger.mesg(
             dict_to_str(search_body, add_quotes=True), indent=2, verbose=verbose
         )
@@ -497,16 +504,25 @@ class VideoSearcherV2:
                 limit=limit,
                 verbose=verbose,
             )
-            # For filter-only search, we use pubdate sorting in ES query,
-            # so just use heads to limit results (no score-based ranking)
-            # stats_rank and rrf_rank require relevance scores which we don't have
-            parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
+            # For filter-only search with narrow filters, return ALL results
+            # (don't apply rank_top_k limit because users want all docs from the filter)
+            # For filter-only search without narrow filters (e.g., d>xxx, v>xxx),
+            # apply rank_top_k to limit results
+            if has_narrow_filter:
+                # Return all hits, just compute scores for display
+                effective_top_k = len(parse_res.get("hits", []))
+            else:
+                effective_top_k = rank_top_k
+            parse_res = self.hit_ranker.filter_only_rank(
+                parse_res, top_k=effective_top_k
+            )
         else:
             parse_res = res_dict
 
         parse_res["query_info"] = query_info
         parse_res["rewrite_info"] = {}  # Empty rewrite_info for filter-only search
         parse_res["filter_only"] = True
+        parse_res["narrow_filter"] = has_narrow_filter
 
         # Remove non-jsonable items (like query_expr_tree) to avoid serialization errors
         parse_res = self.post_process_return_res(parse_res)

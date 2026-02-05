@@ -119,7 +119,7 @@ def compute_passage(
     if isinstance(owner_name, str):
         owner_name = owner_name.strip()
         if owner_name:
-            parts.append(f"<UP主>{owner_name}</UP主>")
+            parts.append(f"【{owner_name}】")
 
     # title - core content
     title = dict_get(hit, "title", default="", sep=".")
@@ -145,7 +145,7 @@ def compute_passage(
     if not parts:
         # Fallback to bvid
         bvid = hit.get("bvid", "")
-        return f"video {bvid}" if bvid else ""
+        return f"{bvid}" if bvid else ""
 
     combined = " ".join(parts)
 
