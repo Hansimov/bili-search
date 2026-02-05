@@ -1722,6 +1722,275 @@ def test_embed_client_keepalive():
     logger.success("\n> Keepalive test completed!")
 
 
+def test_author_ordering():
+    """Test that author ordering follows video appearance order when sort_field="first_appear_order"."""
+    from tclogger import logger, logstr, brk, dict_to_str
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    test_queries = [
+        "红警08 小块地",
+        "影视飓风 罗永浩",
+    ]
+
+    for query in test_queries:
+        logger.note(f"\n> Testing author ordering for: [{query}]")
+
+        # Get explore result
+        explore_res = explorer.explore(
+            query=query,
+            rank_method="stats",
+            rank_top_k=50,
+            group_owner_limit=25,
+            verbose=False,
+        )
+
+        # Find the step with hits and the group_hits_by_owner step
+        hits_result = None
+        authors_result = None
+        for step in explore_res.get("data", []):
+            if step.get("name") == "most_relevant_search":
+                hits_result = step.get("output", {})
+            elif step.get("name") == "group_hits_by_owner":
+                authors_result = step.get("output", {}).get("authors", {})
+
+        if not hits_result or not authors_result:
+            logger.warn("× Missing hits or authors result")
+            continue
+
+        hits = hits_result.get("hits", [])
+
+        # Track first appearance order from hits
+        expected_first_appear_order = {}
+        for idx, hit in enumerate(hits):
+            mid = hit.get("owner", {}).get("mid")
+            if mid and mid not in expected_first_appear_order:
+                expected_first_appear_order[mid] = idx
+
+        # Verify authors dict preserves first_appear_order
+        logger.hint("  Authors returned (from backend):")
+        for i, (mid, author_info) in enumerate(authors_result.items()):
+            author_name = author_info.get("name", "")
+            first_appear = author_info.get("first_appear_order", -1)
+            sum_rank_score = author_info.get("sum_rank_score", 0)
+            expected_appear = expected_first_appear_order.get(int(mid), -1)
+            match_status = "✓" if first_appear == expected_appear else "×"
+            logger.mesg(
+                f"    [{i}] {author_name:20} first_appear={first_appear:3} "
+                f"(expected={expected_appear:3}) {match_status} sum_rank_score={sum_rank_score:.2f}"
+            )
+
+        # IMPORTANT: The issue is that the backend returns authors sorted by sum_rank_score,
+        # not by first_appear_order. Let's verify:
+        author_list = list(authors_result.values())
+
+        # Check if authors are sorted by sum_rank_score (current backend behavior)
+        is_sorted_by_sum_rank = all(
+            author_list[i].get("sum_rank_score", 0)
+            >= author_list[i + 1].get("sum_rank_score", 0)
+            for i in range(len(author_list) - 1)
+        )
+
+        # Check if authors are sorted by first_appear_order (what frontend expects for "综合排序")
+        is_sorted_by_first_appear = all(
+            author_list[i].get("first_appear_order", 0)
+            <= author_list[i + 1].get("first_appear_order", 0)
+            for i in range(len(author_list) - 1)
+        )
+
+        logger.hint("  Sorting analysis:")
+        logger.mesg(f"    Sorted by sum_rank_score: {is_sorted_by_sum_rank}")
+        logger.mesg(f"    Sorted by first_appear_order: {is_sorted_by_first_appear}")
+
+        # Show first 5 videos and their owners
+        logger.hint("  First 5 hits and their owners (expected author order):")
+        seen_owners = set()
+        for idx, hit in enumerate(hits[:15]):
+            owner = hit.get("owner", {})
+            mid = owner.get("mid")
+            name = owner.get("name", "")
+            rank_score = hit.get("rank_score", 0)
+            if mid not in seen_owners:
+                seen_owners.add(mid)
+                logger.mesg(
+                    f"    [{len(seen_owners)}] {name:20} (first video at position {idx})"
+                )
+                if len(seen_owners) >= 5:
+                    break
+
+
+def test_author_grouper_unit():
+    """Unit test for AuthorGrouper - no ES connection needed"""
+    from ranks.grouper import AuthorGrouper
+    from tclogger import logger
+
+    # Create mock hits data that simulates the structure from ES
+    mock_hits = [
+        # First video from AuthorA (should appear first by order)
+        {
+            "bvid": "BV001",
+            "owner": {"mid": 1001, "name": "AuthorA", "face": "face_a.jpg"},
+            "rank_score": 0.9,
+            "title": "Video 1 by A",
+        },
+        # First video from AuthorB (should appear second by order)
+        {
+            "bvid": "BV002",
+            "owner": {"mid": 1002, "name": "AuthorB", "face": "face_b.jpg"},
+            "rank_score": 0.95,  # Higher score but appears later in hits
+            "title": "Video 1 by B",
+        },
+        # Second video from AuthorA
+        {
+            "bvid": "BV003",
+            "owner": {"mid": 1001, "name": "AuthorA", "face": "face_a.jpg"},
+            "rank_score": 0.85,
+            "title": "Video 2 by A",
+        },
+        # First video from AuthorC (should appear third by order)
+        {
+            "bvid": "BV004",
+            "owner": {"mid": 1003, "name": "AuthorC", "face": "face_c.jpg"},
+            "rank_score": 0.99,  # Highest score but appears last in hits
+            "title": "Video 1 by C",
+        },
+    ]
+
+    grouper = AuthorGrouper()
+
+    # Test 1: Sort by first_appear_order (should preserve video appearance order)
+    logger.note("> Test 1: AuthorGrouper with sort_field='first_appear_order'")
+    authors_by_order = grouper.group(mock_hits, sort_field="first_appear_order")
+
+    logger.mesg(f"  Authors count: {len(authors_by_order)}")
+    for i, (mid, author) in enumerate(authors_by_order.items()):
+        logger.mesg(
+            f"  [{i}] mid={mid} {author['name']:10}: "
+            f"first_appear={author['first_appear_order']}, "
+            f"sum_score={author.get('sum_rank_score', 0):.2f}, "
+            f"count={author['sum_count']}"
+        )
+
+    # Verify order: should be A(0), B(1), C(3) by first appearance
+    expected_order = [1001, 1002, 1003]
+    actual_order = list(authors_by_order.keys())
+
+    if actual_order == expected_order:
+        logger.success(f"  ✓ Correct order by first_appear_order: {actual_order}")
+    else:
+        logger.err(f"  ✗ Wrong order! Expected: {expected_order}, Got: {actual_order}")
+
+    # Test 2: Sort by sum_rank_score
+    logger.note("> Test 2: AuthorGrouper with sort_field='sum_rank_score'")
+    authors_by_score = grouper.group(mock_hits, sort_field="sum_rank_score")
+
+    for i, (mid, author) in enumerate(authors_by_score.items()):
+        logger.mesg(
+            f"  [{i}] mid={mid} {author['name']:10}: "
+            f"first_appear={author['first_appear_order']}, "
+            f"sum_score={author.get('sum_rank_score', 0):.2f}"
+        )
+
+    # A: 0.9 + 0.85 = 1.75, B: 0.95, C: 0.99
+    # Order by sum_rank_score desc: A (1.75), C (0.99), B (0.95)
+    expected_by_score = [1001, 1003, 1002]
+    actual_by_score = list(authors_by_score.keys())
+
+    if actual_by_score == expected_by_score:
+        logger.success(f"  ✓ Correct order by sum_rank_score: {actual_by_score}")
+    else:
+        logger.warn(
+            f"  Order by sum_rank_score: {actual_by_score} (expected: {expected_by_score})"
+        )
+
+    logger.success("\n✓ AuthorGrouper unit tests completed!")
+
+
+def test_author_grouper_list():
+    """Test that AuthorGrouper.group_as_list returns list (for JSON transport)"""
+    from ranks.grouper import AuthorGrouper
+    from tclogger import logger
+
+    # Create mock hits data
+    mock_hits = [
+        {
+            "bvid": "BV001",
+            "owner": {"mid": 1001, "name": "AuthorA", "face": "face_a.jpg"},
+            "rank_score": 0.9,
+            "title": "Video 1 by A",
+        },
+        {
+            "bvid": "BV002",
+            "owner": {"mid": 1002, "name": "AuthorB", "face": "face_b.jpg"},
+            "rank_score": 0.95,
+            "title": "Video 1 by B",
+        },
+        {
+            "bvid": "BV003",
+            "owner": {"mid": 1001, "name": "AuthorA", "face": "face_a.jpg"},
+            "rank_score": 0.85,
+            "title": "Video 2 by A",
+        },
+    ]
+
+    grouper = AuthorGrouper()
+
+    # Test group_as_list returns a list
+    logger.note("> Test: AuthorGrouper.group_as_list() returns list")
+    authors_list = grouper.group_as_list(mock_hits, sort_field="first_appear_order")
+
+    assert isinstance(authors_list, list), "Should return list, not dict"
+    logger.success(f"  ✓ Returned type: {type(authors_list).__name__}")
+
+    # Verify order is preserved in list
+    expected_mids = [1001, 1002]
+    actual_mids = [a["mid"] for a in authors_list]
+    assert actual_mids == expected_mids, f"Expected {expected_mids}, got {actual_mids}"
+    logger.success(f"  ✓ List order preserved: {actual_mids}")
+
+    # Test that JSON serialization preserves order
+    import json
+
+    json_str = json.dumps(authors_list)
+    restored_list = json.loads(json_str)
+    restored_mids = [a["mid"] for a in restored_list]
+    assert restored_mids == expected_mids, "JSON should preserve list order"
+    logger.success(f"  ✓ JSON transport preserves order: {restored_mids}")
+
+    logger.success("\n✓ AuthorGrouper list tests completed!")
+
+
+def test_ranks_imports():
+    """Test that ranks module imports work correctly"""
+    from tclogger import logger
+
+    logger.note("> Testing ranks module imports...")
+
+    # Test importing from submodules directly
+    from ranks.constants import RANK_METHOD_TYPE, RANK_TOP_K
+    from ranks.ranker import VideoHitsRanker
+    from ranks.reranker import get_reranker
+    from ranks.grouper import AuthorGrouper
+    from ranks.scorers import StatsScorer, PubdateScorer
+    from ranks.fusion import ScoreFuser
+
+    logger.success("  ✓ All submodule imports work")
+
+    # Verify some values
+    assert RANK_TOP_K == 50, f"RANK_TOP_K should be 50, got {RANK_TOP_K}"
+    logger.success(f"  ✓ RANK_TOP_K = {RANK_TOP_K}")
+
+    # Test classes can be instantiated
+    ranker = VideoHitsRanker()
+    grouper = AuthorGrouper()
+    stats_scorer = StatsScorer()
+    logger.success("  ✓ All classes can be instantiated")
+
+    logger.success("\n✓ Ranks module import tests completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -1752,8 +2021,13 @@ if __name__ == "__main__":
     # test_user_filter_coverage()
 
     # Performance tests
-    test_vr_performance_with_narrow_filters()
+    # test_vr_performance_with_narrow_filters()
     # test_rerank_client_diagnostic()
     # test_embed_client_keepalive()
+
+    # Ranks module refactoring tests
+    test_ranks_imports()
+    test_author_grouper_unit()
+    test_author_grouper_list()
 
     # python -m elastics.videos.tests

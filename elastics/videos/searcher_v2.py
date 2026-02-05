@@ -24,11 +24,10 @@ from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 from elastics.videos.constants import SEARCH_MATCH_BOOL, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SUGGEST_MATCH_BOOL, SUGGEST_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_DETAIL_LEVELS, SUGGEST_DETAIL_LEVELS
-from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT, RANK_TOP_K, AGG_TOP_K
+from elastics.videos.constants import SEARCH_LIMIT, SUGGEST_LIMIT, AGG_TOP_K
 from elastics.videos.constants import SEARCH_TIMEOUT, SUGGEST_TIMEOUT
 from elastics.videos.constants import NO_HIGHLIGHT_REDUNDANCE_RATIO
 from elastics.videos.constants import USE_SCRIPT_SCORE_DEFAULT
-from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 from elastics.videos.constants import TRACK_TOTAL_HITS, IS_HIGHLIGHT
 from elastics.videos.constants import AGG_TIMEOUT, AGG_PERCENTS
 from elastics.videos.constants import AGG_SORT_FIELD, AGG_SORT_ORDER
@@ -36,13 +35,21 @@ from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD, KNN_K, KNN_NUM_CANDIDATES
 from elastics.videos.constants import KNN_TIMEOUT
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
-from elastics.videos.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT
-from elastics.videos.constants import HYBRID_RRF_K
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
-from elastics.videos.ranker import VideoHitsRanker
 from elastics.es_logger import get_es_debug_logger
 from converters.embed.embed_client import TextEmbedClient
 from converters.dsl.fields.qmod import extract_qmod_from_expr_tree
+
+# Import from ranks module (use direct submodule imports)
+from ranks.constants import (
+    RANK_METHOD_TYPE,
+    RANK_METHOD_DEFAULT,
+    RANK_TOP_K,
+    HYBRID_WORD_WEIGHT,
+    HYBRID_VECTOR_WEIGHT,
+    HYBRID_RRF_K,
+)
+from ranks.ranker import VideoHitsRanker
 
 
 class VideoSearcherV2:

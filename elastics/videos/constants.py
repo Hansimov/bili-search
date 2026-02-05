@@ -151,70 +151,22 @@ SEARCH_MATCH_OPERATOR = "or"
 SUGGEST_MATCH_OPERATOR = SEARCH_MATCH_OPERATOR
 
 USE_SCRIPT_SCORE_DEFAULT = False
-RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance", "tiered"]
-RANK_METHOD_DEFAULT = "stats"
+
+# NOTE: RANK_METHOD_TYPE and RANK_METHOD_DEFAULT have been moved to ranks/constants.py
+# For backward compatibility, you can still import them from here, but prefer:
+#   from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
+from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 
 # =============================================================================
 # Explore Settings
 # =============================================================================
 
-# Explore result limits
-EXPLORE_RANK_TOP_K = 400  # max results to return after ranking
-EXPLORE_GROUP_OWNER_LIMIT = 25  # max author groups to return
+# NOTE: These constants have been moved to ranks/constants.py
+# For backward compatibility, you can still import them from here, but prefer:
+#   from ranks.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
+from ranks.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
+
 EXPLORE_MOST_RELEVANT_LIMIT = 10000  # max docs to scan for relevance
-
-# =============================================================================
-# Ranking Configuration
-# =============================================================================
-
-# Relevance-only ranking settings (for vector search)
-# When rank_method="relevance", only vector similarity score matters
-# No stats/pubdate weighting - pure relevance ranking
-RELEVANCE_MIN_SCORE = 0.4  # minimum normalized score to be considered relevant
-RELEVANCE_SCORE_POWER = 2.0  # power transform to amplify score differences
-
-# RRF (Reciprocal Rank Fusion) settings for multi-metric ranking
-RRF_K = 60  # RRF constant k
-RRF_HEAP_SIZE = 2000  # max items to consider per metric
-RRF_HEAP_RATIO = 5  # heap_size = max(input, top_k * ratio)
-
-# RRF weights for different metrics
-RRF_WEIGHTS = {
-    "pubdate": 2.0,  # publish date timestamp
-    "stat.view": 1.0,
-    "stat.favorite": 1.0,
-    "stat.coin": 1.0,
-    "score": 5.0,  # relevance score (highest weight)
-}
-
-# Stats-based ranking: relevance gating
-# Results with score < RELATE_GATE_RATIO * max_score are filtered
-RELATE_GATE_RATIO = 0.5  # higher = more selective
-RELATE_GATE_COUNT = 2000  # max results to keep
-RELATE_SCORE_POWER = 4  # power transform for relevance score
-
-# =============================================================================
-# Tiered Ranking (Hybrid Search)
-# =============================================================================
-# Tiered ranking for hybrid search:
-# - High relevance zone: sort by stats/recency (热度+最新)
-# - Low relevance zone: sort strictly by relevance
-#
-# ONLY results in the high relevance zone get popularity/recency boost.
-# This prevents low-relevance but high-popularity content from ranking too high.
-
-# High relevance threshold: only items with score >= threshold * max_score
-# get the stats/recency boost. Items below this are sorted by relevance only.
-# 0.7 means only top 30% by relevance score qualify for popularity boost
-TIERED_HIGH_RELEVANCE_THRESHOLD = 0.7
-
-# Within high relevance zone, further group by similarity for tie-breaking
-# Items within this relative diff are considered "equally relevant"
-TIERED_SIMILARITY_THRESHOLD = 0.05  # 5% relative difference
-
-# Weights for secondary sort within high relevance zone
-TIERED_STATS_WEIGHT = 0.7  # weight for popularity (view, coin, etc.)
-TIERED_RECENCY_WEIGHT = 0.3  # weight for recency (pubdate)
 
 # =============================================================================
 # Query Mode Settings
@@ -227,12 +179,10 @@ TIERED_RECENCY_WEIGHT = 0.3  # weight for recency (pubdate)
 QMOD_SINGLE_TYPE = Literal["word", "vector", "rerank"]
 QMOD_DEFAULT = ["word", "vector"]  # default to hybrid search (no rerank for speed)
 
-# Hybrid search settings
-# Word and vector weights are balanced 0.5:0.5 for fair fusion
-# RRF fusion is rank-based, so these weights are used for weighted fusion mode
-HYBRID_WORD_WEIGHT = 0.5  # weight for word-based score in hybrid mode
-HYBRID_VECTOR_WEIGHT = 0.5  # weight for vector-based score in hybrid mode
-HYBRID_RRF_K = 60  # k parameter for RRF fusion
+# NOTE: Hybrid search weights have been moved to ranks/constants.py
+# For backward compatibility, you can still import them from here, but prefer:
+#   from ranks.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT, HYBRID_RRF_K
+from ranks.constants import HYBRID_WORD_WEIGHT, HYBRID_VECTOR_WEIGHT, HYBRID_RRF_K
 
 TRACK_TOTAL_HITS = True
 IS_HIGHLIGHT = True
@@ -293,8 +243,12 @@ MAX_SUGGEST_DETAIL_LEVEL = 3
 # limits
 SEARCH_LIMIT = 50
 SUGGEST_LIMIT = 10
-RANK_TOP_K = 50
 AGG_TOP_K = 1000
+
+# NOTE: RANK_TOP_K has been moved to ranks/constants.py
+# For backward compatibility, you can still import it from here, but prefer:
+#   from ranks.constants import RANK_TOP_K
+from ranks.constants import RANK_TOP_K
 
 # timeout
 SEARCH_TIMEOUT = 2
@@ -324,25 +278,16 @@ KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
 # =============================================================================
 # KNN Reranking Settings
 # =============================================================================
-# Reranking uses float embeddings for precise similarity calculation
-# This compensates for precision loss in LSH bit vector quantization
+# NOTE: These constants have been moved to ranks/constants.py
+# For backward compatibility, you can still import them from here, but prefer:
+#   from ranks.constants import RERANK_ENABLED, RERANK_MAX_HITS, etc.
 
 # Whether to enable reranking by default for KNN search
-KNN_RERANK_ENABLED = True
-
-# Maximum number of hits to rerank (trade-off between quality and latency)
-# Set to 0 to disable reranking
-# Higher values improve recall at cost of embedding API calls
-# Note: Values over 200 significantly increase latency
-KNN_RERANK_MAX_HITS = 1000
-
-# Boost factors for keyword matching during rerank
-# These help surface results that contain exact query terms
-KNN_RERANK_KEYWORD_BOOST = 1.5  # Boost when keyword found in tags/desc
-KNN_RERANK_TITLE_KEYWORD_BOOST = 2.5  # Higher boost for title matches
-
-# Text fields to use for document embedding during rerank
-KNN_RERANK_TEXT_FIELDS = ["title", "tags", "desc", "owner.name"]
+from ranks.constants import RERANK_ENABLED as KNN_RERANK_ENABLED
+from ranks.constants import RERANK_MAX_HITS as KNN_RERANK_MAX_HITS
+from ranks.constants import RERANK_KEYWORD_BOOST as KNN_RERANK_KEYWORD_BOOST
+from ranks.constants import RERANK_TITLE_KEYWORD_BOOST as KNN_RERANK_TITLE_KEYWORD_BOOST
+from ranks.constants import RERANK_TEXT_FIELDS as KNN_RERANK_TEXT_FIELDS
 
 # aggregation
 AGG_PERCENTS = [0, 1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, 99.9, 99.99, 100]

@@ -6,24 +6,14 @@ from tclogger import logstr, logger, brk
 from typing import Union, Literal
 
 from converters.dsl.fields.bvid import bvids_to_filter
-from converters.embed.reranker import EmbeddingReranker, get_reranker
 from converters.highlight.char_match import get_char_highlighter
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_TYPE
-from elastics.videos.constants import RANK_METHOD_TYPE, RANK_METHOD_DEFAULT
 from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
-from elastics.videos.constants import KNN_RERANK_ENABLED, KNN_RERANK_MAX_HITS
-from elastics.videos.constants import (
-    KNN_RERANK_KEYWORD_BOOST,
-    KNN_RERANK_TITLE_KEYWORD_BOOST,
-)
-from elastics.videos.constants import KNN_RERANK_TEXT_FIELDS
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD_DEFAULT
-from elastics.videos.constants import HYBRID_RRF_K
-from elastics.videos.constants import EXPLORE_RANK_TOP_K, EXPLORE_GROUP_OWNER_LIMIT
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from converters.dsl.fields.qmod import (
@@ -32,6 +22,24 @@ from converters.dsl.fields.qmod import (
     has_rerank_qmod,
     get_retrieval_modes,
 )
+
+# Import from ranks module (use direct submodule imports)
+from ranks.constants import (
+    RANK_METHOD_TYPE,
+    RANK_METHOD_DEFAULT,
+    AUTHOR_SORT_FIELD_TYPE,
+    AUTHOR_SORT_FIELD_DEFAULT,
+    EXPLORE_RANK_TOP_K,
+    EXPLORE_GROUP_OWNER_LIMIT,
+    HYBRID_RRF_K,
+    RERANK_ENABLED as KNN_RERANK_ENABLED,
+    RERANK_MAX_HITS as KNN_RERANK_MAX_HITS,
+    RERANK_KEYWORD_BOOST as KNN_RERANK_KEYWORD_BOOST,
+    RERANK_TITLE_KEYWORD_BOOST as KNN_RERANK_TITLE_KEYWORD_BOOST,
+    RERANK_TEXT_FIELDS as KNN_RERANK_TEXT_FIELDS,
+)
+from ranks.reranker import get_reranker
+from ranks.grouper import AuthorGrouper
 
 STEP_ZH_NAMES = {
     "init": {
@@ -206,17 +214,15 @@ class VideoExplorer(VideoSearcherV2):
     def group_hits_by_owner(
         self,
         search_res: dict,
-        sort_field: Literal[
-            "sum_count",
-            "sum_view",
-            "sum_sort_score",
-            "sum_rank_score",
-            "top_rank_score",
-            "first_appear_order",
-        ] = "first_appear_order",
+        sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,
         limit: int = 25,
-    ) -> dict:
+    ) -> list[dict]:
         """Group hits by owner (UP主) and sort by specified field.
+
+        Uses the AuthorGrouper class from ranks module.
+
+        IMPORTANT: Returns a LIST (not dict) to ensure order preservation
+        across JSON serialization/deserialization (network transport to frontend).
 
         Args:
             search_res: Search result containing hits list.
@@ -229,77 +235,23 @@ class VideoExplorer(VideoSearcherV2):
             limit: Max number of author groups to return.
 
         Returns:
-            Dict of author groups keyed by mid.
+            List of author groups, sorted by sort_field.
+            Order is guaranteed to be preserved in JSON transport.
         """
-        group_res = {}
-        first_appear_idx = {}  # Track first appearance index for each author
+        # Use AuthorGrouper from ranks module - return as list for JSON order preservation
+        grouper = AuthorGrouper()
+        authors_list = grouper.group_from_search_result_as_list(
+            search_res=search_res,
+            sort_field=sort_field,
+            limit=limit,
+        )
 
-        hits = search_res.get("hits", [])
-
-        for idx, hit in enumerate(hits):
-            name = dict_get(hit, "owner.name", None)
-            mid = dict_get(hit, "owner.mid", None)
-            pubdate = dict_get(hit, "pubdate") or 0
-            view = dict_get(hit, "stat.view") or 0
-            sort_score = dict_get(hit, "sort_score") or 0
-            rank_score = dict_get(hit, "rank_score") or 0
-            if mid is None or name is None:
-                continue
-
-            # Track first appearance index for this author
-            if mid not in first_appear_idx:
-                first_appear_idx[mid] = idx
-
-            item = group_res.get(mid, None)
-            if item is None:
-                group_res[mid] = {
-                    "mid": mid,
-                    "name": name,
-                    "latest_pubdate": pubdate,
-                    "sum_view": view,
-                    "sum_sort_score": sort_score,
-                    "sum_rank_score": rank_score,
-                    "top_rank_score": rank_score,
-                    "first_appear_order": idx,  # Store first appearance index
-                    "sum_count": 0,
-                    "hits": [],
-                }
-            else:
-                latest_pubdate = group_res[mid]["latest_pubdate"]
-                if pubdate > latest_pubdate:
-                    group_res[mid]["latest_pubdate"] = pubdate
-                    group_res[mid]["name"] = name
-                sum_view = group_res[mid]["sum_view"] or 0
-                sum_sort_score = group_res[mid]["sum_sort_score"] or 0
-                sum_rank_score = group_res[mid]["sum_rank_score"] or 0
-                top_rank_score = group_res[mid]["top_rank_score"] or 0
-                group_res[mid]["sum_view"] = sum_view + view
-                group_res[mid]["sum_sort_score"] = sum_sort_score + sort_score
-                group_res[mid]["sum_rank_score"] = sum_rank_score + rank_score
-                group_res[mid]["top_rank_score"] = max(top_rank_score, rank_score)
-            group_res[mid]["hits"].append(hit)
-            group_res[mid]["sum_count"] += len(group_res[mid]["hits"])
-
-        # sort by sort_field, and limit to top N
-        # For first_appear_order, lower index = earlier appearance = higher priority
-        if sort_field == "first_appear_order":
-            sorted_items = sorted(
-                group_res.items(), key=lambda item: item[1][sort_field], reverse=False
-            )[:limit]
-        else:
-            sorted_items = sorted(
-                group_res.items(), key=lambda item: item[1][sort_field], reverse=True
-            )[:limit]
-        group_res = dict(sorted_items)
-
-        # add user faces
-        mids = list(group_res.keys())
+        # Add user faces from MongoDB
+        mids = [author.get("mid") for author in authors_list]
         user_docs = self.get_user_docs(mids)
+        grouper.add_user_faces_to_list(authors_list, user_docs)
 
-        for mid, user_doc in user_docs.items():
-            group_res[mid]["face"] = user_doc.get("face", "")
-
-        return group_res
+        return authors_list
 
     def is_status_timedout(self, result: dict) -> bool:
         return result.get("status", None) == "timedout"
@@ -584,10 +536,10 @@ class VideoExplorer(VideoSearcherV2):
         step_idx += 1
         step_name = "group_hits_by_owner"
         step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Group hits by owner, sorted by sum_rank_score")
+        logger.hint(f"> {step_str} Group hits by owner, sorted by first_appear_order")
         group_hits_by_owner_params = {
             "search_res": full_doc_search_res,
-            "sort_field": "sum_rank_score",  # Sum of rank_scores to find active/popular authors
+            "sort_field": "first_appear_order",  # Match video list order for UI consistency
             "limit": group_owner_limit,
         }
         group_hits_by_owner_result = {
@@ -595,7 +547,7 @@ class VideoExplorer(VideoSearcherV2):
             "name": step_name,
             "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
             "status": "running",
-            "input": {"limit": group_owner_limit, "sort_field": "sum_rank_score"},
+            "input": {"limit": group_owner_limit, "sort_field": "first_appear_order"},
             "output": {},
             "output_type": STEP_ZH_NAMES[step_name]["output_type"],
             "comment": "",
@@ -631,14 +583,7 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        group_sort_field: Literal[
-            "sum_count",
-            "sum_view",
-            "sum_sort_score",
-            "sum_rank_score",
-            "top_rank_score",
-            "first_appear_order",
-        ] = "sum_rank_score",  # Default: sum of rank_scores to find active/popular authors
+        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,  # Match video list order
     ) -> dict:
         """KNN-based explore using text embeddings instead of keyword matching.
 
@@ -1230,14 +1175,7 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = "tiered",  # Default to tiered: relevance-first with stats/recency tie-breaking
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        group_sort_field: Literal[
-            "sum_count",
-            "sum_view",
-            "sum_sort_score",
-            "sum_rank_score",
-            "top_rank_score",
-            "first_appear_order",
-        ] = "sum_rank_score",  # Default: sum of rank_scores to find active/popular authors
+        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD_DEFAULT,  # Match video list order
         # Rerank params (for q=wvr mode)
         enable_rerank: bool = False,
         rerank_max_hits: int = KNN_RERANK_MAX_HITS,
