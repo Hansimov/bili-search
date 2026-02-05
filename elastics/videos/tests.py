@@ -1071,7 +1071,7 @@ def test_rerank_step_by_step():
     import gc
 
     from converters.embed.embed_client import get_embed_client
-    from converters.embed.reranker import get_reranker, compute_passage
+    from ranks.reranker import get_reranker, compute_passage
 
     explorer = VideoExplorer(
         index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
@@ -2066,6 +2066,422 @@ def test_constants_refactoring():
     logger.success("\n✓ Constants refactoring tests completed!")
 
 
+def test_filter_only_search():
+    """Test filter-only search functionality (no keywords, just filters)."""
+    logger.note("> Testing filter-only search...")
+
+    searcher = VideoSearcherV2(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test 1: Single user filter
+    logger.hint('\n[Test 1] Single user filter: u="影视飓风"')
+    res = searcher.filter_only_search(
+        query='u="影视飓风"',
+        limit=50,
+        verbose=False,
+    )
+    total_hits = res.get("total_hits", 0)
+    return_hits = res.get("return_hits", 0)
+    narrow_filter = res.get("narrow_filter", False)
+
+    logger.mesg(f"  total_hits: {total_hits}")
+    logger.mesg(f"  return_hits: {return_hits}")
+    logger.mesg(f"  narrow_filter: {narrow_filter}")
+
+    assert narrow_filter == True, "Should detect narrow filter for user query"
+    assert return_hits > 0, "Should return results"
+    logger.success("  ✓ Single user filter test passed")
+
+    # Test 2: Multiple user filter
+    logger.hint('\n[Test 2] Multiple user filter: u=["影视飓风","修电脑的张哥"]')
+    res = searcher.filter_only_search(
+        query='u=["影视飓风","修电脑的张哥"]',
+        limit=1000,
+        verbose=False,
+    )
+    total_hits = res.get("total_hits", 0)
+    return_hits = res.get("return_hits", 0)
+    narrow_filter = res.get("narrow_filter", False)
+
+    logger.mesg(f"  total_hits: {total_hits}")
+    logger.mesg(f"  return_hits: {return_hits}")
+    logger.mesg(f"  narrow_filter: {narrow_filter}")
+
+    assert narrow_filter == True, "Should detect narrow filter for multiple users"
+    # For narrow filter, return_hits should equal total_hits (up to limit)
+    expected_return = min(total_hits, 1000)
+    assert (
+        return_hits == expected_return
+    ), f"Expected {expected_return} return_hits, got {return_hits}"
+    logger.success("  ✓ Multiple user filter test passed")
+
+    # Test 3: Range filter only (NOT narrow)
+    logger.hint("\n[Test 3] Range filter only: v>=1000 (should NOT be narrow)")
+    res = searcher.filter_only_search(
+        query="v>=1000",
+        limit=50,
+        verbose=False,
+    )
+    narrow_filter = res.get("narrow_filter", True)  # Default True to fail if not set
+
+    logger.mesg(f"  narrow_filter: {narrow_filter}")
+
+    assert narrow_filter == False, "Range-only filter should NOT be narrow"
+    logger.success("  ✓ Range filter test passed")
+
+    # Test 4: Negative user filter (NOT narrow)
+    logger.hint('\n[Test 4] Negative user filter: u!="影视飓风" (should NOT be narrow)')
+    res = searcher.filter_only_search(
+        query='u!="影视飓风"',
+        limit=50,
+        verbose=False,
+    )
+    narrow_filter = res.get("narrow_filter", True)
+
+    logger.mesg(f"  narrow_filter: {narrow_filter}")
+
+    assert narrow_filter == False, "Negative user filter should NOT be narrow"
+    logger.success("  ✓ Negative user filter test passed")
+
+    logger.success("\n✓ Filter-only search tests completed!")
+
+
+def test_compute_passage():
+    """Test compute_passage function for reranking."""
+    logger.note("> Testing compute_passage function...")
+
+    from ranks.reranker import compute_passage
+
+    # Test 1: Complete hit with all fields
+    logger.hint("\n[Test 1] Complete hit with all fields")
+    hit1 = {
+        "bvid": "BV123",
+        "title": "Test Video Title",
+        "owner": {"name": "TestAuthor", "mid": 12345},
+        "tags": "tag1, tag2, tag3",
+        "desc": "This is a test description.",
+    }
+    passage1 = compute_passage(hit1)
+    logger.mesg(f"  Passage: {passage1}")
+
+    assert "【TestAuthor】" in passage1, "Should contain author in 【】 brackets"
+    assert "Test Video Title" in passage1, "Should contain title"
+    assert "(tag1, tag2, tag3)" in passage1, "Should contain tags in ()"
+    assert "This is a test description." in passage1, "Should contain description"
+    logger.success("  ✓ Complete hit test passed")
+
+    # Test 2: Hit with nested owner structure
+    logger.hint("\n[Test 2] Hit with nested owner structure")
+    hit2 = {
+        "bvid": "BV456",
+        "title": "Another Video",
+        "owner": {"name": "影视飓风", "mid": 946974},
+        "tags": "",  # Empty tags
+        "desc": "-",  # Placeholder desc
+    }
+    passage2 = compute_passage(hit2)
+    logger.mesg(f"  Passage: {passage2}")
+
+    assert "【影视飓风】" in passage2, "Should contain Chinese author name"
+    assert "Another Video" in passage2, "Should contain title"
+    assert "()" not in passage2, "Should not include empty tags"
+    assert "-" not in passage2, "Should not include placeholder desc"
+    logger.success("  ✓ Nested owner test passed")
+
+    # Test 3: Hit with missing fields
+    logger.hint("\n[Test 3] Hit with missing fields")
+    hit3 = {"bvid": "BV789", "title": "Minimal Video"}
+    passage3 = compute_passage(hit3)
+    logger.mesg(f"  Passage: {passage3}")
+
+    assert "Minimal Video" in passage3, "Should contain title"
+    assert len(passage3) > 0, "Should produce non-empty passage"
+    logger.success("  ✓ Missing fields test passed")
+
+    # Test 4: Passage truncation
+    logger.hint("\n[Test 4] Passage truncation")
+    hit4 = {
+        "bvid": "BV999",
+        "title": "X" * 3000,  # Very long title
+        "owner": {"name": "Author"},
+        "tags": "Y" * 1000,
+        "desc": "Z" * 1000,
+    }
+    passage4 = compute_passage(hit4, max_passage_len=500)
+    logger.mesg(f"  Passage length: {len(passage4)} (max: 500)")
+
+    assert len(passage4) <= 500, "Should truncate to max_passage_len"
+    logger.success("  ✓ Truncation test passed")
+
+    logger.success("\n✓ compute_passage tests completed!")
+
+
+def test_narrow_filter_detection():
+    """Test has_narrow_filters detection with various filter combinations."""
+    logger.note("> Testing narrow filter detection...")
+
+    searcher = VideoSearcherV2(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Test cases: (filter_clauses, expected_is_narrow, description)
+    test_cases = [
+        # Positive user filter - IS narrow
+        (
+            [{"term": {"owner.name.keyword": "影视飓风"}}],
+            True,
+            "term owner.name.keyword (positive)",
+        ),
+        (
+            [{"terms": {"owner.name.keyword": ["影视飓风", "修电脑的张哥"]}}],
+            True,
+            "terms owner.name.keyword (positive)",
+        ),
+        # Positive bvid filter - IS narrow
+        ([{"term": {"bvid.keyword": "BV123"}}], True, "term bvid.keyword (positive)"),
+        (
+            [{"terms": {"bvid.keyword": ["BV123", "BV456"]}}],
+            True,
+            "terms bvid.keyword (positive)",
+        ),
+        # Positive mid filter - IS narrow
+        ([{"term": {"owner.mid": 946974}}], True, "term owner.mid (positive)"),
+        # Range filters - NOT narrow
+        ([{"range": {"stat.view": {"gte": 1000}}}], False, "range stat.view"),
+        ([{"range": {"pubdate": {"gte": 1700000000}}}], False, "range pubdate"),
+        # Negative user filter (must_not wrapped) - NOT narrow
+        # Note: must_not doesn't appear in filter_clauses from get_filters_from_query
+        (
+            [{"bool": {"must_not": [{"term": {"owner.name.keyword": "影视飓风"}}]}}],
+            False,
+            "bool.must_not owner.name.keyword (negative)",
+        ),
+        # Mixed positive user + range - IS narrow
+        (
+            [
+                {"term": {"owner.name.keyword": "影视飓风"}},
+                {"range": {"stat.view": {"gte": 1000}}},
+            ],
+            True,
+            "positive user + range",
+        ),
+        # Empty filter - NOT narrow
+        ([], False, "empty filters"),
+        # Nested bool.filter with narrow - IS narrow
+        (
+            [{"bool": {"filter": {"term": {"owner.name.keyword": "影视飓风"}}}}],
+            True,
+            "nested bool.filter with narrow term",
+        ),
+    ]
+
+    all_passed = True
+    for filter_clauses, expected, description in test_cases:
+        actual = searcher.has_narrow_filters(filter_clauses)
+        status = "✓" if actual == expected else "×"
+        if actual != expected:
+            all_passed = False
+        logger.mesg(f"  {status} {description}: expected={expected}, actual={actual}")
+
+    assert all_passed, "Some narrow filter detection tests failed"
+    logger.success("\n✓ Narrow filter detection tests completed!")
+
+
+def test_filter_only_explore():
+    """Test filter-only explore through unified_explore."""
+    logger.note("> Testing filter-only explore...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX,
+        elastic_env_name=ELASTIC_DEV,
+    )
+
+    # Test: Multiple authors with q=w (filter-only)
+    logger.hint('\n[Test] Multiple authors: u=["影视飓风","修电脑的张哥"] q=w')
+
+    result = explorer.unified_explore(
+        query='u=["影视飓风","修电脑的张哥"] q=w',
+        verbose=False,
+        rank_top_k=1000,
+    )
+
+    logger.mesg(f"  Status: {result.get('status')}")
+
+    # Find relevant step info
+    for step in result.get("data", []):
+        step_name = step.get("name")
+        output = step.get("output", {})
+
+        if step_name == "most_relevant_search":
+            total_hits = output.get("total_hits", 0)
+            return_hits = output.get("return_hits", 0)
+            filter_only = output.get("filter_only", False)
+            narrow_filter = output.get("narrow_filter", False)
+
+            logger.mesg(f"  Step: {step_name}")
+            logger.mesg(f"    total_hits: {total_hits}")
+            logger.mesg(f"    return_hits: {return_hits}")
+            logger.mesg(f"    filter_only: {filter_only}")
+            logger.mesg(f"    narrow_filter: {narrow_filter}")
+
+            assert filter_only == True, "Should be filter_only search"
+            assert narrow_filter == True, "Should detect narrow filter"
+            # For narrow filter, should return all hits
+            if total_hits <= 1000:
+                assert return_hits == total_hits, f"Should return all {total_hits} hits"
+
+        elif step_name == "group_hits_by_owner":
+            authors = output.get("authors", [])
+            logger.mesg(f"  Step: {step_name}")
+            logger.mesg(f"    authors count: {len(authors)}")
+            if authors:
+                # authors is a list of author dicts
+                for author_data in authors[:2]:
+                    author_name = author_data.get("name", "Unknown")
+                    hits = author_data.get("hits", [])
+                    logger.mesg(f"    - {author_name}: {len(hits)} videos")
+
+    logger.success("\n✓ Filter-only explore test completed!")
+
+
+def test_owner_name_keyword_boost():
+    """Test that keywords matching owner.name get boosted in reranking.
+
+    This tests the fix for: query `张哥 u=["修电脑的张哥","靓女维修佬"] q=vr`
+    should boost hits from "修电脑的张哥" because "张哥" matches their owner.name.
+    """
+    logger.note("> Testing owner.name keyword boost in reranking...")
+
+    from ranks.reranker import check_keyword_match, EmbeddingReranker
+
+    # Test 1: check_keyword_match function
+    logger.hint("\n[Test 1] check_keyword_match with owner.name")
+
+    test_cases = [
+        ("修电脑的张哥", ["张哥"], True, 1),
+        ("影视飓风", ["张哥"], False, 0),
+        ("靓女维修佬", ["张哥"], False, 0),
+        ("修电脑的张哥", ["修电脑", "张哥"], True, 2),
+        ("TestAuthor", ["test"], True, 1),  # case-insensitive
+    ]
+
+    for text, keywords, expected_match, expected_count in test_cases:
+        has_match, match_count = check_keyword_match(text, keywords)
+        status = (
+            "✓"
+            if (has_match == expected_match and match_count == expected_count)
+            else "×"
+        )
+        logger.mesg(
+            f"  {status} '{text}' + {keywords} -> match={has_match}, count={match_count}"
+        )
+
+    # Test 2: Simulated reranking with owner.name boost
+    logger.hint("\n[Test 2] Simulated hits with owner.name keyword boost")
+
+    # Create mock hits - one with matching owner, one without
+    mock_hits = [
+        {
+            "bvid": "BV001",
+            "title": "显卡维修教程",
+            "owner": {"name": "靓女维修佬", "mid": 1001},
+            "tags": "显卡, 维修",
+            "desc": "显卡维修视频",
+        },
+        {
+            "bvid": "BV002",
+            "title": "显卡维修入门",
+            "owner": {"name": "修电脑的张哥", "mid": 1002},
+            "tags": "显卡, 维修",
+            "desc": "显卡维修基础",
+        },
+    ]
+
+    # Keywords: "张哥"
+    keywords = ["张哥"]
+
+    # Check which hit should get boosted
+    from tclogger import dict_get
+
+    for hit in mock_hits:
+        owner_name = dict_get(hit, "owner.name", default="", sep=".")
+        has_match, match_count = check_keyword_match(owner_name, keywords)
+        logger.mesg(
+            f"  {hit['bvid']} ({owner_name}): keyword_match={has_match}, count={match_count}"
+        )
+
+        if owner_name == "修电脑的张哥":
+            assert has_match == True, "张哥 should match 修电脑的张哥"
+            assert match_count == 1, "Should have 1 match"
+        else:
+            assert has_match == False, "张哥 should NOT match 靓女维修佬"
+
+    logger.success("  ✓ Owner.name keyword matching works correctly")
+
+    # Test 3: Real search with q=vr
+    logger.hint(
+        '\n[Test 3] Real search: 张哥 u=["修电脑的张哥","靓女维修佬"] q=vr d=1m'
+    )
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX,
+        elastic_env_name=ELASTIC_DEV,
+    )
+
+    result = explorer.unified_explore(
+        query='张哥 u=["修电脑的张哥","靓女维修佬"] q=vr d=1m',
+        verbose=False,
+        rank_top_k=50,
+    )
+
+    # Find knn_search step to check keyword_boost
+    for step in result.get("data", []):
+        if step.get("name") == "knn_search":
+            hits = step.get("output", {}).get("hits", [])
+
+            if not hits:
+                logger.warn("  No hits returned")
+                continue
+
+            # Check keyword_boost values
+            logger.mesg(f"  Total hits: {len(hits)}")
+
+            zhang_ge_boosted = 0
+            liang_nv_boosted = 0
+
+            for hit in hits[:10]:  # Check first 10 hits
+                owner_name = dict_get(hit, "owner.name", default="", sep=".")
+                keyword_boost = hit.get("keyword_boost", 1)
+                cosine_sim = hit.get("cosine_similarity", 0)
+                rerank_score = hit.get("rerank_score", 0)
+
+                if "张哥" in owner_name:
+                    if keyword_boost > 1:
+                        zhang_ge_boosted += 1
+                else:
+                    if keyword_boost > 1:
+                        liang_nv_boosted += 1
+
+                logger.mesg(
+                    f"    {hit['bvid'][:13]} ({owner_name[:10]:10}) "
+                    f"cosine={cosine_sim:.4f} boost={keyword_boost:.2f} "
+                    f"score={rerank_score:.4f}"
+                )
+
+            # Verify 修电脑的张哥 hits have keyword_boost > 1
+            logger.mesg(f"\n  修电脑的张哥 boosted (in top 10): {zhang_ge_boosted}")
+            logger.mesg(f"  靓女维修佬 boosted (in top 10): {liang_nv_boosted}")
+
+            # The fix should make 修电脑的张哥 hits have boost > 1
+            assert (
+                zhang_ge_boosted > 0
+            ), "修电脑的张哥 hits should have keyword_boost > 1"
+            logger.success("  ✓ 修电脑的张哥 hits correctly boosted by keyword '张哥'")
+
+    logger.success("\n✓ Owner.name keyword boost test completed!")
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -2105,5 +2521,12 @@ if __name__ == "__main__":
     test_constants_refactoring()
     test_author_grouper_unit()
     test_author_grouper_list()
+
+    # Filter-only search and narrow filter tests
+    test_filter_only_search()
+    test_compute_passage()
+    test_narrow_filter_detection()
+    test_filter_only_explore()
+    test_owner_name_keyword_boost()
 
     # python -m elastics.videos.tests

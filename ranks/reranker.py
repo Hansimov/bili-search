@@ -112,12 +112,12 @@ def compute_passage(
     """
     parts = []
 
-    # owner.name - with semantic tag like TextDocItem
+    # owner.name - with bracket format 【】
     owner_name = dict_get(hit, "owner.name", default="", sep=".")
     if isinstance(owner_name, str):
         owner_name = owner_name.strip()
         if owner_name:
-            parts.append(f"<UP主>{owner_name}</UP主>")
+            parts.append(f"【{owner_name}】")
 
     # title - core content
     title = dict_get(hit, "title", default="", sep=".")
@@ -341,7 +341,15 @@ class EmbeddingReranker:
             similarity = similarity_scores.get(i, 0.1)
             boost = 1.0
 
-            # Title match (highest priority)
+            # Owner.name match (highest priority - matches author name)
+            owner_name = dict_get(hit, "owner.name", default="", sep=".")
+            if isinstance(owner_name, str):
+                owner_match, owner_count = check_keyword_match(owner_name, keywords)
+                if owner_match:
+                    # Owner name match is very important - use title_keyword_boost
+                    boost *= 1 + title_keyword_boost * owner_count
+
+            # Title match (high priority)
             title = dict_get(hit, "title", default="", sep=".")
             if isinstance(title, str):
                 title_match, title_count = check_keyword_match(title, keywords)
