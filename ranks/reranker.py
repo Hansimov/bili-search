@@ -25,6 +25,7 @@ Key Components:
 import time
 from tclogger import logger, dict_get
 
+from blux.text_doc import build_sentence
 from converters.embed.embed_client import TextEmbedClient, get_embed_client
 from ranks.constants import (
     RERANK_MAX_HITS,
@@ -100,8 +101,7 @@ def compute_passage(
 ) -> str:
     """Extract and combine text from a hit for embedding.
 
-    Following TextDocItem.build_sentence() pattern for consistent text building.
-    Uses dict_get for safe nested field access.
+    Uses blux.text_doc.build_sentence() for consistent text building.
 
     Args:
         hit: Hit document with text fields.
@@ -110,48 +110,20 @@ def compute_passage(
     Returns:
         Combined text string for embedding.
     """
-    parts = []
+    passage = build_sentence(
+        title=dict_get(hit, "title", default="", sep="."),
+        tags=dict_get(hit, "tags", default="", sep="."),
+        desc=dict_get(hit, "desc", default="", sep="."),
+        owner_name=dict_get(hit, "owner.name", default="", sep="."),
+        max_len=max_passage_len,
+    )
 
-    # owner.name - with bracket format 【】
-    owner_name = dict_get(hit, "owner.name", default="", sep=".")
-    if isinstance(owner_name, str):
-        owner_name = owner_name.strip()
-        if owner_name:
-            parts.append(f"【{owner_name}】")
-
-    # title - core content
-    title = dict_get(hit, "title", default="", sep=".")
-    if isinstance(title, str):
-        title = title.strip()
-        if title:
-            parts.append(title)
-
-    # tags - wrapped in parentheses like TextDocItem
-    tags = dict_get(hit, "tags", default="", sep=".")
-    if isinstance(tags, str):
-        tags = tags.strip()
-        if tags:
-            parts.append(f"({tags})")
-
-    # desc - skip if just "-"
-    desc = dict_get(hit, "desc", default="", sep=".")
-    if isinstance(desc, str):
-        desc = desc.strip()
-        if desc and desc != "-":
-            parts.append(desc)
-
-    if not parts:
+    if not passage:
         # Fallback to bvid
         bvid = hit.get("bvid", "")
         return f"video {bvid}" if bvid else ""
 
-    combined = " ".join(parts)
-
-    # Final truncation
-    if len(combined) > max_passage_len:
-        combined = combined[:max_passage_len]
-
-    return combined
+    return passage
 
 
 class EmbeddingReranker:
