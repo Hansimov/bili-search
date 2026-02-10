@@ -1,10 +1,9 @@
 from tclogger import logger, logstr, dict_to_str
-from typing import Literal
 
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
-from elastics.videos.constants import SOURCE_FIELDS
-from converters.query.field import is_field_in_fields
+from llms.constants import SOURCE_FIELDS_FOR_LLM_SEARCH
+from llms.actions.utils import shrink_results
 
 
 class SearchTool:
@@ -12,11 +11,7 @@ class SearchTool:
         self,
         index_name: str = ELASTIC_VIDEOS_DEV_INDEX,
         elastic_env_name: str = ELASTIC_DEV,
-        source_fields: list[str] = [
-            *["title", "desc", "tags"],
-            *["bvid", "pic", "owner", "pubdate"],
-            *["stat"],
-        ],
+        source_fields: list[str] = SOURCE_FIELDS_FOR_LLM_SEARCH,
         limit: int = 20,
     ):
         self.searcher = VideoSearcherV2(
@@ -24,27 +19,6 @@ class SearchTool:
         )
         self.source_fields = source_fields
         self.limit = limit
-
-    def shrink_hits_by_source_fields(self, hits: list[dict]) -> list[dict]:
-        new_hits = [
-            {k: v for k, v in hit.items() if is_field_in_fields(k, self.source_fields)}
-            for hit in hits
-        ]
-        return new_hits
-
-    def shrink_results(self, results: dict) -> dict:
-        hits = results.get("hits", [])
-        hits = self.shrink_hits_by_source_fields(hits)
-        res = {"query": results.get("query", ""), "hits": hits}
-        return res
-
-    def add_links(self, results: dict) -> dict:
-        hits = results.get("hits", [])
-        for hit in hits:
-            bvid = hit.get("bvid", "")
-            if bvid:
-                hit["link"] = f"https://www.bilibili.com/video/{bvid}"
-        return results
 
     def search(
         self,
@@ -59,8 +33,7 @@ class SearchTool:
             query, source_fields=source_fields, limit=limit, verbose=False
         )
         if is_shrink_results:
-            res = self.shrink_results(res)
-        res = self.add_links(res)
+            res = shrink_results(res, self.source_fields)
 
         return res
 

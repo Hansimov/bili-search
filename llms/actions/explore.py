@@ -2,8 +2,13 @@ from tclogger import logger, logstr, dict_to_str
 
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
-from elastics.videos.constants import SOURCE_FIELDS
-from converters.query.field import is_field_in_fields
+from llms.constants import SOURCE_FIELDS_FOR_LLM_EXPLORE
+from llms.actions.utils import (
+    shrink_hits_by_source_fields,
+    add_links,
+    add_pubdate_str,
+    add_pub_to_now_str,
+)
 
 
 class ExploreTool:
@@ -11,11 +16,7 @@ class ExploreTool:
         self,
         index_name: str = ELASTIC_VIDEOS_DEV_INDEX,
         elastic_env_name: str = ELASTIC_DEV,
-        source_fields: list[str] = [
-            *["title", "desc", "tags"],
-            *["bvid", "pic", "owner", "pubdate"],
-            *["stat"],
-        ],
+        source_fields: list[str] = SOURCE_FIELDS_FOR_LLM_EXPLORE,
         limit: int = 20,
     ):
         self.explorer = VideoExplorer(
@@ -23,20 +24,6 @@ class ExploreTool:
         )
         self.source_fields = source_fields
         self.limit = limit
-
-    def shrink_hits_by_source_fields(self, hits: list[dict]) -> list[dict]:
-        new_hits = [
-            {k: v for k, v in hit.items() if is_field_in_fields(k, self.source_fields)}
-            for hit in hits
-        ]
-        return new_hits
-
-    def add_links(self, hits: list[dict]) -> list[dict]:
-        for hit in hits:
-            bvid = hit.get("bvid", "")
-            if bvid:
-                hit["link"] = f"https://www.bilibili.com/video/{bvid}"
-        return hits
 
     def extract_hits_from_explore_result(self, result: dict) -> list[dict]:
         """Extract hits from explore result data steps."""
@@ -52,8 +39,10 @@ class ExploreTool:
 
     def shrink_results(self, result: dict) -> dict:
         hits = self.extract_hits_from_explore_result(result)
-        hits = self.shrink_hits_by_source_fields(hits)
-        hits = self.add_links(hits)
+        hits = shrink_hits_by_source_fields(hits, self.source_fields)
+        hits = add_links(hits)
+        hits = add_pubdate_str(hits)
+        hits = add_pub_to_now_str(hits)
         res = {
             "query": result.get("query", ""),
             "status": result.get("status", ""),
