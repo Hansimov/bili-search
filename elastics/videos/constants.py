@@ -273,3 +273,6 @@ NO_HIGHLIGHT_REDUNDANCE_RATIO = 2
 # search analyzer
 # defined in: [bili-scraper/converters/elastic/video_index_settings_v3.py]
 SEARCH_ANALYZER_NAME = "chinese_analyzer"
+
+# pinyin highlight
+IS_USE_PINYIN_HIGHLIGHT = False

@@ -60,7 +60,7 @@ class PinyinHighlighter:
         if matched_indices:
             logger.success(f"Matched indices: ({matched_indices})")
         else:
-            logger.error("No matched index found!")
+            logger.mesg("No matched index found!")
 
         return matched_indices
 

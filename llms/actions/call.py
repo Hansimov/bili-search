@@ -4,6 +4,7 @@ from tclogger import logger, logstr, dict_to_str, brk
 
 from llms.actions.entity import EntityCatogorizer
 from llms.actions.search import SearchTool
+from llms.actions.explore import ExploreTool
 from llms.actions.input import InputCleaner
 
 
@@ -29,6 +30,9 @@ class LLMActionsCaller:
             elif tool_name == "search":
                 searcher = SearchTool()
                 result = searcher.search(tool_input, is_shrink_results=True)
+            elif tool_name == "explore":
+                explorer = ExploreTool()
+                result = explorer.explore(tool_input, is_shrink_results=True)
             else:
                 logger.warn(f"× Unknown tool call: {tool_name}")
                 continue

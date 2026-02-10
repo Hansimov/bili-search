@@ -9,20 +9,25 @@ from converters.highlight.pinyin import PinyinHighlighter
 from elastics.videos.constants import MATCH_TYPE, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SEARCH_MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
+from elastics.videos.constants import IS_USE_PINYIN_HIGHLIGHT
 
 # Extended request type to include KNN search
 KNN_REQUEST_TYPE = Literal["search", "suggest", "knn_search", "random", "latest"]
 
 
 class VideoHitsParser:
-    def __init__(self):
-        self.pinyin_highlighter = PinyinHighlighter()
+    def __init__(self, is_use_pinyin_highlight: bool = IS_USE_PINYIN_HIGHLIGHT):
+        self.is_use_pinyin_highlight = is_use_pinyin_highlight
+        if self.is_use_pinyin_highlight:
+            self.pinyin_highlighter = PinyinHighlighter()
+        else:
+            self.pinyin_highlighter = None
         self.highlight_merger = HighlightMerger()
 
     def get_pinyin_highlights(
         self, keywords: Union[str, list[str]], match_fields: list[str], source: dict
     ) -> dict:
-        if not keywords:
+        if not keywords or not self.pinyin_highlighter:
             return {}
         pinyin_highlights = {}
         for field in match_fields:

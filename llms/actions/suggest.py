@@ -1,19 +1,22 @@
 from tclogger import logger, logstr, dict_to_str
 from typing import Literal
 
-from elastics.videos.searcher import VideoSearcher
-from configs.envs import SEARCH_APP_ENVS
+from elastics.videos.searcher_v2 import VideoSearcherV2
+from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
+from elastics.videos.constants import SOURCE_FIELDS
 
 
 class SuggestTool:
     def __init__(
         self,
-        mode: Literal["prod", "dev"] = "dev",
-        source_fields: list[str] = ["title", "bvid", "owner", "pubdate_str"],
+        index_name: str = ELASTIC_VIDEOS_DEV_INDEX,
+        elastic_env_name: str = ELASTIC_DEV,
+        source_fields: list[str] = ["title", "bvid", "owner", "pubdate"],
         limit: int = 10,
     ):
-        index_name = SEARCH_APP_ENVS["bili_videos_index"][mode]
-        self.searcher = VideoSearcher(index_name, elastic_verbose=False)
+        self.searcher = VideoSearcherV2(
+            index_name=index_name, elastic_env_name=elastic_env_name
+        )
         self.source_fields = source_fields
         self.limit = limit
 
@@ -40,8 +43,8 @@ class SuggestTool:
     ) -> dict:
         source_fields = source_fields or self.source_fields
         limit = limit or self.limit
-        res = self.searcher.multi_level_suggest(
-            query, source_fields=source_fields, limit=limit
+        res = self.searcher.suggest(
+            query, source_fields=source_fields, limit=limit, verbose=False
         )
         if is_shrink_results:
             res = self.shrink_results(res)

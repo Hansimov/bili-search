@@ -1,13 +1,12 @@
 from tclogger import logger, logstr, dict_to_str
-from typing import Literal
 
-from elastics.videos.searcher_v2 import VideoSearcherV2
+from elastics.videos.explorer import VideoExplorer
 from elastics.videos.constants import ELASTIC_VIDEOS_DEV_INDEX, ELASTIC_DEV
 from elastics.videos.constants import SOURCE_FIELDS
 from converters.query.field import is_field_in_fields
 
 
-class SearchTool:
+class ExploreTool:
     def __init__(
         self,
         index_name: str = ELASTIC_VIDEOS_DEV_INDEX,
@@ -19,7 +18,7 @@ class SearchTool:
         ],
         limit: int = 20,
     ):
-        self.searcher = VideoSearcherV2(
+        self.explorer = VideoExplorer(
             index_name=index_name, elastic_env_name=elastic_env_name
         )
         self.source_fields = source_fields
@@ -32,44 +31,58 @@ class SearchTool:
         ]
         return new_hits
 
-    def shrink_results(self, results: dict) -> dict:
-        hits = results.get("hits", [])
-        hits = self.shrink_hits_by_source_fields(hits)
-        res = {"query": results.get("query", ""), "hits": hits}
-        return res
-
-    def add_links(self, results: dict) -> dict:
-        hits = results.get("hits", [])
+    def add_links(self, hits: list[dict]) -> list[dict]:
         for hit in hits:
             bvid = hit.get("bvid", "")
             if bvid:
                 hit["link"] = f"https://www.bilibili.com/video/{bvid}"
-        return results
+        return hits
 
-    def search(
+    def extract_hits_from_explore_result(self, result: dict) -> list[dict]:
+        """Extract hits from explore result data steps."""
+        hits = []
+        for step in result.get("data", []):
+            if step.get("output_type") == "hits":
+                output = step.get("output", {})
+                step_hits = output.get("hits", [])
+                if step_hits:
+                    hits = step_hits
+                    break
+        return hits
+
+    def shrink_results(self, result: dict) -> dict:
+        hits = self.extract_hits_from_explore_result(result)
+        hits = self.shrink_hits_by_source_fields(hits)
+        hits = self.add_links(hits)
+        res = {
+            "query": result.get("query", ""),
+            "status": result.get("status", ""),
+            "hits": hits,
+        }
+        return res
+
+    def explore(
         self,
         query: str,
-        source_fields: list[str] = [],
-        limit: int = 20,
+        limit: int = 0,
         is_shrink_results: bool = False,
     ) -> dict:
-        source_fields = source_fields or self.source_fields
         limit = limit or self.limit
-        res = self.searcher.search(
-            query, source_fields=source_fields, limit=limit, verbose=False
+        res = self.explorer.explore(
+            query=query,
+            rank_top_k=limit,
+            verbose=False,
         )
         if is_shrink_results:
             res = self.shrink_results(res)
-        res = self.add_links(res)
-
         return res
 
 
 if __name__ == "__main__":
     query = "影视飓风 罗永浩"
     logger.note(f"> Query: [{logstr.mesg(query)}]")
-    searcher = SearchTool()
-    results = searcher.search(query, is_shrink_results=True)
+    explorer = ExploreTool()
+    results = explorer.explore(query, is_shrink_results=True)
     logger.success(dict_to_str(results, add_quotes=True))
 
-    # python -m llms.actions.search
+    # python -m llms.actions.explore

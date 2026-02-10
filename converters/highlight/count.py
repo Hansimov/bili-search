@@ -6,13 +6,18 @@ from typing import Union, Literal
 from converters.query.punct import Puncter
 from converters.query.pinyin import ChinesePinyinizer
 from converters.highlight.pinyin import PinyinHighlighter
+from elastics.videos.constants import IS_USE_PINYIN_HIGHLIGHT
 
 
 class HighlightsCounter:
-    def __init__(self):
+    def __init__(self, is_use_pinyin_highlight: bool = IS_USE_PINYIN_HIGHLIGHT):
         self.puncter = Puncter(non_specials="-")
         self.pinyinizer = ChinesePinyinizer()
-        self.highlighter = PinyinHighlighter()
+        self.is_use_pinyin_highlight = is_use_pinyin_highlight
+        if self.is_use_pinyin_highlight:
+            self.highlighter = PinyinHighlighter()
+        else:
+            self.highlighter = None
 
     def qword_match_hword(self, qword: str, hword: str) -> dict[str, bool]:
         is_match = {"prefix": False, "full": False, "middle": False}
@@ -49,7 +54,7 @@ class HighlightsCounter:
         if qword in hword:
             hpattern = f"{qword}[a-zA-Z0-9_]*"
             chwords = re.findall(hpattern, hword)
-        else:
+        elif self.highlighter:
             tag = "hit"
             htext = self.highlighter.highlight(qword, hword, tag=tag)
             if htext:
@@ -75,11 +80,12 @@ class HighlightsCounter:
                 qword_chword_dict[qword] = qword
                 continue
             # pinyin match
-            htext = self.highlighter.highlight(qword, hword, tag=tag)
-            if htext:
-                chword = re.findall(hpattern, htext)[0]
-                if chword:
-                    qword_chword_dict[qword] = chword
+            if self.highlighter:
+                htext = self.highlighter.highlight(qword, hword, tag=tag)
+                if htext:
+                    chword = re.findall(hpattern, htext)[0]
+                    if chword:
+                        qword_chword_dict[qword] = chword
         return {hword: qword_chword_dict}
 
     def calc_hword_qword_chword_from_maps(
@@ -551,6 +557,8 @@ class HighlightsCounter:
         # the qword_hword_count_of_hit is already sorted by hword_count
         qword_hword_pairs: list[tuple] = []
         for qword, hword_count_dict in qword_hword_count_of_hit.items():
+            if not hword_count_dict:
+                continue
             hword = list(hword_count_dict.keys())[0]
             # only keep qword-hword pairs that are different
             # this is used for later qword rewriting

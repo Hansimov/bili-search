@@ -35,11 +35,12 @@ class EntityCatogorizer:
         suggestions = self.suggestor.suggest(query, limit=25)
         # logger.success(dict_to_str(suggestions))
         total_hits = len(suggestions.get("hits", []))
+        suggest_info = suggestions.get("suggest_info", {})
         highlighted_keywords = self.merge_keywords(
-            suggestions.get("highlighted_keywords", {})
+            suggest_info.get("qword_hword_count", {})
         )
         related_authors = self.count_to_ratio(
-            suggestions.get("related_authors", {}), total_hits
+            suggest_info.get("related_authors", {}), total_hits
         )
         res = {
             "query": query,
@@ -56,11 +57,11 @@ if __name__ == "__main__":
     queries = [
         *["08", "月亮3"],
         *["马鹿", "白鼠", "老e"],
-        *["黑神话", "影视飓风", "lks", "yulijun"],
+        *["黑神话", "影视飓风", "lks"],
     ]
     agent = EntityCatogorizer(verbose=True)
     for query in queries:
         logger.note(f"> Query: {logstr.mesg(brk(query))}")
         res = agent.categorize(query)
 
-    # python -m llms.actions.author
+    # python -m llms.actions.entity
