@@ -152,7 +152,8 @@ RERANK_ENABLED = True
 
 # Maximum number of hits to rerank
 # Higher values improve recall but increase latency
-RERANK_MAX_HITS = 1000
+# With supplemental word recall, pool is ~2000-3000 hits (KNN + word)
+RERANK_MAX_HITS = 2000
 
 # Boost factors for keyword matching during rerank
 RERANK_KEYWORD_BOOST = 1.5  # Boost when keyword found in tags/desc

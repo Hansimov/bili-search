@@ -240,18 +240,30 @@ TERMINATE_AFTER = 2000000
 KNN_TEXT_EMB_FIELD = "text_emb"
 # KNN_K: Number of nearest neighbors to return from each shard
 # Higher values improve recall but increase latency
-# For bit vectors with Hamming distance, larger K is needed for good recall
-# Note: Should be >= KNN_RERANK_MAX_HITS for optimal reranking
-KNN_K = 1000  # Must match KNN_RERANK_MAX_HITS for full reranking
+# With supplemental word recall, the rerank pool = KNN_K + word recall supplement
+# KNN provides semantic topic recall; word recall provides entity/keyword recall
+KNN_K = 400  # Word recall supplements with keyword-matching candidates
 # KNN_NUM_CANDIDATES: Candidates to consider per shard before selecting top K
 # Should be significantly larger than K for good recall
-# For 2048-bit vectors, more candidates help find relevant items
-# Higher values improve recall but increase latency - ES does internal oversampling
-KNN_NUM_CANDIDATES = 4000  # 4x of K for good bit vector recall
+# With 8 shards: total candidates = 8 * num_candidates = 32,000
+KNN_NUM_CANDIDATES = 4000  # 10x of K (standard ratio)
 KNN_TIMEOUT = 8  # timeout for KNN search
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
 KNN_SIMILARITY = "hamming"  # for bit vectors, hamming is most efficient
 KNN_LSH_BITN = 2048  # LSH bit count, must match text_emb dims
+
+# =============================================================================
+# Supplemental Word Recall for Vector Search
+# =============================================================================
+# Semantic embedding KNN finds content by topic similarity, which fundamentally
+# differs from keyword matching. For entity queries (UP主 names, brand names),
+# the model interprets proper nouns literally (e.g., "影视飓风" as "film+hurricane"),
+# returning topically-similar but entity-mismatched results.
+# Solution: Run a fast word search in parallel with KNN, merge results,
+# then let the float embedding reranker determine final ranking.
+KNN_WORD_RECALL_ENABLED = True  # Enable supplemental word recall for vector search
+KNN_WORD_RECALL_LIMIT = 1000  # Max word search results for recall supplement
+KNN_WORD_RECALL_TIMEOUT = 3  # Timeout for supplemental word search (seconds)
 
 # =============================================================================
 # KNN Reranking Settings

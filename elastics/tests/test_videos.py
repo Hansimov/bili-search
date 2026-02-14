@@ -3086,6 +3086,388 @@ def test_search_edge_cases():
     assert all_passed, "Search edge case test failures"
 
 
+# ===========================================================================
+# Word Recall Supplement Tests
+# ===========================================================================
+
+
+def test_word_recall_supplement():
+    """Test that supplemental word recall improves KNN vector search quality.
+
+    The LSH bit vector hamming distance is too coarse (scores cluster within
+    0.01-0.02 range), making KNN top-k selection essentially random.
+    The word recall supplement runs a fast word search in parallel with KNN,
+    merges results, then reranks with float embeddings for precise ranking.
+
+    This test verifies:
+    1. Word recall supplement step appears in knn_explore output
+    2. Supplement adds new candidates to the KNN pool
+    3. Top results are semantically relevant (reranker picks good candidates)
+    4. Overlap with word search improves (was 0% without supplement)
+    """
+    import time
+
+    logger.note("> Testing word recall supplement for KNN search...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    test_queries = [
+        "影视飓风",  # Channel name: KNN used to return generic hurricane videos
+        "deepseek",  # Tech term: KNN used to return unrelated AI videos
+    ]
+
+    all_passed = True
+
+    for query in test_queries:
+        logger.note(f"\n> Query: [{query}]")
+
+        # Run knn_explore with word recall enabled (default)
+        start_time = time.perf_counter()
+        explore_res = explorer.knn_explore(
+            query=query,
+            enable_rerank=True,
+            rank_top_k=400,
+            group_owner_limit=10,
+            verbose=False,
+        )
+        elapsed = time.perf_counter() - start_time
+
+        # Check overall status
+        status = explore_res.get("status", "unknown")
+        if status != "finished":
+            logger.warn(f"  × Explore status: {status} (expected: finished)")
+            all_passed = False
+            continue
+        logger.mesg(f"  Status: {status}, elapsed: {elapsed:.2f}s")
+
+        steps = explore_res.get("data", [])
+        step_names = [s.get("name") for s in steps]
+
+        # 1. Verify word_recall_supplement step exists
+        has_word_recall = "word_recall_supplement" in step_names
+        if has_word_recall:
+            logger.mesg(f"  ✓ word_recall_supplement step present")
+        else:
+            logger.warn(f"  × word_recall_supplement step missing! steps: {step_names}")
+            all_passed = False
+            continue
+
+        # 2. Check word recall supplement info
+        word_recall_step = next(
+            s for s in steps if s.get("name") == "word_recall_supplement"
+        )
+        word_info = word_recall_step.get("output", {})
+        supplement_count = word_info.get("supplement_count", 0)
+        merged_total = word_info.get("merged_total", 0)
+        knn_original = word_info.get("knn_original_count", 0)
+
+        if supplement_count > 0:
+            logger.mesg(
+                f"  ✓ Word recall added {supplement_count} supplements "
+                f"(pool: {knn_original} KNN + {supplement_count} word = {merged_total})"
+            )
+        else:
+            logger.warn(f"  × No supplement candidates added")
+            all_passed = False
+
+        # 3. Check rerank step exists and processed the merged pool
+        has_rerank = "rerank" in step_names
+        if has_rerank:
+            rerank_step = next(s for s in steps if s.get("name") == "rerank")
+            reranked_count = rerank_step.get("output", {}).get("reranked_count", 0)
+            if reranked_count >= merged_total:
+                logger.mesg(f"  ✓ Reranker processed {reranked_count} candidates")
+            else:
+                logger.warn(
+                    f"  × Reranked {reranked_count} but pool was {merged_total}"
+                )
+        else:
+            logger.warn(f"  × Rerank step missing")
+            all_passed = False
+
+        # 4. Check that knn_search step has hits
+        knn_step = next((s for s in steps if s.get("name") == "knn_search"), None)
+        if knn_step:
+            knn_output = knn_step.get("output", {})
+            knn_hits = knn_output.get("hits", [])
+            return_hits = knn_output.get("return_hits", 0)
+            if return_hits > 0:
+                logger.mesg(f"  ✓ KNN returned {return_hits} final hits")
+                # Check top result has rerank_score
+                top_hit = knn_hits[0] if knn_hits else {}
+                if "rerank_score" in top_hit:
+                    logger.mesg(
+                        f"  ✓ Top hit has rerank_score: {top_hit['rerank_score']:.4f}"
+                    )
+                    title = top_hit.get("title", "")
+                    logger.mesg(f"    Title: {title[:60]}")
+                else:
+                    logger.warn(f"  × Top hit missing rerank_score")
+            else:
+                logger.warn(f"  × No hits returned")
+                all_passed = False
+
+        # 5. Verify performance is reasonable (< 5s per query)
+        if elapsed < 5.0:
+            logger.mesg(f"  ✓ Performance OK: {elapsed:.2f}s < 5.0s")
+        else:
+            logger.warn(f"  × Performance too slow: {elapsed:.2f}s >= 5.0s")
+            all_passed = False
+
+    if all_passed:
+        logger.success("\n✓ All word recall supplement tests passed!")
+    else:
+        logger.warn("\n× Some word recall supplement tests failed!")
+    assert all_passed, "Word recall supplement test failures"
+
+
+def test_word_recall_overlap_improvement():
+    """Test that word recall supplement improves overlap between q=v and q=w.
+
+    Before the fix: q=v and q=w had 0% overlap for queries like 影视飓风.
+    After the fix: overlap should be > 20% (typically 35-45%).
+    """
+    logger.note("> Testing word recall overlap improvement...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    test_cases = [
+        ("影视飓风", 20),  # Expect > 20% overlap (typically 37%)
+        ("deepseek", 20),  # Expect > 20% overlap (typically 45%)
+    ]
+
+    all_passed = True
+
+    for query, min_overlap_pct in test_cases:
+        logger.note(f"\n> Query: [{query}], min overlap: {min_overlap_pct}%")
+
+        # Run word search (q=w) - use search() directly for simpler result structure
+        word_search_res = explorer.search(
+            query=query,
+            limit=400,
+            rank_top_k=400,
+            timeout=5,
+            verbose=False,
+        )
+        word_bvids = {
+            h.get("bvid") for h in word_search_res.get("hits", []) if h.get("bvid")
+        }
+
+        # Run vector search (q=v) with word recall
+        knn_res = explorer.knn_explore(
+            query=query,
+            enable_rerank=True,
+            rank_top_k=400,
+            verbose=False,
+        )
+        knn_bvids = set()
+        for step in knn_res.get("data", []):
+            if step.get("name") == "knn_search":
+                hits = step.get("output", {}).get("hits", [])
+                knn_bvids = {h.get("bvid") for h in hits if h.get("bvid")}
+                break
+
+        if not word_bvids or not knn_bvids:
+            logger.warn(
+                f"  × Missing results: word={len(word_bvids)}, knn={len(knn_bvids)}"
+            )
+            all_passed = False
+            continue
+
+        overlap = word_bvids & knn_bvids
+        overlap_pct = len(overlap) / len(word_bvids) * 100
+
+        if overlap_pct >= min_overlap_pct:
+            logger.mesg(
+                f"  ✓ Overlap: {len(overlap)}/{len(word_bvids)} = {overlap_pct:.1f}% "
+                f"(>= {min_overlap_pct}%)"
+            )
+        else:
+            logger.warn(
+                f"  × Overlap too low: {len(overlap)}/{len(word_bvids)} = {overlap_pct:.1f}% "
+                f"(expected >= {min_overlap_pct}%)"
+            )
+            all_passed = False
+
+    if all_passed:
+        logger.success("\n✓ All overlap improvement tests passed!")
+    else:
+        logger.warn("\n× Some overlap improvement tests failed!")
+    assert all_passed, "Overlap improvement test failures"
+
+
+def test_word_recall_disabled():
+    """Test that KNN explore works correctly when word recall is disabled."""
+    logger.note("> Testing KNN explore with word recall disabled...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Run knn_explore with word recall explicitly disabled
+    explore_res = explorer.knn_explore(
+        query="影视飓风",
+        enable_rerank=True,
+        word_recall_enabled=False,
+        rank_top_k=50,
+        group_owner_limit=5,
+        verbose=False,
+    )
+
+    all_passed = True
+    status = explore_res.get("status", "unknown")
+    if status != "finished":
+        logger.warn(f"  × Status: {status}")
+        all_passed = False
+    else:
+        logger.mesg(f"  ✓ Status: {status}")
+
+    steps = explore_res.get("data", [])
+    step_names = [s.get("name") for s in steps]
+
+    # Verify word_recall_supplement step is NOT present
+    if "word_recall_supplement" not in step_names:
+        logger.mesg(f"  ✓ word_recall_supplement step correctly absent")
+    else:
+        logger.warn(
+            f"  × word_recall_supplement step should not be present when disabled"
+        )
+        all_passed = False
+
+    # Should still have knn_search and rerank
+    if "knn_search" in step_names:
+        logger.mesg(f"  ✓ knn_search step present")
+    else:
+        logger.warn(f"  × knn_search step missing")
+        all_passed = False
+
+    if "rerank" in step_names:
+        logger.mesg(f"  ✓ rerank step present")
+    else:
+        logger.warn(f"  × rerank step missing")
+        all_passed = False
+
+    if all_passed:
+        logger.success("\n✓ Word recall disabled test passed!")
+    else:
+        logger.warn("\n× Word recall disabled test failed!")
+    assert all_passed, "Word recall disabled test failure"
+
+
+def test_word_recall_narrow_filter_skip():
+    """Test that word recall is skipped for narrow filter queries.
+
+    Narrow filters (e.g., u=xxx) use a filter-first approach instead
+    of KNN, so word recall supplement is not needed.
+    """
+    logger.note("> Testing word recall skip for narrow filter queries...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # Narrow filter query (user filter)
+    explore_res = explorer.knn_explore(
+        query='u="红警HBK08" 红警',
+        enable_rerank=True,
+        rank_top_k=50,
+        group_owner_limit=5,
+        verbose=False,
+    )
+
+    all_passed = True
+    status = explore_res.get("status", "unknown")
+    steps = explore_res.get("data", [])
+    step_names = [s.get("name") for s in steps]
+
+    # Narrow filter queries should NOT have word_recall_supplement
+    if "word_recall_supplement" not in step_names:
+        logger.mesg(f"  ✓ word_recall_supplement correctly skipped for narrow filter")
+    else:
+        logger.warn(f"  × word_recall_supplement should be skipped for narrow filters")
+        all_passed = False
+
+    # Should still have results
+    knn_step = next((s for s in steps if s.get("name") == "knn_search"), None)
+    if knn_step:
+        return_hits = knn_step.get("output", {}).get("return_hits", 0)
+        if return_hits > 0:
+            logger.mesg(f"  ✓ Got {return_hits} results with narrow filter")
+        else:
+            logger.mesg(f"  ⓘ No results (user may not exist in dev index)")
+    else:
+        logger.warn(f"  × knn_search step missing")
+        all_passed = False
+
+    if all_passed:
+        logger.success("\n✓ Narrow filter skip test passed!")
+    else:
+        logger.warn("\n× Narrow filter skip test failed!")
+    assert all_passed, "Narrow filter skip test failure"
+
+
+def test_unified_explore_vector_always_reranks():
+    """Test that q=v mode always enables reranking in unified_explore.
+
+    Previously, q=v would skip reranking (enable_rerank=False), making raw
+    KNN hamming scores the final ranking - which is essentially random.
+    Now q=v always enables reranking for quality results.
+    """
+    logger.note("> Testing that q=v always enables reranking...")
+
+    explorer = VideoExplorer(
+        index_name=ELASTIC_VIDEOS_DEV_INDEX, elastic_env_name=ELASTIC_DEV
+    )
+
+    # q=v should now always rerank
+    explore_res = explorer.unified_explore(
+        query="deepseek q=v",
+        rank_top_k=50,
+        group_owner_limit=5,
+        verbose=False,
+    )
+
+    all_passed = True
+    steps = explore_res.get("data", [])
+    step_names = [s.get("name") for s in steps]
+
+    # Verify rerank step is present
+    if "rerank" in step_names:
+        rerank_step = next(s for s in steps if s.get("name") == "rerank")
+        reranked_count = rerank_step.get("output", {}).get("reranked_count", 0)
+        logger.mesg(f"  ✓ Rerank step present, reranked {reranked_count} candidates")
+    else:
+        logger.warn(f"  × Rerank step missing for q=v mode!")
+        all_passed = False
+
+    # Verify word recall supplement is also present
+    if "word_recall_supplement" in step_names:
+        logger.mesg(f"  ✓ Word recall supplement present for q=v")
+    else:
+        logger.warn(f"  × Word recall supplement missing for q=v")
+        all_passed = False
+
+    # Check that results have rerank_score (not just raw hamming score)
+    knn_step = next((s for s in steps if s.get("name") == "knn_search"), None)
+    if knn_step:
+        hits = knn_step.get("output", {}).get("hits", [])
+        if hits and "rerank_score" in hits[0]:
+            logger.mesg(f"  ✓ Top hit has rerank_score: {hits[0]['rerank_score']:.4f}")
+        elif hits:
+            logger.warn(f"  × Top hit missing rerank_score")
+            all_passed = False
+
+    if all_passed:
+        logger.success("\n✓ q=v always-rerank test passed!")
+    else:
+        logger.warn("\n× q=v always-rerank test failed!")
+    assert all_passed, "q=v always-rerank test failure"
+
+
 if __name__ == "__main__":
     # test_random()
     # test_filter()
@@ -3144,4 +3526,11 @@ if __name__ == "__main__":
     test_explore_word_mode()
     test_search_edge_cases()
 
-    # python -m elastics.videos.tests
+    # Word recall supplement tests (KNN recall fix)
+    test_word_recall_supplement()
+    test_word_recall_overlap_improvement()
+    test_word_recall_disabled()
+    test_word_recall_narrow_filter_skip()
+    test_unified_explore_vector_always_reranks()
+
+    # python -m elastics.tests.test_videos

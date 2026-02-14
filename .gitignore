@@ -7,4 +7,3 @@ logs/
 *.log
 *.chats
 *.lm
-tests/

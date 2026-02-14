@@ -1,5 +1,7 @@
 import json
+import time
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from tclogger import dict_get, get_by_threshold
 from tclogger import logstr, logger, brk
@@ -13,6 +15,8 @@ from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
 from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
+from elastics.videos.constants import KNN_WORD_RECALL_ENABLED
+from elastics.videos.constants import KNN_WORD_RECALL_LIMIT, KNN_WORD_RECALL_TIMEOUT
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
 from elastics.structure import construct_boosted_fields
 from elastics.videos.searcher_v2 import VideoSearcherV2
@@ -67,6 +71,10 @@ STEP_ZH_NAMES = {
     },
     "rerank": {
         "name_zh": "精排重排",
+        "output_type": "info",
+    },
+    "word_recall_supplement": {
+        "name_zh": "词语补充召回",
         "output_type": "info",
     },
     "hybrid_search": {
@@ -308,6 +316,59 @@ class VideoExplorer(VideoSearcherV2):
                 hit.update(score_map[bvid])
 
         return full_hits
+
+    def _supplemental_word_recall(
+        self,
+        query: str,
+        source_fields: list[str],
+        extra_filters: list[dict] = [],
+        limit: int = KNN_WORD_RECALL_LIMIT,
+        timeout: float = KNN_WORD_RECALL_TIMEOUT,
+        verbose: bool = False,
+    ) -> dict:
+        """Run a fast word search to supplement KNN recall.
+
+        Semantic embedding search finds content by topic similarity, which
+        naturally differs from keyword matching. For entity queries (UP主 names,
+        brand names like "影视飓风"), the embedding model interprets proper nouns
+        literally (e.g., as "film+hurricane"), returning topically-similar but
+        entity-mismatched results.
+
+        Word search finds candidates that match query keywords exactly,
+        which KNN naturally misses due to this semantic mismatch.
+        These candidates are then merged into the KNN pool and reranked
+        using float-vector cosine similarity for accurate final ranking.
+
+        Args:
+            query: Query string.
+            source_fields: Fields to include (should match KNN source fields).
+            extra_filters: Additional filter clauses.
+            limit: Maximum results from word search.
+            timeout: Search timeout in seconds.
+            verbose: Enable verbose logging.
+
+        Returns:
+            Word search results dict with hits.
+        """
+        try:
+            return self.search(
+                query=query,
+                source_fields=source_fields,
+                extra_filters=extra_filters,
+                parse_hits=True,
+                add_region_info=False,
+                add_highlights_info=False,
+                is_highlight=False,
+                boost=True,
+                rank_method="heads",
+                limit=limit,
+                rank_top_k=limit,
+                timeout=timeout,
+                verbose=verbose,
+            )
+        except Exception as e:
+            logger.warn(f"× Supplemental word recall failed: {e}")
+            return {"hits": [], "total_hits": 0, "timed_out": False}
 
     def explore(
         self,
@@ -578,6 +639,10 @@ class VideoExplorer(VideoSearcherV2):
         rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
         rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
         rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
+        # Supplemental word recall params
+        word_recall_enabled: bool = KNN_WORD_RECALL_ENABLED,
+        word_recall_limit: int = KNN_WORD_RECALL_LIMIT,
+        word_recall_timeout: float = KNN_WORD_RECALL_TIMEOUT,
         # Explore params
         most_relevant_limit: int = 10000,
         rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
@@ -594,13 +659,21 @@ class VideoExplorer(VideoSearcherV2):
         Results are ranked purely by vector similarity score - no stats/pubdate weighting.
         This ensures the most semantically relevant results appear first.
 
+        Recall supplement: Semantic embedding search finds content by topic similarity,
+        which differs from keyword matching. For entity queries (UP主 names, brand names),
+        the embedding model may interpret proper nouns literally (e.g., "影视飓风" as
+        "film+hurricane" instead of as the UP主 name). A parallel word search supplements
+        the KNN recall pool with keyword-matching candidates. The merged pool is then
+        reranked using float embeddings for precise cosine similarity ranking.
+
         The workflow is:
         1. Extract filters from DSL query (non-word expressions)
-        2. Convert query words to embedding vector via TEI (LSH bit vector)
+        2. [PARALLEL] Convert query to LSH vector + run word search for recall
         3. Perform KNN search with filters (coarse recall)
-        4. Rerank using float embeddings for precise similarity (fine ranking)
-        5. Fetch full documents for top results
-        6. Group results by owner (UP主) - ordered by first appearance in hits
+        4. Merge KNN + word recall results (dedup by bvid)
+        5. Rerank merged pool using float embeddings (fine ranking)
+        6. Fetch full documents for top results
+        7. Group results by owner (UP主) - ordered by first appearance in hits
 
         Args:
             query: Query string (can include DSL filter expressions).
@@ -658,11 +731,10 @@ class VideoExplorer(VideoSearcherV2):
         logger.hint("> [step 0] KNN query constructing ...")
 
         # Performance tracking for the entire knn_explore flow
-        import time
-
         perf_tracker = {
             "query_parsing_ms": 0,
             "lsh_embedding_ms": 0,  # Only for non-narrow-filter queries
+            "word_recall_ms": 0,  # Supplemental word recall (parallel with LSH)
             "knn_search_ms": 0,
             "filter_search_ms": 0,  # Only for narrow-filter queries
             "rerank_ms": 0,
@@ -694,6 +766,36 @@ class VideoExplorer(VideoSearcherV2):
         perf_tracker["query_parsing_ms"] = round(
             (time.perf_counter() - step_start) * 1000, 2
         )
+
+        # Start supplemental word recall in parallel (runs during LSH + KNN)
+        # Semantic embeddings find content by topic similarity, but for entity queries
+        # (UP主 names, brand names), the model interprets proper nouns literally.
+        # Word recall supplements with keyword-matching candidates that the reranker
+        # can then position correctly using float-vector cosine similarity.
+        word_recall_future = None
+        word_recall_executor = None
+        use_word_recall = (
+            word_recall_enabled
+            and not has_narrow_filters  # Narrow filters use dual_sort instead
+            and enable_rerank  # Word recall only helps when reranking
+        )
+        if use_word_recall:
+            word_recall_executor = ThreadPoolExecutor(max_workers=1)
+            word_recall_start = time.perf_counter()
+            word_recall_future = word_recall_executor.submit(
+                self._supplemental_word_recall,
+                query=query,
+                source_fields=["bvid", "title", "tags", "desc", "owner"],
+                extra_filters=extra_filters,
+                limit=word_recall_limit,
+                timeout=word_recall_timeout,
+                verbose=False,  # Keep quiet to avoid log interleaving
+            )
+            logger.hint(
+                f"> Started supplemental word recall in parallel "
+                f"(limit={word_recall_limit})",
+                verbose=verbose,
+            )
 
         if has_narrow_filters:
             logger.hint(
@@ -918,8 +1020,75 @@ class VideoExplorer(VideoSearcherV2):
             logger.exit_quiet(not verbose)
             return {"query": query, "status": final_status, "data": step_results}
 
+        # Step 1.5: Merge with supplemental word recall results
+        # Semantic embedding KNN finds content by topic similarity, which naturally
+        # differs from keyword matching results. For entity queries (UP主 names),
+        # the embedding model may return topically-similar but entity-mismatched results.
+        # Word recall brings keyword-matching candidates into the pool for reranking.
+        word_recall_info = {}
+        if word_recall_future is not None:
+            try:
+                word_search_res = word_recall_future.result(timeout=15)
+                perf_tracker["word_recall_ms"] = round(
+                    (time.perf_counter() - word_recall_start) * 1000, 2
+                )
+            except Exception as e:
+                logger.warn(f"× Supplemental word recall failed: {e}")
+                word_search_res = {"hits": [], "total_hits": 0}
+                perf_tracker["word_recall_ms"] = -1
+            finally:
+                if word_recall_executor:
+                    word_recall_executor.shutdown(wait=False)
+
+            word_hits = word_search_res.get("hits", [])
+            knn_bvids = {h.get("bvid") for h in knn_hits}
+            supplement_hits = [h for h in word_hits if h.get("bvid") not in knn_bvids]
+
+            if supplement_hits:
+                knn_hits_before = len(knn_hits)
+                knn_hits = knn_hits + supplement_hits
+                knn_search_res["hits"] = knn_hits
+
+                word_recall_info = {
+                    "word_total_hits": word_search_res.get("total_hits", 0),
+                    "word_return_hits": len(word_hits),
+                    "supplement_count": len(supplement_hits),
+                    "knn_original_count": knn_hits_before,
+                    "merged_total": len(knn_hits),
+                    "word_recall_ms": perf_tracker["word_recall_ms"],
+                }
+                logger.hint(
+                    f"> Word recall supplement: +{len(supplement_hits)} new candidates "
+                    f"(total pool: {len(knn_hits)})",
+                    verbose=verbose,
+                )
+
+            # Add word recall step result
+            step_idx += 1
+            step_name = "word_recall_supplement"
+            word_recall_step = {
+                "step": step_idx,
+                "name": step_name,
+                "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
+                "status": "finished",
+                "input": {
+                    "limit": word_recall_limit,
+                    "timeout": word_recall_timeout,
+                },
+                "output_type": STEP_ZH_NAMES[step_name]["output_type"],
+                "output": word_recall_info,
+                "comment": (
+                    f"补充了 {len(supplement_hits)} 个词语匹配结果"
+                    if supplement_hits
+                    else "无新增候选"
+                ),
+            }
+            step_results.append(word_recall_step)
+
         # Step 2: Rerank using float embeddings for precise similarity
-        # This addresses the precision loss from LSH bit vector quantization
+        # Float-vector cosine similarity provides finer-grained scoring than
+        # LSH hamming similarity, plus keyword boosting ensures entity-matching
+        # documents are promoted above topically-similar but entity-mismatched results.
         rerank_performed = False
         rerank_info = {}
 
@@ -1676,8 +1845,11 @@ class VideoExplorer(VideoSearcherV2):
 
         elif has_vector:
             # Vector-only mode (q=v or q=vr)
-            # IMPORTANT: For vector search, ALWAYS use relevance ranking
-            # Rerank is controlled by enable_rerank flag (q=vr enables it)
+            # IMPORTANT: For vector search, ALWAYS enable reranking.
+            # Raw KNN with bit vectors gives essentially random results due to
+            # hamming score compression (0.01-0.02 range). Reranking with float
+            # embeddings is the only way to get meaningful semantic ranking.
+            # Word recall supplement runs in parallel to improve the recall pool.
             vector_rank_method = "relevance"
             result = self.knn_explore(
                 query=query,
@@ -1690,7 +1862,7 @@ class VideoExplorer(VideoSearcherV2):
                 rank_method=vector_rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
-                enable_rerank=enable_rerank,  # Only rerank if q=vr
+                enable_rerank=True,  # Always rerank for vector search
             )
             # Update qmod in result
             if result.get("data") and len(result["data"]) > 0:
