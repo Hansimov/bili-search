@@ -107,7 +107,8 @@ class VideoSearcherV2:
             res = self.es.client.search(index=self.index_name, body=body)
             res_dict = res.body
         except Exception as e:
-            logger.warn(f"× Error: {e}")
+            error_msg = str(e)
+            logger.warn(f"× ES error [{context or 'unknown'}]: {error_msg}")
             # Log detailed error info to logs/es.log
             es_logger = get_es_debug_logger()
             es_logger.log_error(
@@ -116,7 +117,15 @@ class VideoSearcherV2:
                 index_name=self.index_name,
                 context=context,
             )
-            res_dict = {}
+            # Return a structured error response instead of empty dict
+            # so that hit_parser can distinguish ES errors from timeouts
+            res_dict = {
+                "took": 0,
+                "timed_out": False,
+                "_es_error": True,
+                "_es_error_msg": error_msg,
+                "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []},
+            }
         return res_dict
 
     def construct_search_body(

@@ -7,8 +7,6 @@ from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIEL
 from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS
 from elastics.videos.constants import QUERY_TYPE, QUERY_TYPE_DEFAULT
 from elastics.videos.constants import ES_TOK_QUERY_STRING_MAX_FREQ
-from elastics.videos.constants import ES_TOK_QUERY_STRING_MIN_KEPT_TOKENS_COUNT
-from elastics.videos.constants import ES_TOK_QUERY_STRING_MIN_KEPT_TOKENS_RATIO
 from elastics.videos.constants import MATCH_TYPE, MATCH_BOOL, MATCH_OPERATOR
 from elastics.videos.constants import SEARCH_MATCH_TYPE, SUGGEST_MATCH_TYPE
 
@@ -58,8 +56,6 @@ class WordExprElasticConverter:
             query_dict.update(
                 {
                     "max_freq": ES_TOK_QUERY_STRING_MAX_FREQ,
-                    "min_kept_tokens_count": ES_TOK_QUERY_STRING_MIN_KEPT_TOKENS_COUNT,
-                    "min_kept_tokens_ratio": ES_TOK_QUERY_STRING_MIN_KEPT_TOKENS_RATIO,
                 }
             )
         return {self.query_type: query_dict}
