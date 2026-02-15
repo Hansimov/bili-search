@@ -10,17 +10,18 @@
 - [3. 搜索流程](#3-搜索流程)
   - [3.1 查询模式 (qmod)](#31-查询模式-qmod)
   - [3.2 统一入口 unified_explore](#32-统一入口-unified_explore)
-  - [3.3 词语搜索流程 (explore)](#33-词语搜索流程-explore)
-  - [3.4 向量搜索流程 (knn_explore)](#34-向量搜索流程-knn_explore)
-  - [3.5 混合搜索流程 (hybrid_explore)](#35-混合搜索流程-hybrid_explore)
+  - [3.3 词语搜索流程 (explore_v2)](#33-词语搜索流程-explore_v2--多车道召回)
+  - [3.4 向量搜索流程 (knn_explore_v2)](#34-向量搜索流程-knn_explore_v2)
+  - [3.5 混合搜索流程 (hybrid_explore_v2)](#35-混合搜索流程-hybrid_explore_v2)
 - [4. 核心机制](#4-核心机制)
   - [4.1 DSL 查询解析](#41-dsl-查询解析)
   - [4.2 向量嵌入与 LSH](#42-向量嵌入与-lsh)
-  - [4.3 补充词语召回](#43-补充词语召回)
+  - [4.3 多车道召回 (Multi-Lane Recall)](#43-多车道召回-multi-lane-recall)
   - [4.4 精排重排 (Reranking)](#44-精排重排-reranking)
   - [4.5 排序策略](#45-排序策略)
-  - [4.6 UP 主分组](#46-up-主分组)
-  - [4.7 窄过滤器处理](#47-窄过滤器处理)
+  - [4.6 多样化排序 (Diversified Ranking)](#46-多样化排序-diversified-ranking)
+  - [4.7 UP 主分组](#47-up-主分组)
+  - [4.8 窄过滤器处理](#48-窄过滤器处理)
 - [5. ES 索引设计](#5-es-索引设计)
   - [5.1 索引结构](#51-索引结构)
   - [5.2 文本字段与分词](#52-文本字段与分词)
@@ -67,6 +68,13 @@ elastics/
 │   ├── diag_float_vs_lsh.py  # Float vs LSH 对比诊断
 │   └── diag_knn.py       # KNN 召回诊断
 
+recalls/                      # ← NEW: 多车道召回模块
+├── __init__.py           # 模块文档
+├── base.py               # RecallResult / RecallPool 数据类
+├── word.py               # MultiLaneWordRecall — 多车道词语召回
+├── vector.py             # VectorRecall — 向量+词语补充召回
+└── manager.py            # RecallManager — 召回策略编排
+
 converters/
 ├── embed/
 │   └── embed_client.py   # TextEmbedClient — 文本嵌入客户端
@@ -80,6 +88,7 @@ converters/
 ranks/
 ├── constants.py          # 排序相关所有常量
 ├── ranker.py             # VideoHitsRanker — 排序引擎
+├── diversified.py        # DiversifiedRanker — 多样化槽位排序 ← NEW
 ├── reranker.py           # EmbeddingReranker — 精排
 ├── grouper.py            # AuthorGrouper — UP主分组
 ├── scorers.py            # 评分器：Stats/Pubdate/Relate
@@ -99,10 +108,20 @@ VideoSearcherV2
         │
         ▼
 VideoExplorer (继承 VideoSearcherV2)
-    ├── explore()          # 词语探索 (多步骤)
-    ├── knn_explore()      # 向量探索 (多步骤)
-    ├── hybrid_explore()   # 混合探索 (多步骤)
-    └── unified_explore()  # 统一分发入口
+    ├── explore_v2()       # 词语探索 V2 (多车道召回 + 多样化排序)
+    ├── knn_explore_v2()   # 向量探索 V2 (向量召回 + 多样化排序)
+    ├── hybrid_explore_v2()# 混合探索 V2 (混合召回 + 多样化排序)
+    ├── unified_explore()  # 统一分发入口 → 路由到 V2 方法
+    ├── explore()          # [Legacy] 词语探索
+    ├── knn_explore()      # [Legacy] 向量探索
+    └── hybrid_explore()   # [Legacy] 混合探索
+
+RecallManager (召回策略编排)
+    ├── MultiLaneWordRecall   # 4 车道并行词语召回
+    └── VectorRecall          # 向量召回 + 词语补充
+
+DiversifiedRanker (多样化排序)
+    └── diversified_rank()    # 槽位分配多样化排序
 ```
 
 `VideoSearcherV2` 提供单次搜索能力，返回命中列表。  
@@ -116,7 +135,9 @@ VideoExplorer (继承 VideoSearcherV2)
 | MongoDB | `MongoOperator` | UP 主头像等补充信息 |
 | TEI 嵌入服务 | `TextEmbedClient` | 文本 → 向量（float 1024 维 + LSH 2048 bit） |
 | DSL 解析器 | `DslExprRewriter` + `DslExprToElasticConverter` | 查询重写与 ES 查询构建 |
-| 排序引擎 | `VideoHitsRanker` | 多策略排序（stats/relevance/tiered/rrf） |
+| 召回管理器 | `RecallManager` | 多车道召回策略编排 |
+| 排序引擎 | `VideoHitsRanker` | 多策略排序（diversified/stats/relevance/tiered/rrf） |
+| 多样化排序器 | `DiversifiedRanker` | 槽位分配多样化排序（默认） |
 | 精排器 | `EmbeddingReranker` | 基于 float 向量余弦相似度的精排 |
 | 分组器 | `AuthorGrouper` | 按 UP 主聚合结果 |
 
@@ -130,12 +151,12 @@ VideoExplorer (继承 VideoSearcherV2)
 
 | 表达式 | 模式列表 | 分发方法 | 排序策略 | 精排 |
 |--------|----------|----------|----------|------|
-| `q=w` | `["word"]` | `explore()` | stats | 否 |
-| `q=wr` | `["word", "rerank"]` | `explore()` | stats | **是** |
-| `q=v` | `["vector"]` | `knn_explore()` | relevance | **始终开启** |
-| `q=vr` | `["vector", "rerank"]` | `knn_explore()` | relevance | **始终开启** |
-| `q=wv` | `["word", "vector"]` | `hybrid_explore()` | tiered | 否 |
-| `q=wvr` | `["word", "vector", "rerank"]` | `hybrid_explore()` | tiered | **是** |
+| `q=w` | `["word"]` | `explore_v2()` | diversified | 否 |
+| `q=wr` | `["word", "rerank"]` | `explore_v2()` | diversified | **是** |
+| `q=v` | `["vector"]` | `knn_explore_v2()` | diversified | **始终开启** |
+| `q=vr` | `["vector", "rerank"]` | `knn_explore_v2()` | diversified | **始终开启** |
+| `q=wv` | `["word", "vector"]` | `hybrid_explore_v2()` | diversified | 否 |
+| `q=wvr` | `["word", "vector", "rerank"]` | `hybrid_explore_v2()` | diversified | **是** |
 | 无指定 | 由默认设置决定 | 根据 `QMOD` 常量 | 随模式 | 随模式 |
 
 > **重要**：`q=v` 模式始终开启精排，因为原始 KNN hamming 分数精度不足以产生有意义的排序。
@@ -145,17 +166,21 @@ VideoExplorer (继承 VideoSearcherV2)
 `unified_explore()` 是所有搜索请求的统一入口：
 
 ```
-用户查询 → 提取 qmod → 判断搜索模式组合 → 分发到对应 explore 方法
+用户查询 → 提取 qmod → 判断搜索模式组合 → 分发到对应 V2 explore 方法
 ```
 
 处理逻辑：
 1. 解析 DSL 表达式，提取 `qmod` 字段
 2. 如无 `qmod`，使用默认配置 `QMOD = ["word", "vector"]`
 3. 判断是否包含 `word`、`vector`、`rerank`
-4. 分发到 `explore()` / `knn_explore()` / `hybrid_explore()`
+4. 分发到 `explore_v2()` / `knn_explore_v2()` / `hybrid_explore_v2()`
 5. 在结果中附加 `qmod` 信息
 
-### 3.3 词语搜索流程 (explore)
+### 3.3 词语搜索流程 (explore_v2 — 多车道召回)
+
+**旧流程问题**：单次搜索扫描 10000 条文档（`terminate_after=2M`），速度慢且召回维度单一（仅 BM25 相关性）。
+
+**新流程**：4 车道并行召回 + 多样化排序
 
 ```
 ┌─ Step 0: construct_query_dsl_dict ─────────────────────────┐
@@ -163,18 +188,33 @@ VideoExplorer (继承 VideoSearcherV2)
 └────────────────────────────────────────────────────────────┘
                          │
                          ▼
-┌─ Step 1: most_relevant_search ─────────────────────────────┐
-│  ① 最小字段搜索 (bvid, stat, pubdate, duration)           │
-│  ② limit=10000, rank_method=stats                          │
-│  ③ 返回按 stats 排序的 bvid 列表                           │
-└────────────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─ 补充: fetch_docs_by_bvids ───────────────────────────────┐
-│  按 bvid 列表获取完整文档（含高亮、region 信息）           │
+┌─ Step 1: multi_lane_recall ────────────────────────────────┐
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │           ThreadPoolExecutor (4 并行)                 │ │
+│  │  ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐ │ │
+│  │  │ 相关性   │ │ 热度     │ │ 时效性  │ │ 质量     │ │ │
+│  │  │ BM25     │ │ stat.view│ │ pubdate │ │stat_score│ │ │
+│  │  │ _score   │ │ desc     │ │ desc    │ │ desc     │ │ │
+│  │  │ 200 条   │ │ 100 条   │ │ 100 条  │ │ 100 条   │ │ │
+│  │  └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬─────┘ │ │
+│  │       └────────┬────┴────────┬───┘           │       │ │
+│  │                └─────────────┴───────────────┘       │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                         │                                  │
+│              合并 + 去重 (by bvid)                          │
+│              约 300-500 候选文档                             │
+│              每条文档带 lane_tags                            │
 └────────────────────────────────────────────────────────────┘
                          │
                     (可选: rerank)
+                         │
+                         ▼
+┌─ fetch_and_rank ───────────────────────────────────────────┐
+│  ① fetch_docs_by_bvids: 获取完整文档                        │
+│  ② diversified_rank: 槽位分配排序                            │
+│     Top 10 = 3×相关 + 2×质量 + 3×时效 + 2×热度              │
+│  ③ 剩余文档按融合分数排序                                    │
+└────────────────────────────────────────────────────────────┘
                          │
                          ▼
 ┌─ Step 2: group_hits_by_owner ──────────────────────────────┐
@@ -182,21 +222,21 @@ VideoExplorer (继承 VideoSearcherV2)
 └────────────────────────────────────────────────────────────┘
 ```
 
-### 3.4 向量搜索流程 (knn_explore)
+### 3.4 向量搜索流程 (knn_explore_v2)
 
 ```
 ┌─ Step 0: construct_knn_query ──────────────────────────────┐
 │  ① 解析 DSL → 提取过滤条件                                 │
 │  ② 判断窄过滤器 (用户/BV 号过滤)                            │
-│  ③ 并行启动: LSH 嵌入 + 补充词语召回                       │
+│  ③ VectorRecall 协调嵌入和检索                               │
 └────────────────────────────────────────────────────────────┘
                          │
             ┌────────────┴────────────┐
             ▼                         ▼
     ┌─ 窄过滤器 ─┐          ┌─ 常规查询 ──────────┐
     │ dual_sort   │          │ KNN search           │
-    │ filter      │          │ k=400                │
-    │ search      │          │ num_candidates=10000 │
+    │ filter      │          │ + 词语补充召回        │
+    │ search      │          │ 并行执行              │
     └─────────────┘          └──────────────────────┘
                          │
                          ▼
@@ -213,8 +253,8 @@ VideoExplorer (继承 VideoSearcherV2)
 └────────────────────────────────────────────────────────────┘
                          │
                          ▼
-┌─ 补充: fetch_docs_by_bvids ───────────────────────────────┐
-│  获取完整文档 → 合并分数 → 字符级高亮                      │
+┌─ fetch_and_rank ───────────────────────────────────────────┐
+│  获取完整文档 → diversified_rank → 字符级高亮              │
 └────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -223,7 +263,7 @@ VideoExplorer (继承 VideoSearcherV2)
 └────────────────────────────────────────────────────────────┘
 ```
 
-### 3.5 混合搜索流程 (hybrid_explore)
+### 3.5 混合搜索流程 (hybrid_explore_v2)
 
 ```
 ┌─ Step 0: construct_query_dsl_dict ─────────────────────────┐
@@ -231,22 +271,24 @@ VideoExplorer (继承 VideoSearcherV2)
 └────────────────────────────────────────────────────────────┘
                          │
                          ▼
-┌─ Step 1: hybrid_search ───────────────────────────────────┐
+┌─ Step 1: hybrid_recall ───────────────────────────────────┐
+│  RecallManager 协调两种召回:                                │
 │  ┌─────────────┐  ┌──────────────┐                        │
-│  │  词语搜索   │  │  KNN 搜索    │   ← 并行执行           │
-│  │  search()   │  │  knn_search()│                        │
+│  │  多车道词语  │  │  KNN 向量    │   ← 并行执行           │
+│  │  recall      │  │  recall      │                        │
 │  └──────┬──────┘  └──────┬───────┘                        │
 │         └───────┬────────┘                                │
 │                 ▼                                          │
-│   RRF 融合 (fill-and-supplement 策略)                      │
-│   - 词语 Top-100 + KNN Top-100 优先                        │
-│   - 填充至 limit (默认 400)                                │
+│   RecallPool.merge → 合并去重                               │
+│   保留 lane_tags, rank info                                │
 └────────────────────────────────────────────────────────────┘
                          │
                     (可选: rerank)
                          │
                          ▼
-┌─ 补充 + 排序 + 分组 ──────────────────────────────────────┐
+┌─ fetch_and_rank ──────────────────────────────────────────┐
+│  fetch_docs → diversified_rank → group_by_owner           │
+└───────────────────────────────────────────────────────────┘
 │  fetch_docs_by_bvids → tiered_rank → group_hits_by_owner  │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -306,39 +348,44 @@ score = (2048 - hamming_distance) / 2048
 **已验证结论：**
 LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `diag_float_vs_lsh.py` 验证）。KNN 召回问题的根本原因是嵌入模型对实体名的语义误解（如将"影视飓风"理解为"影视+飓风"），而非 LSH 精度损失。
 
-### 4.3 补充词语召回
+### 4.3 多车道召回 (Multi-Lane Recall)
 
-**问题：** 语义嵌入按主题相似度搜索，与关键词匹配存在本质差异。对于实体查询（UP 主名、品牌名等），嵌入模型会将专有名词按字面意义理解，返回主题相近但实体不匹配的结果。
+**问题**：旧的单次 ES 搜索（limit=10000）召回维度单一、速度慢。只按 BM25 相关性取 top-k，无法保证召回高热度、高质量、高时效性的文档。
 
-**解决方案：** 在 KNN 搜索的同时，并行运行一个快速词语搜索，将两者的结果合并（按 bvid 去重），然后交给精排器决定最终排序。
+**解决方案**：`recalls/` 模块实现多车道并行召回策略。
 
-```
-┌──────────────────────────┐
-│   ThreadPoolExecutor     │
-│  ┌─────────┐ ┌────────┐ │
-│  │ 词语搜索│ │LSH嵌入 │ │  ← 并行
-│  │ limit=  │ │+ KNN   │ │
-│  │ 1000    │ │ 搜索   │ │
-│  └────┬────┘ └───┬────┘ │
-└───────┼──────────┼──────┘
-        └─────┬────┘
-              ▼
-     合并 + 去重 (by bvid)
-     KNN 400 + 词语补充 ≈ 1000-1400
-              │
-              ▼
-     float 向量精排 (cosine + keyword_boost)
-```
+#### 多车道词语召回 (MultiLaneWordRecall)
 
-**配置参数：**
-- `KNN_WORD_RECALL_ENABLED = True`
-- `KNN_WORD_RECALL_LIMIT = 1000`
-- `KNN_WORD_RECALL_TIMEOUT = 3s`
+同一个查询，4 个车道并行执行不同排序的 ES 查询：
 
-**跳过条件：**
-- 词语召回被禁用 (`word_recall_enabled=False`)
-- 存在窄过滤器（使用 dual_sort 替代）
-- 精排未开启（无精排器时词语召回无法被正确排序）
+| 车道 | 排序依据 | 取回量 | 目标 |
+|------|----------|--------|------|
+| `relevance` | BM25 `_score` | 200 | 相关性最高的文档 |
+| `popularity` | `stat.view` desc | 100 | 热度最高的文档 |
+| `recency` | `pubdate` desc | 100 | 时间最近的文档 |
+| `quality` | `stat_score` desc | 100 | 质量最高的文档 |
+
+**合并逻辑** (`RecallPool.merge`)：
+- 按 `bvid` 去重，同一文档可能出现在多个车道
+- 每条文档记录 `lane_tags`（如 `{"relevance", "popularity"}`）
+- 合并后的候选池约 300-500 条
+
+**性能**：4 个并行 ES 查询 vs 1 个扫描 10000 条的查询。每个车道的 `size` 远小于 10000，且并行执行，总延迟约等于单个最慢车道的延迟。
+
+#### 向量召回 (VectorRecall)
+
+- **广泛查询**：KNN搜索 + 并行词语补充召回 → 合并去重
+- **窄过滤器查询**：`dual_sort_filter_search()` 按时间和热度双排序
+
+#### RecallManager
+
+根据搜索模式自动选择召回策略：
+
+| 模式 | 召回策略 |
+|------|----------|
+| `word` | `MultiLaneWordRecall` |
+| `vector` | `VectorRecall` |
+| `hybrid` | 两者并行 → `RecallPool.merge` |
 
 ### 4.4 精排重排 (Reranking)
 
@@ -404,7 +451,56 @@ rrf_score = Σ weight[i] / (k + rank[i])
 ```
 融合多个维度的排序（分数、统计量、发布时间）。
 
-### 4.6 UP 主分组
+### 4.6 多样化排序 (Diversified Ranking)
+
+**问题**：连续加权融合 (`w × quality + w × relevance + w × recency`) 导致 Top 10 同质化 — 所有结果都是各维度中等偏上的"均衡型"文档，缺少某一维度特别突出的文档。
+
+**解决方案**：`DiversifiedRanker` 使用**槽位分配**算法，保证 Top-K 中各维度都有代表。
+
+#### 槽位分配算法
+
+```
+1. 计算每条文档的 4 维分数:
+   - relevance_score: ES BM25 分数归一化
+   - quality_score: stat_score (DocScorer 计算的质量分)
+   - recency_score: pubdate 线性衰减
+   - popularity_score: stat.view 排名分
+
+2. 按维度优先级依次分配槽位:
+   slot_preset = {
+     "relevance": 3,   # 3 个相关性最高的
+     "quality": 2,     # 2 个质量最高的
+     "recency": 3,     # 3 个最新的
+     "popularity": 2,  # 2 个最热门的
+   }   # 总计 10 个槽位
+
+3. 每个维度取该维度分数最高且未被选中的文档
+
+4. 若有剩余文档，按加权融合分数排序作为 fallback
+
+5. 被选中的文档按其槽位排名赋予 rank_score
+```
+
+#### 槽位预设 (Slot Presets)
+
+| 预设 | 相关 | 质量 | 时效 | 热度 | 适用场景 |
+|------|------|------|------|------|----------|
+| `balanced` (默认) | 3 | 2 | 3 | 2 | 通用搜索 |
+| `prefer_relevance` | 5 | 2 | 2 | 1 | 精确查找 |
+| `prefer_quality` | 2 | 4 | 2 | 2 | 质量优先 |
+| `prefer_recency` | 2 | 1 | 5 | 2 | 时效优先 |
+
+#### 与旧排序策略的对比
+
+| 特性 | stats (旧默认) | diversified (新默认) |
+|------|---------------|---------------------|
+| Top 10 多样性 | 低 (都是均衡型) | **高 (各维度代表)** |
+| 超高播放量文档 | 可能被平均化稀释 | **保证出现** |
+| 最新发布文档 | 可能排名偏后 | **保证出现** |
+| 排序可控性 | 仅通过调权重 | **通过调槽位数** |
+| 融合分数连续性 | 连续 | Top-K 后连续 |
+
+### 4.7 UP 主分组
 
 `AuthorGrouper` 将搜索结果按 UP 主聚合，返回有序列表：
 
@@ -414,7 +510,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
 
 **返回类型为 list（而非 dict）** ，以确保 JSON 序列化/反序列化时顺序不丢失。
 
-### 4.7 窄过滤器处理
+### 4.8 窄过滤器处理
 
 当查询包含用户过滤器（`u=xxx`）或 BV 号过滤器（`bv=xxx`）时，结果集通常很小（如某 UP 主的几十到几百个视频）。此时 KNN 搜索效率低下（HNSW 图中只有极少数节点满足过滤条件）。
 

@@ -45,6 +45,7 @@ from ranks.scorers import (
     transform_relevance_score,
 )
 from ranks.fusion import ScoreFuser
+from ranks.diversified import DiversifiedRanker
 
 
 class VideoHitsRanker:
@@ -69,6 +70,7 @@ class VideoHitsRanker:
         self.pubdate_scorer = PubdateScorer()
         self.relate_scorer = RelateScorer()
         self.score_fuser = ScoreFuser()
+        self.diversified_ranker = DiversifiedRanker()
 
     def heads(self, hits_info: dict, top_k: int = RANK_TOP_K) -> dict:
         """Get first k hits without ranking.
@@ -651,7 +653,7 @@ class VideoHitsRanker:
         Args:
             hits_info: Dict with "hits" list.
             method: Ranking method ("heads", "rrf", "stats", "relevance",
-                    "tiered", "preference").
+                    "tiered", "preference", "diversified").
             top_k: Number of top results to return.
             prefer: Ranking preference mode.
             **kwargs: Additional arguments for specific ranking methods.
@@ -671,5 +673,41 @@ class VideoHitsRanker:
             return self.tiered_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
         elif method == "preference":
             return self.preference_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
+        elif method == "diversified":
+            return self.diversified_rank(
+                hits_info, top_k=top_k, prefer=prefer, **kwargs
+            )
         else:
             return self.stats_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
+
+    def diversified_rank(
+        self,
+        hits_info: dict,
+        top_k: int = RANK_TOP_K,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
+        diversify_top_n: int = 10,
+        **kwargs,
+    ) -> dict:
+        """Diversified slot-based ranking.
+
+        Ensures top results contain documents from multiple dimensions:
+        relevant, popular, recent, and high-quality.
+
+        For the first `diversify_top_n` results, uses slot allocation
+        to guarantee diversity. Remaining results use fused scoring.
+
+        Args:
+            hits_info: Dict with "hits" list.
+            top_k: Total results to return.
+            prefer: Preference mode (controls slot allocation).
+            diversify_top_n: How many top items to diversify.
+
+        Returns:
+            hits_info with diversified-ranked hits.
+        """
+        return self.diversified_ranker.diversified_rank_with_fused_fallback(
+            hits_info=hits_info,
+            top_k=top_k,
+            prefer=prefer,
+            diversify_top_n=diversify_top_n,
+        )

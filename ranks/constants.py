@@ -23,8 +23,10 @@ from typing import Literal
 # Ranking Method Types
 # =============================================================================
 
-RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance", "tiered"]
-RANK_METHOD = "stats"
+RANK_METHOD_TYPE = Literal[
+    "heads", "rrf", "stats", "relevance", "tiered", "diversified"
+]
+RANK_METHOD = "diversified"
 
 # =============================================================================
 # Ranking Preference Types
