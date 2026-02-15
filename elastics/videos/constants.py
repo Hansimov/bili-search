@@ -15,6 +15,7 @@ SOURCE_FIELDS = [
     *["tid", "ptid", "tname", "rtags", "tags"],
     *["owner", "pic", "duration", "stat"],
     *["pubdate", "insert_at"],
+    "stat_score",  # pre-computed doc quality score from blux.doc_score
 ]
 DOC_EXCLUDED_SOURCE_FIELDS = []
 
@@ -242,11 +243,13 @@ KNN_TEXT_EMB_FIELD = "text_emb"
 # Higher values improve recall but increase latency
 # With supplemental word recall, the rerank pool = KNN_K + word recall supplement
 # KNN provides semantic topic recall; word recall provides entity/keyword recall
-KNN_K = 400  # Word recall supplements with keyword-matching candidates
+KNN_K = 1000  # More neighbors for better recall + larger rerank candidate pool
 # KNN_NUM_CANDIDATES: Candidates to consider per shard before selecting top K
 # Should be significantly larger than K for good recall
-# With 8 shards: total candidates = 8 * num_candidates = 32,000
-KNN_NUM_CANDIDATES = 4000  # 10x of K (standard ratio)
+# With 8 shards: total candidates = 8 * num_candidates = 80,000
+KNN_NUM_CANDIDATES = (
+    10000  # 25x of K (higher ratio for better recall with LSH bit vectors)
+)
 KNN_TIMEOUT = 8  # timeout for KNN search
 KNN_SIMILARITY_TYPE = Literal["hamming", "l2_norm", "cosine"]
 KNN_SIMILARITY = "hamming"  # for bit vectors, hamming is most efficient

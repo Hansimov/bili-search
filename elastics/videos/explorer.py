@@ -31,6 +31,8 @@ from converters.dsl.fields.qmod import (
 from ranks.constants import (
     RANK_METHOD_TYPE,
     RANK_METHOD,
+    RANK_PREFER_TYPE,
+    RANK_PREFER,
     AUTHOR_SORT_FIELD_TYPE,
     AUTHOR_SORT_FIELD,
     EXPLORE_RANK_TOP_K,
@@ -387,6 +389,8 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
+        # Ranking preference
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
         # Rerank params (for q=wr mode)
         enable_rerank: bool = False,
         rerank_max_hits: int = KNN_RERANK_MAX_HITS,
@@ -540,7 +544,12 @@ class VideoExplorer(VideoSearcherV2):
 
                 full_doc_search_res["hits"] = reranked_hits[:rank_top_k]
                 full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
-                full_doc_search_res["rank_method"] = "rerank"
+
+                # Apply preference-based ranking after reranking (q=wr)
+                # Fuses BM25 + embedding relevance with quality and recency
+                full_doc_search_res = self.hit_ranker.preference_rank(
+                    full_doc_search_res, top_k=rank_top_k, prefer=prefer
+                )
                 rerank_performed = True
 
                 # Get new top bvids after rerank
@@ -649,6 +658,8 @@ class VideoExplorer(VideoSearcherV2):
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,  # Match video list order
+        # Ranking preference
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
     ) -> dict:
         """KNN-based explore using text embeddings instead of keyword matching.
 
@@ -1234,13 +1245,14 @@ class VideoExplorer(VideoSearcherV2):
         ranking_top_k = len(full_hits) if is_narrow_filter else rank_top_k
 
         # Re-apply ranking after merging scores
-        # If rerank was performed, use rerank_score; otherwise use original score
+        # If rerank was performed, apply preference-based ranking;
+        # otherwise use original ranking method
         if rerank_performed:
-            # Sort by rerank_score which already incorporates cosine similarity and keyword boost
-            full_hits.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
+            # Apply preference-based ranking: fuses embedding + quality + recency
             full_doc_search_res["hits"] = full_hits
-            full_doc_search_res["return_hits"] = len(full_hits)
-            full_doc_search_res["rank_method"] = "rerank"
+            full_doc_search_res = self.hit_ranker.preference_rank(
+                full_doc_search_res, top_k=ranking_top_k, prefer=prefer
+            )
         else:
             # For KNN explore without rerank, apply ranking method
             if rank_method == "relevance":
@@ -1253,7 +1265,7 @@ class VideoExplorer(VideoSearcherV2):
                 )
             elif rank_method == "stats":
                 full_doc_search_res = self.hit_ranker.stats_rank(
-                    full_doc_search_res, top_k=ranking_top_k
+                    full_doc_search_res, top_k=ranking_top_k, prefer=prefer
                 )
             else:  # "heads"
                 full_doc_search_res = self.hit_ranker.heads(
@@ -1351,6 +1363,8 @@ class VideoExplorer(VideoSearcherV2):
         rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
         rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
         rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
+        # Ranking preference
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
     ) -> dict:
         """Hybrid explore combining word-based and vector-based retrieval.
 
@@ -1607,7 +1621,12 @@ class VideoExplorer(VideoSearcherV2):
 
                 full_doc_search_res["hits"] = reranked_hits[:rank_top_k]
                 full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
-                full_doc_search_res["rank_method"] = "rerank"
+
+                # Apply preference-based ranking after reranking (q=wvr)
+                # Fuses hybrid + embedding relevance with quality and recency
+                full_doc_search_res = self.hit_ranker.preference_rank(
+                    full_doc_search_res, top_k=rank_top_k, prefer=prefer
+                )
                 rerank_performed = True
                 full_hits = full_doc_search_res["hits"]
 
@@ -1662,6 +1681,7 @@ class VideoExplorer(VideoSearcherV2):
                     full_doc_search_res,
                     top_k=rank_top_k,
                     relevance_field="hybrid_score",
+                    prefer=prefer,
                 )
             elif rank_method == "relevance":
                 # Pure relevance ranking, just set rank_score for downstream use
@@ -1677,7 +1697,7 @@ class VideoExplorer(VideoSearcherV2):
                 )
             elif rank_method == "stats":
                 full_doc_search_res = self.hit_ranker.stats_rank(
-                    full_doc_search_res, top_k=rank_top_k
+                    full_doc_search_res, top_k=rank_top_k, prefer=prefer
                 )
             else:  # "heads"
                 full_doc_search_res = self.hit_ranker.heads(
@@ -1758,6 +1778,8 @@ class VideoExplorer(VideoSearcherV2):
         rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
+        # Ranking preference
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
         # KNN/Hybrid specific params
         knn_field: str = KNN_TEXT_EMB_FIELD,
         knn_k: int = KNN_K,
@@ -1837,6 +1859,7 @@ class VideoExplorer(VideoSearcherV2):
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
                 enable_rerank=enable_rerank,  # Pass rerank flag
+                prefer=prefer,
             )
             # Update qmod in result to include full mode info
             if result.get("data") and len(result["data"]) > 0:
@@ -1863,6 +1886,7 @@ class VideoExplorer(VideoSearcherV2):
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
                 enable_rerank=True,  # Always rerank for vector search
+                prefer=prefer,
             )
             # Update qmod in result
             if result.get("data") and len(result["data"]) > 0:
@@ -1881,6 +1905,7 @@ class VideoExplorer(VideoSearcherV2):
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
                 enable_rerank=enable_rerank,  # Pass rerank flag for word search
+                prefer=prefer,
             )
             # Add qmod to first step's output for word-only mode
             if result.get("data") and len(result["data"]) > 0:

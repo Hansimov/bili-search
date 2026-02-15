@@ -1,128 +1,177 @@
 """
 Score Fusion Strategies
 
-This module provides methods for combining multiple scores into a final ranking score.
+This module provides methods for combining multiple normalized scores
+into a final ranking score, supporting preference-based weight adjustment.
 
 Main class:
-    - ScoreFuser: Combines stats, pubdate, and relevance scores
+    - ScoreFuser: Combines quality, relevance, and recency scores
 
-The fusion formula emphasizes relevance to ensure that highly relevant results
-rank first, even if they have lower popularity or recency scores.
+All input scores are expected to be normalized to [0, 1]:
+    - quality ∈ [0, 1): stat quality from DocScorer
+    - relevance ∈ [0, 1]: normalized relevance (BM25, cosine, or blended)
+    - recency ∈ [0, 1]: normalized time factor from PubdateScorer
+
+Preference modes control relative weight of each signal:
+    - balanced: relevance-first, quality second, recency third
+    - prefer_quality: emphasize document popularity/engagement
+    - prefer_relevance: emphasize search match quality
+    - prefer_recency: emphasize freshness
 """
 
-from typing import Literal
+import math
+
+from ranks.constants import (
+    RANK_PREFER_TYPE,
+    RANK_PREFER,
+    RANK_PREFER_PRESETS,
+    BLEND_SEMANTIC_WEIGHT,
+    BLEND_BM25_WEIGHT,
+    BLEND_KEYWORD_BONUS,
+)
 
 
 class ScoreFuser:
-    """Fuses multiple scores into a single ranking score.
+    """Fuses multiple normalized scores into a single ranking score.
 
-    The default fusion strategy uses a product formula with strong relevance emphasis:
-        final_score = stats_score * pubdate_score * (relate_score ^ 3)
+    Supports two fusion strategies:
+    1. Preference-based weighted sum (primary, recommended):
+       score = w_quality * quality + w_relevance * relevance + w_recency * recency
 
-    The cube on relate_score makes relevance strongly dominate the ranking,
-    ensuring highly relevant results appear first even if less popular.
+    2. Legacy product formula (kept for compatibility):
+       score = (base + stats) * pubdate * relate^power
+
+    The preference-based approach is preferred because:
+    - Each signal contributes independently and transparently
+    - Weights directly map to user-visible preference modes
+    - Normalized inputs ensure balanced contribution
 
     Example:
         >>> fuser = ScoreFuser()
-        >>> # High relevance wins even with lower stats
-        >>> fuser.fuse(stats=10, pubdate=1.0, relate=0.9)  # relate^3 = 0.729
-        7.29
-        >>> fuser.fuse(stats=100, pubdate=1.0, relate=0.5)  # relate^3 = 0.125
-        12.5  # Higher stats but lower relevance = similar final score
+        >>> fuser.fuse_with_preference(quality=0.8, relevance=0.9, recency=0.5)
+        0.69  # balanced: 0.3*0.8 + 0.5*0.9 + 0.2*0.5
+        >>> fuser.fuse_with_preference(quality=0.8, relevance=0.9, recency=0.5,
+        ...                            prefer="prefer_quality")
+        0.77  # 0.5*0.8 + 0.3*0.9 + 0.2*0.5
     """
+
+    # Base score offset for legacy product formula
+    STATS_BASE = 0.1
 
     def __init__(self, relate_power: float = 3.0):
         """Initialize score fuser.
 
         Args:
-            relate_power: Exponent applied to relate_score (default 3.0).
-                         Higher values give more weight to relevance.
+            relate_power: Exponent for relate_score in product formula (legacy).
         """
         self.relate_power = relate_power
+
+    def fuse_with_preference(
+        self,
+        quality: float,
+        relevance: float,
+        recency: float,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
+    ) -> float:
+        """Fuse scores using preference-weighted sum.
+
+        All inputs should be normalized to [0, 1].
+
+        Formula: w_q * quality + w_r * relevance + w_t * recency
+
+        Args:
+            quality: Quality score from StatsScorer ∈ [0, 1).
+            relevance: Normalized relevance ∈ [0, 1].
+            recency: Normalized recency from PubdateScorer ∈ [0, 1].
+            prefer: Preference mode controlling weight distribution.
+
+        Returns:
+            Fused score in [0, 1], rounded to 6 decimal places.
+        """
+        weights = RANK_PREFER_PRESETS.get(prefer, RANK_PREFER_PRESETS["balanced"])
+        score = (
+            weights["quality"] * quality
+            + weights["relevance"] * relevance
+            + weights["recency"] * recency
+        )
+        return round(min(score, 1.0), 6)
+
+    @staticmethod
+    def blend_relevance(
+        cosine_similarity: float,
+        bm25_norm: float = 0.0,
+        keyword_boost: float = 1.0,
+    ) -> float:
+        """Blend embedding cosine similarity with BM25 keyword-match score.
+
+        Used after reranking to produce a unified relevance score that
+        combines semantic understanding (from embeddings) with precise
+        keyword matching (from BM25).
+
+        Formula when BM25 is available:
+            relevance = semantic_w * cosine + bm25_w * bm25_norm + keyword_bonus
+
+        Formula when only embedding is available:
+            relevance = cosine * (semantic_w + bm25_w) + keyword_bonus
+
+        The keyword_bonus is derived from the keyword_boost multiplier
+        (typically 1.0 for no match, up to ~6.0+ for multiple matches).
+        It provides a small uplift for documents containing exact query terms.
+
+        Args:
+            cosine_similarity: Embedding cosine similarity ∈ [0, 1].
+            bm25_norm: Normalized BM25 score ∈ [0, 1]. 0 if unavailable.
+            keyword_boost: Keyword boost multiplier from reranker (>= 1.0).
+
+        Returns:
+            Blended relevance score ∈ [0, 1].
+        """
+        # Keyword bonus: log-compress the boost multiplier to [0, BLEND_KEYWORD_BONUS]
+        # keyword_boost=1.0 → 0, keyword_boost=3.0 → ~0.07, keyword_boost=6.0 → ~0.10
+        if keyword_boost > 1.0:
+            bonus = min(
+                math.log1p(keyword_boost - 1.0) / 2.0 * BLEND_KEYWORD_BONUS / 0.1,
+                BLEND_KEYWORD_BONUS,
+            )
+        else:
+            bonus = 0.0
+
+        if bm25_norm > 0:
+            # Both signals available: weighted blend
+            blended = (
+                BLEND_SEMANTIC_WEIGHT * cosine_similarity
+                + BLEND_BM25_WEIGHT * bm25_norm
+                + bonus
+            )
+        else:
+            # Only embedding: scale semantic to fill full weight
+            blended = (
+                cosine_similarity * (BLEND_SEMANTIC_WEIGHT + BLEND_BM25_WEIGHT) + bonus
+            )
+
+        return min(max(blended, 0.0), 1.0)
+
+    # ---- Legacy methods (kept for backward compatibility) ----
 
     def calc_fuse_score_by_prod(
         self, stats_score: float, pubdate_score: float, relate_score: float
     ) -> float:
-        """Fuse scores using product formula with strong relevance emphasis.
-
-        Formula: stats_score * pubdate_score * (relate_score ^ relate_power)
-
-        Args:
-            stats_score: Popularity score from StatsScorer.
-            pubdate_score: Recency score from PubdateScorer.
-            relate_score: Relevance score from RelateScorer.
-
-        Returns:
-            Fused score, rounded to 6 decimal places.
-        """
-        # Power transform on relate_score to strongly amplify its importance
+        """Legacy product formula. Use fuse_with_preference() instead."""
+        stats_with_base = self.STATS_BASE + stats_score
         relate_emphasis = relate_score**self.relate_power
-        return round(stats_score * pubdate_score * relate_emphasis, 6)
-
-    def calc_fuse_score_by_weighted_sum(
-        self,
-        stats_score: float,
-        pubdate_score: float,
-        relate_score: float,
-        stats_weight: float = 0.3,
-        pubdate_weight: float = 0.2,
-        relate_weight: float = 0.5,
-    ) -> float:
-        """Fuse scores using weighted sum.
-
-        Formula: stats_weight * stats + pubdate_weight * pubdate + relate_weight * relate
-
-        This is an alternative to the product formula, useful when you want
-        more predictable score combinations.
-
-        Args:
-            stats_score: Popularity score (should be normalized 0-1).
-            pubdate_score: Recency score (typically 0-4).
-            relate_score: Relevance score (typically 0-1).
-            stats_weight: Weight for stats (default 0.3).
-            pubdate_weight: Weight for pubdate (default 0.2).
-            relate_weight: Weight for relate (default 0.5).
-
-        Returns:
-            Weighted sum of scores.
-        """
-        return round(
-            stats_weight * stats_score
-            + pubdate_weight * pubdate_score
-            + relate_weight * relate_score,
-            6,
-        )
+        return round(stats_with_base * pubdate_score * relate_emphasis, 6)
 
     def fuse(
         self,
-        stats_score: float,
-        pubdate_score: float,
-        relate_score: float,
-        method: Literal["product", "weighted_sum"] = "product",
+        stats_score: float = 0.0,
+        pubdate_score: float = 0.0,
+        relate_score: float = 0.0,
+        method: str = "product",
         **kwargs,
     ) -> float:
-        """Fuse multiple scores into a single ranking score.
-
-        Args:
-            stats_score: Popularity score from StatsScorer.
-            pubdate_score: Recency score from PubdateScorer.
-            relate_score: Relevance score from RelateScorer.
-            method: Fusion method ("product" or "weighted_sum").
-            **kwargs: Additional arguments for specific fusion methods.
-
-        Returns:
-            Fused score for ranking.
-        """
-        if method == "weighted_sum":
-            return self.calc_fuse_score_by_weighted_sum(
-                stats_score=stats_score,
-                pubdate_score=pubdate_score,
-                relate_score=relate_score,
-                **kwargs,
-            )
-        else:
-            return self.calc_fuse_score_by_prod(
-                stats_score=stats_score,
-                pubdate_score=pubdate_score,
-                relate_score=relate_score,
-            )
+        """Legacy fuse method. Use fuse_with_preference() instead."""
+        return self.calc_fuse_score_by_prod(
+            stats_score=stats_score,
+            pubdate_score=pubdate_score,
+            relate_score=relate_score,
+        )

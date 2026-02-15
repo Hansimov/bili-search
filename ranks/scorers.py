@@ -6,7 +6,7 @@ Each scorer handles a specific aspect of video quality/relevance.
 
 Scorers:
     - StatsScorer: Popularity scoring based on view, coin, favorite, etc.
-    - PubdateScorer: Recency scoring based on publish date
+    - PubdateScorer: Real-time recency scoring using blux.doc_score time factor
     - RelateScorer: Relevance gating and scoring
 
 Functions:
@@ -15,18 +15,16 @@ Functions:
 """
 
 import math
+import time as _time
 from typing import Literal
 
 from ranks.constants import (
     # Stats scoring
     STAT_FIELDS,
     STAT_LOGX_OFFSETS,
-    # Pubdate scoring
-    PUBDATE_BASE,
-    SECONDS_PER_DAY,
-    ZERO_DAY_SCORE,
-    INFT_DAY_SCORE,
-    PUBDATE_SCORE_POINTS,
+    # Recency scoring (from blux time factor)
+    TIME_FACTOR_MIN,
+    TIME_FACTOR_MAX,
     # Relevance scoring
     RELATE_GATE_RATIO,
     RELATE_GATE_COUNT,
@@ -118,18 +116,24 @@ def transform_relevance_score(
 class StatsScorer:
     """Popularity scorer based on video statistics.
 
-    Calculates a composite score from view count, favorites, coins, etc.
-    Uses log transform to handle wide range of values gracefully.
+    Supports two scoring modes:
+    1. "doc_score" (default): Uses blux.doc_score.DocScorer for saturated,
+       anomaly-aware scoring. Returns bounded values ∈ [0, 1).
+    2. "prod_logx" (legacy): Product of log-transformed stats. Returns
+       unbounded values ~100-1000+.
 
-    The scoring formula is:
-        product(log(stat + offset) for each stat field)
-
-    This gives higher scores to videos that are popular across multiple metrics.
+    The doc_score mode is preferred because:
+    - Saturated per-field scoring prevents any single stat from dominating
+    - Anomaly detection penalizes artificially inflated stats
+    - Bounded output simplifies score fusion and comparison
+    - Consistent with the stat_score stored in ES index
 
     Example:
         >>> scorer = StatsScorer()
         >>> scorer.calc({"view": 100000, "coin": 1000, "favorite": 500})
-        ~150.0
+        ~0.65  # bounded [0, 1)
+        >>> scorer.calc_prod_logx({"view": 100000, "coin": 1000, "favorite": 500})
+        ~150.0  # unbounded (legacy)
     """
 
     def __init__(
@@ -145,9 +149,41 @@ class StatsScorer:
         """
         self.stat_fields = stat_fields
         self.stat_logx_offsets = stat_logx_offsets
+        # Initialize DocScorer for doc_score mode
+        self._doc_scorer = None
+
+    @property
+    def doc_scorer(self):
+        """Lazy-init DocScorer from blux (avoids import at module level)."""
+        if self._doc_scorer is None:
+            from blux.doc_score import DocScorer
+
+            self._doc_scorer = DocScorer()
+        return self._doc_scorer
+
+    def calc_stat_quality(self, stats: dict) -> float:
+        """Calculate bounded stat quality score using DocScorer.
+
+        Uses blux.doc_score.DocScorer's saturated scoring with anomaly detection.
+        Returns the pure stat quality without time factor.
+
+        Score = stat_score × anomaly_factor, where:
+        - stat_score ∈ [0, 1): weighted average of saturated per-field scores
+        - anomaly_factor ∈ [0.3, 1.0]: penalizes inconsistent stats
+
+        Args:
+            stats: Dict of stat values (view, coin, favorite, like, danmaku, reply).
+
+        Returns:
+            Bounded quality score ∈ [0, 1).
+        """
+        scorer = self.doc_scorer
+        stat_score = scorer._calc_stat_score(stats)
+        anomaly_factor = scorer._calc_anomaly_factor(stats)
+        return stat_score * anomaly_factor
 
     def calc_stats_score_by_prod_logx(self, stats: dict) -> float:
-        """Calculate score as product of log-transformed stats.
+        """Calculate score as product of log-transformed stats (legacy method).
 
         Args:
             stats: Dict of stat values (view, coin, favorite, etc.).
@@ -164,121 +200,104 @@ class StatsScorer:
             for field in self.stat_fields
         )
 
-    def calc(self, stats: dict) -> float:
+    # Keep legacy alias
+    calc_prod_logx = calc_stats_score_by_prod_logx
+
+    def calc(self, stats: dict, hit: dict = None) -> float:
         """Calculate stats score.
+
+        If the hit has a pre-computed stat_score from ES (via blux.doc_score),
+        extracts just the stat quality component. Otherwise computes fresh
+        using DocScorer's saturated scoring.
 
         Args:
             stats: Dict of stat values.
+            hit: Optional hit dict that may contain pre-computed "stat_score".
 
         Returns:
-            Stats score (higher = more popular).
+            Stats quality score ∈ [0, 1).
         """
-        return self.calc_stats_score_by_prod_logx(stats)
+        return self.calc_stat_quality(stats)
 
 
 class PubdateScorer:
-    """Recency scorer based on video publish date.
+    """Real-time recency scorer using blux's DocScorer time factor.
 
-    Uses piecewise linear interpolation between defined points to
-    calculate a score that decays with video age.
+    Computes freshness based on current time minus publish date,
+    reusing blux.doc_score.DocScorer._calc_time_factor() for consistent
+    time decay behavior.
 
-    Score decay curve (default):
-        - Today: 4.0
-        - 1 week old: 1.0
-        - 1 month old: 0.6
-        - 1 year old: 0.3
-        - Older: 0.25
+    Previous implementation used an absolute-days-since-2010 calculation
+    that produced a constant 0.25 for all modern videos. This version
+    uses real-time age (now - pubdate) for meaningful time decay.
+
+    Time decay curve (from DocScorer):
+        - <= 1 hour old:  1.30 (fresh boost)
+        - 1 day old:      1.10
+        - 3 days old:     0.90
+        - 7 days old:     0.70
+        - 15 days old:    0.55
+        - >= 30 days old: 0.45
+
+    Returns time_factor in [0.45, 1.30], normalized to [0, 1] via normalize().
 
     Example:
         >>> scorer = PubdateScorer()
-        >>> scorer.calc(1704067200)  # 2024-01-01
-        ~0.35 (depending on current date)
+        >>> scorer.calc(time.time() - 3600)    # 1 hour ago
+        1.30
+        >>> scorer.calc(time.time() - 86400)   # 1 day ago
+        1.10
+        >>> scorer.calc(time.time() - 2592000) # 30 days ago
+        0.45
     """
 
-    def __init__(
-        self,
-        day_score_points: list[tuple[float, float]] = PUBDATE_SCORE_POINTS,
-        zero_day_score: float = ZERO_DAY_SCORE,
-        inft_day_score: float = INFT_DAY_SCORE,
-    ):
-        """Initialize pubdate scorer.
+    def __init__(self):
+        """Initialize pubdate scorer with lazy-loaded DocScorer."""
+        self._doc_scorer = None
 
-        Args:
-            day_score_points: List of (days_old, score) points for interpolation.
-            zero_day_score: Score for videos from the future (edge case).
-            inft_day_score: Score for very old videos.
-        """
-        self.day_score_points = sorted(day_score_points)
-        self.zero_day_score = zero_day_score
-        self.inft_day_score = inft_day_score
-        self.slope_offsets = self.pre_calc_slope_offsets(day_score_points)
+    @property
+    def doc_scorer(self):
+        """Lazy-init DocScorer from blux (avoids import at module level)."""
+        if self._doc_scorer is None:
+            from blux.doc_score import DocScorer
 
-    def pre_calc_slope_offsets(self, points: list[tuple[float, float]]):
-        """Pre-calculate slopes and offsets for piecewise linear interpolation.
+            self._doc_scorer = DocScorer()
+        return self._doc_scorer
 
-        Args:
-            points: List of (x, y) points.
+    def calc(self, pubdate: int, now_ts: float = None) -> float:
+        """Calculate real-time recency score.
 
-        Returns:
-            List of (slope, offset) tuples for each segment.
-        """
-        slope_offsets = []
-        for i in range(1, len(points)):
-            x1, y1 = points[i - 1]
-            x2, y2 = points[i]
-            slope = (y2 - y1) / (x2 - x1)
-            offset = y1 - slope * x1
-            slope_offsets.append((slope, offset))
-        return slope_offsets
-
-    def calc_pass_days(self, pubdate: int) -> float:
-        """Calculate days since pubdate relative to base date.
+        Uses blux.doc_score.DocScorer._calc_time_factor() with the
+        real-time video age (now - pubdate) as input.
 
         Args:
             pubdate: Unix timestamp of publish date.
+            now_ts: Current timestamp. Defaults to time.time().
 
         Returns:
-            Days passed since PUBDATE_BASE (can be negative for old videos).
+            Time factor in [TIME_FACTOR_MIN, TIME_FACTOR_MAX] = [0.45, 1.30].
+            Higher values mean more recent.
         """
-        return (pubdate - PUBDATE_BASE) / SECONDS_PER_DAY
+        if now_ts is None:
+            now_ts = _time.time()
+        age_seconds = max(0, now_ts - pubdate)
+        return self.doc_scorer._calc_time_factor(age_seconds)
 
-    def calc_pubdate_score_by_slope_offsets(self, pubdate: int) -> float:
-        """Calculate score using piecewise linear interpolation.
+    def normalize(self, time_factor: float) -> float:
+        """Normalize time factor to [0, 1] range.
+
+        Maps [TIME_FACTOR_MIN, TIME_FACTOR_MAX] = [0.45, 1.30] to [0, 1].
 
         Args:
-            pubdate: Unix timestamp of publish date.
+            time_factor: Raw time factor from calc().
 
         Returns:
-            Recency score.
+            Normalized value in [0, 1].
         """
-        pass_days = self.calc_pass_days(pubdate)
-        points = self.day_score_points
-
-        # Handle edge cases
-        if pass_days <= points[0][0]:
-            return self.zero_day_score
-        if pass_days >= points[-1][0]:
-            return self.inft_day_score
-
-        # Find the segment and interpolate
-        for i in range(1, len(points)):
-            if pass_days <= points[i][0]:
-                slope, offset = self.slope_offsets[i - 1]
-                score = slope * pass_days + offset
-                return score
-
-        return self.inft_day_score
-
-    def calc(self, pubdate: int) -> float:
-        """Calculate pubdate score.
-
-        Args:
-            pubdate: Unix timestamp of publish date.
-
-        Returns:
-            Recency score (higher = more recent).
-        """
-        return self.calc_pubdate_score_by_slope_offsets(pubdate)
+        denom = TIME_FACTOR_MAX - TIME_FACTOR_MIN
+        if denom <= 0:
+            return 0.5
+        return max(0.0, min(1.0, (time_factor - TIME_FACTOR_MIN) / denom))
 
 
 class RelateScorer:

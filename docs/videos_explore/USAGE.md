@@ -111,7 +111,7 @@ res = searcher.search(
 res = searcher.knn_search(
     query="红警08 小块地",
     k=400,                   # 每分片返回 400 个近邻
-    num_candidates=4000,     # 每分片搜索 4000 个候选
+    num_candidates=10000,    # 每分片搜索 10000 个候选
     limit=50,
     rank_top_k=50,
     verbose=True,
@@ -236,7 +236,7 @@ result = explorer.explore(
 result = explorer.knn_explore(
     query="原神 角色",
     knn_k=400,                    # 每分片近邻数
-    knn_num_candidates=4000,      # 每分片候选数
+    knn_num_candidates=10000,     # 每分片候选数
     enable_rerank=True,           # 精排（默认开启）
     word_recall_enabled=True,     # 词语补充召回（默认开启）
     word_recall_limit=1000,       # 词语搜索上限
@@ -420,6 +420,8 @@ for step in result["data"]:
 | `tname` | str | 分区名称 |
 | `score` | float | ES BM25 原始分数 |
 | `rank_score` | float | 排序综合分数 |
+| `stat_score` | float | 预计算文档质量分（来自 ES 索引，由 DocScorer 生成） |
+| `stats_score` | float | 排序时计算的统计分（调试用，由 StatsScorer 生成） |
 | `rerank_score` | float | 精排分数（如有） |
 | `cosine_similarity` | float | 余弦相似度（如有） |
 | `hybrid_score` | float | 混合融合分数（如有） |
@@ -476,6 +478,9 @@ python -m elastics.tests.diag_knn           # KNN 召回诊断
 | 词语召回 | `test_word_recall_supplement`, `test_word_recall_overlap_improvement` | 补充召回 |
 | DSL 解析 | `test_qmod_parser`, `test_dsl_query_construction` | 查询解析 |
 | 分组 | `test_author_grouper_unit`, `test_author_ordering` | UP 主分组 |
+| KNN 召回 | `test_knn_num_candidates_recall` | num_candidates 对召回的影响 |
+| 查询模式 | `test_qmod_recall_comparison` | 各 qmod 模式召回重合度 |
+| 排序质量 | `test_stat_score_in_ranking` | stat_score 参与排序验证 |
 
 ---
 
@@ -547,7 +552,7 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `extra_filters` | list[dict] | `[]` | 额外过滤 |
 | `knn_field` | str | `"text_emb"` | 向量字段名 |
 | `k` | int | `400` | 每分片返回近邻数 |
-| `num_candidates` | int | `4000` | 每分片候选数 |
+| `num_candidates` | int | `10000` | 每分片候选数 |
 | `similarity` | float | `None` | 最低相似度阈值 |
 | `parse_hits` | bool | `True` | 解析命中 |
 | `add_region_info` | bool | `True` | 分区信息 |
@@ -568,7 +573,7 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `word_weight` | float | `0.5` | 词语权重 (weighted 模式) |
 | `vector_weight` | float | `0.5` | 向量权重 (weighted 模式) |
 | `knn_k` | int | `400` | KNN 近邻数 |
-| `knn_num_candidates` | int | `4000` | KNN 候选数 |
+| `knn_num_candidates` | int | `10000` | KNN 候选数 |
 | 其余参数 | — | — | 同 search() |
 
 ---
@@ -590,7 +595,7 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `group_owner_limit` | int | `25` | UP 主分组上限 |
 | `knn_field` | str | `"text_emb"` | KNN 向量字段 |
 | `knn_k` | int | `400` | KNN 近邻数 |
-| `knn_num_candidates` | int | `4000` | KNN 候选数 |
+| `knn_num_candidates` | int | `10000` | KNN 候选数 |
 
 ### explore()
 
@@ -624,7 +629,7 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `verbose` | bool | `False` | 详细日志 |
 | `knn_field` | str | `"text_emb"` | 向量字段 |
 | `knn_k` | int | `400` | 每分片近邻数 |
-| `knn_num_candidates` | int | `4000` | 每分片候选数 |
+| `knn_num_candidates` | int | `10000` | 每分片候选数 |
 | `similarity` | float | `None` | 最低相似度 |
 | `enable_rerank` | bool | `True` | 是否精排 |
 | `rerank_max_hits` | int | `2000` | 精排候选上限 |
@@ -650,7 +655,7 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `verbose` | bool | `False` | 详细日志 |
 | `knn_field` | str | `"text_emb"` | 向量字段 |
 | `knn_k` | int | `400` | KNN 近邻数 |
-| `knn_num_candidates` | int | `4000` | KNN 候选数 |
+| `knn_num_candidates` | int | `10000` | KNN 候选数 |
 | `rrf_k` | int | `60` | RRF 常数 |
 | `fusion_method` | str | `"rrf"` | 融合方法 |
 | `most_relevant_limit` | int | `10000` | 搜索范围 |
@@ -691,7 +696,7 @@ SEARCH_BOOSTED_FIELDS = {
 ```python
 KNN_TEXT_EMB_FIELD = "text_emb"     # 向量字段
 KNN_K = 400                         # 每分片近邻数
-KNN_NUM_CANDIDATES = 4000           # 每分片候选数 (10× K)
+KNN_NUM_CANDIDATES = 10000          # 每分片候选数 (25× K)
 KNN_TIMEOUT = 8                     # KNN 搜索超时
 KNN_SIMILARITY = "hamming"          # 距离度量
 KNN_LSH_BITN = 2048                 # LSH bit 数
@@ -724,9 +729,10 @@ RERANK_MAX_PASSAGE_LENGTH = 4096    # 最大段落长度
 ### stats — 统计排序
 
 ```python
-# 分数融合公式: stats_score × pubdate_score × (relate_score³)
-STAT_FIELDS = ["view", "favorite", "coin", "reply", "share", "danmaku"]  # 统计字段
-STAT_LOGX_OFFSETS = {"view": 10, "favorite": 2, "coin": 2, ...}  # 对数偏移
+# 分数融合公式: (STATS_BASE + stats_score) × pubdate_score × (relate_score³)
+# stats_score 由 blux.doc_score.DocScorer 计算，有界 ∈ [0, 1)
+# 包含: 饱和评分 (view, like, coin, favorite, danmaku, reply 加权平均) × 异常检测因子
+STATS_BASE = 0.1  # 偏移量，防止零统计量文档被完全压制
 
 # 时效性衰减
 PUBDATE_SCORE_POINTS = [

@@ -27,6 +27,37 @@ RANK_METHOD_TYPE = Literal["heads", "rrf", "stats", "relevance", "tiered"]
 RANK_METHOD = "stats"
 
 # =============================================================================
+# Ranking Preference Types
+# =============================================================================
+
+# Preference modes control the relative importance of quality, relevance,
+# and recency in the final ranking score. Used by all ranking methods.
+RANK_PREFER_TYPE = Literal[
+    "balanced", "prefer_quality", "prefer_relevance", "prefer_recency"
+]
+RANK_PREFER = "balanced"  # Default preference
+
+# Preference weight presets: quality (stats), relevance (BM25/embedding), recency (time)
+# All weights sum to 1.0 for each preset
+RANK_PREFER_PRESETS = {
+    "balanced": {"quality": 0.30, "relevance": 0.50, "recency": 0.20},
+    "prefer_quality": {"quality": 0.50, "relevance": 0.30, "recency": 0.20},
+    "prefer_relevance": {"quality": 0.15, "relevance": 0.70, "recency": 0.15},
+    "prefer_recency": {"quality": 0.20, "relevance": 0.30, "recency": 0.50},
+}
+
+# =============================================================================
+# BM25 + Embedding Relevance Blending
+# =============================================================================
+
+# When reranking is used (q=wr, q=vr, q=wvr), blend BM25 keyword-match
+# scores with embedding cosine similarity for more robust relevance.
+# Semantic weight + BM25 weight should sum to ~1.0
+BLEND_SEMANTIC_WEIGHT = 0.6  # Weight for embedding cosine similarity
+BLEND_BM25_WEIGHT = 0.3  # Weight for BM25 keyword-match score
+BLEND_KEYWORD_BONUS = 0.1  # Max bonus from keyword presence boost
+
+# =============================================================================
 # Ranking Limits
 # =============================================================================
 
@@ -180,6 +211,19 @@ HYBRID_WORD_WEIGHT = 0.5
 
 # Weight for vector-based score in hybrid mode
 HYBRID_VECTOR_WEIGHT = 0.5
+
+# =============================================================================
+# Author Grouping Configuration
+# =============================================================================
+
+# =============================================================================
+# Recency Scoring (from blux.doc_score time factor)
+# =============================================================================
+
+# Real-time time factor boundaries (from DocScorer.TIME_ANCHORS)
+# Used for normalization to [0, 1] range
+TIME_FACTOR_MIN = 0.45  # Score for videos >= 30 days old
+TIME_FACTOR_MAX = 1.30  # Score for videos <= 1 hour old
 
 # =============================================================================
 # Author Grouping Configuration

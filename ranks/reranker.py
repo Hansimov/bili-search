@@ -344,6 +344,9 @@ class EmbeddingReranker:
 
             rerank_score = similarity * boost
 
+            # Preserve original score (BM25/hybrid) before overwriting
+            # This allows post-rerank fusion of BM25 + embedding signals
+            hit["original_score"] = hit.get("score", 0)
             hit[score_field] = round(rerank_score, 6)
             hit["cosine_similarity"] = round(similarity, 6)
             hit["keyword_boost"] = round(boost, 4)

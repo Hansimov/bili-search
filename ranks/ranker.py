@@ -19,11 +19,14 @@ Usage:
 
 import heapq
 import math
+import time as _time
 
 from tclogger import dict_get
 
 from ranks.constants import (
     RANK_TOP_K,
+    RANK_PREFER_TYPE,
+    RANK_PREFER,
     RRF_K,
     RRF_HEAP_SIZE,
     RRF_HEAP_RATIO,
@@ -89,11 +92,11 @@ class VideoHitsRanker:
         return hits_info
 
     def filter_only_rank(self, hits_info: dict, top_k: int = RANK_TOP_K) -> dict:
-        """Rank filter-only search results using stats + pubdate scoring.
+        """Rank filter-only search results using stats + real-time recency.
 
         For filter-only searches (no keywords), we don't have relevance scores.
         This method computes a meaningful score based on popularity (stats)
-        and recency (pubdate), then uses this for ranking.
+        and recency (real-time time factor), then uses this for ranking.
 
         The score is set in the "score" field so the frontend can display it.
 
@@ -102,7 +105,7 @@ class VideoHitsRanker:
             top_k: Number of top results to return.
 
         Returns:
-            hits_info with stats+pubdate ranked hits.
+            hits_info with stats+recency ranked hits.
         """
         hits: list[dict] = hits_info.get("hits", [])
         if not hits:
@@ -111,25 +114,28 @@ class VideoHitsRanker:
 
         hits_num = len(hits)
         top_k = min(top_k, hits_num)
+        now_ts = _time.time()
 
-        # Calculate stats and pubdate scores for each hit
+        # Calculate stats and recency scores for each hit
         for hit in hits:
             stats = dict_get(hit, "stat", {})
             pubdate = dict_get(hit, "pubdate", 0)
 
             # Calculate component scores
-            stats_score = self.stats_scorer.calc(stats)
-            pubdate_score = self.pubdate_scorer.calc(pubdate)
+            stats_score = self.stats_scorer.calc(stats)  # bounded [0, 1)
+            time_factor = self.pubdate_scorer.calc(pubdate, now_ts=now_ts)
+            recency = self.pubdate_scorer.normalize(time_factor)  # [0, 1]
 
-            # For filter-only search, combine stats and pubdate with no relevance
-            # Using weighted combination: stats dominates with pubdate as tie-breaker
-            # Stats score is typically in range [100, 1000], pubdate in [0.2, 4]
-            rank_score = stats_score + pubdate_score * 10  # Amplify pubdate effect
+            # For filter-only search, combine stats and recency (no relevance)
+            rank_score = 0.6 * stats_score + 0.4 * recency
 
             # Set both rank_score (for ranking) and score (for display)
-            hit["rank_score"] = rank_score
-            # Set display score as normalized stats_score (divide by 10 for ~[10, 100] range)
-            hit["score"] = round(stats_score / 10, 1)
+            hit["rank_score"] = round(rank_score, 6)
+            hit["stats_score"] = round(stats_score, 4)
+            hit["time_factor"] = round(time_factor, 4)
+            hit["recency_score"] = round(recency, 4)
+            # Set display score based on stat quality
+            hit["score"] = round(stats_score * 100, 1)
 
         # Sort by rank_score and take top_k
         top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
@@ -245,17 +251,20 @@ class VideoHitsRanker:
         hits_info: dict,
         top_k: int = RANK_TOP_K,
         apply_score_transform: bool = True,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
     ) -> dict:
-        """Rank by combined stats, pubdate, and relevance scores.
+        """Rank by combined quality, relevance, and real-time recency.
 
         This is the default ranking method for keyword search.
-        It balances popularity, recency, and relevance.
+        It balances popularity, recency, and relevance using the
+        preference-weighted fusion formula.
 
         Args:
             hits_info: Dict with "hits" list.
             top_k: Number of top results to return.
             apply_score_transform: Whether to apply score transformation
                                    for relevance amplification.
+            prefer: Ranking preference mode.
 
         Returns:
             hits_info with stats-ranked hits.
@@ -266,7 +275,9 @@ class VideoHitsRanker:
         stats_list, pubdate_list, relate_list = self.get_hits_metrics(hits)
         self.relate_scorer.update_relate_gate(relate_list)
 
-        # Get max relate for normalization in transform
+        now_ts = _time.time()
+
+        # Get max relate for normalization
         max_relate = max(relate_list) if relate_list else 1.0
         if max_relate <= 0:
             max_relate = 1.0
@@ -274,24 +285,37 @@ class VideoHitsRanker:
         for hit, stats, pubdate, relate in zip(
             hits, stats_list, pubdate_list, relate_list
         ):
+            # Quality: bounded [0, 1) from DocScorer
             stats_score = self.stats_scorer.calc(stats)
-            pubdate_score = self.pubdate_scorer.calc(pubdate)
-            relate_score = self.relate_scorer.calc(relate)
+
+            # Recency: real-time time factor normalized to [0, 1]
+            time_factor = self.pubdate_scorer.calc(pubdate, now_ts=now_ts)
+            recency = self.pubdate_scorer.normalize(time_factor)
+
+            # Relevance: normalized BM25 score to [0, 1]
+            relate_norm = min(relate / max_relate, 1.0) if max_relate > 0 else 0.0
 
             # Apply score transformation to amplify high-relevance items
             if apply_score_transform:
                 transformed_relate = transform_relevance_score(
                     relate, max_score=max_relate
                 )
-                # Blend transformed relate with gate-based relate_score
-                relate_score = max(relate_score, transformed_relate)
+                relate_norm = max(relate_norm, transformed_relate)
 
-            rank_score = self.score_fuser.fuse(
-                stats_score=stats_score,
-                pubdate_score=pubdate_score,
-                relate_score=relate_score,
+            # Fuse with preference weights
+            rank_score = self.score_fuser.fuse_with_preference(
+                quality=stats_score,
+                relevance=relate_norm,
+                recency=recency,
+                prefer=prefer,
             )
             hit["rank_score"] = rank_score
+
+            # Store component scores for debugging/analysis
+            hit["stats_score"] = round(stats_score, 4)
+            hit["time_factor"] = round(time_factor, 4)
+            hit["recency_score"] = round(recency, 4)
+            hit["relevance_score"] = round(relate_norm, 4)
 
         top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
         hits_info["hits"] = top_hits
@@ -379,6 +403,7 @@ class VideoHitsRanker:
         similarity_threshold: float = TIERED_SIMILARITY_THRESHOLD,
         stats_weight: float = TIERED_STATS_WEIGHT,
         recency_weight: float = TIERED_RECENCY_WEIGHT,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
     ) -> dict:
         """Tiered ranking: high-relevance zone gets popularity boost, rest by relevance.
 
@@ -398,6 +423,7 @@ class VideoHitsRanker:
             similarity_threshold: Items within this diff are "equally relevant".
             stats_weight: Weight for popularity in secondary sort.
             recency_weight: Weight for recency in secondary sort.
+            prefer: Ranking preference mode (used for secondary scoring).
 
         Returns:
             hits_info with tiered-ranked hits.
@@ -406,6 +432,8 @@ class VideoHitsRanker:
         if not hits:
             hits_info["rank_method"] = "tiered"
             return hits_info
+
+        now_ts = _time.time()
 
         # Step 1: Get max score and normalize
         scores = [hit.get(relevance_field, 0) or 0 for hit in hits]
@@ -425,19 +453,20 @@ class VideoHitsRanker:
             hit["relevance_norm"] = round(rel_norm, 4)
             hit["relevance_score_raw"] = rel_score
 
-            # Calculate stats score (popularity)
+            # Calculate stats score (popularity) - bounded [0, 1) from DocScorer
             stats = hit.get("stat", {})
             stats_score = self.stats_scorer.calc(stats)
             hit["stats_score"] = stats_score
 
-            # Calculate recency score
+            # Calculate recency score (real-time, normalized to [0, 1])
             pubdate = hit.get("pubdate", 0)
-            recency_score = self.pubdate_scorer.calc(pubdate)
-            hit["recency_score"] = recency_score
+            time_factor = self.pubdate_scorer.calc(pubdate, now_ts=now_ts)
+            recency_norm = self.pubdate_scorer.normalize(time_factor)
+            hit["recency_score"] = round(recency_norm, 4)
+            hit["time_factor"] = round(time_factor, 4)
 
-            # Normalize stats_score (typically ranges 1-1000+)
-            stats_norm = math.log10(stats_score + 1) / 3.0  # ~0-1 for stats 1-1000
-            recency_norm = recency_score / 4.0  # recency_score is ~0-4
+            # Stats score is already bounded [0, 1) from DocScorer
+            stats_norm = stats_score
 
             # Combined secondary score for high relevance zone
             hit["secondary_score"] = (
@@ -521,19 +550,110 @@ class VideoHitsRanker:
 
         return hits_info
 
+    def preference_rank(
+        self,
+        hits_info: dict,
+        top_k: int = RANK_TOP_K,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
+    ) -> dict:
+        """Rank reranked hits using preference-weighted fusion of quality, relevance, recency.
+
+        After reranking, hits have cosine_similarity, keyword_boost, and
+        potentially original_score (preserved BM25/hybrid score). This method
+        combines these with quality (stats) and recency (real-time time_factor)
+        using the preference-weighted fusion formula.
+
+        Relevance is computed by blending:
+        - cosine_similarity (embedding semantic match)
+        - original_score (BM25 keyword match, if available)
+        - keyword_boost (exact keyword presence bonus)
+
+        Used for q=wr, q=vr, q=wvr modes after reranking.
+
+        Args:
+            hits_info: Dict with "hits" list (must have rerank fields).
+            top_k: Number of top results to return.
+            prefer: Ranking preference mode.
+
+        Returns:
+            hits_info with preference-ranked hits.
+        """
+        hits: list[dict] = hits_info.get("hits", [])
+        if not hits:
+            hits_info["rank_method"] = "preference"
+            return hits_info
+
+        hits_num = len(hits)
+        top_k = min(top_k, hits_num)
+        now_ts = _time.time()
+
+        # Compute max original_score for BM25 normalization across batch
+        max_original = max((h.get("original_score", 0) for h in hits), default=1.0)
+        if max_original <= 0:
+            max_original = 1.0
+
+        for hit in hits:
+            # Quality from stats (bounded [0, 1) from DocScorer)
+            stats = dict_get(hit, "stat", {})
+            quality = self.stats_scorer.calc(stats)
+
+            # Recency from real-time time factor (normalized to [0, 1])
+            pubdate = dict_get(hit, "pubdate", 0)
+            time_factor = self.pubdate_scorer.calc(pubdate, now_ts=now_ts)
+            recency = self.pubdate_scorer.normalize(time_factor)
+
+            # Relevance: blend cosine similarity + BM25
+            cosine = hit.get("cosine_similarity", 0)
+            original_score = hit.get("original_score", 0)
+            keyword_boost = hit.get("keyword_boost", 1.0)
+            bm25_norm = (
+                min(original_score / max_original, 1.0) if max_original > 0 else 0.0
+            )
+
+            relevance = ScoreFuser.blend_relevance(
+                cosine_similarity=cosine,
+                bm25_norm=bm25_norm,
+                keyword_boost=keyword_boost,
+            )
+
+            # Fuse with preference weights
+            rank_score = self.score_fuser.fuse_with_preference(
+                quality=quality,
+                relevance=relevance,
+                recency=recency,
+                prefer=prefer,
+            )
+
+            hit["rank_score"] = rank_score
+            hit["quality_score"] = round(quality, 4)
+            hit["relevance_score"] = round(relevance, 4)
+            hit["recency_score"] = round(recency, 4)
+            hit["time_factor"] = round(time_factor, 4)
+
+        top_hits = self.get_top_hits(hits, top_k=top_k, sort_field="rank_score")
+        hits_info["hits"] = top_hits
+        hits_info["return_hits"] = len(top_hits)
+        hits_info["rank_method"] = "preference"
+        hits_info["prefer"] = prefer
+
+        return hits_info
+
     def rank(
         self,
         hits_info: dict,
         method: str = "stats",
         top_k: int = RANK_TOP_K,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
         **kwargs,
     ) -> dict:
         """Unified ranking entry point.
 
         Args:
             hits_info: Dict with "hits" list.
-            method: Ranking method ("heads", "rrf", "stats", "relevance", "tiered").
+            method: Ranking method ("heads", "rrf", "stats", "relevance",
+                    "tiered", "preference").
             top_k: Number of top results to return.
+            prefer: Ranking preference mode.
             **kwargs: Additional arguments for specific ranking methods.
 
         Returns:
@@ -544,10 +664,12 @@ class VideoHitsRanker:
         elif method == "rrf":
             return self.rrf_rank(hits_info, top_k=top_k, **kwargs)
         elif method == "stats":
-            return self.stats_rank(hits_info, top_k=top_k, **kwargs)
+            return self.stats_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
         elif method == "relevance":
             return self.relevance_rank(hits_info, top_k=top_k, **kwargs)
         elif method == "tiered":
-            return self.tiered_rank(hits_info, top_k=top_k, **kwargs)
+            return self.tiered_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
+        elif method == "preference":
+            return self.preference_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
         else:
-            return self.stats_rank(hits_info, top_k=top_k, **kwargs)
+            return self.stats_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)

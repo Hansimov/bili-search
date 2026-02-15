@@ -44,7 +44,7 @@
 
 每种模式均可附加精排重排（`r`），如 `q=vr`、`q=wr`、`q=wvr`。
 
-系统索引约 **5000 万** 条视频文档，使用 **8 个分片**，支持丰富的 DSL 过滤表达式（日期、播放量、UP 主、BV 号等）。
+系统索引约 **5000 万** 条视频文档，使用 **8 个分片**，支持丰富的 DSL 过滤表达式（日期、播放量、UP 主、BV 号等）。每条文档包含预计算的 `stat_score`（由 `blux.doc_score.DocScorer` 在入库时计算），用于衡量文档质量。
 
 ---
 
@@ -187,17 +187,17 @@ VideoExplorer (继承 VideoSearcherV2)
 ```
 ┌─ Step 0: construct_knn_query ──────────────────────────────┐
 │  ① 解析 DSL → 提取过滤条件                                 │
-│  ② 判断窄过滤器 (用户/BV 号过滤)                           │
+│  ② 判断窄过滤器 (用户/BV 号过滤)                            │
 │  ③ 并行启动: LSH 嵌入 + 补充词语召回                       │
 └────────────────────────────────────────────────────────────┘
                          │
             ┌────────────┴────────────┐
             ▼                         ▼
-    ┌─ 窄过滤器 ─┐          ┌─ 常规查询 ─────────┐
-    │ dual_sort   │          │ KNN search          │
-    │ filter      │          │ k=400               │
-    │ search      │          │ num_candidates=4000 │
-    └─────────────┘          └─────────────────────┘
+    ┌─ 窄过滤器 ─┐          ┌─ 常规查询 ──────────┐
+    │ dual_sort   │          │ KNN search           │
+    │ filter      │          │ k=400                │
+    │ search      │          │ num_candidates=10000 │
+    └─────────────┘          └──────────────────────┘
                          │
                          ▼
 ┌─ Step 1.5: word_recall_supplement ─────────────────────────┐
@@ -377,9 +377,13 @@ passage = build_sentence(title, tags, desc, owner_name)
 
 #### stats — 统计排序（默认，用于词语搜索）
 ```
-rank_score = stats_score × pubdate_score × (relate_score³)
+rank_score = (STATS_BASE + stats_score) × pubdate_score × (relate_score³)
 ```
-- **stats_score**：∏ log(stat + offset)，综合播放、收藏、投币等统计量
+- **stats_score**：由 `blux.doc_score.DocScorer` 计算的文档质量分，∈ [0, 1)，综合饱和评分 + 异常检测
+  - 饱和评分：对每个统计字段 (view, like, coin, favorite, danmaku, reply) 应用 `1 - 1/(1 + field/10^α)` 加权平均
+  - 异常检测：高播放但低互动时惩罚因子 ∈ [0.3, 1.0]
+  - 最终：`stat_quality = saturated_score × anomaly_factor`
+- **STATS_BASE**：0.1 偏移量，防止零统计量文档被完全压制
 - **pubdate_score**：分段线性衰减（今天=4.0, 7 天=1.0, 30 天=0.6, 1 年=0.3）
 - **relate_score**：搜索相关度分数，门控 + 幂变换
 
@@ -391,7 +395,7 @@ rank_score = transform(score, power=2.0, min=0.4, high_threshold=0.85, high_boos
 
 #### tiered — 分层排序（用于混合搜索）
 将结果分为两个区域：
-- **高相关区**（≥ max_score × 0.7）：按 `0.7 × stats + 0.3 × recency` 排序（允许热度和时效性影响排序）
+- **高相关区**（≥ max_score × 0.7）：按 `0.7 × stats_score + 0.3 × recency` 排序（stats_score 为 DocScorer 的有界质量分 [0,1)，直接参与加权无需额外归一化）
 - **低相关区**（< max_score × 0.7）：按纯相关度排序
 
 #### rrf — 倒数排序融合
@@ -432,7 +436,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
 - 索引名：`bili_videos_dev6`（开发）/ `bili_videos_pro1`（生产）
 - 分片数：**8 个主分片**（每个分片约 625 万文档）
 - 副本数：0（单节点部署）
-- KNN 总候选量：8 × num_candidates = 8 × 4000 = **32,000**
+- KNN 总候选量：8 × num_candidates = 8 × 10,000 = **80,000**
 
 ### 5.2 文本字段与分词
 
