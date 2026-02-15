@@ -49,6 +49,44 @@ RANK_PREFER_PRESETS = {
 }
 
 # =============================================================================
+# Diversified Ranking Fused Score Weights
+# =============================================================================
+
+# Weights for fused scoring in diversified ranker (Phase 2: beyond top-N slots).
+# Also used in NoiseFilter for multi-signal confidence assessment.
+DIVERSIFIED_FUSED_WEIGHTS = {
+    "relevance": 0.35,
+    "quality": 0.25,
+    "recency": 0.20,
+    "popularity": 0.20,
+}
+
+# =============================================================================
+# Recall Noise Filtering
+# =============================================================================
+
+# Minimum BM25 score for non-relevance recall lanes.
+# Docs scoring below this are noise — they match query syntax but not meaning.
+# BM25 score of ~2.0 means at least one term reasonably matches.
+MIN_BM25_SCORE = 2.0
+
+# Score-ratio gate: remove docs with score < ratio * max_score in their lane.
+# Applied after each recall lane returns, before merge.
+NOISE_SCORE_RATIO_GATE = 0.12
+
+# KNN score ratio: stricter threshold for noisy LSH hamming distance scores.
+# LSH bit vectors have narrow score ranges, so many irrelevant docs score similarly.
+NOISE_KNN_SCORE_RATIO = 0.5
+
+# Don't apply noise filtering if total hits below this count.
+# Small result sets need all candidates.
+NOISE_MIN_HITS_FOR_FILTER = 30
+
+# Gate reduction for multi-lane docs (appear in 2+ recall lanes).
+# Multi-lane appearance is strong evidence of relevance, so apply lower threshold.
+NOISE_MULTI_LANE_GATE_FACTOR = 0.5
+
+# =============================================================================
 # BM25 + Embedding Relevance Blending
 # =============================================================================
 

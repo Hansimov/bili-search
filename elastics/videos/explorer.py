@@ -1,33 +1,19 @@
-import json
 import time
 
-from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
-from tclogger import dict_get, get_by_threshold
-from tclogger import logstr, logger, brk
-from typing import Union, Literal
+from tclogger import logger
+from typing import Union
 
-from converters.dsl.fields.bvid import bvids_to_filter
 from converters.highlight.char_match import get_char_highlighter
-from elastics.videos.constants import SEARCH_MATCH_FIELDS, EXPLORE_BOOSTED_FIELDS
-from elastics.videos.constants import SEARCH_MATCH_TYPE
-from elastics.videos.constants import AGG_TIMEOUT, EXPLORE_TIMEOUT
-from elastics.videos.constants import TERMINATE_AFTER
+from elastics.videos.constants import EXPLORE_TIMEOUT
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
-from elastics.videos.constants import KNN_WORD_RECALL_ENABLED
-from elastics.videos.constants import KNN_WORD_RECALL_LIMIT, KNN_WORD_RECALL_TIMEOUT
-from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
-from elastics.structure import construct_boosted_fields
+from elastics.videos.constants import QMOD
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from converters.dsl.fields.qmod import (
-    extract_qmod_from_expr_tree,
     is_hybrid_qmod,
     has_rerank_qmod,
-    get_retrieval_modes,
 )
 
-# Import from ranks module (use direct submodule imports)
 from ranks.constants import (
     RANK_METHOD_TYPE,
     RANK_METHOD,
@@ -37,33 +23,15 @@ from ranks.constants import (
     AUTHOR_SORT_FIELD,
     EXPLORE_RANK_TOP_K,
     EXPLORE_GROUP_OWNER_LIMIT,
-    HYBRID_RRF_K,
-    RERANK_ENABLED as KNN_RERANK_ENABLED,
     RERANK_MAX_HITS as KNN_RERANK_MAX_HITS,
     RERANK_KEYWORD_BOOST as KNN_RERANK_KEYWORD_BOOST,
     RERANK_TITLE_KEYWORD_BOOST as KNN_RERANK_TITLE_KEYWORD_BOOST,
-    RERANK_TEXT_FIELDS as KNN_RERANK_TEXT_FIELDS,
 )
 from ranks.reranker import get_reranker
 from ranks.grouper import AuthorGrouper
 from recalls.manager import RecallManager
 
 STEP_ZH_NAMES = {
-    "init": {
-        "name_zh": "初始化",
-    },
-    "construct_query_dsl_dict": {
-        "name_zh": "解析查询",
-        "output_type": "info",
-    },
-    "construct_knn_query": {
-        "name_zh": "构建向量查询",
-        "output_type": "info",
-    },
-    "aggregation": {
-        "name_zh": "聚合",
-        "output_type": "info",
-    },
     "most_relevant_search": {
         "name_zh": "搜索相关",
         "output_type": "hits",
@@ -76,16 +44,8 @@ STEP_ZH_NAMES = {
         "name_zh": "精排重排",
         "output_type": "info",
     },
-    "word_recall_supplement": {
-        "name_zh": "词语补充召回",
-        "output_type": "info",
-    },
     "hybrid_search": {
         "name_zh": "混合搜索",
-        "output_type": "hits",
-    },
-    "most_popular_search": {
-        "name_zh": "搜索热门",
         "output_type": "hits",
     },
     "group_hits_by_owner": {
@@ -161,122 +121,6 @@ class VideoExplorer(VideoSearcherV2):
         super().__init__(*args, **kwargs)
         self.recall_manager = RecallManager()
 
-    def get_total_hits(self, agg_result: dict):
-        return dict_get(agg_result, "hits.total.value", None)
-
-    def get_stat_filter_by_threshold(
-        self,
-        agg_result: dict,
-        field: Literal["view", "like", "coin", "favorite"],
-        threshold: float = None,
-        max_doc_count: int = None,
-        res_format: Literal["dict", "tuple"] = "dict",
-    ) -> Union[dict, tuple]:
-        total_hits = self.get_total_hits(agg_result)
-        if total_hits is None:
-            logger.warn(f"× Not found total_hits")
-            return None
-        if max_doc_count is None and threshold is None:
-            return {}
-        if threshold is None:
-            threshold = 0
-        if max_doc_count is not None:
-            if total_hits <= max_doc_count:
-                return {}
-            threshold = max((1 - max_doc_count / total_hits) * 100, threshold)
-        stat_agg_dict = dict_get(agg_result, f"aggregations.{field}_ps.values", None)
-        if stat_agg_dict is None:
-            logger.warn(f"× Not found aggregation: {field}_ps")
-            return None
-        stat_key, stat_value = get_by_threshold(
-            stat_agg_dict,
-            threshold=threshold,
-            direction="upper_bound",
-            target="key",
-        )
-        if stat_key is None and stat_value is None:
-            logger.warn(f"× Not found threshold: {threshold}")
-            return None
-        if res_format == "tuple":
-            return stat_key, stat_value
-        else:
-            stat_filter = {"range": {f"stat.{field}": {"gte": int(stat_value)}}}
-            return stat_filter
-
-    def get_score_threshold_by_ratio(
-        self,
-        agg_result: dict,
-        ratio: float = None,
-        max_doc_count: int = None,
-    ) -> float:
-        """ratio: 0.0 - 1.0, means should be greater than ratio * max_score
-        for example, if ratio=0.75, means should be greater than 75% of max_score
-        """
-        field = "score"
-        total_hits = self.get_total_hits(agg_result)
-        if total_hits is None:
-            logger.warn(f"× Not found total_hits")
-            return None
-        if max_doc_count is None and ratio is None:
-            return 0
-        score_agg_dict = dict_get(agg_result, f"aggregations.{field}_ps.values", None)
-        if score_agg_dict is None:
-            logger.warn(f"× Not found aggregation: {field}_ps")
-            return None
-        try:
-            max_score = max(score_agg_dict.values())
-            min_score = min(score_agg_dict.values())
-        except:
-            return None
-        if ratio is None:
-            ratio = 0
-        if max_doc_count is not None and max_doc_count < total_hits:
-            doc_count_percentile = max_doc_count / total_hits * 100
-            percent_by_count, _ = get_by_threshold(
-                score_agg_dict,
-                threshold=doc_count_percentile,
-                direction="upper_bound",
-                target="key",
-            )
-            ratio_by_count = percent_by_count / 100
-            # ratio could be min/max of the constraints by max_doc_count and ratio,
-            # - if use min, could ensure there are enough-but-not-too-much candidate docs
-            # - if use max, would get less candidates, especially useful when the first recall docs are too many
-            ratio = max(ratio, ratio_by_count)
-        score_threshold = round(max(max_score * ratio, min_score), 4)
-        return score_threshold
-
-    def set_total_hits(self, agg_res: dict, search_res: dict) -> None:
-        agg_total_hits = self.get_total_hits(agg_res)
-        search_total_hits = search_res.get("total_hits", 0)
-        if agg_total_hits is not None and search_total_hits is not None:
-            if search_total_hits == TERMINATE_AFTER:
-                search_res["total_hits"] = agg_total_hits
-        return search_res
-
-    def format_result(
-        self, res: dict, res_format: Literal["json", "str"] = "json"
-    ) -> Union[dict, str]:
-        if res_format == "str":
-            # used for EventSourceResponse
-            return json.dumps(res)
-        else:
-            # used for normal response
-            return res
-
-    def update_step_output(
-        self, step_yield: dict, step_output: dict = None, field: str = None
-    ) -> dict:
-        if isinstance(step_output, dict) and step_output.get("timed_out", None) is True:
-            step_yield["status"] = "timedout"
-        else:
-            step_yield["status"] = "finished"
-        if field is not None:
-            step_yield["output"][field] = step_output
-        else:
-            step_yield["output"] = step_output
-        return step_yield
-
     def get_user_docs(self, mids: list[str]) -> dict:
         user_docs_list = self.mongo.get_docs(
             "users",
@@ -328,9 +172,6 @@ class VideoExplorer(VideoSearcherV2):
         grouper.add_user_faces_to_list(authors_list, user_docs)
 
         return authors_list
-
-    def is_status_timedout(self, result: dict) -> bool:
-        return result.get("status", None) == "timedout"
 
     def merge_scores_into_hits(
         self,
@@ -385,58 +226,93 @@ class VideoExplorer(VideoSearcherV2):
 
         return full_hits
 
-    def _supplemental_word_recall(
+    # =========================================================================
+    # Filter-Only Explore (no search keywords)
+    # =========================================================================
+
+    def _filter_only_explore(
         self,
         query: str,
-        source_fields: list[str],
         extra_filters: list[dict] = [],
-        limit: int = KNN_WORD_RECALL_LIMIT,
-        timeout: float = KNN_WORD_RECALL_TIMEOUT,
+        suggest_info: dict = {},
         verbose: bool = False,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
     ) -> dict:
-        """Run a fast word search to supplement KNN recall.
+        """Handle queries with no search keywords (filter-only).
 
-        Semantic embedding search finds content by topic similarity, which
-        naturally differs from keyword matching. For entity queries (UP主 names,
-        brand names like "影视飓风"), the embedding model interprets proper nouns
-        literally (e.g., as "film+hurricane"), returning topically-similar but
-        entity-mismatched results.
+        For queries like "user:123" or "date>2024" with no text keywords,
+        there's no relevance signal. Results are ranked by stats + recency.
 
-        Word search finds candidates that match query keywords exactly,
-        which KNN naturally misses due to this semantic mismatch.
-        These candidates are then merged into the KNN pool and reranked
-        using float-vector cosine similarity for accurate final ranking.
+        This replaces the legacy explore() method for the no-keywords case.
 
         Args:
-            query: Query string.
-            source_fields: Fields to include (should match KNN source fields).
+            query: Query string (contains only filter expressions).
             extra_filters: Additional filter clauses.
-            limit: Maximum results from word search.
-            timeout: Search timeout in seconds.
+            suggest_info: Suggestion info for query rewriting.
             verbose: Enable verbose logging.
+            rank_top_k: Max results to return.
+            group_owner_limit: Max author groups.
 
         Returns:
-            Word search results dict with hits.
+            dict: {"query": str, "status": str, "data": list[dict]}
         """
-        try:
-            return self.search(
-                query=query,
-                source_fields=source_fields,
-                extra_filters=extra_filters,
-                parse_hits=True,
-                add_region_info=False,
-                add_highlights_info=False,
-                is_highlight=False,
-                boost=True,
-                rank_method="heads",
-                limit=limit,
-                rank_top_k=limit,
-                timeout=timeout,
-                verbose=verbose,
+        logger.enter_quiet(not verbose)
+        perf = {"total_ms": 0}
+        explore_start = time.perf_counter()
+        steps = StepBuilder()
+
+        # Step 0: Search with filter-only (no keyword matching)
+        step = steps.add_step(
+            "most_relevant_search",
+            status="running",
+            input_data={"query": query, "filter_only": True},
+        )
+        logger.hint("> [step 0] Filter-only search ...", verbose=verbose)
+
+        search_res = self.search(
+            query=query,
+            extra_filters=extra_filters,
+            suggest_info=suggest_info,
+            parse_hits=True,
+            add_region_info=True,
+            add_highlights_info=False,
+            is_highlight=False,
+            boost=True,
+            rank_method="heads",
+            limit=rank_top_k * 2,
+            rank_top_k=rank_top_k,
+            timeout=EXPLORE_TIMEOUT,
+            verbose=verbose,
+        )
+
+        # Apply filter-only ranking (stats + recency, no relevance)
+        search_res = self.hit_ranker.filter_only_rank(search_res, top_k=rank_top_k)
+        search_res["filter_only"] = True
+        steps.update_step(step, search_res)
+
+        if not search_res.get("hits"):
+            steps.add_step(
+                "group_hits_by_owner",
+                output={"authors": []},
+                comment="无搜索结果",
             )
-        except Exception as e:
-            logger.warn(f"× Supplemental word recall failed: {e}")
-            return {"hits": [], "total_hits": 0, "timed_out": False}
+            perf["total_ms"] = round((time.perf_counter() - explore_start) * 1000, 2)
+            logger.exit_quiet(not verbose)
+            return steps.finalize(query, perf=perf)
+
+        # Step 1: Group by owner
+        logger.hint("> [step 1] Group by owner ...", verbose=verbose)
+        group_res = self._build_group_step(search_res, group_owner_limit)
+        steps.add_step(
+            "group_hits_by_owner",
+            output={"authors": group_res},
+            input_data={"limit": group_owner_limit},
+        )
+
+        perf["total_ms"] = round((time.perf_counter() - explore_start) * 1000, 2)
+        logger.exit_quiet(not verbose)
+        return steps.finalize(query, perf=perf)
 
     # =========================================================================
     # V2 Explore Methods (multi-lane recall + diversified ranking)
@@ -604,15 +480,15 @@ class VideoExplorer(VideoSearcherV2):
         # Check for keywords
         if not self.has_search_keywords(query):
             logger.exit_quiet(not verbose)
-            return self.explore(
+            result = self._filter_only_explore(
                 query=query,
                 extra_filters=extra_filters,
                 suggest_info=suggest_info,
                 verbose=verbose,
-                rank_method=rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
             )
+            return result
 
         # Step 0: Multi-lane recall
         step = steps.add_step(
@@ -714,11 +590,10 @@ class VideoExplorer(VideoSearcherV2):
 
         if not self.has_search_keywords(query):
             logger.exit_quiet(not verbose)
-            result = self.explore(
+            result = self._filter_only_explore(
                 query=query,
                 extra_filters=extra_filters,
                 verbose=verbose,
-                rank_method=rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
             )
@@ -824,12 +699,11 @@ class VideoExplorer(VideoSearcherV2):
 
         if not self.has_search_keywords(query):
             logger.exit_quiet(not verbose)
-            result = self.explore(
+            result = self._filter_only_explore(
                 query=query,
                 extra_filters=extra_filters,
                 suggest_info=suggest_info,
                 verbose=verbose,
-                rank_method=rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
             )
@@ -919,1400 +793,6 @@ class VideoExplorer(VideoSearcherV2):
         perf["total_ms"] = round((time.perf_counter() - explore_start) * 1000, 2)
         logger.exit_quiet(not verbose)
         return steps.finalize(query, perf=perf)
-
-    def explore(
-        self,
-        # `query_dsl_dict` related params
-        query: str,
-        query_dsl_dict: dict = None,
-        match_fields: list[str] = SEARCH_MATCH_FIELDS,
-        match_type: str = SEARCH_MATCH_TYPE,
-        extra_filters: list[dict] = [],
-        suggest_info: dict = {},
-        boost: bool = True,
-        boosted_fields: dict = EXPLORE_BOOSTED_FIELDS,
-        verbose: bool = False,
-        # `explore` related params
-        most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
-        rank_top_k: int = EXPLORE_RANK_TOP_K,
-        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        # Ranking preference
-        prefer: RANK_PREFER_TYPE = RANK_PREFER,
-        # Rerank params (for q=wr mode)
-        enable_rerank: bool = False,
-        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
-        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
-        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
-        rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
-    ) -> dict:
-        """Explore and return all step results in a single response.
-
-        Returns:
-            dict: {
-                "query": str,
-                "status": "finished" | "timedout",
-                "data": list[dict]  # list of step results
-            }
-        """
-        logger.enter_quiet(not verbose)
-
-        step_results = []  # Collect all step results
-        final_status = "finished"
-
-        # Step 0: Construct query_dsl_dict
-        step_idx = 0
-        step_name = "construct_query_dsl_dict"
-        logger.hint("> [step 1] Query constructing ...")
-        if query_dsl_dict is None:
-            boosted_fields_params = {
-                "match_fields": match_fields,
-                "boost": boost,
-                "boosted_fields": boosted_fields,
-            }
-            boosted_match_fields, boosted_date_fields = construct_boosted_fields(
-                **boosted_fields_params
-            )
-            query_rewrite_dsl_params = {
-                "query": query,
-                "suggest_info": suggest_info,
-                "boosted_match_fields": boosted_match_fields,
-                "boosted_date_fields": boosted_date_fields,
-                "match_type": match_type,
-                "extra_filters": extra_filters,
-            }
-            _, _, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
-                **query_rewrite_dsl_params
-            )
-        query_dsl_dict_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "finished",
-            "input": query_rewrite_dsl_params,
-            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-            "output": query_dsl_dict,
-            "comment": "",
-        }
-        step_results.append(query_dsl_dict_result)
-
-        # Step 1: Most-relevant docs
-        step_idx += 1
-        step_name = "most_relevant_search"
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Top relevant docs")
-        relevant_search_params = {
-            "query": query,
-            "suggest_info": suggest_info,
-            "source_fields": ["bvid", "stat", "pubdate", "duration"],  # reduce io
-            "extra_filters": extra_filters,
-            "use_script_score": False,  # speed up
-            "rank_method": rank_method,  # better ranking
-            "add_region_info": False,  # speed up
-            "add_highlights_info": False,  # speed up
-            "is_profile": False,
-            "is_highlight": False,  # speed up
-            "limit": most_relevant_limit,
-            "rank_top_k": rank_top_k,  # final returned docs with partial fields
-            "timeout": EXPLORE_TIMEOUT,
-            "verbose": verbose,
-        }
-        relevant_search_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "running",
-            "input": relevant_search_params,
-            "output": {},
-            "output_type": "hits",
-            "comment": "",
-        }
-        relevant_search_res = self.search(**relevant_search_params)
-        self.update_step_output(relevant_search_result, step_output=relevant_search_res)
-        if self.is_status_timedout(relevant_search_result):
-            final_status = "timedout"
-            step_results.append(relevant_search_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": final_status, "data": step_results}
-
-        # Step 3: Fetch full-docs by return ranked ids
-        full_doc_search_params = deepcopy(relevant_search_params)
-        bvids = [hit.get("bvid", None) for hit in relevant_search_res.get("hits", [])]
-        bvid_filter = bvids_to_filter(bvids)
-        full_doc_search_params.pop("source_fields", None)
-        full_doc_search_params.update(
-            {
-                "rank_method": rank_method,  # same with relevant search
-                "is_highlight": True,
-                "add_region_info": True,
-                "add_highlights_info": True,
-                "extra_filters": extra_filters + [bvid_filter],
-                "limit": len(bvids),
-            }
-        )
-        full_doc_search_res = self.search(**full_doc_search_params)
-        full_doc_search_res["total_hits"] = relevant_search_res.get("total_hits", 0)
-
-        # Optional rerank step for q=wr mode
-        rerank_performed = False
-        rerank_info = {}
-        if enable_rerank:
-            step_idx += 1
-            step_name = "rerank"
-            step_str = logstr.note(brk(f"Step {step_idx}"))
-            logger.hint(f"> {step_str} Reranking with float embeddings")
-
-            reranker = get_reranker()
-            if reranker.is_available():
-                full_hits = full_doc_search_res.get("hits", [])
-                original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
-
-                # Get query words for reranking using DSL parser
-                query_info = self.query_rewriter.get_query_info(query)
-                keywords_body = query_info.get("keywords_body", [])
-                rerank_expr_tree = query_info.get("query_expr_tree", None)
-                embed_text = " ".join(keywords_body) if keywords_body else query
-
-                # Perform reranking with DSL-extracted keywords
-                reranked_hits, rerank_perf = reranker.rerank(
-                    query=embed_text,
-                    hits=full_hits[:rerank_max_hits],
-                    keywords=keywords_body,
-                    expr_tree=rerank_expr_tree,
-                    keyword_boost=rerank_keyword_boost,
-                    title_keyword_boost=rerank_title_keyword_boost,
-                    max_rerank=rerank_max_hits,
-                    score_field="rerank_score",
-                    verbose=verbose,
-                )
-
-                # Add remaining hits not reranked
-                if len(full_hits) > rerank_max_hits:
-                    reranked_hits.extend(full_hits[rerank_max_hits:])
-
-                full_doc_search_res["hits"] = reranked_hits[:rank_top_k]
-                full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
-
-                # Apply preference-based ranking after reranking (q=wr)
-                # Fuses BM25 + embedding relevance with quality and recency
-                full_doc_search_res = self.hit_ranker.preference_rank(
-                    full_doc_search_res, top_k=rank_top_k, prefer=prefer
-                )
-                rerank_performed = True
-
-                # Get new top bvids after rerank
-                reranked_top_bvids = [h.get("bvid") for h in reranked_hits[:10]]
-                position_changes = sum(
-                    1
-                    for i, bvid in enumerate(reranked_top_bvids)
-                    if i >= len(original_top_bvids) or bvid != original_top_bvids[i]
-                )
-
-                rerank_info = {
-                    "reranked_count": min(len(full_hits), rerank_max_hits),
-                    "keyword_boost": rerank_keyword_boost,
-                    "title_keyword_boost": rerank_title_keyword_boost,
-                    "top10_position_changes": position_changes,
-                    "perf": rerank_perf,  # Add perf info
-                }
-
-                rerank_result = {
-                    "step": step_idx,
-                    "name": step_name,
-                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                    "status": "finished",
-                    "input": {
-                        "max_hits": rerank_max_hits,
-                        "keyword_boost": rerank_keyword_boost,
-                    },
-                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                    "output": rerank_info,
-                    "comment": f"重排了 {rerank_info['reranked_count']} 个结果",
-                }
-                step_results.append(rerank_result)
-
-                logger.mesg(
-                    f"  Reranked {rerank_info['reranked_count']} hits, "
-                    f"{position_changes} position changes in top 10",
-                    verbose=verbose,
-                )
-            else:
-                logger.warn("× Reranker not available, skipping rerank step")
-                rerank_info = {"skipped": True, "reason": "Reranker not available"}
-
-        self.update_step_output(relevant_search_result, step_output=full_doc_search_res)
-        if rerank_performed:
-            relevant_search_result["output"]["rerank_info"] = rerank_info
-        if self.is_status_timedout(relevant_search_result):
-            final_status = "timedout"
-            step_results.append(relevant_search_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": final_status, "data": step_results}
-        step_results.append(relevant_search_result)
-
-        # Step 4: Group hits by owner
-        step_idx += 1
-        step_name = "group_hits_by_owner"
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Group hits by owner, sorted by first_appear_order")
-        group_hits_by_owner_params = {
-            "search_res": full_doc_search_res,
-            "sort_field": "first_appear_order",  # Match video list order for UI consistency
-            "limit": group_owner_limit,
-        }
-        group_hits_by_owner_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "running",
-            "input": {"limit": group_owner_limit, "sort_field": "first_appear_order"},
-            "output": {},
-            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-            "comment": "",
-        }
-        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
-        self.update_step_output(
-            group_hits_by_owner_result, step_output=group_res, field="authors"
-        )
-        step_results.append(group_hits_by_owner_result)
-
-        logger.exit_quiet(not verbose)
-        return {"query": query, "status": final_status, "data": step_results}
-
-    def knn_explore(
-        self,
-        # Query and filter params
-        query: str,
-        extra_filters: list[dict] = [],
-        verbose: bool = False,
-        # KNN-specific params
-        knn_field: str = KNN_TEXT_EMB_FIELD,
-        knn_k: int = KNN_K,
-        knn_num_candidates: int = KNN_NUM_CANDIDATES,
-        similarity: float = None,
-        # Rerank params
-        enable_rerank: bool = KNN_RERANK_ENABLED,
-        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
-        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
-        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
-        rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
-        # Supplemental word recall params
-        word_recall_enabled: bool = KNN_WORD_RECALL_ENABLED,
-        word_recall_limit: int = KNN_WORD_RECALL_LIMIT,
-        word_recall_timeout: float = KNN_WORD_RECALL_TIMEOUT,
-        # Explore params
-        most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = "relevance",  # Default to pure relevance ranking
-        rank_top_k: int = EXPLORE_RANK_TOP_K,
-        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,  # Match video list order
-        # Ranking preference
-        prefer: RANK_PREFER_TYPE = RANK_PREFER,
-    ) -> dict:
-        """KNN-based explore using text embeddings instead of keyword matching.
-
-        This method performs vector similarity search using the text_emb field,
-        while still supporting all DSL filter expressions (date, stat, user, etc.).
-
-        IMPORTANT: For vector search, relevance is the ONLY metric that matters.
-        Results are ranked purely by vector similarity score - no stats/pubdate weighting.
-        This ensures the most semantically relevant results appear first.
-
-        Recall supplement: Semantic embedding search finds content by topic similarity,
-        which differs from keyword matching. For entity queries (UP主 names, brand names),
-        the embedding model may interpret proper nouns literally (e.g., "影视飓风" as
-        "film+hurricane" instead of as the UP主 name). A parallel word search supplements
-        the KNN recall pool with keyword-matching candidates. The merged pool is then
-        reranked using float embeddings for precise cosine similarity ranking.
-
-        The workflow is:
-        1. Extract filters from DSL query (non-word expressions)
-        2. [PARALLEL] Convert query to LSH vector + run word search for recall
-        3. Perform KNN search with filters (coarse recall)
-        4. Merge KNN + word recall results (dedup by bvid)
-        5. Rerank merged pool using float embeddings (fine ranking)
-        6. Fetch full documents for top results
-        7. Group results by owner (UP主) - ordered by first appearance in hits
-
-        Args:
-            query: Query string (can include DSL filter expressions).
-            extra_filters: Additional filter clauses.
-            verbose: Enable verbose logging.
-            knn_field: Dense vector field for KNN search.
-            knn_k: Number of nearest neighbors.
-            knn_num_candidates: Candidates per shard.
-            similarity: Minimum similarity threshold.
-            most_relevant_limit: Max docs for initial KNN search.
-            rank_method: Ranking method for results.
-            rank_top_k: Top-k for final ranking.
-            group_owner_limit: Max groups for owner aggregation.
-
-        Returns:
-            dict: {
-                "query": str,
-                "status": "finished" | "timedout" | "error",
-                "data": list[dict]  # list of step results
-            }
-        """
-        logger.enter_quiet(not verbose)
-
-        # Check if there are actual search keywords
-        # If no keywords, fall back to word-only explore (which uses filter_only_search)
-        if not self.has_search_keywords(query):
-            logger.hint(
-                "> No search keywords found, falling back to word-only explore",
-                verbose=verbose,
-            )
-            logger.exit_quiet(not verbose)
-            result = self.explore(
-                query=query,
-                extra_filters=extra_filters,
-                verbose=verbose,
-                most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-            )
-            # Mark that this was a filter-only fallback and add qmod
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = [
-                    "vector"
-                ]  # Original requested mode
-                result["data"][0]["output"]["filter_only"] = True
-            return result
-
-        step_results = []
-        final_status = "finished"
-
-        # Step 0: Construct KNN query info
-        step_idx = 0
-        step_name = "construct_knn_query"
-        logger.hint("> [step 0] KNN query constructing ...")
-
-        # Performance tracking for the entire knn_explore flow
-        perf_tracker = {
-            "query_parsing_ms": 0,
-            "lsh_embedding_ms": 0,  # Only for non-narrow-filter queries
-            "word_recall_ms": 0,  # Supplemental word recall (parallel with LSH)
-            "knn_search_ms": 0,
-            "filter_search_ms": 0,  # Only for narrow-filter queries
-            "rerank_ms": 0,
-            "fetch_docs_ms": 0,
-            "total_ms": 0,
-        }
-        explore_start = time.perf_counter()
-
-        # Extract filters and query info
-        step_start = time.perf_counter()
-        query_info, filter_clauses = self.get_filters_from_query(
-            query=query,
-            extra_filters=extra_filters,
-        )
-
-        # Check for narrow filters (e.g., user filters) that would cause KNN
-        # to return very few results. For such cases, use filter-first approach.
-        has_narrow_filters = self.has_narrow_filters(filter_clauses)
-
-        # Get query words for embedding (used for reranking even with narrow filters)
-        words_expr = query_info.get("words_expr", "")
-        keywords_body = query_info.get("keywords_body", [])
-
-        if keywords_body:
-            embed_text = " ".join(keywords_body)
-        else:
-            embed_text = words_expr or query
-
-        perf_tracker["query_parsing_ms"] = round(
-            (time.perf_counter() - step_start) * 1000, 2
-        )
-
-        # Start supplemental word recall in parallel (runs during LSH + KNN)
-        # Semantic embeddings find content by topic similarity, but for entity queries
-        # (UP主 names, brand names), the model interprets proper nouns literally.
-        # Word recall supplements with keyword-matching candidates that the reranker
-        # can then position correctly using float-vector cosine similarity.
-        word_recall_future = None
-        word_recall_executor = None
-        use_word_recall = (
-            word_recall_enabled
-            and not has_narrow_filters  # Narrow filters use dual_sort instead
-            and enable_rerank  # Word recall only helps when reranking
-        )
-        if use_word_recall:
-            word_recall_executor = ThreadPoolExecutor(max_workers=1)
-            word_recall_start = time.perf_counter()
-            word_recall_future = word_recall_executor.submit(
-                self._supplemental_word_recall,
-                query=query,
-                source_fields=["bvid", "title", "tags", "desc", "owner"],
-                extra_filters=extra_filters,
-                limit=word_recall_limit,
-                timeout=word_recall_timeout,
-                verbose=False,  # Keep quiet to avoid log interleaving
-            )
-            logger.hint(
-                f"> Started supplemental word recall in parallel "
-                f"(limit={word_recall_limit})",
-                verbose=verbose,
-            )
-
-        if has_narrow_filters:
-            logger.hint(
-                "> Narrow filters detected (user/bvid), using filter-first approach",
-                verbose=verbose,
-            )
-            logger.hint(
-                "> Skipping LSH embedding (not needed for filter-first + rerank)",
-                verbose=verbose,
-            )
-
-        # For narrow filters, we skip LSH embedding entirely:
-        # - LSH is only needed for ES KNN search
-        # - With narrow filters, we use filter-first approach (dual_sort_filter_search)
-        # - Then rerank directly using tfmx.rerank() for semantic similarity
-        # This optimization saves ~50-100ms per query with narrow filters
-        query_vector = None
-        if not has_narrow_filters:
-            # Check embed client availability (only needed for KNN search)
-            if not self.embed_client.is_available():
-                logger.warn("× Embed client not available, KNN explore cannot proceed")
-                error_result = {
-                    "step": step_idx,
-                    "name": step_name,
-                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                    "status": "error",
-                    "input": {"query": query},
-                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                    "output": {"error": "Embed client not available"},
-                    "comment": "TEI服务不可用",
-                }
-                step_results.append(error_result)
-                logger.exit_quiet(not verbose)
-                return {"query": query, "status": "error", "data": step_results}
-
-            # Refresh connection if stale (prevents cold start after idle)
-            self.embed_client.refresh_if_stale(verbose=verbose)
-
-            # Convert query to embedding (LSH for KNN search)
-            step_start = time.perf_counter()
-            query_hex = self.embed_client.text_to_hex(embed_text)
-            perf_tracker["lsh_embedding_ms"] = round(
-                (time.perf_counter() - step_start) * 1000, 2
-            )
-
-            if not query_hex:
-                logger.warn("× Failed to get embedding for query")
-                error_result = {
-                    "step": step_idx,
-                    "name": step_name,
-                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                    "status": "error",
-                    "input": {"query": query, "embed_text": embed_text},
-                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                    "output": {"error": "Failed to compute embedding"},
-                    "comment": "无法计算查询向量",
-                }
-                step_results.append(error_result)
-                logger.exit_quiet(not verbose)
-                return {"query": query, "status": "error", "data": step_results}
-
-            query_vector = self.embed_client.hex_to_byte_array(query_hex)
-
-        knn_query_info = {
-            "embed_text": embed_text,
-            "query_vector_len": len(query_vector) if query_vector else 0,
-            "filter_count": len(filter_clauses),
-            "filters": filter_clauses[:3] if filter_clauses else [],  # Show first 3
-            "qmod": ["vector"],  # vector-only mode
-            "narrow_filters": has_narrow_filters,  # Track if using filter-first approach
-            "lsh_skipped": has_narrow_filters,  # Track if LSH was skipped
-            "perf": {
-                "query_parsing_ms": perf_tracker["query_parsing_ms"],
-                "lsh_embedding_ms": perf_tracker["lsh_embedding_ms"],
-            },
-        }
-
-        knn_query_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "finished",
-            "input": {"query": query, "extra_filters": extra_filters},
-            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-            "output": knn_query_info,
-            "comment": "跳过LSH向量(使用过滤优先策略)" if has_narrow_filters else "",
-        }
-        step_results.append(knn_query_result)
-
-        # Step 1: KNN search for most relevant docs
-        step_idx += 1
-        step_name = "knn_search"
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} KNN search for relevant docs")
-
-        # Build source fields for KNN search - minimal fields for efficiency
-        # Only include fields needed for reranking; full docs fetched later
-        knn_source_fields = [
-            "bvid",  # Required for identifying docs
-        ]
-        # Add rerank text fields if reranking is enabled
-        if enable_rerank and rerank_text_fields:
-            for field in rerank_text_fields:
-                if field not in knn_source_fields:
-                    knn_source_fields.append(field)
-
-        # When reranking is enabled, skip the first ranking pass
-        # to allow more candidates for reranking
-        skip_first_ranking = enable_rerank and rerank_max_hits > 0
-
-        knn_search_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "running",
-            "input": {"query": query},
-            "output": {},
-            "output_type": "hits",
-            "comment": "",
-        }
-
-        # For narrow filters (user/bvid filters), use filter-first approach:
-        # 1. Get all docs matching the filter using dual-sort (recent + popular)
-        # 2. Always apply reranking to score by semantic similarity
-        # This ensures all filtered docs are considered, not just those in global KNN top-k
-        if has_narrow_filters:
-            logger.hint(
-                "> Using filter-first approach for narrow filters",
-                verbose=verbose,
-            )
-            # Use dual-sort search to get comprehensive coverage:
-            # - 2000 * N most recent videos (by pubdate)
-            # - 2000 * N most popular videos (by stat.view)
-            # where N = number of owners in filter
-            step_start = time.perf_counter()
-            filter_search_res = self.dual_sort_filter_search(
-                query=query,
-                source_fields=knn_source_fields,
-                extra_filters=extra_filters,
-                parse_hits=True,
-                add_region_info=False,
-                add_highlights_info=False,
-                per_owner_recent_limit=2000,
-                per_owner_popular_limit=2000,
-                timeout=KNN_TIMEOUT,
-                verbose=verbose,
-            )
-            perf_tracker["filter_search_ms"] = round(
-                (time.perf_counter() - step_start) * 1000, 2
-            )
-            # Use filter search results as knn_search_res
-            knn_search_res = filter_search_res
-            knn_search_res["narrow_filter_used"] = True
-            knn_search_res["perf"] = {
-                "filter_search_ms": perf_tracker["filter_search_ms"]
-            }
-            knn_search_result["comment"] = "使用双排序过滤策略(最新+最热)"
-
-            # Force enable reranking for narrow filters to compute semantic similarity
-            if not enable_rerank:
-                enable_rerank = True
-                rerank_max_hits = max(rerank_max_hits, most_relevant_limit)
-                skip_first_ranking = True
-        else:
-            # Standard KNN search for broad queries
-            step_start = time.perf_counter()
-            knn_search_params = {
-                "query": query,
-                "source_fields": knn_source_fields,
-                "extra_filters": extra_filters,
-                "knn_field": knn_field,
-                "k": knn_k,  # Use knn_k parameter for KNN search
-                "num_candidates": knn_num_candidates,
-                "similarity": similarity,
-                "add_region_info": False,
-                "is_explain": False,
-                "rank_method": rank_method,
-                "limit": knn_k,  # Get all k results for reranking
-                "rank_top_k": rerank_max_hits if skip_first_ranking else rank_top_k,
-                "skip_ranking": skip_first_ranking,  # Skip ranking if reranking later
-                "timeout": KNN_TIMEOUT,
-                "verbose": verbose,
-            }
-            knn_search_result["input"] = knn_search_params
-            knn_search_res = self.knn_search(**knn_search_params)
-            perf_tracker["knn_search_ms"] = round(
-                (time.perf_counter() - step_start) * 1000, 2
-            )
-            knn_search_res["perf"] = {"knn_search_ms": perf_tracker["knn_search_ms"]}
-
-        self.update_step_output(knn_search_result, step_output=knn_search_res)
-
-        # Track timeout status but continue processing if we have any hits
-        if self.is_status_timedout(knn_search_result):
-            final_status = "timedout"
-
-        step_results.append(knn_search_result)
-
-        # Check if we have any results to process
-        knn_hits = knn_search_res.get("hits", [])
-        if not knn_hits:
-            # No results - still need to add empty group_hits_by_owner step for frontend
-            logger.warn("× No results from KNN search")
-            # Add empty group_hits_by_owner result with appropriate comment
-            step_idx += 1
-            # Distinguish between timeout and normal no-results
-            if final_status == "timedout":
-                comment = "搜索超时，请稍后重试"
-            else:
-                comment = "无搜索结果"
-            empty_group_result = {
-                "step": step_idx,
-                "name": "group_hits_by_owner",
-                "name_zh": STEP_ZH_NAMES["group_hits_by_owner"]["name_zh"],
-                "status": "finished",
-                "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
-                "output": {"authors": {}},
-                "output_type": STEP_ZH_NAMES["group_hits_by_owner"]["output_type"],
-                "comment": comment,
-            }
-            step_results.append(empty_group_result)
-            logger.exit_quiet(not verbose)
-            return {"query": query, "status": final_status, "data": step_results}
-
-        # Step 1.5: Merge with supplemental word recall results
-        # Semantic embedding KNN finds content by topic similarity, which naturally
-        # differs from keyword matching results. For entity queries (UP主 names),
-        # the embedding model may return topically-similar but entity-mismatched results.
-        # Word recall brings keyword-matching candidates into the pool for reranking.
-        word_recall_info = {}
-        if word_recall_future is not None:
-            try:
-                word_search_res = word_recall_future.result(timeout=15)
-                perf_tracker["word_recall_ms"] = round(
-                    (time.perf_counter() - word_recall_start) * 1000, 2
-                )
-            except Exception as e:
-                logger.warn(f"× Supplemental word recall failed: {e}")
-                word_search_res = {"hits": [], "total_hits": 0}
-                perf_tracker["word_recall_ms"] = -1
-            finally:
-                if word_recall_executor:
-                    word_recall_executor.shutdown(wait=False)
-
-            word_hits = word_search_res.get("hits", [])
-            knn_bvids = {h.get("bvid") for h in knn_hits}
-            supplement_hits = [h for h in word_hits if h.get("bvid") not in knn_bvids]
-
-            if supplement_hits:
-                knn_hits_before = len(knn_hits)
-                knn_hits = knn_hits + supplement_hits
-                knn_search_res["hits"] = knn_hits
-
-                word_recall_info = {
-                    "word_total_hits": word_search_res.get("total_hits", 0),
-                    "word_return_hits": len(word_hits),
-                    "supplement_count": len(supplement_hits),
-                    "knn_original_count": knn_hits_before,
-                    "merged_total": len(knn_hits),
-                    "word_recall_ms": perf_tracker["word_recall_ms"],
-                }
-                logger.hint(
-                    f"> Word recall supplement: +{len(supplement_hits)} new candidates "
-                    f"(total pool: {len(knn_hits)})",
-                    verbose=verbose,
-                )
-
-            # Add word recall step result
-            step_idx += 1
-            step_name = "word_recall_supplement"
-            word_recall_step = {
-                "step": step_idx,
-                "name": step_name,
-                "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                "status": "finished",
-                "input": {
-                    "limit": word_recall_limit,
-                    "timeout": word_recall_timeout,
-                },
-                "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                "output": word_recall_info,
-                "comment": (
-                    f"补充了 {len(supplement_hits)} 个词语匹配结果"
-                    if supplement_hits
-                    else "无新增候选"
-                ),
-            }
-            step_results.append(word_recall_step)
-
-        # Step 2: Rerank using float embeddings for precise similarity
-        # Float-vector cosine similarity provides finer-grained scoring than
-        # LSH hamming similarity, plus keyword boosting ensures entity-matching
-        # documents are promoted above topically-similar but entity-mismatched results.
-        rerank_performed = False
-        rerank_info = {}
-
-        if enable_rerank and rerank_max_hits > 0:
-            step_idx += 1
-            step_name = "rerank"
-            step_str = logstr.note(brk(f"Step {step_idx}"))
-            logger.hint(f"> {step_str} Reranking with float embeddings")
-
-            reranker = get_reranker()
-            if reranker.is_available():
-                # Get original scores before rerank
-                original_top_bvids = [h.get("bvid") for h in knn_hits[:10]]
-
-                # Get keywords from query_info for keyword boosting
-                # This uses DSL-parsed keywords for accurate matching
-                rerank_keywords = query_info.get("keywords_body", [])
-                rerank_expr_tree = query_info.get("query_expr_tree", None)
-
-                # Perform reranking with timing
-                step_start = time.perf_counter()
-                reranked_hits, rerank_perf = reranker.rerank(
-                    query=embed_text,
-                    hits=knn_hits,
-                    keywords=rerank_keywords,
-                    expr_tree=rerank_expr_tree,
-                    keyword_boost=rerank_keyword_boost,
-                    title_keyword_boost=rerank_title_keyword_boost,
-                    max_rerank=rerank_max_hits,
-                    score_field="rerank_score",
-                    verbose=verbose,
-                )
-                perf_tracker["rerank_ms"] = round(
-                    (time.perf_counter() - step_start) * 1000, 2
-                )
-
-                # Update knn_search_res with reranked hits
-                knn_search_res["hits"] = reranked_hits
-                knn_hits = reranked_hits
-                rerank_performed = True
-
-                # Get new top bvids after rerank
-                reranked_top_bvids = [h.get("bvid") for h in reranked_hits[:10]]
-
-                # Calculate how many positions changed
-                position_changes = sum(
-                    1
-                    for i, bvid in enumerate(reranked_top_bvids)
-                    if i >= len(original_top_bvids) or bvid != original_top_bvids[i]
-                )
-
-                rerank_info = {
-                    "reranked_count": min(len(knn_hits), rerank_max_hits),
-                    "keyword_boost": rerank_keyword_boost,
-                    "title_keyword_boost": rerank_title_keyword_boost,
-                    "top10_position_changes": position_changes,
-                    "original_top3": original_top_bvids[:3],
-                    "reranked_top3": reranked_top_bvids[:3],
-                    "perf": rerank_perf,  # Add detailed perf info from reranker
-                }
-
-                rerank_result = {
-                    "step": step_idx,
-                    "name": step_name,
-                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                    "status": "finished",
-                    "input": {
-                        "max_hits": rerank_max_hits,
-                        "keyword_boost": rerank_keyword_boost,
-                        "title_keyword_boost": rerank_title_keyword_boost,
-                    },
-                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                    "output": rerank_info,
-                    "comment": f"重排了 {rerank_info['reranked_count']} 个结果",
-                }
-                step_results.append(rerank_result)
-
-                logger.mesg(
-                    f"  Reranked {rerank_info['reranked_count']} hits, "
-                    f"{position_changes} position changes in top 10",
-                    verbose=verbose,
-                )
-            else:
-                logger.warn("× Reranker not available, skipping rerank step")
-                rerank_info = {"skipped": True, "reason": "Reranker not available"}
-
-        # Step 3: Fetch full docs for ranked results (using reranked order if available)
-        # For narrow filters (user/bvid), return ALL matching docs, not just rank_top_k
-        # This ensures the full filtered set is available for semantic exploration
-        if knn_search_res.get("narrow_filter_used"):
-            # For narrow filters, use all returned hits (limited by dual_sort limits)
-            fetch_limit = len(knn_hits)
-        else:
-            # For broad queries, limit to rank_top_k
-            fetch_limit = min(len(knn_hits), rank_top_k)
-
-        top_k_hits = knn_hits[:fetch_limit]
-        bvids = [hit.get("bvid", None) for hit in top_k_hits]
-
-        # Clear knn_hits to release memory early (we only need top_k now)
-        del knn_hits
-
-        # Use fetch_docs_by_bvids to get full docs without word matching
-        step_start = time.perf_counter()
-        full_doc_search_res = self.fetch_docs_by_bvids(
-            bvids=bvids,
-            add_region_info=True,
-            limit=len(bvids),
-            timeout=EXPLORE_TIMEOUT,
-            verbose=verbose,
-        )
-        perf_tracker["fetch_docs_ms"] = round(
-            (time.perf_counter() - step_start) * 1000, 2
-        )
-
-        # Merge scores from KNN search (and rerank if performed) into full doc hits
-        full_hits = full_doc_search_res.get("hits", [])
-
-        # Build a score map from top_k_hits that includes rerank_score if available
-        score_fields = ["score", "rank_score", "sort_score"]
-        if rerank_performed:
-            score_fields.extend(["rerank_score", "cosine_similarity", "keyword_boost"])
-        self.merge_scores_into_hits(full_hits, top_k_hits, score_fields=score_fields)
-
-        # Clear top_k_hits to release memory
-        del top_k_hits
-
-        # Add char-level highlighting for vector search results
-        # Since ES keyword highlighting isn't available for KNN search,
-        # we use simple char-level matching to highlight query keywords
-        char_highlighter = get_char_highlighter()
-        char_highlighter.add_highlights_to_hits(
-            hits=full_hits,
-            keywords=embed_text,  # Use the same text used for embedding
-            fields=["title", "tags", "desc", "owner.name"],
-            tag="hit",
-        )
-
-        # Determine the limit for ranking
-        # For narrow filters (user/bvid), don't limit - return all matching docs
-        # For broad queries, limit to rank_top_k
-        is_narrow_filter = knn_search_res.get("narrow_filter_used", False)
-        ranking_top_k = len(full_hits) if is_narrow_filter else rank_top_k
-
-        # Re-apply ranking after merging scores
-        # If rerank was performed, apply preference-based ranking;
-        # otherwise use original ranking method
-        if rerank_performed:
-            # Apply preference-based ranking: fuses embedding + quality + recency
-            full_doc_search_res["hits"] = full_hits
-            full_doc_search_res = self.hit_ranker.preference_rank(
-                full_doc_search_res, top_k=ranking_top_k, prefer=prefer
-            )
-        else:
-            # For KNN explore without rerank, apply ranking method
-            if rank_method == "relevance":
-                full_doc_search_res = self.hit_ranker.relevance_rank(
-                    full_doc_search_res, top_k=ranking_top_k
-                )
-            elif rank_method == "rrf":
-                full_doc_search_res = self.hit_ranker.rrf_rank(
-                    full_doc_search_res, top_k=ranking_top_k
-                )
-            elif rank_method == "stats":
-                full_doc_search_res = self.hit_ranker.stats_rank(
-                    full_doc_search_res, top_k=ranking_top_k, prefer=prefer
-                )
-            else:  # "heads"
-                full_doc_search_res = self.hit_ranker.heads(
-                    full_doc_search_res, top_k=ranking_top_k
-                )
-
-        full_doc_search_res["total_hits"] = knn_search_res.get("total_hits", 0)
-
-        # Preserve filter-first approach info from knn_search_res
-        if knn_search_res.get("narrow_filter_used"):
-            full_doc_search_res["narrow_filter_used"] = True
-        if knn_search_res.get("dual_sort_used"):
-            full_doc_search_res["dual_sort_used"] = True
-            full_doc_search_res["dual_sort_info"] = knn_search_res.get("dual_sort_info")
-
-        # Update the knn_search step output with final results
-        # Note: We update the existing step rather than creating a new one
-        knn_search_result["output"] = full_doc_search_res
-        if rerank_performed:
-            knn_search_result["output"]["rerank_info"] = rerank_info
-
-        # Step 4: Group hits by owner
-        # IMPORTANT: Always execute this step even if previous steps timed out,
-        # as long as we have some hits to group. This ensures "相关作者" is always populated.
-        # For KNN explore, use top_rank_score to find authors with highest relevance hits
-        step_idx += 1
-        step_name = "group_hits_by_owner"
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Group hits by owner")
-
-        group_hits_by_owner_params = {
-            "search_res": full_doc_search_res,
-            "sort_field": group_sort_field,
-            "limit": group_owner_limit,
-        }
-
-        group_hits_by_owner_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "running",
-            "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
-            "output": {},
-            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-            "comment": "",
-        }
-
-        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
-
-        self.update_step_output(
-            group_hits_by_owner_result, step_output=group_res, field="authors"
-        )
-        step_results.append(group_hits_by_owner_result)
-
-        # Calculate total time and add performance summary
-        perf_tracker["total_ms"] = round(
-            (time.perf_counter() - explore_start) * 1000, 2
-        )
-
-        # Log performance summary
-        if verbose:
-            logger.mesg(f"  knn_explore perf: {perf_tracker}")
-
-        logger.exit_quiet(not verbose)
-        return {
-            "query": query,
-            "status": final_status,
-            "data": step_results,
-            "perf": perf_tracker,  # Add overall performance tracker to result
-        }
-
-    def hybrid_explore(
-        self,
-        # Query and filter params
-        query: str,
-        extra_filters: list[dict] = [],
-        suggest_info: dict = {},
-        verbose: bool = False,
-        # KNN params
-        knn_field: str = KNN_TEXT_EMB_FIELD,
-        knn_k: int = KNN_K,
-        knn_num_candidates: int = KNN_NUM_CANDIDATES,
-        # Hybrid params
-        rrf_k: int = HYBRID_RRF_K,
-        fusion_method: Literal["rrf", "weighted"] = "rrf",
-        # Explore params
-        most_relevant_limit: int = 10000,
-        rank_method: RANK_METHOD_TYPE = "tiered",  # Default to tiered: relevance-first with stats/recency tie-breaking
-        rank_top_k: int = EXPLORE_RANK_TOP_K,
-        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
-        group_sort_field: AUTHOR_SORT_FIELD_TYPE = AUTHOR_SORT_FIELD,  # Match video list order
-        # Rerank params (for q=wvr mode)
-        enable_rerank: bool = False,
-        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
-        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
-        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
-        rerank_text_fields: list[str] = KNN_RERANK_TEXT_FIELDS,
-        # Ranking preference
-        prefer: RANK_PREFER_TYPE = RANK_PREFER,
-    ) -> dict:
-        """Hybrid explore combining word-based and vector-based retrieval.
-
-        This method uses tiered ranking by default: relevance-first,
-        with popularity/recency tie-breaking within same-relevance tiers.
-        This ensures highly relevant content ranks first, while allowing
-        popular/recent content to surface among similarly relevant results.
-
-        Workflow:
-        1. Performs word-based search (for keyword matching)
-        2. Performs KNN vector search (for semantic similarity)
-        3. Fuses results using RRF, with vector scores weighted higher
-        4. Optionally reranks with float embeddings (if q=wvr)
-        5. Ranks by pure relevance score (no stats/pubdate weighting)
-        6. Groups results by owner (UP主) using top relevance score
-
-        Args:
-            query: Query string (can include DSL filter expressions).
-            extra_filters: Additional filter clauses.
-            suggest_info: Suggestion info.
-            verbose: Enable verbose logging.
-            knn_field: Dense vector field for KNN search.
-            knn_k: Number of nearest neighbors.
-            knn_num_candidates: Candidates per shard.
-            rrf_k: K parameter for RRF fusion.
-            fusion_method: "rrf" or "weighted".
-            most_relevant_limit: Max docs for searches.
-            rank_method: Ranking method ("relevance" recommended for vector search).
-            rank_top_k: Top-k for final ranking.
-            group_owner_limit: Max groups for owner aggregation.
-            group_sort_field: Field to sort author groups by.
-
-        Returns:
-            dict: {
-                "query": str,
-                "status": "finished" | "timedout" | "error",
-                "data": list[dict]  # list of step results, qmod in first step's output
-            }
-        """
-        logger.enter_quiet(not verbose)
-
-        # Check if there are actual search keywords
-        # If no keywords, fall back to word-only explore (which uses filter_only_search)
-        if not self.has_search_keywords(query):
-            logger.hint(
-                "> No search keywords found, falling back to word-only explore",
-                verbose=verbose,
-            )
-            logger.exit_quiet(not verbose)
-            result = self.explore(
-                query=query,
-                extra_filters=extra_filters,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-            )
-            # Mark that this was a filter-only fallback and add qmod
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = [
-                    "word",
-                    "vector",
-                ]  # Original requested mode
-                result["data"][0]["output"]["filter_only"] = True
-            return result
-
-        step_results = []
-        final_status = "finished"
-
-        # Step 0: Parse query and extract info
-        step_idx = 0
-        step_name = "construct_query_dsl_dict"
-        logger.hint("> [step 0] Query constructing ...")
-
-        query_info = self.query_rewriter.get_query_info(query)
-        query_dsl_dict_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "finished",
-            "input": {"query": query},
-            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-            "output": {
-                "words_expr": query_info.get("words_expr", ""),
-                "keywords_body": query_info.get("keywords_body", []),
-                "qmod": ["word", "vector"],  # hybrid mode
-            },
-            "comment": "",
-        }
-        step_results.append(query_dsl_dict_result)
-
-        # Step 1: Hybrid search
-        step_idx += 1
-        step_name = "hybrid_search"
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Hybrid search (word + KNN)")
-
-        # When rerank is enabled, we use hybrid search just for candidate collection
-        # and skip fusion-based scoring (rerank will do the scoring)
-        if enable_rerank:
-            hybrid_rank_method = "heads"  # Just collect candidates, no fusion scoring
-            hybrid_rank_top_k = rerank_max_hits  # Get more candidates for reranking
-        else:
-            hybrid_rank_method = rank_method
-            hybrid_rank_top_k = rank_top_k
-
-        hybrid_search_params = {
-            "query": query,
-            "source_fields": [
-                "bvid",
-                "owner",
-                "stat",
-                "pubdate",
-                "duration",
-            ],  # Include owner for author grouping
-            "extra_filters": extra_filters,
-            "suggest_info": suggest_info,
-            "knn_field": knn_field,
-            "knn_k": knn_k,  # Use knn_k parameter for KNN portion
-            "knn_num_candidates": knn_num_candidates,
-            "rrf_k": rrf_k,
-            "fusion_method": fusion_method,
-            "add_region_info": False,
-            "add_highlights_info": False,
-            "is_highlight": False,
-            "rank_method": hybrid_rank_method,  # Use heads when rerank enabled
-            "limit": min(most_relevant_limit, 2000),  # Cap limit for faster search
-            "rank_top_k": hybrid_rank_top_k,  # Get more candidates when rerank enabled
-            "timeout": EXPLORE_TIMEOUT,
-            "verbose": verbose,
-        }
-
-        hybrid_search_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "running",
-            "input": hybrid_search_params,
-            "output": {},
-            "output_type": "hits",
-            "comment": "",
-        }
-
-        hybrid_search_res = self.hybrid_search(**hybrid_search_params)
-        self.update_step_output(hybrid_search_result, step_output=hybrid_search_res)
-
-        # Track timeout status but continue processing
-        if self.is_status_timedout(hybrid_search_result):
-            final_status = "timedout"
-
-        # Step 2: Fetch full docs for ranked results
-        bvids = [hit.get("bvid", None) for hit in hybrid_search_res.get("hits", [])]
-        if not bvids:
-            # No results - still need to add empty group_hits_by_owner step for frontend
-            logger.warn("× No results from hybrid search")
-            step_results.append(hybrid_search_result)
-            # Add empty group_hits_by_owner result with appropriate comment
-            step_idx += 1
-            # Distinguish between timeout and normal no-results
-            if final_status == "timedout":
-                comment = "搜索超时，请稍后重试"
-            else:
-                comment = "无搜索结果"
-            empty_group_result = {
-                "step": step_idx,
-                "name": "group_hits_by_owner",
-                "name_zh": STEP_ZH_NAMES["group_hits_by_owner"]["name_zh"],
-                "status": "finished",
-                "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
-                "output": {"authors": {}},
-                "output_type": STEP_ZH_NAMES["group_hits_by_owner"]["output_type"],
-                "comment": comment,
-            }
-            step_results.append(empty_group_result)
-            logger.exit_quiet(not verbose)
-            return {
-                "query": query,
-                "status": final_status,
-                "data": step_results,
-            }
-
-        bvid_filter = bvids_to_filter(bvids)
-
-        # Step 2 (hidden): Fetch full docs for ranked results
-        # IMPORTANT: For hybrid search, we must NOT filter by keywords again,
-        # because vector search results may not contain the query keywords
-        # (they are semantically similar but not lexically matching).
-        # We only use bvid filter to fetch full docs.
-        step_str = logstr.note(brk(f"Step (full docs)"))
-        logger.hint(f"> {step_str} Fetch full docs by bvids (no keyword filter)")
-
-        # Use fetch_docs_by_bvids which uses match_all + bvid filter
-        # This ensures we get ALL results from hybrid_search, not just keyword-matched ones
-        full_doc_search_res = self.fetch_docs_by_bvids(
-            bvids=bvids,
-            add_region_info=True,
-            limit=len(bvids),
-            timeout=EXPLORE_TIMEOUT,
-            verbose=verbose,
-        )
-
-        # Merge hybrid scores from original search into full doc hits
-        hybrid_hits = hybrid_search_res.get("hits", [])
-        full_hits = full_doc_search_res.get("hits", [])
-        self.merge_scores_into_hits(full_hits, hybrid_hits)
-
-        # Add char-level highlighting for hybrid search results
-        # Word search provides ES highlighting, but KNN results need char-level matching
-        query_info = self.query_rewriter.get_query_info(query)
-        keywords_body = query_info.get("keywords_body", [])
-        embed_text = " ".join(keywords_body) if keywords_body else query
-        char_highlighter = get_char_highlighter()
-        char_highlighter.add_highlights_to_hits(
-            hits=full_hits,
-            keywords=embed_text,
-            fields=["title", "tags", "desc", "owner.name"],
-            tag="hit",
-        )
-
-        # Optional rerank step for q=wvr mode
-        rerank_performed = False
-        rerank_info = {}
-        if enable_rerank:
-            step_idx += 1
-            step_name = "rerank"
-            step_str = logstr.note(brk(f"Step {step_idx}"))
-            logger.hint(f"> {step_str} Reranking with float embeddings")
-
-            reranker = get_reranker()
-            if reranker.is_available():
-                original_top_bvids = [h.get("bvid") for h in full_hits[:10]]
-
-                # Get expr_tree for keyword extraction
-                rerank_expr_tree = query_info.get("query_expr_tree", None)
-
-                # Perform reranking with DSL-extracted keywords
-                reranked_hits, rerank_perf = reranker.rerank(
-                    query=embed_text,
-                    hits=full_hits[:rerank_max_hits],
-                    keywords=keywords_body,
-                    expr_tree=rerank_expr_tree,
-                    keyword_boost=rerank_keyword_boost,
-                    title_keyword_boost=rerank_title_keyword_boost,
-                    max_rerank=rerank_max_hits,
-                    score_field="rerank_score",
-                    verbose=verbose,
-                )
-
-                # Add remaining hits not reranked
-                if len(full_hits) > rerank_max_hits:
-                    reranked_hits.extend(full_hits[rerank_max_hits:])
-
-                full_doc_search_res["hits"] = reranked_hits[:rank_top_k]
-                full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
-
-                # Apply preference-based ranking after reranking (q=wvr)
-                # Fuses hybrid + embedding relevance with quality and recency
-                full_doc_search_res = self.hit_ranker.preference_rank(
-                    full_doc_search_res, top_k=rank_top_k, prefer=prefer
-                )
-                rerank_performed = True
-                full_hits = full_doc_search_res["hits"]
-
-                # Get new top bvids after rerank
-                reranked_top_bvids = [h.get("bvid") for h in reranked_hits[:10]]
-                position_changes = sum(
-                    1
-                    for i, bvid in enumerate(reranked_top_bvids)
-                    if i >= len(original_top_bvids) or bvid != original_top_bvids[i]
-                )
-
-                rerank_info = {
-                    "reranked_count": min(len(full_hits), rerank_max_hits),
-                    "keyword_boost": rerank_keyword_boost,
-                    "title_keyword_boost": rerank_title_keyword_boost,
-                    "top10_position_changes": position_changes,
-                    "perf": rerank_perf,  # Add perf info
-                }
-
-                rerank_result = {
-                    "step": step_idx,
-                    "name": step_name,
-                    "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-                    "status": "finished",
-                    "input": {
-                        "max_hits": rerank_max_hits,
-                        "keyword_boost": rerank_keyword_boost,
-                    },
-                    "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-                    "output": rerank_info,
-                    "comment": f"重排了 {rerank_info['reranked_count']} 个结果",
-                }
-                step_results.append(rerank_result)
-
-                logger.mesg(
-                    f"  Reranked {rerank_info['reranked_count']} hits, "
-                    f"{position_changes} position changes in top 10",
-                    verbose=verbose,
-                )
-            else:
-                logger.warn("× Reranker not available, skipping rerank step")
-                rerank_info = {"skipped": True, "reason": "Reranker not available"}
-
-        # Re-apply ranking after merging scores (if not reranked)
-        # For hybrid explore, use tiered ranking by default:
-        # - Group by relevance tiers
-        # - Within each tier, sort by popularity/recency
-        if not rerank_performed:
-            if rank_method == "tiered":
-                # Tiered ranking: relevance-first with stats/recency tie-breaking
-                full_doc_search_res = self.hit_ranker.tiered_rank(
-                    full_doc_search_res,
-                    top_k=rank_top_k,
-                    relevance_field="hybrid_score",
-                    prefer=prefer,
-                )
-            elif rank_method == "relevance":
-                # Pure relevance ranking, just set rank_score for downstream use
-                for hit in full_hits:
-                    hit["rank_score"] = hit.get("hybrid_score", 0) or 0
-                full_hits.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
-                full_doc_search_res["hits"] = full_hits[:rank_top_k]
-                full_doc_search_res["return_hits"] = len(full_doc_search_res["hits"])
-                full_doc_search_res["rank_method"] = "relevance"
-            elif rank_method == "rrf":
-                full_doc_search_res = self.hit_ranker.rrf_rank(
-                    full_doc_search_res, top_k=rank_top_k
-                )
-            elif rank_method == "stats":
-                full_doc_search_res = self.hit_ranker.stats_rank(
-                    full_doc_search_res, top_k=rank_top_k, prefer=prefer
-                )
-            else:  # "heads"
-                full_doc_search_res = self.hit_ranker.heads(
-                    full_doc_search_res, top_k=rank_top_k
-                )
-
-        full_doc_search_res["total_hits"] = hybrid_search_res.get("total_hits", 0)
-        full_doc_search_res["fusion_method"] = hybrid_search_res.get(
-            "fusion_method", fusion_method
-        )
-        full_doc_search_res["word_hits_count"] = hybrid_search_res.get(
-            "word_hits_count", 0
-        )
-        full_doc_search_res["knn_hits_count"] = hybrid_search_res.get(
-            "knn_hits_count", 0
-        )
-
-        self.update_step_output(hybrid_search_result, step_output=full_doc_search_res)
-        if rerank_performed:
-            hybrid_search_result["output"]["rerank_info"] = rerank_info
-
-        # Track if any step timed out, but continue to group_hits_by_owner if we have hits
-        if self.is_status_timedout(hybrid_search_result):
-            final_status = "timedout"
-
-        step_results.append(hybrid_search_result)
-
-        # Step 3: Group hits by owner
-        # IMPORTANT: Always execute this step even if previous steps timed out,
-        # as long as we have some hits to group. This ensures "相关作者" is always populated.
-
-        # Step 3: Group hits by owner
-        # For hybrid explore, use top_rank_score to find authors with highest relevance hits
-        step_idx += 1
-        step_name = "group_hits_by_owner"
-        step_str = logstr.note(brk(f"Step {step_idx}"))
-        logger.hint(f"> {step_str} Group hits by owner")
-
-        group_hits_by_owner_params = {
-            "search_res": full_doc_search_res,
-            "sort_field": group_sort_field,
-            "limit": group_owner_limit,
-        }
-
-        group_hits_by_owner_result = {
-            "step": step_idx,
-            "name": step_name,
-            "name_zh": STEP_ZH_NAMES[step_name]["name_zh"],
-            "status": "running",
-            "input": {"limit": group_owner_limit, "sort_field": group_sort_field},
-            "output": {},
-            "output_type": STEP_ZH_NAMES[step_name]["output_type"],
-            "comment": "",
-        }
-
-        group_res = self.group_hits_by_owner(**group_hits_by_owner_params)
-        self.update_step_output(
-            group_hits_by_owner_result, step_output=group_res, field="authors"
-        )
-        step_results.append(group_hits_by_owner_result)
-
-        logger.exit_quiet(not verbose)
-        return {
-            "query": query,
-            "status": final_status,
-            "data": step_results,
-        }
 
     def unified_explore(
         self,

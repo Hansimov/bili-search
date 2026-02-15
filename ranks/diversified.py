@@ -14,8 +14,15 @@ Algorithm:
 
 This guarantees that "相关的"、"热度高的"、"质量高的"、"时间近的"
 all appear in the top results.
+
+Scoring improvements over naive max-normalization:
+- Popularity uses log-scale normalization because view counts follow
+  a power-law distribution. Without log-scale, a 100M-view video
+  crushes all 50K-view videos to near-zero popularity scores.
+- Fused weights are configurable via DIVERSIFIED_FUSED_WEIGHTS.
 """
 
+import math
 import time as _time
 from typing import Literal
 
@@ -26,6 +33,7 @@ from ranks.constants import (
     RANK_TOP_K,
     RANK_PREFER_TYPE,
     RANK_PREFER,
+    DIVERSIFIED_FUSED_WEIGHTS,
 )
 
 # Slot allocation presets
@@ -100,7 +108,14 @@ class DiversifiedRanker:
         - relevance_score: Normalized BM25/hybrid/rerank score [0, 1]
         - quality_score: Stat quality from DocScorer [0, 1)
         - recency_score: Normalized time factor [0, 1]
-        - popularity_score: Normalized view count [0, 1]
+        - popularity_score: Log-normalized view count [0, 1]
+
+        Popularity uses log-scale normalization because view counts follow
+        a power-law distribution. Without log-scale, a single 100M-view
+        video crushes all other videos' popularity to near-zero:
+            log1p(100,000,000) / log1p(50,000) = 18.4 / 10.8 = 1.7x
+        vs linear:
+            100,000,000 / 50,000 = 2000x
 
         Args:
             hits: List of hit dicts to score.
@@ -109,37 +124,30 @@ class DiversifiedRanker:
         if now_ts is None:
             now_ts = _time.time()
 
-        # Find max values for normalization
-        max_score = max(
-            (
-                h.get("score", 0)
-                or h.get("hybrid_score", 0)
-                or h.get("rerank_score", 0)
-                or 0
-                for h in hits
-            ),
-            default=1.0,
-        )
+        # Collect raw values for normalization
+        raw_scores = []
+        raw_views = []
+        for h in hits:
+            raw_scores.append(
+                h.get("rerank_score") or h.get("hybrid_score") or h.get("score") or 0
+            )
+            raw_views.append(dict_get(h, "stat.view", 0) or 0)
+
+        # Max-normalization for relevance (BM25/cosine scores are well-distributed)
+        max_score = max(raw_scores) if raw_scores else 1.0
         if max_score <= 0:
             max_score = 1.0
 
-        max_view = max(
-            (dict_get(h, "stat.view", 0) or 0 for h in hits),
-            default=1,
-        )
-        if max_view <= 0:
-            max_view = 1
+        # Log-scale normalization for popularity (power-law distributed)
+        log_views = [math.log1p(v) for v in raw_views]
+        max_log_view = max(log_views) if log_views else 1.0
+        if max_log_view <= 0:
+            max_log_view = 1.0
 
-        for hit in hits:
+        for i, hit in enumerate(hits):
             # Relevance: use best available score
-            raw_score = (
-                hit.get("rerank_score")
-                or hit.get("hybrid_score")
-                or hit.get("score")
-                or 0
-            )
             hit["relevance_score"] = round(
-                min(raw_score / max_score, 1.0) if max_score > 0 else 0.0, 4
+                min(raw_scores[i] / max_score, 1.0) if max_score > 0 else 0.0, 4
             )
 
             # Quality: bounded [0, 1) from DocScorer
@@ -152,9 +160,8 @@ class DiversifiedRanker:
             hit["recency_score"] = round(self.pubdate_scorer.normalize(time_factor), 4)
             hit["time_factor"] = round(time_factor, 4)
 
-            # Popularity: normalized by max view in this batch
-            view = dict_get(hit, "stat.view", 0) or 0
-            hit["popularity_score"] = round(view / max_view, 4)
+            # Popularity: log-scale normalization
+            hit["popularity_score"] = round(log_views[i] / max_log_view, 4)
 
     def _allocate_slots(
         self,
@@ -204,14 +211,15 @@ class DiversifiedRanker:
         # Phase 2: Fill remaining slots with best overall fused score
         remaining = max(0, top_k - len(result))
         if remaining > 0:
-            # Fused score: simple average of all dimension scores
+            # Fused score: weighted combination of all dimensions
+            w = DIVERSIFIED_FUSED_WEIGHTS
             for hit in hits:
                 if hit.get("bvid") not in selected_bvids:
                     hit["_fused_score"] = (
-                        hit.get("relevance_score", 0) * 0.35
-                        + hit.get("quality_score", 0) * 0.25
-                        + hit.get("recency_score", 0) * 0.20
-                        + hit.get("popularity_score", 0) * 0.20
+                        hit.get("relevance_score", 0) * w["relevance"]
+                        + hit.get("quality_score", 0) * w["quality"]
+                        + hit.get("recency_score", 0) * w["recency"]
+                        + hit.get("popularity_score", 0) * w["popularity"]
                     )
 
             fused_sorted = sorted(
@@ -333,13 +341,14 @@ class DiversifiedRanker:
         top_bvids = {h.get("bvid") for h in top_hits}
 
         # Phase 2: Fused score ranking for the rest
+        w = DIVERSIFIED_FUSED_WEIGHTS
         remaining_hits = [h for h in hits if h.get("bvid") not in top_bvids]
         for hit in remaining_hits:
             hit["rank_score"] = round(
-                hit.get("relevance_score", 0) * 0.35
-                + hit.get("quality_score", 0) * 0.25
-                + hit.get("recency_score", 0) * 0.20
-                + hit.get("popularity_score", 0) * 0.20,
+                hit.get("relevance_score", 0) * w["relevance"]
+                + hit.get("quality_score", 0) * w["quality"]
+                + hit.get("recency_score", 0) * w["recency"]
+                + hit.get("popularity_score", 0) * w["popularity"],
                 6,
             )
             hit["_slot_dimension"] = "fused"

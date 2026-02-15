@@ -130,12 +130,18 @@ class RecallManager:
         else:
             raise ValueError(f"Unknown recall mode: {mode}")
 
+        # Apply pool-level noise filtering to remove low-confidence candidates
+        pre_filter_count = len(pool.hits)
+        pool = pool.filter_noise()
+
         pool.took_ms = round((time.perf_counter() - start) * 1000, 2)
 
         if verbose:
+            noise_removed = pre_filter_count - len(pool.hits)
+            filter_msg = f" (filtered {noise_removed} noise)" if noise_removed else ""
             logger.mesg(
                 f"  RecallManager ({mode}): {len(pool.hits)} candidates "
-                f"in {pool.took_ms:.0f}ms"
+                f"in {pool.took_ms:.0f}ms{filter_msg}"
             )
 
         return pool

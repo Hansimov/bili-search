@@ -19,7 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from tclogger import logger
 
-from recalls.base import RecallResult, RecallPool
+from recalls.base import RecallResult, RecallPool, NoiseFilter
+from ranks.constants import MIN_BM25_SCORE
 
 # Lane configurations: (lane_name, sort_spec, limit)
 WORD_RECALL_LANES = {
@@ -149,8 +150,15 @@ class MultiLaneWordRecall:
                 )
 
             took_ms = round((time.perf_counter() - start) * 1000, 2)
+            hits = res.get("hits", [])
+
+            # Apply score-ratio noise filtering within this lane
+            # This removes docs that barely match the query (BM25 rare-keyword noise)
+            original_count = len(hits)
+            hits = NoiseFilter.filter_by_score_ratio(hits)
+
             return RecallResult(
-                hits=res.get("hits", []),
+                hits=hits,
                 lane=lane_name,
                 total_hits=res.get("total_hits", 0),
                 took_ms=took_ms,
@@ -227,6 +235,7 @@ class MultiLaneWordRecall:
             "track_total_hits": True,
             "size": limit,
             "terminate_after": min(TERMINATE_AFTER, 500000),  # Smaller scan for speed
+            "min_score": MIN_BM25_SCORE,  # Filter noise: docs must reasonably match
         }
         search_body = set_timeout(search_body, timeout=timeout)
 

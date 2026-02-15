@@ -17,11 +17,12 @@
   - [4.1 DSL 查询解析](#41-dsl-查询解析)
   - [4.2 向量嵌入与 LSH](#42-向量嵌入与-lsh)
   - [4.3 多车道召回 (Multi-Lane Recall)](#43-多车道召回-multi-lane-recall)
-  - [4.4 精排重排 (Reranking)](#44-精排重排-reranking)
-  - [4.5 排序策略](#45-排序策略)
-  - [4.6 多样化排序 (Diversified Ranking)](#46-多样化排序-diversified-ranking)
-  - [4.7 UP 主分组](#47-up-主分组)
-  - [4.8 窄过滤器处理](#48-窄过滤器处理)
+  - [4.4 召回噪声过滤 (Noise Filtering)](#44-召回噪声过滤-noise-filtering)
+  - [4.5 精排重排 (Reranking)](#45-精排重排-reranking)
+  - [4.6 排序策略](#46-排序策略)
+  - [4.7 多样化排序 (Diversified Ranking)](#47-多样化排序-diversified-ranking)
+  - [4.8 UP 主分组](#48-up-主分组)
+  - [4.9 窄过滤器处理](#49-窄过滤器处理)
 - [5. ES 索引设计](#5-es-索引设计)
   - [5.1 索引结构](#51-索引结构)
   - [5.2 文本字段与分词](#52-文本字段与分词)
@@ -68,12 +69,16 @@ elastics/
 │   ├── diag_float_vs_lsh.py  # Float vs LSH 对比诊断
 │   └── diag_knn.py       # KNN 召回诊断
 
-recalls/                      # ← NEW: 多车道召回模块
+recalls/                      # 多车道召回模块
 ├── __init__.py           # 模块文档
-├── base.py               # RecallResult / RecallPool 数据类
+├── base.py               # RecallResult / RecallPool / NoiseFilter
 ├── word.py               # MultiLaneWordRecall — 多车道词语召回
 ├── vector.py             # VectorRecall — 向量+词语补充召回
-└── manager.py            # RecallManager — 召回策略编排
+├── manager.py            # RecallManager — 召回策略编排
+└── tests/
+    ├── test_base.py      # RecallPool 合并测试 (7 tests)
+    ├── test_diversified.py # 多样化排序测试 (8 tests)
+    └── test_noise.py     # 噪声过滤测试 (18 tests)
 
 converters/
 ├── embed/
@@ -108,17 +113,20 @@ VideoSearcherV2
         │
         ▼
 VideoExplorer (继承 VideoSearcherV2)
-    ├── explore_v2()       # 词语探索 V2 (多车道召回 + 多样化排序)
-    ├── knn_explore_v2()   # 向量探索 V2 (向量召回 + 多样化排序)
-    ├── hybrid_explore_v2()# 混合探索 V2 (混合召回 + 多样化排序)
-    ├── unified_explore()  # 统一分发入口 → 路由到 V2 方法
-    ├── explore()          # [Legacy] 词语探索
-    ├── knn_explore()      # [Legacy] 向量探索
-    └── hybrid_explore()   # [Legacy] 混合探索
+    ├── explore_v2()           # 词语探索 (多车道召回 + 多样化排序)
+    ├── knn_explore_v2()       # 向量探索 (向量召回 + 多样化排序)
+    ├── hybrid_explore_v2()    # 混合探索 (混合召回 + 多样化排序)
+    ├── unified_explore()      # 统一分发入口 → 路由到 V2 方法
+    └── _filter_only_explore() # 无关键词回退 (纯过滤 + stats/recency 排序)
 
 RecallManager (召回策略编排)
     ├── MultiLaneWordRecall   # 4 车道并行词语召回
-    └── VectorRecall          # 向量召回 + 词语补充
+    ├── VectorRecall          # 向量召回 + 词语补充
+    └── pool.filter_noise()   # 合并后噪声过滤
+
+NoiseFilter (噪声过滤)
+    ├── filter_by_score_ratio()     # BM25 车道噪声过滤
+    └── filter_knn_by_score_ratio() # KNN 向量噪声过滤
 
 DiversifiedRanker (多样化排序)
     └── diversified_rank()    # 槽位分配多样化排序
@@ -135,7 +143,7 @@ DiversifiedRanker (多样化排序)
 | MongoDB | `MongoOperator` | UP 主头像等补充信息 |
 | TEI 嵌入服务 | `TextEmbedClient` | 文本 → 向量（float 1024 维 + LSH 2048 bit） |
 | DSL 解析器 | `DslExprRewriter` + `DslExprToElasticConverter` | 查询重写与 ES 查询构建 |
-| 召回管理器 | `RecallManager` | 多车道召回策略编排 |
+| 召回管理器 | `RecallManager` | 多车道召回策略编排 + 噪声过滤 |
 | 排序引擎 | `VideoHitsRanker` | 多策略排序（diversified/stats/relevance/tiered/rrf） |
 | 多样化排序器 | `DiversifiedRanker` | 槽位分配多样化排序（默认） |
 | 精排器 | `EmbeddingReranker` | 基于 float 向量余弦相似度的精排 |
@@ -387,7 +395,54 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 | `vector` | `VectorRecall` |
 | `hybrid` | 两者并行 → `RecallPool.merge` |
 
-### 4.4 精排重排 (Reranking)
+合并后自动调用 `pool.filter_noise()` 移除噪声文档（见 [4.4 召回噪声过滤](#44-召回噪声过滤-noise-filtering)）。
+
+### 4.4 召回噪声过滤 (Noise Filtering)
+
+**问题**：召回阶段会引入大量噪声文档：
+- **BM25 稀有关键词噪声**：IDF 高的稀有词（如"飓风"）产生高 BM25 分数，即使文档与查询语义无关
+- **KNN bit vector 噪声**：LSH 量化后 hamming 距离区分度有限，大量语义无关文档获得相近分数
+
+**解决方案**：三层噪声过滤架构
+
+```
+                    ES 层                    车道层                    池层
+                ┌──────────┐          ┌──────────────┐         ┌───────────┐
+                │min_score │          │ NoiseFilter.  │         │ RecallPool│
+   Query ──→   │ = 2.0    │ ──→      │ filter_by_    │  ──→    │ .filter_  │ ──→ 排序
+                │(ES body) │          │ score_ratio() │         │ noise()   │
+                └──────────┘          └──────────────┘         └───────────┘
+                    │                       │                       │
+              不返回 BM25             每个车道内部移除          合并池中移除
+              分数 < 2.0 的           低于 ratio × max          多车道文档
+              文档                   的低分命中                 获得更低阈值
+```
+
+#### 第一层：ES 级过滤 (`min_score`)
+在 ES 搜索请求 body 中设置 `"min_score": 2.0`，阻止 BM25 分数极低的文档被返回。仅适用于非相关性车道（popularity/recency/quality 车道按其他字段排序，BM25 分数可能偏低但文档仍有价值）。
+
+#### 第二层：车道级过滤 (`NoiseFilter`)
+每个车道返回的 hits 经过 `filter_by_score_ratio()` 过滤：
+- **BM25 车道**：移除 `score < max_score × 0.12` 的命中
+- **KNN 车道**：使用更严格的比率 `score < max_score × 0.5`（KNN 分数范围窄）
+- **最小数量保护**：若总命中 ≤ 30 条，跳过过滤以避免结果过少
+
+#### 第三层：池级过滤 (`RecallPool.filter_noise()`)
+合并后的召回池进行最终过滤：
+- 全局 gate = `max_score × ratio`
+- **多车道感知**：出现在 2+ 个车道的文档使用更低阈值（`gate × 0.5`），因为跨车道出现本身就是相关性信号
+
+#### 噪声过滤常量
+
+| 常量 | 默认值 | 说明 |
+|------|--------|------|
+| `MIN_BM25_SCORE` | 2.0 | ES 级最低分数阈值 |
+| `NOISE_SCORE_RATIO_GATE` | 0.12 | BM25 分数比率门限 |
+| `NOISE_KNN_SCORE_RATIO` | 0.5 | KNN 分数比率门限（更严格） |
+| `NOISE_MIN_HITS_FOR_FILTER` | 30 | 最少命中数，低于此值不过滤 |
+| `NOISE_MULTI_LANE_GATE_FACTOR` | 0.5 | 多车道文档的阈值缩放因子 |
+
+### 4.5 精排重排 (Reranking)
 
 精排使用 float 向量的余弦相似度替代 LSH hamming 相似度进行精细排序：
 
@@ -415,7 +470,7 @@ passage = build_sentence(title, tags, desc, owner_name)
 - `RERANK_TIMEOUT = 30s`
 - `RERANK_MAX_PASSAGE_LENGTH = 4096` 字符
 
-### 4.5 排序策略
+### 4.6 排序策略
 
 系统支持 5 种排序策略，由 `VideoHitsRanker` 实现：
 
@@ -451,7 +506,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
 ```
 融合多个维度的排序（分数、统计量、发布时间）。
 
-### 4.6 多样化排序 (Diversified Ranking)
+### 4.7 多样化排序 (Diversified Ranking)
 
 **问题**：连续加权融合 (`w × quality + w × relevance + w × recency`) 导致 Top 10 同质化 — 所有结果都是各维度中等偏上的"均衡型"文档，缺少某一维度特别突出的文档。
 
@@ -464,7 +519,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
    - relevance_score: ES BM25 分数归一化
    - quality_score: stat_score (DocScorer 计算的质量分)
    - recency_score: pubdate 线性衰减
-   - popularity_score: stat.view 排名分
+   - popularity_score: log1p(stat.view) 对数归一化
 
 2. 按维度优先级依次分配槽位:
    slot_preset = {
@@ -477,9 +532,17 @@ rrf_score = Σ weight[i] / (k + rank[i])
 3. 每个维度取该维度分数最高且未被选中的文档
 
 4. 若有剩余文档，按加权融合分数排序作为 fallback
+   DIVERSIFIED_FUSED_WEIGHTS = {
+     "relevance": 0.35,
+     "quality": 0.25,
+     "recency": 0.20,
+     "popularity": 0.20,
+   }
 
 5. 被选中的文档按其槽位排名赋予 rank_score
 ```
+
+**Popularity 对数归一化**：播放量呈幂律分布（如 100M vs 50K），线性归一化会导致一个超高播放视频压制所有其他文档。使用 `log1p(view) / max_log_view` 将比率从 2000:1 压缩到约 1.7:1，使不同量级的播放量都能公平参与评分。
 
 #### 槽位预设 (Slot Presets)
 
@@ -500,7 +563,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
 | 排序可控性 | 仅通过调权重 | **通过调槽位数** |
 | 融合分数连续性 | 连续 | Top-K 后连续 |
 
-### 4.7 UP 主分组
+### 4.8 UP 主分组
 
 `AuthorGrouper` 将搜索结果按 UP 主聚合，返回有序列表：
 
@@ -510,7 +573,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
 
 **返回类型为 list（而非 dict）** ，以确保 JSON 序列化/反序列化时顺序不丢失。
 
-### 4.8 窄过滤器处理
+### 4.9 窄过滤器处理
 
 当查询包含用户过滤器（`u=xxx`）或 BV 号过滤器（`bv=xxx`）时，结果集通常很小（如某 UP 主的几十到几百个视频）。此时 KNN 搜索效率低下（HNSW 图中只有极少数节点满足过滤条件）。
 
@@ -616,9 +679,8 @@ rrf_score = Σ weight[i] / (k + rank[i])
 |------|---------|-------------|
 | `construct_query_dsl_dict` | 解析查询 | info |
 | `construct_knn_query` | 构建向量查询 | info |
-| `most_relevant_search` | 搜索相关 | hits |
+| `multi_lane_recall` | 多车道召回 | hits |
 | `knn_search` | 向量搜索 | hits |
-| `word_recall_supplement` | 词语补充召回 | info |
 | `rerank` | 精排重排 | info |
 | `hybrid_search` | 混合搜索 | hits |
 | `group_hits_by_owner` | UP 主聚合 | info |

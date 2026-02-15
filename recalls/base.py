@@ -1,11 +1,19 @@
 """
 Base Types for Recall System
 
-Provides data classes for recall results and merged recall pools.
+Provides data classes for recall results, merged recall pools,
+and noise filtering to remove low-confidence candidates.
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
+
+from ranks.constants import (
+    NOISE_SCORE_RATIO_GATE,
+    NOISE_KNN_SCORE_RATIO,
+    NOISE_MIN_HITS_FOR_FILTER,
+    NOISE_MULTI_LANE_GATE_FACTOR,
+)
 
 
 @dataclass
@@ -114,4 +122,141 @@ class RecallPool:
             took_ms=max_took,
             timed_out=any_timeout,
             lane_tags=lane_tags,
+        )
+
+    def filter_noise(
+        self,
+        score_ratio: float = NOISE_SCORE_RATIO_GATE,
+        min_hits: int = NOISE_MIN_HITS_FOR_FILTER,
+        multi_lane_factor: float = NOISE_MULTI_LANE_GATE_FACTOR,
+    ) -> "RecallPool":
+        """Remove low-confidence candidates from the pool.
+
+        Uses score-ratio gating: docs with score < ratio * max_score
+        are considered noise and removed. Multi-lane docs (appearing in 2+
+        recall lanes) get a reduced threshold since cross-lane appearance
+        is strong evidence of relevance.
+
+        This is particularly effective against:
+        - BM25 rare-keyword noise (low scores from unimportant term matches)
+        - KNN bit vector noise (many irrelevant docs with similar hamming distance)
+
+        Args:
+            score_ratio: Minimum score as fraction of max_score.
+            min_hits: Don't filter if pool has fewer hits than this.
+            multi_lane_factor: Multiply threshold by this for multi-lane docs.
+
+        Returns:
+            New RecallPool with noise removed.
+        """
+        if len(self.hits) <= min_hits:
+            return self
+
+        # Get scores for gating
+        scores = [h.get("score", 0) or 0 for h in self.hits]
+        max_score = max(scores) if scores else 0
+        if max_score <= 0:
+            return self
+
+        gate = max_score * score_ratio
+
+        filtered_hits = []
+        filtered_tags = {}
+        removed_count = 0
+
+        for hit in self.hits:
+            score = hit.get("score", 0) or 0
+            bvid = hit.get("bvid", "")
+            lanes = self.lane_tags.get(bvid, set())
+            lane_count = len(lanes)
+
+            # Multi-lane docs get a lower threshold
+            effective_gate = gate * multi_lane_factor if lane_count >= 2 else gate
+
+            if score >= effective_gate:
+                filtered_hits.append(hit)
+                if bvid:
+                    filtered_tags[bvid] = lanes
+            else:
+                removed_count += 1
+
+        # Update lanes_info with filter stats
+        lanes_info = dict(self.lanes_info)
+        lanes_info["_noise_filter"] = {
+            "removed": removed_count,
+            "kept": len(filtered_hits),
+            "gate": round(gate, 4),
+            "max_score": round(max_score, 4),
+        }
+
+        return RecallPool(
+            hits=filtered_hits,
+            lanes_info=lanes_info,
+            total_hits=self.total_hits,
+            took_ms=self.took_ms,
+            timed_out=self.timed_out,
+            lane_tags=filtered_tags,
+        )
+
+
+class NoiseFilter:
+    """Static methods for lane-level score filtering.
+
+    Used within individual recall strategies (word, vector) to filter
+    noisy hits before they enter the merge pool.
+    """
+
+    @staticmethod
+    def filter_by_score_ratio(
+        hits: list[dict],
+        score_field: str = "score",
+        ratio: float = NOISE_SCORE_RATIO_GATE,
+        min_hits: int = NOISE_MIN_HITS_FOR_FILTER,
+    ) -> list[dict]:
+        """Remove hits scoring below ratio * max_score.
+
+        Args:
+            hits: List of hit dicts.
+            score_field: Field containing the score.
+            ratio: Minimum score as fraction of max.
+            min_hits: Don't filter if fewer hits than this.
+
+        Returns:
+            Filtered list of hits.
+        """
+        if len(hits) <= min_hits:
+            return hits
+
+        scores = [h.get(score_field, 0) or 0 for h in hits]
+        max_score = max(scores) if scores else 0
+        if max_score <= 0:
+            return hits
+
+        gate = max_score * ratio
+        return [h for h in hits if (h.get(score_field, 0) or 0) >= gate]
+
+    @staticmethod
+    def filter_knn_by_score_ratio(
+        hits: list[dict],
+        score_field: str = "score",
+        ratio: float = NOISE_KNN_SCORE_RATIO,
+        min_hits: int = NOISE_MIN_HITS_FOR_FILTER,
+    ) -> list[dict]:
+        """Remove KNN hits scoring below ratio * max_score.
+
+        KNN bit vector (LSH hamming) scores have narrow ranges where
+        many irrelevant docs cluster near the relevant ones. A stricter
+        ratio is needed compared to BM25 scores.
+
+        Args:
+            hits: List of KNN hit dicts.
+            score_field: Field containing the score.
+            ratio: Minimum score as fraction of max (stricter than BM25).
+            min_hits: Don't filter if fewer hits than this.
+
+        Returns:
+            Filtered list of hits.
+        """
+        return NoiseFilter.filter_by_score_ratio(
+            hits, score_field=score_field, ratio=ratio, min_hits=min_hits
         )

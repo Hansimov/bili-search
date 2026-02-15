@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from tclogger import logger
 
-from recalls.base import RecallResult, RecallPool
+from recalls.base import RecallResult, RecallPool, NoiseFilter
 
 # Default limits
 VECTOR_KNN_K = 1000
@@ -119,8 +119,15 @@ class VectorRecall:
                 verbose=False,
             )
             took_ms = round((time.perf_counter() - start) * 1000, 2)
+            hits = res.get("hits", [])
+
+            # Filter KNN noise: LSH bit vector hamming distances have narrow ranges
+            # where many irrelevant docs cluster near relevant ones.
+            # A stricter ratio removes clearly irrelevant docs.
+            hits = NoiseFilter.filter_knn_by_score_ratio(hits)
+
             return RecallResult(
-                hits=res.get("hits", []),
+                hits=hits,
                 lane="knn",
                 total_hits=res.get("total_hits", 0),
                 took_ms=took_ms,
