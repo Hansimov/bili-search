@@ -23,31 +23,39 @@ from recalls.base import RecallResult, RecallPool, NoiseFilter
 from ranks.constants import MIN_BM25_SCORE
 
 # Lane configurations: (lane_name, sort_spec, limit)
+# Increased limits for better recall coverage:
+#   - More candidates per lane → better chance of finding good docs
+#   - Parallel execution means wall-clock time ≈ slowest single lane
 WORD_RECALL_LANES = {
     "relevance": {
         "sort": None,  # Default _score sorting
-        "limit": 200,
+        "limit": 500,
         "desc": "BM25 keyword relevance",
     },
     "popularity": {
         "sort": [{"stat.view": "desc"}],
-        "limit": 100,
+        "limit": 200,
         "desc": "Most viewed matching docs",
     },
     "recency": {
         "sort": [{"pubdate": "desc"}],
-        "limit": 100,
+        "limit": 200,
         "desc": "Most recent matching docs",
     },
     "quality": {
         "sort": [{"stat_score": "desc"}],
-        "limit": 100,
+        "limit": 200,
         "desc": "Highest quality matching docs",
+    },
+    "engagement": {
+        "sort": [{"stat.coin": "desc"}],
+        "limit": 100,
+        "desc": "Highest engagement (coins) matching docs",
     },
 }
 
 # Default lanes to run in parallel
-DEFAULT_LANES = ["relevance", "popularity", "recency", "quality"]
+DEFAULT_LANES = ["relevance", "popularity", "recency", "quality", "engagement"]
 
 
 class MultiLaneWordRecall:
@@ -76,7 +84,7 @@ class MultiLaneWordRecall:
     def __init__(
         self,
         lanes_config: dict = None,
-        max_workers: int = 4,
+        max_workers: int = 5,
     ):
         """Initialize multi-lane recall.
 
@@ -151,6 +159,10 @@ class MultiLaneWordRecall:
 
             took_ms = round((time.perf_counter() - start) * 1000, 2)
             hits = res.get("hits", [])
+
+            # Apply content quality penalty first (reduces inflated BM25 scores
+            # for short texts and very low-engagement docs)
+            NoiseFilter.apply_content_quality_penalty(hits)
 
             # Apply score-ratio noise filtering within this lane
             # This removes docs that barely match the query (BM25 rare-keyword noise)
@@ -285,7 +297,15 @@ class MultiLaneWordRecall:
             RecallPool with merged, deduplicated candidates.
         """
         if source_fields is None:
-            source_fields = ["bvid", "stat", "pubdate", "duration", "stat_score"]
+            source_fields = [
+                "bvid",
+                "title",
+                "desc",
+                "stat",
+                "pubdate",
+                "duration",
+                "stat_score",
+            ]
         if lanes is None:
             lanes = DEFAULT_LANES
 

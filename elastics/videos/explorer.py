@@ -443,31 +443,54 @@ class VideoExplorer(VideoSearcherV2):
         )
         return group_res
 
-    def explore_v2(
+    def _run_explore_pipeline(
         self,
         query: str,
+        recall_mode: str,
+        step_name: str,
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
         verbose: bool = False,
-        # Recall & ranking params
         rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
         prefer: RANK_PREFER_TYPE = RANK_PREFER,
-        # Rerank params
         enable_rerank: bool = False,
         rerank_max_hits: int = KNN_RERANK_MAX_HITS,
         rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
         rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
+        knn_field: str = KNN_TEXT_EMB_FIELD,
+        recall_source_fields: list[str] = None,
+        recall_timeout: float = EXPLORE_TIMEOUT,
     ) -> dict:
-        """V2 Word explore using multi-lane recall + diversified ranking.
+        """Shared pipeline for all explore variants.
 
-        Performance improvement: Instead of scanning 10000 docs with one query,
-        runs 4 focused parallel queries (~200 each) optimized for different
-        dimensions (relevance, popularity, recency, quality).
+        All explore methods follow the same structure:
+        1. Check for keywords → filter_only_explore if none
+        2. Run recall (word/vector/hybrid)
+        3. Fetch full docs + optional rerank + ranking
+        4. Group by author
 
-        Ranking improvement: Uses diversified slot-based ranking to guarantee
-        that top results contain representatives from each dimension.
+        This method unifies the common logic to reduce code duplication.
+
+        Args:
+            query: Search query string.
+            recall_mode: "word", "vector", or "hybrid".
+            step_name: Step name for the main search step.
+            extra_filters: Additional filter clauses.
+            suggest_info: Suggestion info.
+            verbose: Verbose logging.
+            rank_method: Ranking method.
+            rank_top_k: Max results after ranking.
+            group_owner_limit: Max author groups.
+            prefer: Ranking preference mode.
+            enable_rerank: Whether to apply reranking.
+            rerank_max_hits: Max hits to rerank.
+            rerank_keyword_boost: Keyword boost factor.
+            rerank_title_keyword_boost: Title keyword boost factor.
+            knn_field: Dense vector field for KNN.
+            recall_source_fields: Fields to retrieve in recall.
+            recall_timeout: Timeout for recall operations.
 
         Returns:
             dict: {"query": str, "status": str, "data": list[dict]}
@@ -477,7 +500,7 @@ class VideoExplorer(VideoSearcherV2):
         explore_start = time.perf_counter()
         steps = StepBuilder()
 
-        # Check for keywords
+        # Check for keywords → fallback to filter-only
         if not self.has_search_keywords(query):
             logger.exit_quiet(not verbose)
             result = self._filter_only_explore(
@@ -488,27 +511,42 @@ class VideoExplorer(VideoSearcherV2):
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
             )
+            # Tag result with recall mode if needed
+            if recall_mode != "word" and result.get("data") and len(result["data"]) > 0:
+                qmod_map = {
+                    "vector": ["vector"],
+                    "hybrid": ["word", "vector"],
+                }
+                result["data"][0]["output"]["qmod"] = qmod_map.get(recall_mode, [])
+                result["data"][0]["output"]["filter_only"] = True
             return result
 
-        # Step 0: Multi-lane recall
+        # Step 0: Recall
         step = steps.add_step(
-            "most_relevant_search",
+            step_name,
             status="running",
-            input_data={"query": query, "recall_mode": "multi_lane"},
+            input_data={"query": query, "recall_mode": recall_mode},
         )
-        logger.hint("> [step 0] Multi-lane recall ...", verbose=verbose)
+        logger.hint(f"> [step 0] {recall_mode} recall ...", verbose=verbose)
         recall_start = time.perf_counter()
 
-        recall_pool = self.recall_manager.recall(
+        # Build recall kwargs
+        recall_kwargs = dict(
             searcher=self,
             query=query,
-            mode="word",
-            source_fields=["bvid", "stat", "pubdate", "duration", "stat_score"],
+            mode=recall_mode,
             extra_filters=extra_filters,
-            suggest_info=suggest_info,
-            timeout=EXPLORE_TIMEOUT,
+            timeout=recall_timeout,
             verbose=verbose,
         )
+        if recall_source_fields:
+            recall_kwargs["source_fields"] = recall_source_fields
+        if suggest_info:
+            recall_kwargs["suggest_info"] = suggest_info
+        if recall_mode in ("vector", "hybrid"):
+            recall_kwargs["knn_field"] = knn_field
+
+        recall_pool = self.recall_manager.recall(**recall_kwargs)
         perf["recall_ms"] = round((time.perf_counter() - recall_start) * 1000, 2)
 
         if not recall_pool.hits:
@@ -517,7 +555,9 @@ class VideoExplorer(VideoSearcherV2):
                 {"hits": [], "total_hits": 0, "recall_info": recall_pool.lanes_info},
             )
             steps.add_step(
-                "group_hits_by_owner", output={"authors": []}, comment="无搜索结果"
+                "group_hits_by_owner",
+                output={"authors": []},
+                comment="无搜索结果",
             )
             logger.exit_quiet(not verbose)
             return steps.finalize(query, perf=perf)
@@ -564,6 +604,58 @@ class VideoExplorer(VideoSearcherV2):
         logger.exit_quiet(not verbose)
         return steps.finalize(query, perf=perf)
 
+    def explore_v2(
+        self,
+        query: str,
+        extra_filters: list[dict] = [],
+        suggest_info: dict = {},
+        verbose: bool = False,
+        # Recall & ranking params
+        rank_method: RANK_METHOD_TYPE = RANK_METHOD,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        group_owner_limit: int = EXPLORE_GROUP_OWNER_LIMIT,
+        prefer: RANK_PREFER_TYPE = RANK_PREFER,
+        # Rerank params
+        enable_rerank: bool = False,
+        rerank_max_hits: int = KNN_RERANK_MAX_HITS,
+        rerank_keyword_boost: float = KNN_RERANK_KEYWORD_BOOST,
+        rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
+    ) -> dict:
+        """V2 Word explore using multi-lane recall + diversified ranking.
+
+        Uses 5 parallel recall lanes (relevance, popularity, recency, quality,
+        engagement) for comprehensive candidate coverage, then three-phase
+        diversified ranking (headline → slots → fused) for quality results.
+
+        Returns:
+            dict: {"query": str, "status": str, "data": list[dict]}
+        """
+        return self._run_explore_pipeline(
+            query=query,
+            recall_mode="word",
+            step_name="most_relevant_search",
+            extra_filters=extra_filters,
+            suggest_info=suggest_info,
+            verbose=verbose,
+            rank_method=rank_method,
+            rank_top_k=rank_top_k,
+            group_owner_limit=group_owner_limit,
+            prefer=prefer,
+            enable_rerank=enable_rerank,
+            rerank_max_hits=rerank_max_hits,
+            rerank_keyword_boost=rerank_keyword_boost,
+            rerank_title_keyword_boost=rerank_title_keyword_boost,
+            recall_source_fields=[
+                "bvid",
+                "title",
+                "desc",
+                "stat",
+                "pubdate",
+                "duration",
+                "stat_score",
+            ],
+        )
+
     def knn_explore_v2(
         self,
         query: str,
@@ -583,94 +675,23 @@ class VideoExplorer(VideoSearcherV2):
         prefer: RANK_PREFER_TYPE = RANK_PREFER,
     ) -> dict:
         """V2 KNN explore using vector recall + diversified ranking."""
-        logger.enter_quiet(not verbose)
-        perf = {"total_ms": 0}
-        explore_start = time.perf_counter()
-        steps = StepBuilder()
-
-        if not self.has_search_keywords(query):
-            logger.exit_quiet(not verbose)
-            result = self._filter_only_explore(
-                query=query,
-                extra_filters=extra_filters,
-                verbose=verbose,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-            )
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = ["vector"]
-                result["data"][0]["output"]["filter_only"] = True
-            return result
-
-        # Step 0: Vector recall
-        step = steps.add_step(
-            "knn_search",
-            status="running",
-            input_data={"query": query, "recall_mode": "vector"},
-        )
-        logger.hint("> [step 0] Vector recall ...", verbose=verbose)
-        recall_start = time.perf_counter()
-
-        recall_pool = self.recall_manager.recall(
-            searcher=self,
+        return self._run_explore_pipeline(
             query=query,
-            mode="vector",
+            recall_mode="vector",
+            step_name="knn_search",
             extra_filters=extra_filters,
-            knn_field=knn_field,
-            timeout=KNN_TIMEOUT,
             verbose=verbose,
-        )
-        perf["recall_ms"] = round((time.perf_counter() - recall_start) * 1000, 2)
-
-        if not recall_pool.hits:
-            steps.update_step(step, {"hits": [], "total_hits": 0})
-            steps.add_step(
-                "group_hits_by_owner", output={"authors": []}, comment="无搜索结果"
-            )
-            logger.exit_quiet(not verbose)
-            return steps.finalize(query, perf=perf)
-
-        # Step 1: Fetch, rerank, rank
-        logger.hint(
-            f"> [step 1] Fetch & rank {len(recall_pool.hits)} candidates ...",
-            verbose=verbose,
-        )
-        search_res, rerank_info = self._fetch_and_rank(
-            recall_hits=recall_pool.hits,
-            query=query,
             rank_method=rank_method,
             rank_top_k=rank_top_k,
+            group_owner_limit=group_owner_limit,
             prefer=prefer,
             enable_rerank=enable_rerank,
             rerank_max_hits=rerank_max_hits,
             rerank_keyword_boost=rerank_keyword_boost,
             rerank_title_keyword_boost=rerank_title_keyword_boost,
-            extra_filters=extra_filters,
-            verbose=verbose,
+            knn_field=knn_field,
+            recall_timeout=KNN_TIMEOUT,
         )
-        search_res["total_hits"] = recall_pool.total_hits
-        search_res["recall_info"] = recall_pool.lanes_info
-        steps.update_step(step, search_res)
-
-        if rerank_info:
-            steps.add_step(
-                "rerank",
-                output=rerank_info,
-                comment=f"重排了 {rerank_info.get('reranked_count', 0)} 个结果",
-            )
-
-        # Step 2: Group by owner
-        logger.hint("> [step 2] Group by owner ...", verbose=verbose)
-        group_res = self._build_group_step(search_res, group_owner_limit)
-        steps.add_step(
-            "group_hits_by_owner",
-            output={"authors": group_res},
-            input_data={"limit": group_owner_limit},
-        )
-
-        perf["total_ms"] = round((time.perf_counter() - explore_start) * 1000, 2)
-        logger.exit_quiet(not verbose)
-        return steps.finalize(query, perf=perf)
 
     def hybrid_explore_v2(
         self,
@@ -692,40 +713,23 @@ class VideoExplorer(VideoSearcherV2):
         prefer: RANK_PREFER_TYPE = RANK_PREFER,
     ) -> dict:
         """V2 Hybrid explore using combined word+vector recall + diversified ranking."""
-        logger.enter_quiet(not verbose)
-        perf = {"total_ms": 0}
-        explore_start = time.perf_counter()
-        steps = StepBuilder()
-
-        if not self.has_search_keywords(query):
-            logger.exit_quiet(not verbose)
-            result = self._filter_only_explore(
-                query=query,
-                extra_filters=extra_filters,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-            )
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = ["word", "vector"]
-                result["data"][0]["output"]["filter_only"] = True
-            return result
-
-        # Step 0: Hybrid recall
-        step = steps.add_step(
-            "hybrid_search",
-            status="running",
-            input_data={"query": query, "recall_mode": "hybrid"},
-        )
-        logger.hint("> [step 0] Hybrid recall ...", verbose=verbose)
-        recall_start = time.perf_counter()
-
-        recall_pool = self.recall_manager.recall(
-            searcher=self,
+        return self._run_explore_pipeline(
             query=query,
-            mode="hybrid",
-            source_fields=[
+            recall_mode="hybrid",
+            step_name="hybrid_search",
+            extra_filters=extra_filters,
+            suggest_info=suggest_info,
+            verbose=verbose,
+            rank_method=rank_method,
+            rank_top_k=rank_top_k,
+            group_owner_limit=group_owner_limit,
+            prefer=prefer,
+            enable_rerank=enable_rerank,
+            rerank_max_hits=rerank_max_hits,
+            rerank_keyword_boost=rerank_keyword_boost,
+            rerank_title_keyword_boost=rerank_title_keyword_boost,
+            knn_field=knn_field,
+            recall_source_fields=[
                 "bvid",
                 "stat",
                 "pubdate",
@@ -736,63 +740,7 @@ class VideoExplorer(VideoSearcherV2):
                 "desc",
                 "owner",
             ],
-            extra_filters=extra_filters,
-            suggest_info=suggest_info,
-            knn_field=knn_field,
-            timeout=EXPLORE_TIMEOUT,
-            verbose=verbose,
         )
-        perf["recall_ms"] = round((time.perf_counter() - recall_start) * 1000, 2)
-
-        if not recall_pool.hits:
-            steps.update_step(step, {"hits": [], "total_hits": 0})
-            steps.add_step(
-                "group_hits_by_owner", output={"authors": []}, comment="无搜索结果"
-            )
-            logger.exit_quiet(not verbose)
-            return steps.finalize(query, perf=perf)
-
-        # Step 1: Fetch, rerank, rank
-        logger.hint(
-            f"> [step 1] Fetch & rank {len(recall_pool.hits)} candidates ...",
-            verbose=verbose,
-        )
-        search_res, rerank_info = self._fetch_and_rank(
-            recall_hits=recall_pool.hits,
-            query=query,
-            rank_method=rank_method,
-            rank_top_k=rank_top_k,
-            prefer=prefer,
-            enable_rerank=enable_rerank,
-            rerank_max_hits=rerank_max_hits,
-            rerank_keyword_boost=rerank_keyword_boost,
-            rerank_title_keyword_boost=rerank_title_keyword_boost,
-            extra_filters=extra_filters,
-            verbose=verbose,
-        )
-        search_res["total_hits"] = recall_pool.total_hits
-        search_res["recall_info"] = recall_pool.lanes_info
-        steps.update_step(step, search_res)
-
-        if rerank_info:
-            steps.add_step(
-                "rerank",
-                output=rerank_info,
-                comment=f"重排了 {rerank_info.get('reranked_count', 0)} 个结果",
-            )
-
-        # Step 2: Group by owner
-        logger.hint("> [step 2] Group by owner ...", verbose=verbose)
-        group_res = self._build_group_step(search_res, group_owner_limit)
-        steps.add_step(
-            "group_hits_by_owner",
-            output={"authors": group_res},
-            input_data={"limit": group_owner_limit},
-        )
-
-        perf["total_ms"] = round((time.perf_counter() - explore_start) * 1000, 2)
-        logger.exit_quiet(not verbose)
-        return steps.finalize(query, perf=perf)
 
     def unified_explore(
         self,

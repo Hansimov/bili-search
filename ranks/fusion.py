@@ -151,12 +151,12 @@ class ScoreFuser:
 
         return min(max(blended, 0.0), 1.0)
 
-    # ---- Legacy methods (kept for backward compatibility) ----
+    # ---- Legacy methods (deprecated, kept for backward compatibility) ----
 
     def calc_fuse_score_by_prod(
         self, stats_score: float, pubdate_score: float, relate_score: float
     ) -> float:
-        """Legacy product formula. Use fuse_with_preference() instead."""
+        """Deprecated: Product formula. Use fuse_with_preference() instead."""
         stats_with_base = self.STATS_BASE + stats_score
         relate_emphasis = relate_score**self.relate_power
         return round(stats_with_base * pubdate_score * relate_emphasis, 6)
@@ -169,7 +169,7 @@ class ScoreFuser:
         method: str = "product",
         **kwargs,
     ) -> float:
-        """Legacy fuse method. Use fuse_with_preference() instead."""
+        """Deprecated: Use fuse_with_preference() instead."""
         return self.calc_fuse_score_by_prod(
             stats_score=stats_score,
             pubdate_score=pubdate_score,

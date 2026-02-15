@@ -686,21 +686,27 @@ class VideoHitsRanker:
         top_k: int = RANK_TOP_K,
         prefer: RANK_PREFER_TYPE = RANK_PREFER,
         diversify_top_n: int = 10,
+        headline_top_n: int = 3,
         **kwargs,
     ) -> dict:
-        """Diversified slot-based ranking.
+        """Diversified three-phase ranking.
 
-        Ensures top results contain documents from multiple dimensions:
-        relevant, popular, recent, and high-quality.
+        Phase 1 — Headline selection (top 3):
+            Picks candidates with best composite headline_score
+            (relevance + quality + recency) for the most visible positions.
 
-        For the first `diversify_top_n` results, uses slot allocation
-        to guarantee diversity. Remaining results use fused scoring.
+        Phase 2 — Slot allocation (positions 4-10):
+            Fills remaining diversified positions with dimension representatives.
+
+        Phase 3 — Fused scoring (beyond top 10):
+            Remaining results use continuous fused scoring.
 
         Args:
             hits_info: Dict with "hits" list.
             top_k: Total results to return.
             prefer: Preference mode (controls slot allocation).
-            diversify_top_n: How many top items to diversify.
+            diversify_top_n: How many top items to diversify (phases 1+2).
+            headline_top_n: How many items to select by headline quality.
 
         Returns:
             hits_info with diversified-ranked hits.
@@ -710,4 +716,5 @@ class VideoHitsRanker:
             top_k=top_k,
             prefer=prefer,
             diversify_top_n=diversify_top_n,
+            headline_top_n=headline_top_n,
         )

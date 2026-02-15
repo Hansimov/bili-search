@@ -5,6 +5,8 @@ Tests cover:
 1. NoiseFilter.filter_by_score_ratio — lane-level BM25 noise removal
 2. NoiseFilter.filter_knn_by_score_ratio — KNN bit vector noise removal
 3. RecallPool.filter_noise — pool-level multi-lane noise filtering
+4. NoiseFilter.apply_content_quality_penalty — BM25 short-text / low-engagement penalties
+5. RecallPool.filter_noise with content quality signals
 """
 
 import pytest
@@ -13,6 +15,10 @@ from ranks.constants import (
     NOISE_SCORE_RATIO_GATE,
     NOISE_KNN_SCORE_RATIO,
     NOISE_MIN_HITS_FOR_FILTER,
+    NOISE_SHORT_TEXT_MIN_LENGTH,
+    NOISE_SHORT_TEXT_PENALTY,
+    NOISE_MIN_ENGAGEMENT_VIEWS,
+    NOISE_LOW_ENGAGEMENT_PENALTY,
 )
 
 
@@ -327,3 +333,197 @@ class TestNoiseFilterScenarios:
         # All noise removed (max noise score 0.008 < 0.011)
         noise_count = sum(1 for h in filtered.hits if h["bvid"].startswith("noise"))
         assert noise_count == 0
+
+
+# ============================================================================
+# NoiseFilter.apply_content_quality_penalty tests
+# ============================================================================
+
+
+def _make_rich_hit(bvid, score, title="", desc="", views=1000):
+    """Create a hit with title, desc, and stat fields."""
+    return {
+        "bvid": bvid,
+        "score": score,
+        "title": title,
+        "desc": desc,
+        "stat": {"view": views},
+    }
+
+
+class TestApplyContentQualityPenalty:
+    """Test BM25 short-text and low-engagement penalty adjustments."""
+
+    def test_short_text_gets_penalized(self):
+        """Docs with very short title+desc should have reduced scores."""
+        hits = [
+            _make_rich_hit("BV1", 10.0, title="短标题", desc=""),  # 3 chars < 15
+            _make_rich_hit(
+                "BV2",
+                10.0,
+                title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+                desc="",
+            ),  # > 15 chars
+        ]
+        NoiseFilter.apply_content_quality_penalty(hits)
+        # BV1 has short text (3 < NOISE_SHORT_TEXT_MIN_LENGTH), should be penalized
+        assert hits[0]["score"] < 10.0
+        assert hits[0].get("_quality_penalty") is not None
+        # BV2 has long enough text, should be untouched
+        assert hits[1]["score"] == 10.0
+
+    def test_no_penalty_when_no_content(self):
+        """Docs with empty title+desc (content_length=0) are not penalized."""
+        hits = [
+            _make_rich_hit("BV1", 10.0, title="", desc=""),
+        ]
+        NoiseFilter.apply_content_quality_penalty(hits)
+        # content_length == 0, the condition "0 < content_length" is False
+        assert hits[0]["score"] == 10.0
+
+    def test_low_engagement_gets_penalized(self):
+        """Docs with near-zero views should have reduced scores."""
+        long_title = "这是一个足够长的正常视频标题不会触发短文本惩罚"
+        hits = [
+            _make_rich_hit("BV1", 10.0, title=long_title, views=5),
+            _make_rich_hit("BV2", 10.0, title=long_title, views=5000),
+        ]
+        NoiseFilter.apply_content_quality_penalty(hits)
+        assert hits[0]["score"] < 10.0  # Low views penalty
+        assert hits[1]["score"] == 10.0  # Sufficient views
+
+    def test_double_penalty_stacks(self):
+        """Short text + low engagement should compound penalties."""
+        hits = [
+            _make_rich_hit("BV1", 10.0, title="短", desc="", views=5),  # Both penalties
+        ]
+        NoiseFilter.apply_content_quality_penalty(hits)
+        expected = 10.0 * NOISE_SHORT_TEXT_PENALTY * NOISE_LOW_ENGAGEMENT_PENALTY
+        assert abs(hits[0]["score"] - expected) < 0.001
+
+    def test_no_stat_dict_skips_engagement_penalty(self):
+        """Hits without stat dict should not get engagement penalty."""
+        hits = [
+            {
+                "bvid": "BV1",
+                "score": 10.0,
+                "title": "这是一个足够长的正常视频标题不会触发短文本惩罚",
+            }
+        ]
+        NoiseFilter.apply_content_quality_penalty(hits)
+        assert hits[0]["score"] == 10.0  # No penalty applied
+
+    def test_modifies_in_place(self):
+        """The method should modify hits in-place and also return them."""
+        hits = [_make_rich_hit("BV1", 10.0, title="短", views=5)]
+        result = NoiseFilter.apply_content_quality_penalty(hits)
+        assert result is hits
+        assert hits[0]["score"] < 10.0
+
+
+# ============================================================================
+# RecallPool.filter_noise with content quality signals
+# ============================================================================
+
+
+class TestFilterNoiseWithContentQuality:
+    """Test pool-level noise filtering with short-text and low-engagement signals."""
+
+    def test_short_text_docs_filtered_as_noise(self):
+        """Short-text docs near the score gate should be removed by penalty."""
+        short_doc = _make_rich_hit("BV_SHORT", 3.0, title="短标题", views=10000)
+        normal_doc = _make_rich_hit(
+            "BV_NORM",
+            20.0,
+            title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+            views=10000,
+        )
+        filler = [
+            _make_rich_hit(
+                f"BV_F{i}",
+                15.0 - i * 0.3,
+                title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+                views=5000,
+            )
+            for i in range(35)
+        ]
+
+        all_hits = [normal_doc, short_doc] + filler
+        pool = make_pool({"relevance": all_hits})
+
+        # gate = 20.0 * 0.12 = 2.4
+        # BV_SHORT effective = 3.0 * SHORT_TEXT_PENALTY = 3.0 * 0.3 = 0.9 < 2.4
+        filtered = pool.filter_noise(score_ratio=0.12)
+
+        short_present = any(h["bvid"] == "BV_SHORT" for h in filtered.hits)
+        assert not short_present, "Short-text doc should have been filtered out"
+
+        normal_present = any(h["bvid"] == "BV_NORM" for h in filtered.hits)
+        assert normal_present, "Normal doc should have survived"
+
+    def test_low_engagement_docs_filtered_as_noise(self):
+        """Docs with near-zero views near the gate should be removed."""
+        low_view_doc = _make_rich_hit(
+            "BV_LOW",
+            3.0,
+            title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+            views=10,
+        )
+        high_view_doc = _make_rich_hit(
+            "BV_HIGH",
+            20.0,
+            title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+            views=100000,
+        )
+        filler = [
+            _make_rich_hit(
+                f"BV_F{i}",
+                15.0 - i * 0.3,
+                title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+                views=5000,
+            )
+            for i in range(35)
+        ]
+
+        all_hits = [high_view_doc, low_view_doc] + filler
+        pool = make_pool({"relevance": all_hits})
+
+        # gate = 20.0 * 0.12 = 2.4
+        # BV_LOW effective = 3.0 * LOW_ENGAGEMENT_PENALTY = 3.0 * 0.15 = 0.45 < 2.4
+        filtered = pool.filter_noise(score_ratio=0.12)
+
+        low_present = any(h["bvid"] == "BV_LOW" for h in filtered.hits)
+        assert not low_present, "Low-engagement doc should have been filtered out"
+
+    def test_noise_filter_stats_include_penalty_counts(self):
+        """Filter stats should report short-text and low-engagement penalized counts."""
+        hits = [
+            _make_rich_hit(
+                "BV1",
+                20.0,
+                title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+                views=10000,
+            ),
+            _make_rich_hit("BV2", 3.0, title="短", views=10000),  # short text
+            _make_rich_hit(
+                "BV3",
+                3.0,
+                title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+                views=5,
+            ),  # low engagement
+        ] + [
+            _make_rich_hit(
+                f"BV_F{i}",
+                10.0,
+                title="这是一个足够长的正常视频标题不会触发短文本惩罚",
+                views=5000,
+            )
+            for i in range(35)
+        ]
+
+        pool = make_pool({"relevance": hits})
+        filtered = pool.filter_noise(score_ratio=0.12)
+
+        stats = filtered.lanes_info.get("_noise_filter", {})
+        assert stats.get("short_text_penalized", 0) >= 1
+        assert stats.get("low_engagement_penalized", 0) >= 1

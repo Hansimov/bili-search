@@ -30,7 +30,7 @@ def _make_hit(bvid, score=1.0, view=1000, pubdate=None, stat_score=0.5, **kw):
 
 
 def test_diversified_rank_basic():
-    """Top 10 should contain representatives from all 4 dimensions."""
+    """Top 10 should contain representatives from all 4 dimensions when using direct slot allocation."""
     logger.note("> Test: diversified_rank basic slot allocation")
 
     now = int(time.time())
@@ -104,28 +104,28 @@ def test_diversified_rank_basic():
     ranked = result["hits"]
     assert len(ranked) == 10, f"Expected 10 hits, got {len(ranked)}"
 
-    # Check dimension distribution - all 4 dimensions should be present
+    # Check dimension distribution — all 4 base dimensions should be present
     dims = result.get("dimension_distribution", {})
     logger.mesg(f"  Dimension distribution: {dims}")
 
-    # The critical assertion: all 4 base dimensions should be represented
     slot_dims = set(h.get("_slot_dimension") for h in ranked)
     for dim in ["relevance", "quality", "recency", "popularity"]:
         assert dim in slot_dims, f"Missing dimension: {dim}. Got: {slot_dims}"
 
-    # The balanced preset allocates {relevance: 3, quality: 2, recency: 3, popularity: 2}
+    # The balanced preset allocates {relevance: 2, quality: 2, recency: 2, popularity: 1}
+    # = 7 dimension slots + 3 fused slots to fill top_k=10
     assert (
-        dims.get("relevance", 0) == 3
-    ), f"Expected 3 relevance slots, got {dims.get('relevance')}"
+        dims.get("relevance", 0) == 2
+    ), f"Expected 2 relevance slots, got {dims.get('relevance')}"
     assert (
-        dims.get("recency", 0) == 3
-    ), f"Expected 3 recency slots, got {dims.get('recency')}"
+        dims.get("recency", 0) == 2
+    ), f"Expected 2 recency slots, got {dims.get('recency')}"
     assert (
         dims.get("quality", 0) == 2
     ), f"Expected 2 quality slots, got {dims.get('quality')}"
     assert (
-        dims.get("popularity", 0) == 2
-    ), f"Expected 2 popularity slots, got {dims.get('popularity')}"
+        dims.get("popularity", 0) == 1
+    ), f"Expected 1 popularity slot, got {dims.get('popularity')}"
 
     # All results should have rank_score
     for h in ranked:
@@ -229,7 +229,7 @@ def test_diversified_rank_fewer_than_top_k():
 
 
 def test_diversified_rank_with_fused_fallback():
-    """Top-N should use diversification, rest should use fused scoring."""
+    """Three-phase ranking: headline top-3, then slot allocation, then fused rest."""
     logger.note("> Test: diversified_rank_with_fused_fallback")
 
     now = int(time.time())
@@ -256,11 +256,21 @@ def test_diversified_rank_with_fused_fallback():
     assert len(ranked) == 20, f"Expected 20, got {len(ranked)}"
     assert result.get("diversified_top_n") == 10
 
-    # First 10 should have slot dimension tags
+    # First 3 should be headline picks, remaining 7 of top-10 are slot picks
+    headline_count = result.get("headline_top_n", 0)
+    assert headline_count == 3, f"Expected 3 headline picks, got {headline_count}"
+
+    # First 10 should all have slot dimension tags (headline, dimension, or fused)
     for h in ranked[:10]:
         assert (
             "_slot_dimension" in h
         ), f"Missing slot dimension in top-10 hit: {h.get('bvid')}"
+
+    # Headline hits should be tagged as "headline"
+    headline_hits = [h for h in ranked[:10] if h.get("_slot_dimension") == "headline"]
+    assert (
+        len(headline_hits) == 3
+    ), f"Expected 3 headline hits, got {len(headline_hits)}"
 
     # No duplicates
     bvids = [h["bvid"] for h in ranked]
@@ -351,6 +361,172 @@ def test_score_all_dimensions():
     logger.success("  PASSED")
 
 
+def test_headline_score_computed():
+    """_score_all_dimensions should compute headline_score for each hit."""
+    logger.note("> Test: headline_score computation")
+
+    now = int(time.time())
+    hits = [
+        _make_hit("BV_HIGH", score=40, view=100000, pubdate=now - 3600, stat_score=0.9),
+        _make_hit(
+            "BV_LOW", score=5, view=100, pubdate=now - 86400 * 365, stat_score=0.1
+        ),
+    ]
+
+    ranker = DiversifiedRanker()
+    ranker._score_all_dimensions(hits, now_ts=now)
+
+    for hit in hits:
+        assert "headline_score" in hit, f"Missing headline_score for {hit['bvid']}"
+        assert 0 <= hit["headline_score"] <= 1.0
+
+    # BV_HIGH should have much higher headline_score (good on all dimensions)
+    assert hits[0]["headline_score"] > hits[1]["headline_score"]
+
+    logger.success("  PASSED")
+
+
+def test_select_headline_top_n():
+    """_select_headline_top_n picks the best composite candidates."""
+    logger.note("> Test: _select_headline_top_n selection quality")
+
+    now = int(time.time())
+    hits = []
+
+    # High relevance but old/low quality — should NOT be headline
+    for i in range(5):
+        hits.append(
+            _make_hit(
+                f"REL{i}",
+                score=50 - i,
+                view=200,
+                pubdate=now - 86400 * 365,
+                stat_score=0.05,
+            )
+        )
+
+    # Balanced: high relevance + recent + quality — ideal headline candidates
+    for i in range(5):
+        hits.append(
+            _make_hit(
+                f"IDEAL{i}",
+                score=35 - i,
+                view=80000,
+                pubdate=now - 3600 * (i + 1),
+                stat_score=0.8,
+            )
+        )
+
+    ranker = DiversifiedRanker()
+    ranker._score_all_dimensions(hits, now_ts=now)
+
+    selected, bvids = ranker._select_headline_top_n(hits, top_n=3)
+
+    assert len(selected) == 3
+    assert len(bvids) == 3
+
+    # All selected should be tagged as "headline"
+    for hit in selected:
+        assert hit.get("_slot_dimension") == "headline"
+
+    # Ideal candidates (good on all 3 axes) should dominate headline picks
+    ideal_in_headline = sum(1 for h in selected if h["bvid"].startswith("IDEAL"))
+    assert (
+        ideal_in_headline >= 2
+    ), f"Expected ≥2 IDEAL in headline, got {ideal_in_headline}"
+
+    logger.success("  PASSED")
+
+
+def test_headline_top_n_no_duplicates_with_slots():
+    """Headline picks should not appear again in slot allocation."""
+    logger.note("> Test: headline exclusion from slot allocation")
+
+    now = int(time.time())
+    hits = []
+    for i in range(30):
+        hits.append(
+            _make_hit(
+                f"BV{i:03d}",
+                score=30 - i,
+                view=(30 - i) * 1000,
+                pubdate=now - i * 3600,
+                stat_score=0.1 + (i % 10) * 0.08,
+            )
+        )
+
+    ranker = DiversifiedRanker()
+    result = ranker.diversified_rank_with_fused_fallback(
+        hits_info={"hits": hits},
+        top_k=15,
+        diversify_top_n=10,
+        headline_top_n=3,
+    )
+
+    ranked = result["hits"]
+    bvids = [h["bvid"] for h in ranked]
+    assert len(set(bvids)) == len(bvids), f"Duplicate bvids: {bvids}"
+
+    # First 3 should be headline
+    headline_dims = [h.get("_slot_dimension") for h in ranked[:3]]
+    assert all(
+        d == "headline" for d in headline_dims
+    ), f"Top 3 should be headline, got {headline_dims}"
+
+    logger.success("  PASSED")
+
+
+def test_three_phase_ranking_structure():
+    """Full three-phase ranking should have headline + slot + fused sections."""
+    logger.note("> Test: three-phase ranking structure")
+
+    now = int(time.time())
+    hits = []
+    for i in range(50):
+        v = max(100, (50 - i) * 2000)
+        hits.append(
+            _make_hit(
+                f"BV{i:03d}",
+                score=50 - i,
+                view=v,
+                pubdate=now - i * 7200,
+                stat_score=0.05 + (i % 12) * 0.075,
+            )
+        )
+
+    ranker = DiversifiedRanker()
+    result = ranker.diversified_rank_with_fused_fallback(
+        hits_info={"hits": hits},
+        top_k=30,
+        diversify_top_n=10,
+        headline_top_n=3,
+    )
+
+    ranked = result["hits"]
+    assert len(ranked) == 30
+
+    # Check phase distribution
+    headline_count = sum(
+        1 for h in ranked[:10] if h.get("_slot_dimension") == "headline"
+    )
+    slot_count = sum(
+        1
+        for h in ranked[:10]
+        if h.get("_slot_dimension") in {"relevance", "quality", "recency", "popularity"}
+    )
+    fused_count = sum(1 for h in ranked[10:] if h.get("_slot_dimension") == "fused")
+
+    assert headline_count == 3, f"Expected 3 headline in top-10, got {headline_count}"
+    assert slot_count >= 1, f"Expected ≥1 slot dimensions in top-10, got {slot_count}"
+    assert fused_count > 0, f"Expected some fused hits beyond top-10"
+
+    # Verify metadata
+    assert result.get("headline_top_n") == 3
+    assert result.get("diversified_top_n") == 10
+
+    logger.success("  PASSED")
+
+
 if __name__ == "__main__":
     test_diversified_rank_basic()
     test_diversified_rank_slot_counts()
@@ -360,4 +536,8 @@ if __name__ == "__main__":
     test_diversified_rank_with_fused_fallback()
     test_diversified_rank_prefer_presets()
     test_score_all_dimensions()
+    test_headline_score_computed()
+    test_select_headline_top_n()
+    test_headline_top_n_no_duplicates_with_slots()
+    test_three_phase_ranking_structure()
     logger.success("\n✓ All diversified ranking tests passed")

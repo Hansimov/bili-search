@@ -62,6 +62,27 @@ DIVERSIFIED_FUSED_WEIGHTS = {
 }
 
 # =============================================================================
+# Headline Quality Scoring (Top-3 Selection)
+# =============================================================================
+
+# Top-N "headline" positions should be both relevant AND high quality.
+# Instead of pure relevance slot allocation, the top positions use a
+# composite "headline quality" score that balances relevance with
+# quality and recency, ensuring the best first impression.
+HEADLINE_TOP_N = 3  # How many top positions use headline quality scoring
+HEADLINE_WEIGHTS = {
+    "relevance": 0.45,  # Must be relevant
+    "quality": 0.30,  # Must be high quality
+    "recency": 0.15,  # Prefer recent
+    "popularity": 0.10,  # Slight popularity bias
+}
+
+# Content quality signals for ranking penalty
+# Short-duration penalty: very short videos (<30s) are often low-effort
+RANK_SHORT_DURATION_THRESHOLD = 30  # seconds
+RANK_SHORT_DURATION_PENALTY = 0.8  # multiply quality_score by this
+
+# =============================================================================
 # Recall Noise Filtering
 # =============================================================================
 
@@ -85,6 +106,17 @@ NOISE_MIN_HITS_FOR_FILTER = 30
 # Gate reduction for multi-lane docs (appear in 2+ recall lanes).
 # Multi-lane appearance is strong evidence of relevance, so apply lower threshold.
 NOISE_MULTI_LANE_GATE_FACTOR = 0.5
+
+# Content quality noise filtering:
+# Short-text penalty: BM25 inflates scores for very short docs (field-length normalization).
+# Penalize docs where combined content is too short — they are likely low-effort.
+NOISE_SHORT_TEXT_MIN_LENGTH = 15  # Min chars (title+desc) to be considered substantial
+NOISE_SHORT_TEXT_PENALTY = 0.3  # Multiply score by this when content is too short
+
+# Quality engagement floor: even if BM25 score is high, docs with near-zero
+# engagement are likely low-quality (spam, empty, test uploads).
+NOISE_MIN_ENGAGEMENT_VIEWS = 100  # Minimum views to pass quality gate
+NOISE_LOW_ENGAGEMENT_PENALTY = 0.15  # Score penalty factor for very low engagement
 
 # =============================================================================
 # BM25 + Embedding Relevance Blending

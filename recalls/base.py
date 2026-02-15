@@ -13,6 +13,10 @@ from ranks.constants import (
     NOISE_KNN_SCORE_RATIO,
     NOISE_MIN_HITS_FOR_FILTER,
     NOISE_MULTI_LANE_GATE_FACTOR,
+    NOISE_SHORT_TEXT_MIN_LENGTH,
+    NOISE_SHORT_TEXT_PENALTY,
+    NOISE_MIN_ENGAGEMENT_VIEWS,
+    NOISE_LOW_ENGAGEMENT_PENALTY,
 )
 
 
@@ -132,14 +136,15 @@ class RecallPool:
     ) -> "RecallPool":
         """Remove low-confidence candidates from the pool.
 
-        Uses score-ratio gating: docs with score < ratio * max_score
-        are considered noise and removed. Multi-lane docs (appearing in 2+
-        recall lanes) get a reduced threshold since cross-lane appearance
-        is strong evidence of relevance.
+        Three-signal noise removal:
+        1. Score-ratio gating: docs with score < ratio * max_score are noise.
+        2. Short-text penalty: BM25 inflates scores for short docs; apply
+           penalty factor to their effective score before gating.
+        3. Low-engagement penalty: docs with near-zero views/engagement are
+           likely spam/junk; penalize their effective score.
 
-        This is particularly effective against:
-        - BM25 rare-keyword noise (low scores from unimportant term matches)
-        - KNN bit vector noise (many irrelevant docs with similar hamming distance)
+        Multi-lane docs (appearing in 2+ recall lanes) get a reduced threshold
+        since cross-lane appearance is strong evidence of relevance.
 
         Args:
             score_ratio: Minimum score as fraction of max_score.
@@ -163,6 +168,8 @@ class RecallPool:
         filtered_hits = []
         filtered_tags = {}
         removed_count = 0
+        short_text_penalized = 0
+        low_engagement_penalized = 0
 
         for hit in self.hits:
             score = hit.get("score", 0) or 0
@@ -173,7 +180,24 @@ class RecallPool:
             # Multi-lane docs get a lower threshold
             effective_gate = gate * multi_lane_factor if lane_count >= 2 else gate
 
-            if score >= effective_gate:
+            # Apply short-text penalty to effective score
+            effective_score = score
+            title = hit.get("title", "") or ""
+            desc = hit.get("desc", "") or ""
+            content_length = len(title) + len(desc)
+            if content_length < NOISE_SHORT_TEXT_MIN_LENGTH and content_length > 0:
+                effective_score *= NOISE_SHORT_TEXT_PENALTY
+                short_text_penalized += 1
+
+            # Apply low-engagement penalty (only when stat data is available)
+            stat = hit.get("stat")
+            if isinstance(stat, dict):
+                views = stat.get("view", 0) or 0
+                if views < NOISE_MIN_ENGAGEMENT_VIEWS:
+                    effective_score *= NOISE_LOW_ENGAGEMENT_PENALTY
+                    low_engagement_penalized += 1
+
+            if effective_score >= effective_gate:
                 filtered_hits.append(hit)
                 if bvid:
                     filtered_tags[bvid] = lanes
@@ -187,6 +211,8 @@ class RecallPool:
             "kept": len(filtered_hits),
             "gate": round(gate, 4),
             "max_score": round(max_score, 4),
+            "short_text_penalized": short_text_penalized,
+            "low_engagement_penalized": low_engagement_penalized,
         }
 
         return RecallPool(
@@ -260,3 +286,57 @@ class NoiseFilter:
         return NoiseFilter.filter_by_score_ratio(
             hits, score_field=score_field, ratio=ratio, min_hits=min_hits
         )
+
+    @staticmethod
+    def apply_content_quality_penalty(
+        hits: list[dict],
+        score_field: str = "score",
+        short_text_min_length: int = NOISE_SHORT_TEXT_MIN_LENGTH,
+        short_text_penalty: float = NOISE_SHORT_TEXT_PENALTY,
+        min_engagement_views: int = NOISE_MIN_ENGAGEMENT_VIEWS,
+        low_engagement_penalty: float = NOISE_LOW_ENGAGEMENT_PENALTY,
+    ) -> list[dict]:
+        """Apply content quality penalties to hit scores in-place.
+
+        Addresses BM25's bias toward short texts: BM25 field-length
+        normalization gives disproportionately high scores to docs with
+        very short title/desc. This method penalizes such docs by
+        reducing their effective score.
+
+        Also penalizes docs with near-zero engagement (views < threshold),
+        which are typically spam, test uploads, or very low-quality content.
+
+        Args:
+            hits: List of hit dicts (modified in-place).
+            score_field: Field containing the score to adjust.
+            short_text_min_length: Min chars (title+desc) for substantial content.
+            short_text_penalty: Multiply score by this for short content.
+            min_engagement_views: Minimum views to pass quality gate.
+            low_engagement_penalty: Score multiplier for very low engagement.
+
+        Returns:
+            Same list with adjusted scores (modified in-place).
+        """
+        for hit in hits:
+            penalty = 1.0
+
+            # Short text penalty
+            title = hit.get("title", "") or ""
+            desc = hit.get("desc", "") or ""
+            content_length = len(title) + len(desc)
+            if 0 < content_length < short_text_min_length:
+                penalty *= short_text_penalty
+
+            # Low engagement penalty (only when stat data is available)
+            stat = hit.get("stat")
+            if isinstance(stat, dict):
+                views = stat.get("view", 0) or 0
+                if views < min_engagement_views:
+                    penalty *= low_engagement_penalty
+
+            if penalty < 1.0:
+                score = hit.get(score_field, 0) or 0
+                hit[score_field] = score * penalty
+                hit["_quality_penalty"] = round(penalty, 4)
+
+        return hits

@@ -77,8 +77,8 @@ recalls/                      # 多车道召回模块
 ├── manager.py            # RecallManager — 召回策略编排
 └── tests/
     ├── test_base.py      # RecallPool 合并测试 (7 tests)
-    ├── test_diversified.py # 多样化排序测试 (8 tests)
-    └── test_noise.py     # 噪声过滤测试 (18 tests)
+    ├── test_diversified.py # 多样化排序测试 (12 tests)
+    └── test_noise.py     # 噪声过滤测试 (27 tests)
 
 converters/
 ├── embed/
@@ -113,23 +113,27 @@ VideoSearcherV2
         │
         ▼
 VideoExplorer (继承 VideoSearcherV2)
-    ├── explore_v2()           # 词语探索 (多车道召回 + 多样化排序)
-    ├── knn_explore_v2()       # 向量探索 (向量召回 + 多样化排序)
-    ├── hybrid_explore_v2()    # 混合探索 (混合召回 + 多样化排序)
+    ├── _run_explore_pipeline()     # 共享探索管线 (所有 V2 方法委托至此)
+    ├── explore_v2()           # 词语探索 → _run_explore_pipeline(mode="word")
+    ├── knn_explore_v2()       # 向量探索 → _run_explore_pipeline(mode="vector")
+    ├── hybrid_explore_v2()    # 混合探索 → _run_explore_pipeline(mode="hybrid")
     ├── unified_explore()      # 统一分发入口 → 路由到 V2 方法
     └── _filter_only_explore() # 无关键词回退 (纯过滤 + stats/recency 排序)
 
 RecallManager (召回策略编排)
-    ├── MultiLaneWordRecall   # 4 车道并行词语召回
+    ├── MultiLaneWordRecall   # 5 车道并行词语召回
     ├── VectorRecall          # 向量召回 + 词语补充
-    └── pool.filter_noise()   # 合并后噪声过滤
+    └── pool.filter_noise()   # 合并后噪声过滤 (3 信号)
 
 NoiseFilter (噪声过滤)
-    ├── filter_by_score_ratio()     # BM25 车道噪声过滤
-    └── filter_knn_by_score_ratio() # KNN 向量噪声过滤
+    ├── filter_by_score_ratio()         # BM25 车道噪声过滤
+    ├── filter_knn_by_score_ratio()     # KNN 向量噪声过滤
+    └── apply_content_quality_penalty() # 短文本/低互动惩罚
 
-DiversifiedRanker (多样化排序)
-    └── diversified_rank()    # 槽位分配多样化排序
+DiversifiedRanker (三阶段排序)
+    ├── _select_headline_top_n()  # Phase 1: 头部质量选择 (top-3)
+    ├── _allocate_slots()         # Phase 2: 槽位分配 (位置 4-10)
+    └── fused scoring              # Phase 3: 融合评分 (>10)
 ```
 
 `VideoSearcherV2` 提供单次搜索能力，返回命中列表。  
@@ -197,20 +201,20 @@ DiversifiedRanker (多样化排序)
                          │
                          ▼
 ┌─ Step 1: multi_lane_recall ────────────────────────────────┐
-│  ┌───────────────────────────────────────────────────────┐ │
-│  │           ThreadPoolExecutor (4 并行)                 │ │
-│  │  ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐ │ │
-│  │  │ 相关性   │ │ 热度     │ │ 时效性  │ │ 质量     │ │ │
-│  │  │ BM25     │ │ stat.view│ │ pubdate │ │stat_score│ │ │
-│  │  │ _score   │ │ desc     │ │ desc    │ │ desc     │ │ │
-│  │  │ 200 条   │ │ 100 条   │ │ 100 条  │ │ 100 条   │ │ │
-│  │  └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬─────┘ │ │
-│  │       └────────┬────┴────────┬───┘           │       │ │
-│  │                └─────────────┴───────────────┘       │ │
-│  └───────────────────────────────────────────────────────┘ │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │           ThreadPoolExecutor (5 并行)                     │ │
+│  │  ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌──────────┐ │
+│  │  │ 相关性   │ │ 热度     │ │ 时效性  │ │ 质量     │ │ 互动     │ │
+│  │  │ BM25     │ │ stat.view│ │ pubdate │ │stat_score│ │ stat.coin│ │
+│  │  │ _score   │ │ desc     │ │ desc    │ │ desc     │ │ desc     │ │
+│  │  │ 500 条   │ │ 200 条   │ │ 200 条  │ │ 200 条   │ │ 100 条   │ │
+│  │  └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬─────┘ └────┬─────┘ │
+│  │       └────────┬────┴────────┬───┘           └──────┬─────┘       │
+│  │                └─────────────┴──────────────────────┘             │
+│  └───────────────────────────────────────────────────────────────────┘ │
 │                         │                                  │
 │              合并 + 去重 (by bvid)                          │
-│              约 300-500 候选文档                             │
+│              约 500-1000 候选文档                            │
 │              每条文档带 lane_tags                            │
 └────────────────────────────────────────────────────────────┘
                          │
@@ -219,9 +223,10 @@ DiversifiedRanker (多样化排序)
                          ▼
 ┌─ fetch_and_rank ───────────────────────────────────────────┐
 │  ① fetch_docs_by_bvids: 获取完整文档                        │
-│  ② diversified_rank: 槽位分配排序                            │
-│     Top 10 = 3×相关 + 2×质量 + 3×时效 + 2×热度              │
-│  ③ 剩余文档按融合分数排序                                    │
+│  ② diversified_rank: 三阶段排序                              │
+│     Phase 1: 头部质量选择 (top-3 by headline_score)          │
+│     Phase 2: 槽位分配 (位置 4-10)                            │
+│     Phase 3: 融合评分 (剩余文档)                              │
 └────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -368,17 +373,20 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 
 | 车道 | 排序依据 | 取回量 | 目标 |
 |------|----------|--------|------|
-| `relevance` | BM25 `_score` | 200 | 相关性最高的文档 |
-| `popularity` | `stat.view` desc | 100 | 热度最高的文档 |
-| `recency` | `pubdate` desc | 100 | 时间最近的文档 |
-| `quality` | `stat_score` desc | 100 | 质量最高的文档 |
+| `relevance` | BM25 `_score` | 500 | 相关性最高的文档 |
+| `popularity` | `stat.view` desc | 200 | 热度最高的文档 |
+| `recency` | `pubdate` desc | 200 | 时间最近的文档 |
+| `quality` | `stat_score` desc | 200 | 质量最高的文档 |
+| `engagement` | `stat.coin` desc | 100 | 高互动质量的文档 |
+
+车道的 `source_fields` 包含 `title`、`desc`，用于后续内容质量过滤。
 
 **合并逻辑** (`RecallPool.merge`)：
 - 按 `bvid` 去重，同一文档可能出现在多个车道
 - 每条文档记录 `lane_tags`（如 `{"relevance", "popularity"}`）
-- 合并后的候选池约 300-500 条
+- 合并后的候选池约 500-1000 条
 
-**性能**：4 个并行 ES 查询 vs 1 个扫描 10000 条的查询。每个车道的 `size` 远小于 10000，且并行执行，总延迟约等于单个最慢车道的延迟。
+**性能**：5 个并行 ES 查询 vs 1 个扫描 10000 条的查询。每个车道的 `size` 远小于 10000，且并行执行，总延迟约等于单个最慢车道的延迟。
 
 #### 向量召回 (VectorRecall)
 
@@ -403,19 +411,19 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 - **BM25 稀有关键词噪声**：IDF 高的稀有词（如"飓风"）产生高 BM25 分数，即使文档与查询语义无关
 - **KNN bit vector 噪声**：LSH 量化后 hamming 距离区分度有限，大量语义无关文档获得相近分数
 
-**解决方案**：三层噪声过滤架构
+**解决方案**：三层 + 三信号噪声过滤架构
 
 ```
-                    ES 层                    车道层                    池层
-                ┌──────────┐          ┌──────────────┐         ┌───────────┐
-                │min_score │          │ NoiseFilter.  │         │ RecallPool│
-   Query ──→   │ = 2.0    │ ──→      │ filter_by_    │  ──→    │ .filter_  │ ──→ 排序
-                │(ES body) │          │ score_ratio() │         │ noise()   │
-                └──────────┘          └──────────────┘         └───────────┘
-                    │                       │                       │
-              不返回 BM25             每个车道内部移除          合并池中移除
-              分数 < 2.0 的           低于 ratio × max          多车道文档
-              文档                   的低分命中                 获得更低阈值
+                    ES 层                    车道层                    池层 (三信号)
+                ┌──────────┐          ┌──────────────┐         ┌────────────────────┐
+                │min_score │          │ NoiseFilter.  │         │ RecallPool         │
+   Query ──→   │ = 2.0    │ ──→      │ filter_by_    │  ──→    │ .filter_noise()    │ ──→ 排序
+                │(ES body) │          │ score_ratio() │         │ ① score-ratio      │
+                └──────────┘          │ + content     │         │ ② short-text pen.  │
+                    │                 │   quality     │         │ ③ low-engage pen.  │
+              不返回 BM25             │   penalty     │         └────────────────────┘
+              分数 < 2.0 的           └──────────────┘
+              文档
 ```
 
 #### 第一层：ES 级过滤 (`min_score`)
@@ -426,10 +434,15 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 - **BM25 车道**：移除 `score < max_score × 0.12` 的命中
 - **KNN 车道**：使用更严格的比率 `score < max_score × 0.5`（KNN 分数范围窄）
 - **最小数量保护**：若总命中 ≤ 30 条，跳过过滤以避免结果过少
+- **内容质量预处理** (`apply_content_quality_penalty`)：在 score-ratio 过滤之前，对短文本和低互动文档的分数施加惩罚，使它们更容易被 score-ratio 过滤移除
 
-#### 第三层：池级过滤 (`RecallPool.filter_noise()`)
-合并后的召回池进行最终过滤：
-- 全局 gate = `max_score × ratio`
+#### 第三层：池级过滤 (`RecallPool.filter_noise()` — 三信号)
+合并后的召回池使用三信号进行最终过滤：
+
+1. **Score-ratio 门控**：全局 gate = `max_score × ratio`
+2. **短文本惩罚**：`title + desc` 长度 < 15 字符的文档，有效分数 × 0.3（BM25 field-length normalization 对短文本过度加分）
+3. **低互动惩罚**：播放量 < 100 的文档，有效分数 × 0.15（极低互动通常为垃圾/测试内容）
+
 - **多车道感知**：出现在 2+ 个车道的文档使用更低阈值（`gate × 0.5`），因为跨车道出现本身就是相关性信号
 
 #### 噪声过滤常量
@@ -441,6 +454,10 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 | `NOISE_KNN_SCORE_RATIO` | 0.5 | KNN 分数比率门限（更严格） |
 | `NOISE_MIN_HITS_FOR_FILTER` | 30 | 最少命中数，低于此值不过滤 |
 | `NOISE_MULTI_LANE_GATE_FACTOR` | 0.5 | 多车道文档的阈值缩放因子 |
+| `NOISE_SHORT_TEXT_MIN_LENGTH` | 15 | 短文本判定阈值（title+desc 字符数） |
+| `NOISE_SHORT_TEXT_PENALTY` | 0.3 | 短文本分数惩罚因子 |
+| `NOISE_MIN_ENGAGEMENT_VIEWS` | 100 | 低互动判定阈值（播放量） |
+| `NOISE_LOW_ENGAGEMENT_PENALTY` | 0.15 | 低互动分数惩罚因子 |
 
 ### 4.5 精排重排 (Reranking)
 
@@ -510,58 +527,81 @@ rrf_score = Σ weight[i] / (k + rank[i])
 
 **问题**：连续加权融合 (`w × quality + w × relevance + w × recency`) 导致 Top 10 同质化 — 所有结果都是各维度中等偏上的"均衡型"文档，缺少某一维度特别突出的文档。
 
-**解决方案**：`DiversifiedRanker` 使用**槽位分配**算法，保证 Top-K 中各维度都有代表。
+**解决方案**：`DiversifiedRanker` 使用**三阶段排序**算法，保证 Top-3 质量，Top-10 多样性。
 
-#### 槽位分配算法
+#### 三阶段排序算法
 
 ```
-1. 计算每条文档的 4 维分数:
-   - relevance_score: ES BM25 分数归一化
-   - quality_score: stat_score (DocScorer 计算的质量分)
-   - recency_score: pubdate 线性衰减
-   - popularity_score: log1p(stat.view) 对数归一化
-
-2. 按维度优先级依次分配槽位:
-   slot_preset = {
-     "relevance": 3,   # 3 个相关性最高的
-     "quality": 2,     # 2 个质量最高的
-     "recency": 3,     # 3 个最新的
-     "popularity": 2,  # 2 个最热门的
-   }   # 总计 10 个槽位
-
-3. 每个维度取该维度分数最高且未被选中的文档
-
-4. 若有剩余文档，按加权融合分数排序作为 fallback
-   DIVERSIFIED_FUSED_WEIGHTS = {
-     "relevance": 0.35,
-     "quality": 0.25,
-     "recency": 0.20,
-     "popularity": 0.20,
-   }
-
-5. 被选中的文档按其槽位排名赋予 rank_score
+Phase 1 — 头部质量选择 (Top-3)
+  ┌──────────────────────────────────────────┐
+  │ 计算 headline_score (复合分数):          │
+  │   = 0.45×relevance + 0.30×quality       │
+  │     + 0.15×recency  + 0.10×popularity   │
+  │                                          │
+  │ 从 relevance_score ≥ 0.3 的候选中       │
+  │ 选取 headline_score 最高的 3 个          │
+  └──────────────────────────────────────────┘
+                 │
+                 ▼
+Phase 2 — 槽位分配 (位置 4-10)
+  ┌──────────────────────────────────────────┐
+  │ 从剩余候选中按维度分配 7 个槽位:        │
+  │   balanced: {rel:2, quality:2,           │
+  │              recency:2, popularity:1}    │
+  └──────────────────────────────────────────┘
+                 │
+                 ▼
+Phase 3 — 融合评分 (位置 11+)
+  ┌──────────────────────────────────────────┐
+  │ 剩余文档按加权融合分数排序:             │
+  │   FUSED_WEIGHTS = {rel:0.35, qual:0.25, │
+  │                    rec:0.20, pop:0.20}  │
+  └──────────────────────────────────────────┘
 ```
+
+每条文档的 5 维分数:
+- **relevance_score**: ES BM25 分数归一化
+- **quality_score**: stat_score (DocScorer 计算的质量分)，短时长视频 (<30s) 额外惩罚 ×0.8
+- **recency_score**: pubdate 线性衰减
+- **popularity_score**: log1p(stat.view) 对数归一化
+- **headline_score**: 复合分数，兼顾相关性 + 质量 + 时效 + 热度
 
 **Popularity 对数归一化**：播放量呈幂律分布（如 100M vs 50K），线性归一化会导致一个超高播放视频压制所有其他文档。使用 `log1p(view) / max_log_view` 将比率从 2000:1 压缩到约 1.7:1，使不同量级的播放量都能公平参与评分。
 
-#### 槽位预设 (Slot Presets)
+#### Phase 1: 头部质量选择
+
+**问题**：Top-3 纯按 BM25 相关性选取时，容易选中短标题/低质量的文档（BM25 对短文本过度加分）。
+
+**方案**：使用 `headline_score` 复合分数选取 Top-3，确保最显眼位置的结果同时具备高相关性、高质量和合理时效性：
+
+| 维度 | 权重 | 说明 |
+|------|------|------|
+| relevance | 0.45 | 搜索匹配度仍是主导因素 |
+| quality | 0.30 | 质量是用户满意度关键 |
+| recency | 0.15 | 时效性作为加分项 |
+| popularity | 0.10 | 热度作为辅助参考 |
+
+#### Phase 2: 槽位预设 (Slot Presets)
+
+槽位预设决定 Top-3 后的位置 4-10 如何分配（按预设总数补满）：
 
 | 预设 | 相关 | 质量 | 时效 | 热度 | 适用场景 |
 |------|------|------|------|------|----------|
-| `balanced` (默认) | 3 | 2 | 3 | 2 | 通用搜索 |
-| `prefer_relevance` | 5 | 2 | 2 | 1 | 精确查找 |
-| `prefer_quality` | 2 | 4 | 2 | 2 | 质量优先 |
-| `prefer_recency` | 2 | 1 | 5 | 2 | 时效优先 |
+| `balanced` (默认) | 2 | 2 | 2 | 1 | 通用搜索 |
+| `prefer_relevance` | 3 | 2 | 1 | 1 | 精确查找 |
+| `prefer_quality` | 1 | 3 | 1 | 2 | 质量优先 |
+| `prefer_recency` | 1 | 1 | 4 | 1 | 时效优先 |
 
 #### 与旧排序策略的对比
 
-| 特性 | stats (旧默认) | diversified (新默认) |
-|------|---------------|---------------------|
-| Top 10 多样性 | 低 (都是均衡型) | **高 (各维度代表)** |
-| 超高播放量文档 | 可能被平均化稀释 | **保证出现** |
-| 最新发布文档 | 可能排名偏后 | **保证出现** |
-| 排序可控性 | 仅通过调权重 | **通过调槽位数** |
-| 融合分数连续性 | 连续 | Top-K 后连续 |
+| 特性 | stats (旧默认) | 旧 diversified | 新三阶段 diversified |
+|------|---------------|---------------|---------------------|
+| Top 3 质量 | 低 (仅看分数) | 中 (纯相关性) | **高 (复合质量分)** |
+| Top 10 多样性 | 低 (都是均衡型) | **高** | **高 (各维度代表)** |
+| 超高播放量文档 | 可能被稀释 | **保证出现** | **保证出现** |
+| 最新发布文档 | 可能排名偏后 | **保证出现** | **保证出现** |
+| 排序可控性 | 仅通过调权重 | 调槽位数 | **调头部权重 + 调槽位数** |
+| 短文本噪声 | 可能排前列 | 可能排前列 | **被惩罚，不会排前列** |
 
 ### 4.8 UP 主分组
 
