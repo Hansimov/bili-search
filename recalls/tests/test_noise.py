@@ -127,29 +127,29 @@ class TestFilterKNNScoreRatio:
     """Test KNN-specific noise filtering (stricter ratio)."""
 
     def test_stricter_than_bm25(self):
-        """KNN ratio is stricter (0.5 default vs 0.12 for BM25)."""
+        """KNN ratio is stricter (0.60 default vs 0.18 for BM25)."""
         hits = make_hits([0.020, 0.018, 0.015, 0.012, 0.010, 0.005])
-        # KNN gate = 0.020 * 0.5 = 0.010
+        # KNN gate = 0.020 * 0.60 = 0.012
         knn_filtered = NoiseFilter.filter_knn_by_score_ratio(hits, min_hits=3)
-        # Score 0.005 < 0.010, removed
-        assert len(knn_filtered) == 5
-        assert all(h["score"] >= 0.010 for h in knn_filtered)
+        # Scores 0.010 and 0.005 < 0.012, removed
+        assert len(knn_filtered) == 4
+        assert all(h["score"] >= 0.012 for h in knn_filtered)
 
     def test_knn_narrow_range(self):
         """KNN scores cluster in narrow range — filters tail effectively."""
         # Simulates LSH hamming scores: 0.019, 0.018, 0.017, ..., 0.001
         scores = [0.019 - i * 0.001 for i in range(19)]
         hits = make_hits(scores)
-        # gate = 0.019 * 0.5 = 0.0095
-        filtered = NoiseFilter.filter_knn_by_score_ratio(hits, min_hits=10)
-        # Keep scores >= 0.0095: 0.019, 0.018, ..., 0.010 = 10 hits
-        assert len(filtered) == 10
+        # gate = 0.019 * 0.60 = 0.0114
+        filtered = NoiseFilter.filter_knn_by_score_ratio(hits, min_hits=3)
+        # Keep scores >= 0.0114: 0.019, 0.018, ..., 0.012 = 8 hits
+        assert len(filtered) == 8
 
     def test_knn_preserves_top_hits(self):
         """Good KNN matches are always preserved."""
         hits = make_hits([0.025, 0.023, 0.020, 0.018])
         filtered = NoiseFilter.filter_knn_by_score_ratio(hits, min_hits=3)
-        # gate = 0.025 * 0.5 = 0.0125 — all pass
+        # gate = 0.025 * 0.60 = 0.015 — all pass
         assert len(filtered) == 4
 
 

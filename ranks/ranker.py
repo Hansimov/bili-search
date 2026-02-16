@@ -5,16 +5,21 @@ This module provides the main VideoHitsRanker class that implements various
 ranking methods for video search results.
 
 Ranking Methods:
+    - diversified: Three-phase ranking with headline → slot → fused (default)
     - heads: Simple truncation without ranking
     - rrf: Reciprocal Rank Fusion across multiple metrics
     - stats: Stats-weighted ranking (popularity + recency + relevance)
     - relevance: Pure relevance/similarity ranking
     - tiered: Two-zone ranking (high relevance gets stats boost)
 
+The `diversified` method is the default for explore endpoints. It provides
+three-phase ranking (headline quality → relevance-gated slots → fused scoring)
+with title-match bonus support. Other methods are available for the search API.
+
 Usage:
     >>> from ranks import VideoHitsRanker
     >>> ranker = VideoHitsRanker()
-    >>> ranked_hits = ranker.stats_rank(hits_info, top_k=100)
+    >>> ranked_hits = ranker.diversified_rank(hits_info, top_k=400)
 """
 
 import heapq

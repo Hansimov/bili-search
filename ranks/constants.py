@@ -52,13 +52,14 @@ RANK_PREFER_PRESETS = {
 # Diversified Ranking Fused Score Weights
 # =============================================================================
 
-# Weights for fused scoring in diversified ranker (Phase 2: beyond top-N slots).
-# Also used in NoiseFilter for multi-signal confidence assessment.
+# Weights for fused scoring in diversified ranker (Phase 3: beyond top-N slots).
+# Relevance dominates to prevent irrelevant docs from surfacing.
+# Quality and recency provide secondary differentiation.
 DIVERSIFIED_FUSED_WEIGHTS = {
-    "relevance": 0.35,
-    "quality": 0.25,
-    "recency": 0.20,
-    "popularity": 0.20,
+    "relevance": 0.50,
+    "quality": 0.20,
+    "recency": 0.18,
+    "popularity": 0.12,
 }
 
 # =============================================================================
@@ -71,11 +72,22 @@ DIVERSIFIED_FUSED_WEIGHTS = {
 # quality and recency, ensuring the best first impression.
 HEADLINE_TOP_N = 3  # How many top positions use headline quality scoring
 HEADLINE_WEIGHTS = {
-    "relevance": 0.45,  # Must be relevant
-    "quality": 0.30,  # Must be high quality
+    "relevance": 0.55,  # Must be highly relevant (dominant signal)
+    "quality": 0.20,  # Must be high quality
     "recency": 0.15,  # Prefer recent
     "popularity": 0.10,  # Slight popularity bias
 }
+
+# Minimum relevance score required for headline and slot candidates.
+# Prevents low-relevance docs from occupying top-10 positions even if
+# they score high on popularity/recency. This is the primary fix for
+# the "some top-10 slots have irrelevant docs" problem.
+# Set to 0.30 to be strict: docs must have at least 30% of max BM25 score
+# to be eligible for any top-10 position.
+SLOT_MIN_RELEVANCE = 0.30
+
+# Minimum relevance for headline (top-3) positions — even stricter.
+HEADLINE_MIN_RELEVANCE = 0.35
 
 # Content quality signals for ranking penalty
 # Short-duration penalty: very short videos (<30s) are often low-effort
@@ -83,21 +95,44 @@ RANK_SHORT_DURATION_THRESHOLD = 30  # seconds
 RANK_SHORT_DURATION_PENALTY = 0.8  # multiply quality_score by this
 
 # =============================================================================
+# Title Match Bonus
+# =============================================================================
+
+# Title match is a strong relevance signal: if the query appears in the title,
+# the doc is very likely relevant. This bonus is added to relevance_score
+# before normalization, acting as a multiplicative boost.
+TITLE_MATCH_BONUS = 0.15  # Added to normalized relevance when title matches query
+
+# =============================================================================
+# Relevance Decay for Slot Candidates
+# =============================================================================
+
+# Below this relevance threshold, apply exponential decay to dimension scores.
+# This prevents low-relevance docs from occupying dimension slots even if they
+# are the "most popular" or "most recent" in the pool.
+SLOT_RELEVANCE_DECAY_THRESHOLD = 0.40
+SLOT_RELEVANCE_DECAY_POWER = 2.0  # Quadratic decay below threshold
+
+# =============================================================================
 # Recall Noise Filtering
 # =============================================================================
 
 # Minimum BM25 score for non-relevance recall lanes.
 # Docs scoring below this are noise — they match query syntax but not meaning.
-# BM25 score of ~2.0 means at least one term reasonably matches.
-MIN_BM25_SCORE = 2.0
+# BM25 score of ~3.0 means at least one meaningful term matches.
+# (Raised from 2.0: many barely-matching docs had scores 2.0-3.0)
+MIN_BM25_SCORE = 3.0
 
 # Score-ratio gate: remove docs with score < ratio * max_score in their lane.
 # Applied after each recall lane returns, before merge.
-NOISE_SCORE_RATIO_GATE = 0.12
+# 0.18 means docs must score at least 18% of the best hit's score.
+# (Raised from 0.12: too many marginally matching docs survived)
+NOISE_SCORE_RATIO_GATE = 0.18
 
 # KNN score ratio: stricter threshold for noisy LSH hamming distance scores.
 # LSH bit vectors have narrow score ranges, so many irrelevant docs score similarly.
-NOISE_KNN_SCORE_RATIO = 0.5
+# (Raised from 0.5: LSH hamming clusters too many irrelevant docs near threshold)
+NOISE_KNN_SCORE_RATIO = 0.60
 
 # Don't apply noise filtering if total hits below this count.
 # Small result sets need all candidates.
@@ -166,39 +201,17 @@ HYBRID_RRF_K = 60  # k parameter for hybrid search RRF fusion
 # Stats-based Scoring Configuration
 # =============================================================================
 
-# Stat fields used for stats scoring
-STAT_FIELDS = ["view", "favorite", "coin", "reply", "share", "danmaku"]
-
-# Log offsets for different stat fields
-# Higher offset = less emphasis on low values
-STAT_LOGX_OFFSETS = {
-    "view": 10,
-    "favorite": 2,
-    "coin": 2,
-    "reply": 2,
-    "share": 2,
-    "danmaku": 2,
-}
+# Stats-based scoring is now handled by StatsScorer (DocScorer-based)
+# in ranks/scorers.py. Individual stat fields and log offsets are
+# configured in the DocScorer library, not here.
 
 # =============================================================================
 # Pubdate (Recency) Scoring Configuration
 # =============================================================================
 
-PUBDATE_BASE = 1262275200  # 2010-01-01 00:00:00 (reference timestamp)
-SECONDS_PER_DAY = 86400
-
-# Score for videos at different ages
-ZERO_DAY_SCORE = 4.0  # Score for videos published most recently
-INFT_DAY_SCORE = 0.25  # Score for videos published before base
-
-# Piecewise linear function points: (days_old, score)
-# Interpolates between these points for smooth decay
-PUBDATE_SCORE_POINTS = [
-    (0, 4.0),  # Today: 4.0
-    (7, 1.0),  # 1 week: 1.0
-    (30, 0.6),  # 1 month: 0.6
-    (365, 0.3),  # 1 year: 0.3
-]
+# Recency scoring is now handled by PubdateScorer in ranks/scorers.py,
+# which uses the real-time time factor from DocScorer.TIME_ANCHORS.
+# See TIME_FACTOR_MIN and TIME_FACTOR_MAX below for normalization bounds.
 
 # =============================================================================
 # Relevance (Similarity) Scoring Configuration
@@ -288,18 +301,11 @@ HYBRID_VECTOR_WEIGHT = 0.5
 # Author Grouping Configuration
 # =============================================================================
 
-# =============================================================================
 # Recency Scoring (from blux.doc_score time factor)
-# =============================================================================
-
 # Real-time time factor boundaries (from DocScorer.TIME_ANCHORS)
 # Used for normalization to [0, 1] range
 TIME_FACTOR_MIN = 0.45  # Score for videos >= 30 days old
 TIME_FACTOR_MAX = 1.30  # Score for videos <= 1 hour old
-
-# =============================================================================
-# Author Grouping Configuration
-# =============================================================================
 
 # Available sort fields for author grouping
 AUTHOR_SORT_FIELD_TYPE = Literal[

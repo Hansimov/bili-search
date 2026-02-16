@@ -204,6 +204,9 @@ class VideoExplorer(VideoSearcherV2):
                 "knn_rank",
                 "rank_score",
                 "sort_score",
+                # Recall metadata fields — critical for downstream ranking
+                "_title_matched",  # Title-match bonus in diversified ranker
+                "_recall_lanes",  # Lane membership for multi-lane analysis
             ]
 
         # Build bvid -> score data mapping
@@ -623,9 +626,10 @@ class VideoExplorer(VideoSearcherV2):
     ) -> dict:
         """V2 Word explore using multi-lane recall + diversified ranking.
 
-        Uses 5 parallel recall lanes (relevance, popularity, recency, quality,
-        engagement) for comprehensive candidate coverage, then three-phase
-        diversified ranking (headline → slots → fused) for quality results.
+        Uses 5 parallel recall lanes (relevance, title_match, popularity,
+        recency, quality) for comprehensive candidate coverage, then
+        three-phase diversified ranking (headline → slots → fused) for
+        quality results.
 
         Returns:
             dict: {"query": str, "status": str, "data": list[dict]}
@@ -648,6 +652,7 @@ class VideoExplorer(VideoSearcherV2):
             recall_source_fields=[
                 "bvid",
                 "title",
+                "tags",
                 "desc",
                 "stat",
                 "pubdate",

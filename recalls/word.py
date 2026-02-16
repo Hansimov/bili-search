@@ -2,16 +2,24 @@
 Multi-Lane Word Recall
 
 Runs parallel ES searches optimized for different dimensions:
-- relevance: BM25 match, sorted by _score (default)
-- popularity: BM25 match, sorted by stat.view desc
-- recency: BM25 match, sorted by pubdate desc
-- quality: BM25 match, sorted by stat_score desc
+- relevance: BM25 match, sorted by _score (text match quality)
+- title_match: BM25 match on title+tags (catches entity/exact queries)
+- popularity: BM25 match, sorted by stat.view desc (raw reach)
+- recency: BM25 match, sorted by pubdate desc (freshness)
+- quality: BM25 match, sorted by stat_score desc (content quality)
 
-This ensures that relevant, popular, recent, AND high-quality documents
-are all present in the candidate pool before ranking.
+Design rationale:
+- Each lane captures a distinct signal dimension to maximize diversity.
+- The title_match lane is critical for entity queries like '通义实验室',
+  '飓风营救', '红警08' where the query should match in the title or tags.
+  Without it, popular-but-irrelevant docs dominate via other lanes.
+  Tags are included because they often contain entity names, movie titles,
+  and topic keywords that are as strong a signal as the title itself.
+- Relevance lane gets a larger limit (500) because BM25 is the primary
+  signal and we want broad keyword coverage in the candidate pool.
 
-Performance advantage: Instead of scanning 10000 docs in one query,
-runs 4 focused queries for ~200 docs each, in parallel.
+Performance: 5 parallel queries of ~200-500 docs each vs scanning 10000 docs
+in one query. Wall-clock time ≈ slowest single lane.
 """
 
 import time
@@ -23,39 +31,55 @@ from recalls.base import RecallResult, RecallPool, NoiseFilter
 from ranks.constants import MIN_BM25_SCORE
 
 # Lane configurations: (lane_name, sort_spec, limit)
-# Increased limits for better recall coverage:
-#   - More candidates per lane → better chance of finding good docs
-#   - Parallel execution means wall-clock time ≈ slowest single lane
+#
+# Each lane captures a distinct signal dimension:
+#   - relevance: text match quality (BM25 _score) — broad recall
+#   - title_match: title+tags BM25 — high precision for entity queries
+#   - popularity: raw reach/awareness (view count)
+#   - recency: freshness (publish date)
+#   - quality: content quality (stat_score from DocScorer)
+#
+# The title_match lane was added to fix entity query problems:
+#   For queries like '通义实验室', '飓风营救', '红警08', the standard
+#   relevance lane searches all fields (title, tags, desc, owner.name)
+#   which dilutes title matches with partial desc/tag matches. The
+#   title_match lane searches title + tags fields with higher weight,
+#   ensuring docs whose title/tags match the query are always recalled.
+#   Tags are included because they often contain entity names, movie
+#   titles, and topic keywords that are as strong a signal as the title.
+#
+# Performance: parallel execution means wall-clock ≈ slowest single lane
 WORD_RECALL_LANES = {
     "relevance": {
         "sort": None,  # Default _score sorting
         "limit": 500,
-        "desc": "BM25 keyword relevance",
+        "desc": "BM25 keyword relevance — text match quality",
+    },
+    "title_match": {
+        "sort": None,  # _score sorting on title+tags fields
+        "limit": 300,
+        "title_tags": True,  # Special flag: search title + tags fields only
+        "desc": "Title+tags BM25 — high precision entity/name matching",
     },
     "popularity": {
         "sort": [{"stat.view": "desc"}],
         "limit": 200,
-        "desc": "Most viewed matching docs",
+        "desc": "Most viewed — raw reach and awareness",
     },
     "recency": {
         "sort": [{"pubdate": "desc"}],
         "limit": 200,
-        "desc": "Most recent matching docs",
+        "desc": "Most recent — freshness and timeliness",
     },
     "quality": {
         "sort": [{"stat_score": "desc"}],
         "limit": 200,
-        "desc": "Highest quality matching docs",
-    },
-    "engagement": {
-        "sort": [{"stat.coin": "desc"}],
-        "limit": 100,
-        "desc": "Highest engagement (coins) matching docs",
+        "desc": "Highest quality — composite DocScorer stat quality",
     },
 }
 
 # Default lanes to run in parallel
-DEFAULT_LANES = ["relevance", "popularity", "recency", "quality", "engagement"]
+DEFAULT_LANES = ["relevance", "title_match", "popularity", "recency", "quality"]
 
 
 class MultiLaneWordRecall:
@@ -65,20 +89,31 @@ class MultiLaneWordRecall:
     different signal, then merges into a single deduplicated pool.
 
     This guarantees that the recall pool contains candidates from
-    all four dimensions (relevant, popular, recent, quality), which
-    the downstream ranker can then draw from for diversified ranking.
+    all five dimensions (relevant, title-matched, popular, recent, quality),
+    which the downstream ranker can then draw from for diversified ranking.
+
+    The five lanes are intentionally distinct:
+    - relevance: text match quality (BM25 _score) across all fields
+    - title_match: title+tags BM25 for entity/name precision
+    - popularity: raw reach/awareness (view count)
+    - recency: freshness (publish date)
+    - quality: content quality (stat_score combining engagement ratios,
+      anomaly detection, and balanced stat signals from DocScorer)
+
+    Title-match tagging:
+    After recall, all hits are tagged with `_title_matched` based on
+    whether the query terms appear in the document title or tags. This
+    signal is used by the downstream ranker to boost relevance scoring.
 
     Example:
         >>> recall = MultiLaneWordRecall()
         >>> pool = recall.recall(
         ...     searcher=video_searcher,
         ...     query="黑神话",
-        ...     lanes=["relevance", "popularity", "recency", "quality"],
+        ...     lanes=["relevance", "title_match", "popularity", "recency", "quality"],
         ... )
-        >>> len(pool.hits)  # ~400 after dedup
-        387
-        >>> pool.lanes_info
-        {'relevance': {'hit_count': 200, ...}, 'popularity': {...}, ...}
+        >>> len(pool.hits)  # ~500-800 after dedup
+        650
     """
 
     def __init__(
@@ -90,7 +125,7 @@ class MultiLaneWordRecall:
 
         Args:
             lanes_config: Override lane configurations. Defaults to WORD_RECALL_LANES.
-            max_workers: Max parallel threads for ES queries.
+            max_workers: Max parallel threads for ES queries (5 lanes).
         """
         self.lanes_config = lanes_config or WORD_RECALL_LANES
         self.max_workers = max_workers
@@ -112,7 +147,7 @@ class MultiLaneWordRecall:
             searcher: VideoSearcherV2 instance.
             query: Search query string.
             lane_name: Name of this recall lane.
-            lane_config: Configuration for this lane (sort, limit).
+            lane_config: Configuration for this lane (sort, limit, title_only).
             source_fields: Fields to retrieve from ES.
             extra_filters: Additional filter clauses.
             suggest_info: Suggestion info for query rewriting.
@@ -124,9 +159,21 @@ class MultiLaneWordRecall:
         start = time.perf_counter()
         sort_spec = lane_config.get("sort")
         limit = lane_config.get("limit", 200)
+        title_tags = lane_config.get("title_tags", False)
 
         try:
-            if sort_spec is not None:
+            if title_tags:
+                # Title+tags lane: search title and tags for high precision
+                res = self._search_title_tags(
+                    searcher=searcher,
+                    query=query,
+                    source_fields=source_fields,
+                    extra_filters=extra_filters,
+                    suggest_info=suggest_info,
+                    limit=limit,
+                    timeout=timeout,
+                )
+            elif sort_spec is not None:
                 # For non-relevance lanes, use custom sort via raw ES query
                 res = self._search_with_sort(
                     searcher=searcher,
@@ -186,6 +233,96 @@ class MultiLaneWordRecall:
                 took_ms=took_ms,
                 timed_out=False,
             )
+
+    def _search_title_tags(
+        self,
+        searcher,
+        query: str,
+        source_fields: list[str],
+        extra_filters: list[dict],
+        suggest_info: dict,
+        limit: int,
+        timeout: float,
+    ) -> dict:
+        """Execute a BM25 search using title + tags fields only.
+
+        This lane is designed for entity/name queries like '通义实验室',
+        '飓风营救', '红警08' where matching in the title or tags is a strong
+        signal of relevance. By restricting to title+tags fields, we avoid
+        dilution from partial matches in desc/owner.name while capturing
+        entity names and topic keywords from both title and tags.
+
+        Uses title.words + tags.words with es_tok_query_string for best precision.
+
+        Args:
+            searcher: VideoSearcherV2 instance.
+            query: Search query.
+            source_fields: Fields to retrieve.
+            extra_filters: Filter clauses.
+            suggest_info: Suggestion info.
+            limit: Max results.
+            timeout: Timeout in seconds.
+
+        Returns:
+            Parsed search result dict.
+        """
+        from elastics.videos.constants import SEARCH_MATCH_TYPE, TERMINATE_AFTER
+        from elastics.structure import construct_boosted_fields, set_timeout
+
+        # Title + tags fields with appropriate boosts
+        # Title gets highest boost (most specific signal for entity queries)
+        # Tags get moderate boost (often contain entity names and topic keywords)
+        title_tags_match_fields = ["title.words", "tags.words"]
+        title_tags_boosted_fields = {
+            "title.words": 5.0,  # Title is strongest signal
+            "tags.words": 3.0,  # Tags capture entity names and topics
+            "title.pinyin": 0.5,  # Pinyin fallback for romanized input
+        }
+
+        boosted_match_fields, boosted_date_fields = construct_boosted_fields(
+            match_fields=title_tags_match_fields,
+            boost=True,
+            boosted_fields=title_tags_boosted_fields,
+        )
+        _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+            query=query,
+            suggest_info=suggest_info,
+            boosted_match_fields=boosted_match_fields,
+            boosted_date_fields=boosted_date_fields,
+            match_type=SEARCH_MATCH_TYPE,
+            extra_filters=extra_filters,
+        )
+
+        search_body = {
+            "query": query_dsl_dict,
+            "_source": source_fields,
+            "track_total_hits": True,
+            "size": limit,
+            "terminate_after": min(TERMINATE_AFTER, 500000),
+        }
+        search_body = set_timeout(search_body, timeout=timeout)
+
+        es_res_dict = searcher.submit_to_es(search_body, context="recall_title_tags")
+
+        query_info = searcher.query_rewriter.get_query_info(query)
+        parse_res = searcher.hit_parser.parse(
+            query_info,
+            match_fields=title_tags_match_fields,
+            res_dict=es_res_dict,
+            request_type="search",
+            drop_no_highlights=False,
+            add_region_info=False,
+            add_highlights_info=False,
+            match_type=SEARCH_MATCH_TYPE,
+            limit=limit,
+            verbose=False,
+        )
+
+        # Tag all hits from this lane as title-matched
+        for hit in parse_res.get("hits", []):
+            hit["_title_matched"] = True
+
+        return parse_res
 
     def _search_with_sort(
         self,
@@ -289,7 +426,7 @@ class MultiLaneWordRecall:
             source_fields: Fields to retrieve. Defaults to minimal fields.
             extra_filters: Additional filter clauses.
             suggest_info: Suggestion info for query rewriting.
-            lanes: Which lanes to run. Defaults to all four.
+            lanes: Which lanes to run. Defaults to all five.
             timeout: Timeout per lane in seconds.
             verbose: Enable verbose logging.
 
@@ -300,6 +437,7 @@ class MultiLaneWordRecall:
             source_fields = [
                 "bvid",
                 "title",
+                "tags",
                 "desc",
                 "stat",
                 "pubdate",
@@ -347,12 +485,75 @@ class MultiLaneWordRecall:
 
         # Merge all lane results
         pool = RecallPool.merge(*results)
+
+        # Tag title matches for all hits in the merged pool
+        self._tag_title_matches(pool.hits, query)
+
         pool.took_ms = round((time.perf_counter() - start) * 1000, 2)
 
         if verbose:
+            title_matched = sum(1 for h in pool.hits if h.get("_title_matched"))
             logger.mesg(
                 f"  Multi-lane recall: {len(pool.hits)} unique candidates "
+                f"({title_matched} title-matched) "
                 f"from {len(results)} lanes ({pool.took_ms:.0f}ms)"
             )
 
         return pool
+
+    @staticmethod
+    def _tag_title_matches(hits: list[dict], query: str) -> None:
+        """Tag hits with _title_matched if query terms appear in title or tags.
+
+        This is a lightweight character-level check (not tokenization).
+        A hit is tagged if ALL significant query terms (length >= 2) appear
+        in the title OR tags. Single-character query terms are checked
+        individually.
+
+        Tags are included because they often contain entity names, movie
+        titles, and topic keywords that are as strong a signal as the title.
+
+        The _title_matched tag is used by the downstream ranker to apply
+        a relevance bonus via TITLE_MATCH_BONUS.
+
+        Args:
+            hits: List of hit dicts to tag (modified in-place).
+            query: Original query string.
+        """
+        if not query or not hits:
+            return
+
+        # Extract meaningful terms from query (skip single chars for multi-term queries)
+        # Simple approach: split by spaces and common delimiters
+        import re
+
+        terms = re.split(r"[\s\-_,，。、/\\|]+", query.strip())
+        terms = [t.lower() for t in terms if t]
+
+        if not terms:
+            return
+
+        # For very short queries (1-2 chars total), do simple substring match
+        query_clean = query.strip().lower()
+
+        for hit in hits:
+            # Skip if already tagged by title_match lane
+            if hit.get("_title_matched"):
+                continue
+
+            title = (hit.get("title") or "").lower()
+            tags = (hit.get("tags") or "").lower()
+            # Combine title and tags for matching
+            title_tags = title + " " + tags if tags else title
+
+            if not title_tags.strip():
+                continue
+
+            if len(query_clean) <= 2:
+                # Short query: simple substring match in title or tags
+                hit["_title_matched"] = query_clean in title_tags
+            else:
+                # Multi-term: check if query substring appears in title or tags
+                hit["_title_matched"] = query_clean in title_tags or all(
+                    t in title_tags for t in terms if len(t) >= 2
+                )

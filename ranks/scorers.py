@@ -11,17 +11,12 @@ Scorers:
 
 Functions:
     - transform_relevance_score: Power transform for vector similarity scores
-    - log_x: Logarithmic transform with offset
 """
 
 import math
 import time as _time
-from typing import Literal
 
 from ranks.constants import (
-    # Stats scoring
-    STAT_FIELDS,
-    STAT_LOGX_OFFSETS,
     # Recency scoring (from blux time factor)
     TIME_FACTOR_MIN,
     TIME_FACTOR_MAX,
@@ -35,23 +30,6 @@ from ranks.constants import (
     HIGH_RELEVANCE_THRESHOLD,
     HIGH_RELEVANCE_BOOST,
 )
-
-
-def log_x(x: int, base: float = 10.0, offset: int = 10) -> float:
-    """Logarithmic transform with offset for robust handling of small values.
-
-    Formula: log_base(x + offset)
-
-    Args:
-        x: Input value (will be clamped to non-negative).
-        base: Logarithm base (default 10).
-        offset: Added to x before log (default 10, prevents log(0)).
-
-    Returns:
-        Transformed value.
-    """
-    x = max(x, 0)
-    return math.log(x + offset, base)
 
 
 def transform_relevance_score(
@@ -119,8 +97,6 @@ class StatsScorer:
     Supports two scoring modes:
     1. "doc_score" (default): Uses blux.doc_score.DocScorer for saturated,
        anomaly-aware scoring. Returns bounded values ∈ [0, 1).
-    2. "prod_logx" (legacy): Product of log-transformed stats. Returns
-       unbounded values ~100-1000+.
 
     The doc_score mode is preferred because:
     - Saturated per-field scoring prevents any single stat from dominating
@@ -132,24 +108,10 @@ class StatsScorer:
         >>> scorer = StatsScorer()
         >>> scorer.calc({"view": 100000, "coin": 1000, "favorite": 500})
         ~0.65  # bounded [0, 1)
-        >>> scorer.calc_prod_logx({"view": 100000, "coin": 1000, "favorite": 500})
-        ~150.0  # unbounded (legacy)
     """
 
-    def __init__(
-        self,
-        stat_fields: list = STAT_FIELDS,
-        stat_logx_offsets: dict = STAT_LOGX_OFFSETS,
-    ):
-        """Initialize stats scorer.
-
-        Args:
-            stat_fields: List of stat field names to include in scoring.
-            stat_logx_offsets: Dict mapping field name to log offset.
-        """
-        self.stat_fields = stat_fields
-        self.stat_logx_offsets = stat_logx_offsets
-        # Initialize DocScorer for doc_score mode
+    def __init__(self):
+        """Initialize stats scorer with lazy-loaded DocScorer."""
         self._doc_scorer = None
 
     @property
@@ -181,27 +143,6 @@ class StatsScorer:
         stat_score = scorer._calc_stat_score(stats)
         anomaly_factor = scorer._calc_anomaly_factor(stats)
         return stat_score * anomaly_factor
-
-    def calc_stats_score_by_prod_logx(self, stats: dict) -> float:
-        """Calculate score as product of log-transformed stats (legacy method).
-
-        Args:
-            stats: Dict of stat values (view, coin, favorite, etc.).
-
-        Returns:
-            Product of log(x+offset) for all configured fields.
-        """
-        return math.prod(
-            log_x(
-                x=stats.get(field, 0),
-                base=10,
-                offset=self.stat_logx_offsets.get(field, 2),
-            )
-            for field in self.stat_fields
-        )
-
-    # Keep legacy alias
-    calc_prod_logx = calc_stats_score_by_prod_logx
 
     def calc(self, stats: dict, hit: dict = None) -> float:
         """Calculate stats score.

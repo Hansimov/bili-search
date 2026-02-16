@@ -2,29 +2,40 @@
 Diversified Slot-Based Ranker
 
 Instead of fusing all signals into one continuous score (which causes
-homogeneous top-N results), this ranker uses a two-phase approach:
+homogeneous top-N results), this ranker uses a three-phase approach:
 
 Phase 1 — Headline selection (top 3):
-    The most visible positions use a composite "headline quality" score
-    that balances relevance with quality and recency. This ensures the
-    top-3 results are both highly relevant AND high quality, not just
-    the highest BM25 score (which may be a low-quality short-text doc).
+    Composite "headline quality" score balancing relevance, quality, and
+    recency (weights from HEADLINE_WEIGHTS, relevance dominates at 0.55).
+    Minimum relevance threshold (HEADLINE_MIN_RELEVANCE) prevents
+    low-relevance docs from occupying headline positions.
 
-Phase 2 — Diversified slot allocation (positions 4-10):
-    Allocates "slots" to different dimensions, ensuring that the
-    remaining top-K positions contain representatives from each dimension:
-    relevant, popular, recent, and high-quality.
+Phase 2 — Relevance-gated diversified slot allocation (positions 4-10):
+    Allocates slots to dimensions (relevance, quality, recency, popularity)
+    with a critical improvement: **relevance gating**. Each dimension score
+    is multiplied by a relevance factor derived from SLOT_RELEVANCE_DECAY_*
+    constants. This means a doc can only score high in a dimension slot if
+    it is ALSO relevant to the query. An irrelevant viral video cannot
+    take a "popularity" slot.
+
+    Graduated threshold relaxation:
+    - First: only docs with relevance >= SLOT_MIN_RELEVANCE
+    - If too few: relax to relevance >= SLOT_MIN_RELEVANCE * 0.5
+    - If still too few: allow all
 
 Phase 3 — Fused scoring (beyond top-10):
-    Remaining positions are filled using a weighted combination of all
-    dimension scores.
+    Remaining positions filled by weighted combination of all dimension
+    scores, with relevance dominating (0.50 weight).
 
-Scoring improvements over naive max-normalization:
-- Popularity uses log-scale normalization because view counts follow
-  a power-law distribution. Without log-scale, a 100M-view video
-  crushes all 50K-view videos to near-zero popularity scores.
+Title-match bonus:
+    Docs tagged with `_title_matched` (from recall title_match lane) receive
+    TITLE_MATCH_BONUS added to their relevance_score during dimension scoring.
+    This ensures docs whose titles match the query are strongly preferred.
+
+Scoring notes:
+- Popularity uses log-scale normalization (power-law distribution).
 - Short-duration videos (<30s) get a quality penalty to avoid clickbait.
-- Fused weights are configurable via DIVERSIFIED_FUSED_WEIGHTS.
+- Slot presets: balanced (5 slots), relevance (4), quality (5).
 """
 
 import math
@@ -41,36 +52,43 @@ from ranks.constants import (
     DIVERSIFIED_FUSED_WEIGHTS,
     HEADLINE_TOP_N,
     HEADLINE_WEIGHTS,
+    HEADLINE_MIN_RELEVANCE,
+    SLOT_MIN_RELEVANCE,
     RANK_SHORT_DURATION_THRESHOLD,
     RANK_SHORT_DURATION_PENALTY,
+    TITLE_MATCH_BONUS,
+    SLOT_RELEVANCE_DECAY_THRESHOLD,
+    SLOT_RELEVANCE_DECAY_POWER,
 )
 
 # Slot allocation presets
-# NOTE: These now specify slots for positions AFTER the headline top-N.
+# NOTE: These specify slots for positions AFTER the headline top-N.
 # E.g., if HEADLINE_TOP_N=3, "balanced" allocates 7 more slots (3+7=10).
+# Reduced from previous totals to leave room for fused scoring:
+# 2R+1Q+1T+1P = 5 dimension slots + 2 fused = 7 total (+ 3 headline = 10)
 SLOT_PRESETS = {
     "balanced": {
         "relevance": 2,
-        "quality": 2,
-        "recency": 2,
+        "quality": 1,
+        "recency": 1,
         "popularity": 1,
     },
     "prefer_relevance": {
         "relevance": 3,
-        "quality": 2,
+        "quality": 1,
         "recency": 1,
         "popularity": 1,
     },
     "prefer_quality": {
         "relevance": 1,
-        "quality": 3,
+        "quality": 2,
         "recency": 1,
-        "popularity": 2,
+        "popularity": 1,
     },
     "prefer_recency": {
         "relevance": 1,
         "quality": 1,
-        "recency": 4,
+        "recency": 3,
         "popularity": 1,
     },
 }
@@ -85,36 +103,44 @@ DIMENSION_SCORE_FIELDS = {
 
 
 class DiversifiedRanker:
-    """Two-phase diversified ranking for comprehensive top-K results.
+    """Three-phase diversified ranking for comprehensive top-K results.
 
     Phase 1 — Headline quality (top 3):
         Picks the best candidates using a composite score that balances
-        relevance with quality and recency. This ensures the most visible
+        relevance with quality and recency. All candidates must pass a
+        minimum relevance threshold. This ensures the most visible
         positions are occupied by results that are both relevant AND
         high quality, not just the highest BM25 score.
 
     Phase 2 — Slot allocation (positions 4-10):
         Ensures remaining top positions contain representatives from
         each dimension: relevant, popular, recent, high-quality.
+        All candidates must pass SLOT_MIN_RELEVANCE threshold.
 
     Phase 3 — Fused scoring (beyond top 10):
-        Uses weighted combination of all dimension scores.
+        Uses weighted combination of all dimension scores, with
+        relevance having the largest weight (0.40).
 
-    The key insight: pure relevance ranking often puts short-text,
-    low-quality docs at the top because BM25 inflates their scores.
-    Headline quality scoring fixes this by requiring quality AND
-    relevance together for the most prominent positions.
+    The key insights:
+    1. Pure relevance ranking often puts short-text, low-quality docs
+       at the top because BM25 inflates their scores. Headline quality
+       scoring fixes this.
+    2. Without a relevance floor, viral but irrelevant videos could
+       occupy "popularity" slots despite having no query relevance.
+       SLOT_MIN_RELEVANCE prevents this.
 
     Example:
         >>> ranker = DiversifiedRanker()
-        >>> result = ranker.diversified_rank(
+        >>> result = ranker.diversified_rank_with_fused_fallback(
         ...     hits_info={"hits": candidates},
-        ...     top_k=10,
+        ...     top_k=400,
         ...     prefer="balanced",
         ... )
         >>> # Top 3: best headline quality (relevant + quality + recent)
-        >>> # Positions 4-10: diversified slots
+        >>> # Positions 4-10: diversified slots with relevance floor
         >>> # Beyond 10: fused scoring
+        >>> len(result["hits"])  # Exactly 400 (if pool >= 400)
+        400
     """
 
     def __init__(self):
@@ -125,22 +151,18 @@ class DiversifiedRanker:
         """Score each hit on all four dimensions + headline quality.
 
         Computes and stores dimension scores in each hit dict:
-        - relevance_score: Normalized BM25/hybrid/rerank score [0, 1]
+        - relevance_score: Normalized BM25/hybrid/rerank score [0, 1],
+          with title-match bonus applied
         - quality_score: Stat quality from DocScorer [0, 1), with content penalty
         - recency_score: Normalized time factor [0, 1]
         - popularity_score: Log-normalized view count [0, 1]
         - headline_score: Composite score for top-3 selection [0, 1]
 
-        Quality score adjustments:
-        - Short-duration videos (<30s) get a penalty because they are
-          often low-effort content that shouldn't occupy top positions.
-
-        Popularity uses log-scale normalization because view counts follow
-        a power-law distribution. Without log-scale, a single 100M-view
-        video crushes all other videos' popularity to near-zero:
-            log1p(100,000,000) / log1p(50,000) = 18.4 / 10.8 = 1.7x
-        vs linear:
-            100,000,000 / 50,000 = 2000x
+        Title-match bonus:
+        Docs tagged with _title_matched=True get TITLE_MATCH_BONUS added
+        to their normalized relevance score (capped at 1.0). This ensures
+        docs whose title matches the query are strongly preferred in all
+        ranking phases.
 
         Args:
             hits: List of hit dicts to score.
@@ -170,10 +192,14 @@ class DiversifiedRanker:
             max_log_view = 1.0
 
         for i, hit in enumerate(hits):
-            # Relevance: use best available score
-            hit["relevance_score"] = round(
-                min(raw_scores[i] / max_score, 1.0) if max_score > 0 else 0.0, 4
-            )
+            # Relevance: use best available score, normalized to [0, 1]
+            rel_norm = min(raw_scores[i] / max_score, 1.0) if max_score > 0 else 0.0
+
+            # Apply title-match bonus: docs with query in title get a boost
+            if hit.get("_title_matched"):
+                rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
+
+            hit["relevance_score"] = round(rel_norm, 4)
 
             # Quality: bounded [0, 1) from DocScorer
             stats = dict_get(hit, "stat", {})
@@ -196,8 +222,6 @@ class DiversifiedRanker:
             hit["popularity_score"] = round(log_views[i] / max_log_view, 4)
 
             # Headline quality: composite score for top-3 selection
-            # This balances relevance with quality/recency to ensure top
-            # positions are both relevant AND high quality
             w = HEADLINE_WEIGHTS
             hit["headline_score"] = round(
                 w["relevance"] * hit["relevance_score"]
@@ -211,7 +235,7 @@ class DiversifiedRanker:
         self,
         hits: list[dict],
         top_n: int = HEADLINE_TOP_N,
-        min_relevance: float = 0.3,
+        min_relevance: float = HEADLINE_MIN_RELEVANCE,
     ) -> tuple[list[dict], set[str]]:
         """Select top-N headline positions using composite quality score.
 
@@ -222,8 +246,11 @@ class DiversifiedRanker:
         - High quality (good stats, reasonable duration)
         - Reasonably recent
 
-        This ensures the first impression is strong: relevant, trustworthy,
-        and timely content.
+        The selection process:
+        1. Filter candidates by minimum relevance threshold
+        2. Sort by headline_score (composite of relevance + quality + recency)
+        3. Among top candidates with similar headline scores, prefer
+           those with higher relevance to break ties
 
         Args:
             hits: Scored hits (must have scores from _score_all_dimensions).
@@ -237,10 +264,21 @@ class DiversifiedRanker:
         candidates = [h for h in hits if h.get("relevance_score", 0) >= min_relevance]
 
         if not candidates:
-            candidates = hits  # Fallback: use all if none pass threshold
+            # Fallback: relax threshold to half, then to all
+            candidates = [
+                h for h in hits if h.get("relevance_score", 0) >= min_relevance * 0.5
+            ]
+            if not candidates:
+                candidates = hits
 
-        # Sort by headline quality score
-        candidates.sort(key=lambda h: h.get("headline_score", 0), reverse=True)
+        # Sort by headline quality score, then by relevance as tiebreaker
+        candidates.sort(
+            key=lambda h: (
+                h.get("headline_score", 0),
+                h.get("relevance_score", 0),
+            ),
+            reverse=True,
+        )
 
         selected = []
         selected_bvids = set()
@@ -261,19 +299,27 @@ class DiversifiedRanker:
         hits: list[dict],
         slots: dict[str, int],
         top_k: int,
+        min_relevance: float = SLOT_MIN_RELEVANCE,
     ) -> list[dict]:
-        """Allocate slots from each dimension, then fill remaining.
+        """Allocate slots from each dimension with relevance gating.
 
         Algorithm:
-        1. For each dimension, pick top-N items not already selected
-        2. Tag each selected item with its selection reason
-        3. Fill remaining top_k slots with best fused score
-        4. Assign rank_score for stable ordering
+        1. Filter candidates by minimum relevance threshold
+        2. For each dimension, compute relevance-gated dimension score:
+           gated_score = dimension_score * relevance_factor
+           This prevents irrelevant docs from occupying slots.
+        3. Pick top-N items per dimension not already selected
+        4. Fill remaining top_k slots with best fused score
+        5. Assign rank_score for stable ordering
+
+        The relevance gating ensures dimension slots are only filled by
+        docs that are BOTH high on that dimension AND reasonably relevant.
 
         Args:
-            hits: Scored hits (must have dimension scores from _score_all_dimensions).
+            hits: Scored hits (must have dimension scores).
             slots: Dict mapping dimension name to slot count.
             top_k: Total items to return.
+            min_relevance: Minimum relevance_score for slot candidates.
 
         Returns:
             Ordered list of top_k hits with rank_score assigned.
@@ -282,12 +328,39 @@ class DiversifiedRanker:
         result: list[dict] = []
         slot_order = 0
 
-        # Phase 1: Pick top items from each dimension
+        # Candidates must pass relevance floor for diversified slots
+        eligible = [h for h in hits if h.get("relevance_score", 0) >= min_relevance]
+        # If too few pass the floor, relax to half threshold
+        if len(eligible) < top_k:
+            eligible = [
+                h for h in hits if h.get("relevance_score", 0) >= min_relevance * 0.5
+            ]
+        # If still too few, allow all
+        if len(eligible) < top_k:
+            eligible = hits
+
+        # Phase 1: Pick top items from each dimension with relevance gating
         for dimension, count in slots.items():
             score_field = DIMENSION_SCORE_FIELDS.get(dimension, f"{dimension}_score")
-            # Sort by this dimension's score
+
+            # Compute relevance-gated dimension score
+            for h in eligible:
+                dim_score = h.get(score_field, 0)
+                rel_score = h.get("relevance_score", 0)
+
+                if rel_score >= SLOT_RELEVANCE_DECAY_THRESHOLD:
+                    relevance_factor = 1.0
+                elif rel_score > 0:
+                    ratio = rel_score / SLOT_RELEVANCE_DECAY_THRESHOLD
+                    relevance_factor = ratio**SLOT_RELEVANCE_DECAY_POWER
+                else:
+                    relevance_factor = 0.0
+
+                h[f"_gated_{dimension}"] = dim_score * relevance_factor
+
+            gated_field = f"_gated_{dimension}"
             sorted_hits = sorted(
-                hits, key=lambda h: h.get(score_field, 0), reverse=True
+                eligible, key=lambda h: h.get(gated_field, 0), reverse=True
             )
 
             added = 0
@@ -304,7 +377,6 @@ class DiversifiedRanker:
         # Phase 2: Fill remaining slots with best overall fused score
         remaining = max(0, top_k - len(result))
         if remaining > 0:
-            # Fused score: weighted combination of all dimensions
             w = DIVERSIFIED_FUSED_WEIGHTS
             for hit in hits:
                 if hit.get("bvid") not in selected_bvids:
@@ -331,12 +403,13 @@ class DiversifiedRanker:
                     slot_order += 1
 
         # Phase 3: Assign rank_score for stable ordering
-        # Within slot top-K: use slot order (preserves dimension diversity)
-        # Beyond slot top-K: use fused score
         for i, hit in enumerate(result):
-            # Higher rank_score = higher position
-            # slot_order 0 -> highest, slot_order N -> lowest in top section
             hit["rank_score"] = round(1.0 - (i / max(len(result), 1)), 6)
+
+        # Clean up temporary gated score fields
+        for h in eligible:
+            for dimension in slots:
+                h.pop(f"_gated_{dimension}", None)
 
         return result
 
@@ -406,20 +479,24 @@ class DiversifiedRanker:
 
         Phase 1 — Headline quality (top 3):
             Picks the best candidates using composite headline_score that
-            balances relevance + quality + recency. This ensures the most
-            visible positions are occupied by both relevant AND
-            high-quality results.
+            balances relevance + quality + recency. All candidates must
+            pass a minimum relevance threshold.
 
         Phase 2 — Diversified slot allocation (positions 4-10):
             Fills remaining diversified positions with dimension representatives
-            (relevance, quality, recency, popularity).
+            (relevance, quality, recency, popularity). All candidates must
+            pass SLOT_MIN_RELEVANCE threshold to prevent irrelevant docs.
 
         Phase 3 — Fused scoring (beyond top 10):
-            Remaining positions use continuous fused scoring.
+            Remaining positions use continuous fused scoring with relevance
+            dominating the weight distribution.
+
+        IMPORTANT: This method guarantees returning exactly min(top_k, len(hits))
+        documents. If the pool has >= top_k docs, exactly top_k are returned.
 
         Args:
             hits_info: Dict with "hits" list.
-            top_k: Total results to return.
+            top_k: Total results to return (guaranteed if pool is large enough).
             prefer: Preference mode.
             diversify_top_n: Total items for diversification (phases 1+2).
             headline_top_n: How many items to pick by headline quality.
@@ -448,25 +525,24 @@ class DiversifiedRanker:
 
         remaining_for_slots = max(0, diversify_top_n - len(headline_hits))
         slot_hits = []
-        slot_bvids = set(headline_bvids)  # Exclude already-selected headlines
+        all_selected_bvids = set(headline_bvids)
 
         if remaining_for_slots > 0:
             slot_hits = self._allocate_slots(
-                [h for h in hits if h.get("bvid") not in slot_bvids],
+                [h for h in hits if h.get("bvid") not in all_selected_bvids],
                 slots,
                 remaining_for_slots,
             )
             for hit in slot_hits:
                 bvid = hit.get("bvid")
                 if bvid:
-                    slot_bvids.add(bvid)
+                    all_selected_bvids.add(bvid)
 
         top_hits = headline_hits + slot_hits
-        top_bvids = slot_bvids
 
         # Phase 3: Fused score ranking for the rest
         w = DIVERSIFIED_FUSED_WEIGHTS
-        remaining_hits = [h for h in hits if h.get("bvid") not in top_bvids]
+        remaining_hits = [h for h in hits if h.get("bvid") not in all_selected_bvids]
         for hit in remaining_hits:
             hit["rank_score"] = round(
                 hit.get("relevance_score", 0) * w["relevance"]
@@ -479,8 +555,11 @@ class DiversifiedRanker:
 
         remaining_hits.sort(key=lambda h: h.get("rank_score", 0), reverse=True)
 
-        # Combine all phases
-        final_hits = top_hits + remaining_hits[: max(0, top_k - len(top_hits))]
+        # Combine: top-N diversified + rest by fused score
+        # Guarantee exactly min(top_k, total_pool) results
+        target_count = min(top_k, len(hits))
+        fused_quota = max(0, target_count - len(top_hits))
+        final_hits = top_hits + remaining_hits[:fused_quota]
 
         # Assign rank_score for stable ordering in top section
         for i, hit in enumerate(final_hits):

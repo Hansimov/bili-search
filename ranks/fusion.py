@@ -55,17 +55,6 @@ class ScoreFuser:
         0.77  # 0.5*0.8 + 0.3*0.9 + 0.2*0.5
     """
 
-    # Base score offset for legacy product formula
-    STATS_BASE = 0.1
-
-    def __init__(self, relate_power: float = 3.0):
-        """Initialize score fuser.
-
-        Args:
-            relate_power: Exponent for relate_score in product formula (legacy).
-        """
-        self.relate_power = relate_power
-
     def fuse_with_preference(
         self,
         quality: float,
@@ -151,27 +140,6 @@ class ScoreFuser:
 
         return min(max(blended, 0.0), 1.0)
 
-    # ---- Legacy methods (deprecated, kept for backward compatibility) ----
-
-    def calc_fuse_score_by_prod(
-        self, stats_score: float, pubdate_score: float, relate_score: float
-    ) -> float:
-        """Deprecated: Product formula. Use fuse_with_preference() instead."""
-        stats_with_base = self.STATS_BASE + stats_score
-        relate_emphasis = relate_score**self.relate_power
-        return round(stats_with_base * pubdate_score * relate_emphasis, 6)
-
-    def fuse(
-        self,
-        stats_score: float = 0.0,
-        pubdate_score: float = 0.0,
-        relate_score: float = 0.0,
-        method: str = "product",
-        **kwargs,
-    ) -> float:
-        """Deprecated: Use fuse_with_preference() instead."""
-        return self.calc_fuse_score_by_prod(
-            stats_score=stats_score,
-            pubdate_score=pubdate_score,
-            relate_score=relate_score,
-        )
+    # ---- Removed legacy methods ----
+    # calc_fuse_score_by_prod() and fuse() have been removed.
+    # Use fuse_with_preference() for all score fusion needs.
