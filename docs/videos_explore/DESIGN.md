@@ -417,6 +417,35 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 
 合并后自动调用 `pool.filter_noise()` 移除噪声文档（见 [4.4 召回噪声过滤](#44-召回噪声过滤-noise-filtering)）。
 
+#### 多轮召回 (Multi-Round Recall)
+
+RecallManager 实现三轮渐进式召回，逐步完善候选集：
+
+| 轮次 | 名称 | 触发条件 | 说明 |
+|------|------|----------|------|
+| Round 1 | 标准召回 | 始终执行 | 多车道词语/向量/混合召回 + 噪声过滤 |
+| Round 2 | 补充召回 | `len(pool) < target_count` | 更大搜索范围填充缺口 |
+| Round 3 | UP主定向召回 | 检测到 UP主 意图 | 从检测到的 UP主 补充内容 |
+
+**Round 3 — UP主 意图检测 (`_detect_owner_intent`)**：
+
+分析 Round 1 结果中的 `owner.name` 字段，使用三重策略判断查询是否包含 UP主 意图：
+
+1. **Token-set 匹配**：查询所有 token 出现在 UP主 名称 token 中（如 `红警08` → `红警HBK08`）
+2. **CJK 子串匹配**：纯中文查询出现在 UP主 名称中（如 `米娜` → `大聪明罗米娜`）
+3. **通用子串匹配**：所有查询 token 出现在 UP主 名称中
+
+**UP主 集中度分析**：区分"UP主查询"和"话题查询"：
+- **查询-名称长度比**：`len(query) / len(owner_name)` < 0.40 且匹配 UP主 ≥ 2 → 抑制（如 `米娜` / `大聪明罗米娜` = 0.33）
+- **分散度检查**：匹配 UP主 ≥ 6 且无主导 UP主 → 抑制
+- **主导性检查**：最多 doc 的 UP主 < 5 个 doc 且匹配 UP主 > 2 → 抑制
+
+UP主 定向召回使用 `owner.name.keyword` 精确匹配从 ES 过滤查询该 UP主 的 top-50 文档（按 `stat_score` 降序），确保被检测到的创作者有足够的候选文档参与排序。
+
+**Owner 匹配标记 (`_tag_owner_matches`)**：
+
+在词语召回阶段，使用与意图检测相同的三重策略为每条文档标记 `_owner_matched=True`，此标记在排序阶段用于条件性 UP主 匹配加成。
+
 ### 4.4 召回噪声过滤 (Noise Filtering)
 
 **问题**：召回阶段会引入大量噪声文档：
@@ -544,8 +573,35 @@ rrf_score = Σ weight[i] / (k + rank[i])
 #### 标题匹配信号 (Title-Match Bonus)
 
 召回阶段的 `title_match` 车道为标题或标签包含查询关键词的文档添加 `_title_matched=True` 标记。
-在排序阶段，带此标记的文档获得 `TITLE_MATCH_BONUS=0.15` 的额外相关性加分（加到归一化后的 relevance_score 上，上限 1.0）。
+在排序阶段，带此标记的文档获得 `TITLE_MATCH_BONUS=0.20` 的额外相关性加分（加到归一化后的 relevance_score 上，上限 1.0）。
 这确保标题匹配查询的文档在所有排序阶段都被强烈偏好，有效解决 `通义实验室`、`飓风营救`、`红警08` 等实体查询中 top 6-10 被不相关文档占据的问题。
+
+#### UP主匹配信号 (Owner-Match Bonus)
+
+召回阶段为 `owner.name` 包含查询关键词的文档添加 `_owner_matched=True` 标记。在排序阶段，**仅当标题也包含查询关键词时**才应用 `OWNER_MATCH_BONUS=0.30` 的加成。此条件防止 UP主 名称匹配但内容无关的文档被提升（如 UP主 `吴恩达大模型课程` 上传的《喜羊羊》动画）。
+
+#### 内容深度惩罚 (Content Depth Penalty)
+
+BM25 对超短标题过度加分：标题 `gta` 对查询 `gta` 会获得最高分，但实际上这类文档提供零额外信息。内容深度惩罚根据标题去除查询关键词后的**剩余有意义字符数**来调整 relevance_score：
+
+```
+remaining_chars = len(title - query_keywords)
+depth_factor = max(0.30, remaining_chars / 20)
+relevance_score *= depth_factor
+```
+
+#### 标题关键词重叠检查 (Title-Keyword Overlap)
+
+针对纯中文复合查询（如 `小红书推荐系统`），使用**最长连续 CJK 子串匹配**判断标题与查询的内容重叠度。如果查询的 CJK 部分 ≥ 4 字符，检查标题中最长连续匹配子串是否覆盖查询的 50% 以上：
+
+- `小红书推荐系统` in `小红书推荐用户冷启动实践` → 匹配 `小红书推荐` (5/6=83%) ✓
+- `小红书推荐系统` in `台湾省小红书反向广告` → 匹配 `小红书` (3/6=50%) ✗
+
+未通过此检查的文档受到 `RANK_NO_TITLE_KEYWORD_PENALTY=0.50` 的 relevance 惩罚。
+
+#### 伪相关反馈 — 标签亲和度 (Tag Affinity)
+
+Phase 3 融合评分阶段引入基于伪相关反馈的标签亲和度加分。从 relevance_score 最高的 top-20 文档中提取高频标签（出现 ≥ 3 次），为 Phase 3 中与这些标签重叠的文档添加小幅加分（上限 0.10），促进主题一致性。
 
 #### 三阶段排序算法
 
@@ -553,14 +609,21 @@ rrf_score = Σ weight[i] / (k + rank[i])
 Phase 1 — 头部质量选择 (Top-3)
   ┌──────────────────────────────────────────┐
   │ 计算 headline_score (复合分数):          │
-  │   = 0.55×relevance + 0.20×quality       │
-  │     + 0.15×recency  + 0.10×popularity   │
+  │   = 0.50×relevance + 0.30×quality       │
+  │     + 0.10×recency  + 0.10×popularity   │
   │                                          │
-  │ 从 relevance_score ≥ 0.35 的候选中      │
-  │ 选取 headline_score 最高的 3 个          │
+  │ 前置处理：                               │
+  │   - 内容深度惩罚 (短标题 BM25 修正)     │
+  │   - 标题关键词覆盖检查 (CJK 连续匹配)  │
+  │   - 条件化 OM 加成 (需标题有关键词)     │
+  │                                          │
+  │ 从 relevance ≥ HEADLINE_MIN_RELEVANCE   │
+  │ 且时长 ≥ RANK_HEADLINE_MIN_DURATION 的  │
+  │ 候选中选取 headline_score 最高的 3 个    │
   │ (同分时以 relevance_score 做 tiebreak)   │
   │                                          │
-  │ _title_matched 文档额外 +0.15 relevance  │
+  │ _title_matched 文档额外 +0.20 relevance  │
+  │ _owner_matched 文档额外 +0.30 (需标题覆盖)│
   └──────────────────────────────────────────┘
                  │
                  ▼
@@ -594,17 +657,21 @@ Phase 3 — 融合评分 (位置 11+)
   │   FUSED_WEIGHTS = {rel:0.50, qual:0.20, │
   │                    rec:0.15, pop:0.15}  │
   │                                          │
+  │ + 标签亲和度加分 (tag_bonus, max 0.10)  │
+  │   从 top-20 高频标签中获取权重,          │
+  │   tag_bonus = sum(affinity) × 0.05      │
+  │                                          │
   │ 保证总返回 min(top_k, pool_size) 条:    │
   │   fused_quota = target - headline - slot │
   └──────────────────────────────────────────┘
 ```
 
 每条文档的 5 维分数:
-- **relevance_score**: ES BM25 分数归一化 + 标题/标签匹配加成 (TITLE_MATCH_BONUS=0.15)
-- **quality_score**: stat_score (DocScorer 计算的质量分)，短时长视频 (<30s) 额外惩罚 ×0.8
+- **relevance_score**: ES BM25 分数归一化 → 内容深度惩罚 → 标题关键词覆盖惩罚 → TM/OM 加成
+- **quality_score**: stat_score (DocScorer 计算)，时长 < 30s 的视频额外惩罚 ×0.8
 - **recency_score**: pubdate 线性衰减
 - **popularity_score**: log1p(stat.view) 对数归一化
-- **headline_score**: 复合分数，兼顾相关性 + 质量 + 时效 + 热度
+- **headline_score**: 0.50×rel + 0.30×qual + 0.10×rec + 0.10×pop (时长 ≥ 30s 限定)
 
 **Popularity 对数归一化**：播放量呈幂律分布（如 100M vs 50K），线性归一化会导致一个超高播放视频压制所有其他文档。使用 `log1p(view) / max_log_view` 将比率从 2000:1 压缩到约 1.7:1，使不同量级的播放量都能公平参与评分。
 
@@ -616,9 +683,9 @@ Phase 3 — 融合评分 (位置 11+)
 
 | 维度 | 权重 | 说明 |
 |------|------|------|
-| relevance | 0.55 | 搜索匹配度是主导因素（含标题匹配加成） |
-| quality | 0.20 | 质量是用户满意度关键 |
-| recency | 0.15 | 时效性作为加分项 |
+| relevance | 0.50 | 搜索匹配度主导（含深度惩罚、TM/OM 加成） |
+| quality | 0.30 | 质量是用户满意度关键 |
+| recency | 0.10 | 时效性作为加分项 |
 | popularity | 0.10 | 热度作为辅助参考 |
 
 #### Phase 2: 槽位预设 (Slot Presets)
@@ -636,10 +703,14 @@ Phase 3 — 融合评分 (位置 11+)
 
 | 特性 | stats (旧默认) | 旧 diversified | 新三阶段 diversified |
 |------|---------------|---------------|---------------------|
-| Top 3 质量 | 低 (仅看分数) | 中 (纯相关性) | **高 (复合质量分 + 标题匹配加成)** |
+| Top 3 质量 | 低 (仅看分数) | 中 (纯相关性) | **高 (复合质量分 + TM/OM 加成)** |
 | Top 10 多样性 | 低 (都是均衡型) | **高** | **高 (相关性门控各维度代表)** |
 | 不相关热门文档 | 可能进入 top-10 | 可能进入 top-10 | **被相关性门控阻止** |
-| 标题匹配文档 | 无特殊处理 | 无特殊处理 | **+0.15 relevance 加成** |
+| 标题匹配文档 | 无特殊处理 | 无特殊处理 | **+0.20 relevance 加成** |
+| UP主匹配文档 | 无特殊处理 | 无特殊处理 | **+0.30 (需标题有关键词)** |
+| 短标题 BM25 膨胀 | 无处理 | 无处理 | **内容深度惩罚** |
+| CJK 复合查询 | 无处理 | 无处理 | **最长连续子串匹配检查** |
+| 主题一致性 | 无处理 | 无处理 | **标签亲和度 (Phase 3)** |
 | 超高播放量文档 | 可能被稀释 | **保证出现** | **保证出现 (如果相关)** |
 | 最新发布文档 | 可能排名偏后 | **保证出现** | **保证出现 (如果相关)** |
 | 排序可控性 | 仅通过调权重 | 调槽位数 | **调头部权重 + 调槽位数 + 门控阈值** |

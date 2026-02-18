@@ -102,6 +102,22 @@ RANK_VERY_SHORT_DURATION_PENALTY = 0.3  # much harsher penalty for < 15s
 RANK_SHORT_TITLE_THRESHOLD = 25  # characters — titles shorter than this are penalized
 RANK_SHORT_TITLE_PENALTY = 0.4  # multiply quality_score by this for short titles
 
+# Content depth penalty: penalizes relevance_score when the title adds
+# almost no information beyond the query keywords. e.g., query='gta' and
+# title='gta' → the title IS the query, providing zero additional context.
+# This is a RELEVANCE penalty (not just quality) since BM25 falsely inflates
+# scores for very short docs that are essentially keyword matches.
+# The penalty is: relevance *= max(RANK_CONTENT_DEPTH_MIN_FACTOR,
+#   (title_chars_beyond_query) / RANK_CONTENT_DEPTH_NORM_LENGTH)
+RANK_CONTENT_DEPTH_MIN_FACTOR = 0.30  # minimum factor (prevents zeroing out)
+RANK_CONTENT_DEPTH_NORM_LENGTH = 20  # chars beyond query for full relevance
+
+# Very short duration disqualifies from headline/slot positions entirely.
+# Videos under this threshold should NEVER occupy headline (top-3) slots
+# unless nothing else is available.
+RANK_HEADLINE_MIN_DURATION = 30  # seconds — minimum for headline positions
+RANK_SLOT_MIN_DURATION = 15  # seconds — minimum for slot (top-10) positions
+
 # Low engagement penalty in ranking: docs with low views are likely
 # low-quality even if BM25 scores them high.
 RANK_LOW_ENGAGEMENT_THRESHOLD = 500  # views
@@ -119,7 +135,24 @@ TITLE_MATCH_BONUS = 0.20  # Added to normalized relevance when title matches que
 # Owner match bonus: when query partially matches an owner/UP主 name,
 # docs from that owner get a relevance bonus. This helps entity queries
 # like '红警08' (owner '红警HBK08') surface the creator's content.
+# ONLY applied when the doc's title also contains query keywords
+# (prevents boosting irrelevant uploads from matching owners).
 OWNER_MATCH_BONUS = 0.30  # Added to normalized relevance for owner-matched docs
+
+# Title-keyword overlap: when no query keyword appears in the title,
+# the BM25 score comes entirely from non-title fields (owner.name, desc, tags).
+# This suggests the doc's actual content is NOT about the query,
+# so we penalize relevance. Example: query "吴恩达大模型", owner "吴恩达大模型课程"
+# but title "《喜羊羊与灰太狼》" — BM25 is boosted by owner.name match, not content.
+RANK_NO_TITLE_KEYWORD_PENALTY = 0.50  # multiply relevance when 0 query tokens in title
+
+# Owner concentration thresholds: used to distinguish "owner queries"
+# (where the user wants a specific creator) from "topic queries" (where
+# the query happens to match many owner names).
+# An owner is "dominant" when their doc count exceeds these thresholds.
+OWNER_DOMINANT_MIN_DOCS = 5  # Minimum docs from one owner to consider dominant
+OWNER_DOMINANT_RATIO = 0.15  # Docs from owner must be >= 15% of matched-owner pool
+OWNER_DISPERSE_MAX_OWNERS = 6  # If >= this many owners match, it's a topic query
 
 # =============================================================================
 # Relevance Decay for Slot Candidates

@@ -456,6 +456,9 @@ for author in authors:
 # 运行全部测试
 python -m elastics.tests.test_videos
 
+# 优化测试（6 个代表性查询的 recall + rank 质量评估）
+python -m elastics.tests.test_optimization_v2
+
 # 诊断脚本
 python -m elastics.tests.diag_deep          # 向量质量诊断
 python -m elastics.tests.diag_float_vs_lsh  # Float vs LSH 对比
@@ -481,6 +484,7 @@ python -m elastics.tests.diag_knn           # KNN 召回诊断
 | KNN 召回 | `test_knn_num_candidates_recall` | num_candidates 对召回的影响 |
 | 查询模式 | `test_qmod_recall_comparison` | 各 qmod 模式召回重合度 |
 | 排序质量 | `test_stat_score_in_ranking` | stat_score 参与排序验证 |
+| 优化质量 | `test_optimization_v2` | 6 查询 recall+rank 综合评估 (tm/om/short) |
 
 ---
 
@@ -722,6 +726,38 @@ RERANK_TIMEOUT = 30                 # 精排超时
 RERANK_MAX_PASSAGE_LENGTH = 4096    # 最大段落长度
 ```
 
+### 多样化排序配置
+
+```python
+# 标题匹配 & UP主匹配加成
+TITLE_MATCH_BONUS = 0.20            # 标题匹配 relevance 加成
+OWNER_MATCH_BONUS = 0.30            # UP主匹配 relevance 加成（需标题有关键词）
+
+# 内容深度惩罚（抑制超短标题 BM25 膨胀）
+RANK_CONTENT_DEPTH_MIN_FACTOR = 0.30  # 深度因子下限
+RANK_CONTENT_DEPTH_NORM_LENGTH = 20   # 标准化长度（剩余字符数）
+
+# 时长过滤
+RANK_HEADLINE_MIN_DURATION = 30     # Phase 1 最低时长（秒）
+RANK_SLOT_MIN_DURATION = 15         # Phase 2 最低时长（秒）
+
+# 标题关键词惩罚
+RANK_NO_TITLE_KEYWORD_PENALTY = 0.50  # 标题无关键词时 relevance 乘数
+
+# 相关性门控阈值
+HEADLINE_MIN_RELEVANCE = 0.50       # Phase 1 最低 relevance
+SLOT_MIN_RELEVANCE = 0.55           # Phase 2 最低 relevance
+```
+
+### UP主意图检测配置
+
+```python
+# 浓度分析
+OWNER_DOMINANT_MIN_DOCS = 5         # 单一 UP主 最少文档数
+OWNER_DOMINANT_RATIO = 0.15         # 单一 UP主 最低占比
+OWNER_DISPERSE_MAX_OWNERS = 6       # 分散判断：最大匹配 UP主 数
+```
+
 ---
 
 ## 附录 D: 排序策略配置
@@ -772,4 +808,20 @@ RRF_WEIGHTS = {
     "stat.favorite": 1.0,           # 收藏数
     "stat.coin": 1.0,               # 投币数
 }
+```
+
+### diversified — 多样化三阶段排序（默认）
+
+```python
+# Phase 1 权重 (headline_score)
+HEADLINE_WEIGHTS = {"relevance": 0.50, "quality": 0.30, "recency": 0.10, "popularity": 0.10}
+# Phase 2 槽位预设
+SLOT_PRESETS = {
+    "balanced":          {"relevance": 2, "quality": 1, "recency": 1, "popularity": 1},  # 默认
+    "prefer_relevance":  {"relevance": 3, "quality": 1, "recency": 1, "popularity": 1},
+    "prefer_quality":    {"relevance": 1, "quality": 2, "recency": 1, "popularity": 1},
+    "prefer_recency":    {"relevance": 1, "quality": 1, "recency": 3, "popularity": 1},
+}
+# Phase 3 权重 (fused_score)
+FUSED_WEIGHTS = {"relevance": 0.50, "quality": 0.20, "recency": 0.15, "popularity": 0.15}
 ```

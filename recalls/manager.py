@@ -371,24 +371,45 @@ class RecallManager:
     def _detect_owner_intent(query: str, hits: list[dict]) -> list[str]:
         """Detect if query partially matches any owner names in the pool.
 
-        Checks if all meaningful tokens in the query appear in an owner name.
-        For example, '红警08' matches owner '红警HBK08' because both '红警'
-        and '08' appear in the owner name tokens.
+        Uses multiple matching strategies:
+        1. Token-set matching: ALL query tokens appear in owner name tokens
+        2. CJK substring matching: query appears as substring in owner name
+        3. General substring matching: all query tokens appear in owner name
+
+        Then applies **owner concentration analysis** to distinguish:
+        - Owner queries (user wants a specific creator): e.g., '红警08' → '红警HBK08'
+          One dominant owner has many docs, suggesting clear owner intent.
+        - Topic queries (query matches many unrelated owners): e.g., '米娜'
+          Many owners match with no dominant one, suggesting topic intent.
+
+        For topic queries, owner-focused recall is suppressed to avoid
+        over-recalling from owners who happen to have the query in their name.
 
         Args:
             query: Search query.
             hits: Recall pool hits (must have 'owner' field).
 
         Returns:
-            List of matching owner names, sorted by frequency descending.
+            List of matching owner names for owner-focused recall.
+            Empty list if the query is identified as a topic query.
         """
         if not query or not hits:
             return []
 
+        from ranks.constants import (
+            OWNER_DOMINANT_MIN_DOCS,
+            OWNER_DOMINANT_RATIO,
+            OWNER_DISPERSE_MAX_OWNERS,
+        )
+
+        query_lower = query.lower().strip()
         # Tokenize query into meaningful chunks (CJK, alpha, numeric)
-        query_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", query.lower()))
+        query_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", query_lower))
         if not query_tokens or len(query_tokens) < 1:
             return []
+
+        # Check if query is purely CJK (for substring matching)
+        query_is_cjk = bool(re.fullmatch(r"[\u4e00-\u9fff]+", query_lower))
 
         # Count docs per owner
         owner_counts: dict[str, int] = {}
@@ -401,18 +422,69 @@ class RecallManager:
             if name:
                 owner_counts[name] = owner_counts.get(name, 0) + 1
 
-        # Find owners whose token set contains ALL query tokens
+        # Find matching owners using multi-strategy matching
         matches = []
         for name, count in owner_counts.items():
-            name_tokens = set(
-                re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", name.lower())
-            )
+            name_lower = name.lower()
+            name_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", name_lower))
+            matched = False
+            # Strategy 1: Token-set matching
             if query_tokens.issubset(name_tokens):
-                matches.append((name, count))
+                matched = True
+            # Strategy 2: CJK substring matching
+            elif query_is_cjk and query_lower in name_lower:
+                matched = True
+            # Strategy 3: General substring matching
+            elif all(t in name_lower for t in query_tokens):
+                matched = True
+
+            if matched:
+                # Calculate query-to-name length ratio: a low ratio indicates
+                # the query is a small substring of a long name (incidental
+                # match), not an intentional owner search.
+                q_len = len(query_lower)
+                n_len = len(name_lower) or 1
+                length_ratio = q_len / n_len
+                matches.append((name, count, length_ratio))
+
+        if not matches:
+            return []
+
+        # Owner concentration analysis: distinguish owner queries from topic queries
+        total_matched_docs = sum(count for _, count, _ in matches)
+        num_matching_owners = len(matches)
 
         # Sort by frequency descending
         matches.sort(key=lambda x: x[1], reverse=True)
-        return [name for name, count in matches]
+        top_owner_name, top_owner_count, top_length_ratio = matches[0]
+
+        # Check query-name length ratio: if the query is a small fraction
+        # of all matching owner names, it's likely a common word, not owner intent.
+        # E.g., "米娜"(2 chars) in "大聪明罗米娜"(6 chars) → ratio 0.33 → topic query
+        # E.g., "红警08"(4 chars) in "红警HBK08"(7 chars) → ratio 0.57 → owner query
+        avg_length_ratio = sum(r for _, _, r in matches) / num_matching_owners
+        if avg_length_ratio < 0.40 and num_matching_owners >= 2:
+            # Query is a small substring of owner names → suppress
+            return []
+
+        # Check if this is a "dispersed" topic query (many owners, no dominant one)
+        if num_matching_owners >= OWNER_DISPERSE_MAX_OWNERS:
+            # Many owners match → likely a common word/topic, not owner intent
+            # Only proceed if one owner is clearly dominant
+            if total_matched_docs > 0:
+                top_ratio = top_owner_count / total_matched_docs
+                if top_ratio < OWNER_DOMINANT_RATIO:
+                    # No dominant owner → suppress owner-focused recall
+                    return []
+
+        # Check if the dominant owner has enough docs to be meaningful
+        if top_owner_count < OWNER_DOMINANT_MIN_DOCS:
+            # Very few docs from top owner → weak signal
+            # Only return if there are very few matching owners (strong specificity)
+            if num_matching_owners > 2:
+                return []
+
+        return [name for name, count, _ in matches]
 
     def _owner_focused_recall(
         self,
@@ -454,39 +526,42 @@ class RecallManager:
         all_new_hits = []
 
         for owner_name in owner_names[:2]:  # Top 2 matching owners
-            # Build owner filter
-            owner_filter = {"match_phrase": {"owner.name": owner_name}}
+            # Build owner filter: use exact keyword match only.
+            # owner.name is not indexed for text search; only
+            # owner.name.keyword (exact match) is available.
+            owner_filter = {"term": {"owner.name.keyword": owner_name}}
             combined_filters = list(extra_filters) + [owner_filter]
 
             try:
-                # Search for this owner's content matching the query
-                res = searcher.search(
-                    query=query,
-                    source_fields=source_fields
-                    or [
-                        "bvid",
-                        "title",
-                        "tags",
-                        "desc",
-                        "owner",
-                        "stat",
-                        "pubdate",
-                        "duration",
-                        "stat_score",
-                    ],
-                    extra_filters=combined_filters,
-                    parse_hits=True,
-                    add_region_info=False,
-                    add_highlights_info=False,
-                    is_highlight=False,
-                    boost=False,
-                    rank_method="heads",
-                    limit=200,
-                    rank_top_k=200,
-                    timeout=timeout,
-                    verbose=False,
-                )
-                owner_hits = res.get("hits", [])
+                # Use raw ES filter query (no text match) sorted by stat_score.
+                # searcher.search() with query text often returns 0 when the
+                # owner's video titles don't contain the query tokens (e.g.,
+                # query "红警08" but 红警HBK08's titles say "红警基地在角落").
+                _fields = source_fields or [
+                    "bvid",
+                    "title",
+                    "tags",
+                    "desc",
+                    "owner",
+                    "stat",
+                    "pubdate",
+                    "duration",
+                    "stat_score",
+                ]
+                search_body = {
+                    "query": {"bool": {"filter": combined_filters}},
+                    "_source": _fields,
+                    "size": 50,
+                    "sort": [{"stat_score": {"order": "desc"}}],
+                    "track_total_hits": True,
+                }
+                raw_res = searcher.submit_to_es(search_body, context="owner_recall")
+                raw_hits = raw_res.get("hits", {}).get("hits", [])
+                owner_hits = []
+                for rh in raw_hits:
+                    src = rh.get("_source", {})
+                    src["score"] = rh.get("_score") or 0
+                    owner_hits.append(src)
 
                 # Tag and add only new docs
                 new_count = 0

@@ -682,6 +682,14 @@ class MultiLaneWordRecall:
         For example, '红警08' matches owner '红警HBK08' because both '红警'
         and '08' appear in the owner name.
 
+        Uses two matching strategies:
+        1. Token-set matching: all query tokens (CJK runs, alpha, numeric)
+           must appear in the owner name token set. Works for names with
+           mixed scripts like '红警HBK08'.
+        2. Substring matching: for pure CJK queries, also check if the query
+           appears as a substring in the owner name. This handles cases like
+           '米娜' matching '大聪明罗米娜' where CJK text has no word boundaries.
+
         Also stores the matched owner names in each hit for downstream use
         by the diversified ranker.
 
@@ -694,10 +702,14 @@ class MultiLaneWordRecall:
 
         import re
 
+        query_lower = query.lower().strip()
         # Tokenize query into meaningful chunks (CJK, alpha, numeric)
-        query_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", query.lower()))
+        query_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", query_lower))
         if not query_tokens:
             return
+
+        # Check if query is purely CJK (for substring matching)
+        query_is_cjk = bool(re.fullmatch(r"[\u4e00-\u9fff]+", query_lower))
 
         # Collect all unique owner names and their token sets
         owner_token_map: dict[str, set] = {}
@@ -712,16 +724,21 @@ class MultiLaneWordRecall:
                     re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", name.lower())
                 )
 
-        # Find owners whose token set contains ALL query tokens
+        # Find owners matching via token-set OR substring
         matching_owners = set()
         for name, name_tokens in owner_token_map.items():
+            name_lower = name.lower()
+            # Strategy 1: Token-set matching (all query tokens in name tokens)
             if query_tokens and query_tokens.issubset(name_tokens):
                 matching_owners.add(name)
+            # Strategy 2: CJK substring matching
+            elif query_is_cjk and query_lower in name_lower:
+                matching_owners.add(name)
+            # Strategy 3: Check each query token as substring in name
+            elif all(t in name_lower for t in query_tokens):
+                matching_owners.add(name)
 
-        if not matching_owners:
-            return
-
-        # Tag hits from matching owners
+        # Tag hits whose owner is in matching_owners
         for hit in hits:
             owner = hit.get("owner")
             if isinstance(owner, dict):

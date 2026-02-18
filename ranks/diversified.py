@@ -39,6 +39,7 @@ Scoring notes:
 """
 
 import math
+import re
 import time as _time
 from typing import Literal
 
@@ -60,10 +61,15 @@ from ranks.constants import (
     RANK_VERY_SHORT_DURATION_PENALTY,
     RANK_SHORT_TITLE_THRESHOLD,
     RANK_SHORT_TITLE_PENALTY,
+    RANK_CONTENT_DEPTH_MIN_FACTOR,
+    RANK_CONTENT_DEPTH_NORM_LENGTH,
+    RANK_HEADLINE_MIN_DURATION,
+    RANK_SLOT_MIN_DURATION,
     RANK_LOW_ENGAGEMENT_THRESHOLD,
     RANK_LOW_ENGAGEMENT_PENALTY,
     TITLE_MATCH_BONUS,
     OWNER_MATCH_BONUS,
+    RANK_NO_TITLE_KEYWORD_PENALTY,
     SLOT_RELEVANCE_DECAY_THRESHOLD,
     SLOT_RELEVANCE_DECAY_POWER,
     SLOT_QUALITY_TIEBREAKER,
@@ -155,17 +161,78 @@ class DiversifiedRanker:
         self.stats_scorer = StatsScorer()
         self.pubdate_scorer = PubdateScorer()
 
-    def _score_all_dimensions(self, hits: list[dict], now_ts: float = None) -> None:
+    @staticmethod
+    def _compute_tag_affinity(hits: list[dict], top_k: int = 20) -> dict[str, float]:
+        """Extract dominant tags from top-K docs for pseudo-relevance feedback.
+
+        Analyzes the tags of the highest-scoring docs to identify
+        "query-associated tags" — tags that frequently co-occur with
+        relevant content. Returns a tag→weight map used to boost docs
+        that share these tags in the fused scoring phase.
+
+        This implements a form of pseudo-relevance feedback:
+        - Round 1 produced the initial results
+        - We extract features (tags) from the best results
+        - We use those features to boost similar docs in ranking
+
+        Args:
+            hits: Scored hits (must have relevance_score set).
+            top_k: Number of top docs to analyze.
+
+        Returns:
+            Dict mapping tag→affinity_weight (higher = more associated).
+        """
+        # Sort by relevance_score, tiebreak by quality_score
+        sorted_hits = sorted(
+            hits,
+            key=lambda h: (
+                h.get("relevance_score", 0),
+                h.get("quality_score", 0),
+            ),
+            reverse=True,
+        )
+        top_docs = sorted_hits[:top_k]
+
+        # Count tag frequency in top docs
+        tag_freq: dict[str, int] = {}
+        for hit in top_docs:
+            tags_str = hit.get("tags", "") or ""
+            for tag in tags_str.split(","):
+                tag = tag.strip()
+                if tag and len(tag) >= 2:
+                    tag_freq[tag] = tag_freq.get(tag, 0) + 1
+
+        if not tag_freq:
+            return {}
+
+        # Only keep tags that appear in >= 3 top docs (signal, not noise)
+        min_freq = min(3, max(1, top_k // 5))
+        affinity_tags = {
+            tag: freq / top_k for tag, freq in tag_freq.items() if freq >= min_freq
+        }
+
+        return affinity_tags
+
+    def _score_all_dimensions(
+        self, hits: list[dict], now_ts: float = None, query: str = ""
+    ) -> None:
         """Score each hit on all four dimensions + headline quality.
 
         Computes and stores dimension scores in each hit dict:
         - relevance_score: Normalized BM25/hybrid/rerank score [0, 1],
-          with title-match and owner-match bonuses applied
+          with title-match and owner-match bonuses applied, and content
+          depth penalty for ultra-short titles
         - quality_score: Stat quality from DocScorer [0, 1), with content
           penalties for short titles, short duration, low engagement
         - recency_score: Normalized time factor [0, 1]
         - popularity_score: Log-normalized view count [0, 1]
         - headline_score: Composite score for top-3 selection [0, 1]
+
+        Content depth penalty (NEW):
+        Penalizes relevance_score when the title adds almost no information
+        beyond the query keywords. e.g., query='gta' and title='gta' → the
+        title IS the query. The penalty reduces relevance proportionally to
+        how much meaningful content exists beyond the query terms.
 
         Title-match bonus:
         Docs tagged with _title_matched=True get TITLE_MATCH_BONUS added
@@ -184,6 +251,7 @@ class DiversifiedRanker:
         Args:
             hits: List of hit dicts to score.
             now_ts: Current timestamp for recency calculation.
+            query: Original search query for content depth analysis.
         """
         if now_ts is None:
             now_ts = _time.time()
@@ -212,12 +280,66 @@ class DiversifiedRanker:
             # Relevance: use best available score, normalized to [0, 1]
             rel_norm = min(raw_scores[i] / max_score, 1.0) if max_score > 0 else 0.0
 
+            # Content depth penalty: BM25 inflates scores for ultra-short titles
+            # that are essentially just the query keywords. Penalize relevance
+            # proportionally to how much meaningful content the title adds
+            # beyond the query terms.
+            title = (hit.get("title") or "").strip()
+            query_lower = query.lower().strip()
+            title_lower = title.lower() if title else ""
+
+            # Check how many query tokens appear in the title.
+            # For CJK compound queries like "小红书推荐系统", use the longest
+            # contiguous CJK substring match to handle partial matches.
+            # E.g., "小红书推荐用户及冷启动" contains "小红书推荐" (5/6 CJK chars
+            # from "小红书推荐系统", coverage 83%) → keyword match.
+            title_has_query_keywords = False
+            if title_lower and query_lower:
+                # Extract CJK characters from query
+                query_cjk = re.sub(r"[^\u4e00-\u9fff]", "", query_lower)
+                if len(query_cjk) >= 4:
+                    # Longest contiguous CJK substring match
+                    max_match = 0
+                    for start in range(len(query_cjk)):
+                        for end in range(start + 2, len(query_cjk) + 1):
+                            if query_cjk[start:end] in title_lower:
+                                max_match = max(max_match, end - start)
+                    title_has_query_keywords = max_match >= len(query_cjk) * 0.5
+                else:
+                    # Short/non-CJK query: full-string match
+                    q_terms = [
+                        t for t in re.split(r"[\s\-_,，。、/\\|]+", query_lower) if t
+                    ]
+                    title_has_query_keywords = any(t in title_lower for t in q_terms)
+
+            if title and query_lower:
+                # Remove query-like substrings from title to measure "depth"
+                remaining = title_lower
+                for term in re.split(r"[\s\-_,，。、/\\|]+", query_lower):
+                    if term:
+                        remaining = remaining.replace(term, "")
+                # Strip non-alphanumeric debris
+                meaningful_chars = len(re.sub(r"[^\u4e00-\u9fff\w]", "", remaining))
+                depth_factor = min(
+                    meaningful_chars / RANK_CONTENT_DEPTH_NORM_LENGTH, 1.0
+                )
+                depth_factor = max(depth_factor, RANK_CONTENT_DEPTH_MIN_FACTOR)
+                rel_norm *= depth_factor
+
+            # Title-keyword overlap penalty: if NO query keywords appear in the
+            # title, the BM25 score comes from owner.name/desc/tags — the doc's
+            # actual content is likely NOT about the query.
+            if title_lower and query_lower and not title_has_query_keywords:
+                rel_norm *= RANK_NO_TITLE_KEYWORD_PENALTY
+
             # Apply title-match bonus: docs with query in title get a boost
             if hit.get("_title_matched"):
                 rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
 
-            # Apply owner-match bonus: docs from creators matching query
-            if hit.get("_owner_matched"):
+            # Apply owner-match bonus: docs from creators matching query.
+            # Only apply if title also contains query keywords — prevents
+            # boosting irrelevant uploads (e.g., 喜羊羊 from UP "吴恩达大模型课程")
+            if hit.get("_owner_matched") and title_has_query_keywords:
                 rel_norm = min(rel_norm + OWNER_MATCH_BONUS, 1.0)
 
             hit["relevance_score"] = round(rel_norm, 4)
@@ -263,7 +385,8 @@ class DiversifiedRanker:
                 + w["popularity"] * hit["popularity_score"]
             )
             # Owner match bonus in headline: boost owner-matched docs visibility
-            if hit.get("_owner_matched"):
+            # (only if the title contains query keywords — same guard as relevance)
+            if hit.get("_owner_matched") and title_has_query_keywords:
                 headline += 0.10
             hit["headline_score"] = round(headline, 4)
 
@@ -281,9 +404,10 @@ class DiversifiedRanker:
         - Highly relevant (must pass minimum relevance threshold)
         - High quality (good stats, reasonable duration)
         - Reasonably recent
+        - NOT ultra-short content (duration >= RANK_HEADLINE_MIN_DURATION)
 
         The selection process:
-        1. Filter candidates by minimum relevance threshold
+        1. Filter candidates by minimum relevance AND minimum duration
         2. Sort by headline_score (composite of relevance + quality + recency)
         3. Among top candidates with similar headline scores, prefer
            those with higher relevance to break ties
@@ -296,8 +420,19 @@ class DiversifiedRanker:
         Returns:
             Tuple of (selected headline hits, set of selected bvids).
         """
-        # Filter candidates: must have reasonable relevance
-        candidates = [h for h in hits if h.get("relevance_score", 0) >= min_relevance]
+        # Filter candidates: must have reasonable relevance AND duration
+        candidates = [
+            h
+            for h in hits
+            if h.get("relevance_score", 0) >= min_relevance
+            and (h.get("duration", 0) or 0) >= RANK_HEADLINE_MIN_DURATION
+        ]
+
+        if len(candidates) < top_n:
+            # Fallback: relax duration requirement
+            candidates = [
+                h for h in hits if h.get("relevance_score", 0) >= min_relevance
+            ]
 
         if not candidates:
             # Fallback: relax threshold to half, then to all
@@ -365,8 +500,16 @@ class DiversifiedRanker:
         slot_order = 0
 
         # Candidates must pass relevance floor for diversified slots
-        eligible = [h for h in hits if h.get("relevance_score", 0) >= min_relevance]
-        # If too few pass the floor, relax to half threshold
+        eligible = [
+            h
+            for h in hits
+            if h.get("relevance_score", 0) >= min_relevance
+            and (h.get("duration", 0) or 0) >= RANK_SLOT_MIN_DURATION
+        ]
+        # If too few pass the floor, relax duration requirement
+        if len(eligible) < top_k:
+            eligible = [h for h in hits if h.get("relevance_score", 0) >= min_relevance]
+        # If still too few, relax to half threshold
         if len(eligible) < top_k:
             eligible = [
                 h for h in hits if h.get("relevance_score", 0) >= min_relevance * 0.5
@@ -459,6 +602,7 @@ class DiversifiedRanker:
         prefer: RANK_PREFER_TYPE = RANK_PREFER,
         slot_preset: str = None,
         custom_slots: dict = None,
+        query: str = "",
     ) -> dict:
         """Rank hits with diversified slot allocation.
 
@@ -468,6 +612,7 @@ class DiversifiedRanker:
             prefer: Preference mode (maps to slot preset).
             slot_preset: Override slot preset name.
             custom_slots: Custom slot allocation dict.
+            query: Original search query for content depth analysis.
 
         Returns:
             hits_info with diversified-ranked hits.
@@ -480,7 +625,7 @@ class DiversifiedRanker:
         now_ts = _time.time()
 
         # Score all dimensions
-        self._score_all_dimensions(hits, now_ts=now_ts)
+        self._score_all_dimensions(hits, now_ts=now_ts, query=query)
 
         # Determine slot allocation
         if custom_slots:
@@ -513,18 +658,19 @@ class DiversifiedRanker:
         prefer: RANK_PREFER_TYPE = RANK_PREFER,
         diversify_top_n: int = 10,
         headline_top_n: int = HEADLINE_TOP_N,
+        query: str = "",
     ) -> dict:
         """Three-phase ranking: headline → diversified → fused.
 
         Phase 1 — Headline quality (top 3):
             Picks the best candidates using composite headline_score that
             balances relevance + quality + recency. All candidates must
-            pass a minimum relevance threshold.
+            pass a minimum relevance threshold AND have sufficient duration.
 
         Phase 2 — Diversified slot allocation (positions 4-10):
             Fills remaining diversified positions with dimension representatives
             (relevance, quality, recency, popularity). All candidates must
-            pass SLOT_MIN_RELEVANCE threshold to prevent irrelevant docs.
+            pass SLOT_MIN_RELEVANCE threshold and duration floor.
 
         Phase 3 — Fused scoring (beyond top 10):
             Remaining positions use continuous fused scoring with relevance
@@ -539,6 +685,7 @@ class DiversifiedRanker:
             prefer: Preference mode.
             diversify_top_n: Total items for diversification (phases 1+2).
             headline_top_n: How many items to pick by headline quality.
+            query: Original search query for content depth analysis.
 
         Returns:
             hits_info with three-phase ranked hits.
@@ -551,7 +698,11 @@ class DiversifiedRanker:
         now_ts = _time.time()
 
         # Score all dimensions (relevance, quality, recency, popularity, headline)
-        self._score_all_dimensions(hits, now_ts=now_ts)
+        self._score_all_dimensions(hits, now_ts=now_ts, query=query)
+
+        # Pseudo-relevance feedback: extract dominant tags from top docs
+        # to boost topically coherent results in phase 3 fused scoring.
+        affinity_tags = self._compute_tag_affinity(hits, top_k=20)
 
         # Phase 1: Headline selection (top 3)
         headline_hits, headline_bvids = self._select_headline_top_n(
@@ -580,16 +731,25 @@ class DiversifiedRanker:
         top_hits = headline_hits + slot_hits
 
         # Phase 3: Fused score ranking for the rest
+        # Includes tag-affinity bonus from pseudo-relevance feedback.
         w = DIVERSIFIED_FUSED_WEIGHTS
         remaining_hits = [h for h in hits if h.get("bvid") not in all_selected_bvids]
         for hit in remaining_hits:
-            hit["rank_score"] = round(
+            base_fused = (
                 hit.get("relevance_score", 0) * w["relevance"]
                 + hit.get("quality_score", 0) * w["quality"]
                 + hit.get("recency_score", 0) * w["recency"]
-                + hit.get("popularity_score", 0) * w["popularity"],
-                6,
+                + hit.get("popularity_score", 0) * w["popularity"]
             )
+            # Tag affinity: small bonus for docs sharing tags with top docs
+            if affinity_tags:
+                tags_str = hit.get("tags", "") or ""
+                doc_tags = {t.strip() for t in tags_str.split(",") if t.strip()}
+                tag_overlap = sum(affinity_tags.get(t, 0) for t in doc_tags)
+                # Cap at 0.10 to prevent tag-rich docs from dominating
+                tag_bonus = min(tag_overlap * 0.05, 0.10)
+                base_fused += tag_bonus
+            hit["rank_score"] = round(base_fused, 6)
             hit["_slot_dimension"] = "fused"
 
         remaining_hits.sort(key=lambda h: h.get("rank_score", 0), reverse=True)

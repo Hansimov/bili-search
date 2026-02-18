@@ -415,6 +415,7 @@ class VideoExplorer(VideoSearcherV2):
             method=rank_method,
             top_k=rank_top_k,
             prefer=prefer,
+            query=query,
         )
 
         # Add char-level highlighting AFTER ranking — only highlights the
