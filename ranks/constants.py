@@ -72,9 +72,9 @@ DIVERSIFIED_FUSED_WEIGHTS = {
 # quality and recency, ensuring the best first impression.
 HEADLINE_TOP_N = 3  # How many top positions use headline quality scoring
 HEADLINE_WEIGHTS = {
-    "relevance": 0.55,  # Must be highly relevant (dominant signal)
-    "quality": 0.20,  # Must be high quality
-    "recency": 0.15,  # Prefer recent
+    "relevance": 0.50,  # Must be highly relevant (dominant signal)
+    "quality": 0.30,  # Must be high quality — increased to push low-quality content down
+    "recency": 0.10,  # Prefer recent
     "popularity": 0.10,  # Slight popularity bias
 }
 
@@ -82,17 +82,30 @@ HEADLINE_WEIGHTS = {
 # Prevents low-relevance docs from occupying top-10 positions even if
 # they score high on popularity/recency. This is the primary fix for
 # the "some top-10 slots have irrelevant docs" problem.
-# Set to 0.30 to be strict: docs must have at least 30% of max BM25 score
+# Set to 0.40: docs must have at least 40% of max BM25 score
 # to be eligible for any top-10 position.
-SLOT_MIN_RELEVANCE = 0.30
+SLOT_MIN_RELEVANCE = 0.55
 
 # Minimum relevance for headline (top-3) positions — even stricter.
-HEADLINE_MIN_RELEVANCE = 0.35
+HEADLINE_MIN_RELEVANCE = 0.50
 
 # Content quality signals for ranking penalty
 # Short-duration penalty: very short videos (<30s) are often low-effort
 RANK_SHORT_DURATION_THRESHOLD = 30  # seconds
-RANK_SHORT_DURATION_PENALTY = 0.8  # multiply quality_score by this
+RANK_SHORT_DURATION_PENALTY = 0.7  # multiply quality_score by this
+RANK_VERY_SHORT_DURATION_THRESHOLD = 15  # seconds — very short videos
+RANK_VERY_SHORT_DURATION_PENALTY = 0.3  # much harsher penalty for < 15s
+
+# Short-title penalty: BM25 gives disproportionately high scores to docs
+# with very short titles. Penalize these in ranking quality scoring.
+# This fixes the 'chatgpt' problem where title='ChatGpt' scores highest.
+RANK_SHORT_TITLE_THRESHOLD = 25  # characters — titles shorter than this are penalized
+RANK_SHORT_TITLE_PENALTY = 0.4  # multiply quality_score by this for short titles
+
+# Low engagement penalty in ranking: docs with low views are likely
+# low-quality even if BM25 scores them high.
+RANK_LOW_ENGAGEMENT_THRESHOLD = 500  # views
+RANK_LOW_ENGAGEMENT_PENALTY = 0.7  # multiply quality_score by this
 
 # =============================================================================
 # Title Match Bonus
@@ -101,7 +114,12 @@ RANK_SHORT_DURATION_PENALTY = 0.8  # multiply quality_score by this
 # Title match is a strong relevance signal: if the query appears in the title,
 # the doc is very likely relevant. This bonus is added to relevance_score
 # before normalization, acting as a multiplicative boost.
-TITLE_MATCH_BONUS = 0.15  # Added to normalized relevance when title matches query
+TITLE_MATCH_BONUS = 0.20  # Added to normalized relevance when title matches query
+
+# Owner match bonus: when query partially matches an owner/UP主 name,
+# docs from that owner get a relevance bonus. This helps entity queries
+# like '红警08' (owner '红警HBK08') surface the creator's content.
+OWNER_MATCH_BONUS = 0.30  # Added to normalized relevance for owner-matched docs
 
 # =============================================================================
 # Relevance Decay for Slot Candidates
@@ -110,8 +128,13 @@ TITLE_MATCH_BONUS = 0.15  # Added to normalized relevance when title matches que
 # Below this relevance threshold, apply exponential decay to dimension scores.
 # This prevents low-relevance docs from occupying dimension slots even if they
 # are the "most popular" or "most recent" in the pool.
-SLOT_RELEVANCE_DECAY_THRESHOLD = 0.40
+SLOT_RELEVANCE_DECAY_THRESHOLD = 0.45
 SLOT_RELEVANCE_DECAY_POWER = 2.0  # Quadratic decay below threshold
+
+# Quality tiebreaker: small weight to break ties when multiple docs have
+# identical dimension scores (e.g., all chatgpt docs have relevance=1.0).
+# This prevents low-quality docs from occupying slots arbitrarily.
+SLOT_QUALITY_TIEBREAKER = 0.05
 
 # =============================================================================
 # Recall Noise Filtering
@@ -125,14 +148,15 @@ MIN_BM25_SCORE = 3.0
 
 # Score-ratio gate: remove docs with score < ratio * max_score in their lane.
 # Applied after each recall lane returns, before merge.
-# 0.18 means docs must score at least 18% of the best hit's score.
-# (Raised from 0.12: too many marginally matching docs survived)
-NOISE_SCORE_RATIO_GATE = 0.18
+# 0.10 means docs must score at least 10% of the best hit's score.
+# (Lowered from 0.18: was too aggressive, causing insufficient candidate pools
+# especially for single-keyword queries like 'chatgpt'. Quality control is
+# now handled primarily by the diversified ranker's content quality scoring.)
+NOISE_SCORE_RATIO_GATE = 0.10
 
 # KNN score ratio: stricter threshold for noisy LSH hamming distance scores.
 # LSH bit vectors have narrow score ranges, so many irrelevant docs score similarly.
-# (Raised from 0.5: LSH hamming clusters too many irrelevant docs near threshold)
-NOISE_KNN_SCORE_RATIO = 0.60
+NOISE_KNN_SCORE_RATIO = 0.50
 
 # Don't apply noise filtering if total hits below this count.
 # Small result sets need all candidates.
@@ -146,12 +170,12 @@ NOISE_MULTI_LANE_GATE_FACTOR = 0.5
 # Short-text penalty: BM25 inflates scores for very short docs (field-length normalization).
 # Penalize docs where combined content is too short — they are likely low-effort.
 NOISE_SHORT_TEXT_MIN_LENGTH = 15  # Min chars (title+desc) to be considered substantial
-NOISE_SHORT_TEXT_PENALTY = 0.3  # Multiply score by this when content is too short
+NOISE_SHORT_TEXT_PENALTY = 0.4  # Multiply score by this when content is too short
 
 # Quality engagement floor: even if BM25 score is high, docs with near-zero
 # engagement are likely low-quality (spam, empty, test uploads).
-NOISE_MIN_ENGAGEMENT_VIEWS = 100  # Minimum views to pass quality gate
-NOISE_LOW_ENGAGEMENT_PENALTY = 0.15  # Score penalty factor for very low engagement
+NOISE_MIN_ENGAGEMENT_VIEWS = 50  # Minimum views to pass quality gate
+NOISE_LOW_ENGAGEMENT_PENALTY = 0.25  # Score penalty factor for very low engagement
 
 # =============================================================================
 # BM25 + Embedding Relevance Blending

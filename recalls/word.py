@@ -52,34 +52,47 @@ from ranks.constants import MIN_BM25_SCORE
 WORD_RECALL_LANES = {
     "relevance": {
         "sort": None,  # Default _score sorting
-        "limit": 500,
+        "limit": 600,
         "desc": "BM25 keyword relevance — text match quality",
     },
     "title_match": {
         "sort": None,  # _score sorting on title+tags fields
-        "limit": 300,
+        "limit": 400,
         "title_tags": True,  # Special flag: search title + tags fields only
         "desc": "Title+tags BM25 — high precision entity/name matching",
     },
+    "owner_name": {
+        "sort": None,  # _score sorting on owner.name + title fields
+        "limit": 200,
+        "owner_name": True,  # Special flag: search owner.name + title
+        "desc": "Owner name BM25 — UP主名称精确匹配",
+    },
     "popularity": {
         "sort": [{"stat.view": "desc"}],
-        "limit": 200,
+        "limit": 300,
         "desc": "Most viewed — raw reach and awareness",
     },
     "recency": {
         "sort": [{"pubdate": "desc"}],
-        "limit": 200,
+        "limit": 250,
         "desc": "Most recent — freshness and timeliness",
     },
     "quality": {
         "sort": [{"stat_score": "desc"}],
-        "limit": 200,
+        "limit": 300,
         "desc": "Highest quality — composite DocScorer stat quality",
     },
 }
 
 # Default lanes to run in parallel
-DEFAULT_LANES = ["relevance", "title_match", "popularity", "recency", "quality"]
+DEFAULT_LANES = [
+    "relevance",
+    "title_match",
+    "owner_name",
+    "popularity",
+    "recency",
+    "quality",
+]
 
 
 class MultiLaneWordRecall:
@@ -119,7 +132,7 @@ class MultiLaneWordRecall:
     def __init__(
         self,
         lanes_config: dict = None,
-        max_workers: int = 5,
+        max_workers: int = 6,
     ):
         """Initialize multi-lane recall.
 
@@ -160,11 +173,23 @@ class MultiLaneWordRecall:
         sort_spec = lane_config.get("sort")
         limit = lane_config.get("limit", 200)
         title_tags = lane_config.get("title_tags", False)
+        owner_name = lane_config.get("owner_name", False)
 
         try:
             if title_tags:
                 # Title+tags lane: search title and tags for high precision
                 res = self._search_title_tags(
+                    searcher=searcher,
+                    query=query,
+                    source_fields=source_fields,
+                    extra_filters=extra_filters,
+                    suggest_info=suggest_info,
+                    limit=limit,
+                    timeout=timeout,
+                )
+            elif owner_name:
+                # Owner name lane: search owner.name + title for UP主 matching
+                res = self._search_owner_name(
                     searcher=searcher,
                     query=query,
                     source_fields=source_fields,
@@ -324,6 +349,92 @@ class MultiLaneWordRecall:
 
         return parse_res
 
+    def _search_owner_name(
+        self,
+        searcher,
+        query: str,
+        source_fields: list[str],
+        extra_filters: list[dict],
+        suggest_info: dict,
+        limit: int,
+        timeout: float,
+    ) -> dict:
+        """Execute a BM25 search emphasizing owner.name + title fields.
+
+        This lane is designed for queries that target specific creators/UP主,
+        like '红警08' (owner '红警HBK08'), '通义实验室' (owner '通义大模型').
+        By boosting owner.name heavily, docs from matching creators are
+        strongly preferred even if title matches are partial.
+
+        Args:
+            searcher: VideoSearcherV2 instance.
+            query: Search query.
+            source_fields: Fields to retrieve.
+            extra_filters: Filter clauses.
+            suggest_info: Suggestion info.
+            limit: Max results.
+            timeout: Timeout in seconds.
+
+        Returns:
+            Parsed search result dict.
+        """
+        from elastics.videos.constants import SEARCH_MATCH_TYPE, TERMINATE_AFTER
+        from elastics.structure import construct_boosted_fields, set_timeout
+
+        # Owner.name gets highest boost, title secondary
+        owner_match_fields = ["owner.name.words", "title.words", "tags.words"]
+        owner_boosted_fields = {
+            "owner.name.words": 8.0,  # Owner name is the primary signal
+            "owner.name.pinyin": 2.0,  # Pinyin fallback for romanized input
+            "title.words": 3.0,  # Title for context
+            "tags.words": 2.0,  # Tags often contain owner names
+        }
+
+        boosted_match_fields, boosted_date_fields = construct_boosted_fields(
+            match_fields=owner_match_fields,
+            boost=True,
+            boosted_fields=owner_boosted_fields,
+        )
+        _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+            query=query,
+            suggest_info=suggest_info,
+            boosted_match_fields=boosted_match_fields,
+            boosted_date_fields=boosted_date_fields,
+            match_type=SEARCH_MATCH_TYPE,
+            extra_filters=extra_filters,
+        )
+
+        search_body = {
+            "query": query_dsl_dict,
+            "_source": source_fields,
+            "track_total_hits": True,
+            "size": limit,
+            "terminate_after": min(TERMINATE_AFTER, 500000),
+        }
+        search_body = set_timeout(search_body, timeout=timeout)
+
+        es_res_dict = searcher.submit_to_es(search_body, context="recall_owner_name")
+
+        query_info = searcher.query_rewriter.get_query_info(query)
+        parse_res = searcher.hit_parser.parse(
+            query_info,
+            match_fields=owner_match_fields,
+            res_dict=es_res_dict,
+            request_type="search",
+            drop_no_highlights=False,
+            add_region_info=False,
+            add_highlights_info=False,
+            match_type=SEARCH_MATCH_TYPE,
+            limit=limit,
+            verbose=False,
+        )
+
+        # Tag all hits from this lane as owner-name matched
+        for hit in parse_res.get("hits", []):
+            hit["_owner_lane"] = True
+
+        return parse_res
+
     def _search_with_sort(
         self,
         searcher,
@@ -439,6 +550,7 @@ class MultiLaneWordRecall:
                 "title",
                 "tags",
                 "desc",
+                "owner",
                 "stat",
                 "pubdate",
                 "duration",
@@ -488,6 +600,9 @@ class MultiLaneWordRecall:
 
         # Tag title matches for all hits in the merged pool
         self._tag_title_matches(pool.hits, query)
+
+        # Tag owner matches for all hits in the merged pool
+        self._tag_owner_matches(pool.hits, query)
 
         pool.took_ms = round((time.perf_counter() - start) * 1000, 2)
 
@@ -557,3 +672,62 @@ class MultiLaneWordRecall:
                 hit["_title_matched"] = query_clean in title_tags or all(
                     t in title_tags for t in terms if len(t) >= 2
                 )
+
+    @staticmethod
+    def _tag_owner_matches(hits: list[dict], query: str) -> None:
+        """Tag hits with _owner_matched if query tokens match the owner name.
+
+        Detects "owner intent" — when the user searches for a specific creator
+        by checking if all meaningful tokens in the query appear in owner.name.
+        For example, '红警08' matches owner '红警HBK08' because both '红警'
+        and '08' appear in the owner name.
+
+        Also stores the matched owner names in each hit for downstream use
+        by the diversified ranker.
+
+        Args:
+            hits: List of hit dicts to tag (modified in-place).
+            query: Original query string.
+        """
+        if not query or not hits:
+            return
+
+        import re
+
+        # Tokenize query into meaningful chunks (CJK, alpha, numeric)
+        query_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", query.lower()))
+        if not query_tokens:
+            return
+
+        # Collect all unique owner names and their token sets
+        owner_token_map: dict[str, set] = {}
+        for hit in hits:
+            owner = hit.get("owner")
+            if isinstance(owner, dict):
+                name = owner.get("name", "")
+            else:
+                name = ""
+            if name and name not in owner_token_map:
+                owner_token_map[name] = set(
+                    re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]+|\d+", name.lower())
+                )
+
+        # Find owners whose token set contains ALL query tokens
+        matching_owners = set()
+        for name, name_tokens in owner_token_map.items():
+            if query_tokens and query_tokens.issubset(name_tokens):
+                matching_owners.add(name)
+
+        if not matching_owners:
+            return
+
+        # Tag hits from matching owners
+        for hit in hits:
+            owner = hit.get("owner")
+            if isinstance(owner, dict):
+                name = owner.get("name", "")
+            else:
+                name = ""
+            if name in matching_owners:
+                hit["_owner_matched"] = True
+                hit["_matched_owner_name"] = name

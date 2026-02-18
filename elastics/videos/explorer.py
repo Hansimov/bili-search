@@ -207,6 +207,9 @@ class VideoExplorer(VideoSearcherV2):
                 "sort_score",
                 # Recall metadata fields — critical for downstream ranking
                 "_title_matched",  # Title-match bonus in diversified ranker
+                "_owner_matched",  # Owner-match bonus in diversified ranker
+                "_matched_owner_name",  # For debugging/analysis
+                "_owner_lane",  # From owner_name recall lane
                 "_recall_lanes",  # Lane membership for multi-lane analysis
             ]
 

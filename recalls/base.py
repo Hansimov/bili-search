@@ -113,6 +113,16 @@ class RecallPool:
                     merged_hits[idx][rank_key] = rank
                     lane_tags[bvid].add(lane_name)
 
+                    # Propagate metadata flags from lane hits
+                    for flag in (
+                        "_title_matched",
+                        "_owner_matched",
+                        "_owner_lane",
+                        "_matched_owner_name",
+                    ):
+                        if hit.get(flag) and not merged_hits[idx].get(flag):
+                            merged_hits[idx][flag] = hit[flag]
+
                     # Use the max score across lanes so noise filter
                     # doesn't discard relevant docs due to a low KNN
                     # hamming score overriding a high BM25 score.
@@ -141,6 +151,7 @@ class RecallPool:
         score_ratio: float = NOISE_SCORE_RATIO_GATE,
         min_hits: int = NOISE_MIN_HITS_FOR_FILTER,
         multi_lane_factor: float = NOISE_MULTI_LANE_GATE_FACTOR,
+        target_count: int = None,
     ) -> "RecallPool":
         """Remove low-confidence candidates from the pool.
 
@@ -154,10 +165,18 @@ class RecallPool:
         Multi-lane docs (appearing in 2+ recall lanes) get a reduced threshold
         since cross-lane appearance is strong evidence of relevance.
 
+        Target count guarantee: if target_count is specified and filtering
+        would reduce the pool below that count, the least-penalized removed
+        docs are re-added to meet the target. This ensures the downstream
+        ranker always has enough candidates to fill the requested result count.
+
         Args:
             score_ratio: Minimum score as fraction of max_score.
             min_hits: Don't filter if pool has fewer hits than this.
             multi_lane_factor: Multiply threshold by this for multi-lane docs.
+            target_count: Minimum number of docs to keep. If specified and
+                filtering would drop below this, re-add the best-scoring
+                removed docs to reach the target.
 
         Returns:
             New RecallPool with noise removed.
@@ -175,6 +194,7 @@ class RecallPool:
 
         filtered_hits = []
         filtered_tags = {}
+        removed_hits = []  # Track removed docs for potential re-addition
         removed_count = 0
         short_text_penalized = 0
         low_engagement_penalized = 0
@@ -211,12 +231,29 @@ class RecallPool:
                     filtered_tags[bvid] = lanes
             else:
                 removed_count += 1
+                # Store with effective score for potential re-addition
+                removed_hits.append((effective_score, hit))
+
+        # Target count guarantee: re-add best removed docs if needed
+        backfill_count = 0
+        if target_count and len(filtered_hits) < target_count and removed_hits:
+            deficit = target_count - len(filtered_hits)
+            # Sort removed docs by effective score descending (best first)
+            removed_hits.sort(key=lambda x: x[0], reverse=True)
+            for eff_score, hit in removed_hits[:deficit]:
+                filtered_hits.append(hit)
+                bvid = hit.get("bvid", "")
+                if bvid:
+                    filtered_tags[bvid] = self.lane_tags.get(bvid, set())
+                backfill_count += 1
+            removed_count -= backfill_count
 
         # Update lanes_info with filter stats
         lanes_info = dict(self.lanes_info)
         lanes_info["_noise_filter"] = {
             "removed": removed_count,
             "kept": len(filtered_hits),
+            "backfilled": backfill_count,
             "gate": round(gate, 4),
             "max_score": round(max_score, 4),
             "short_text_penalized": short_text_penalized,

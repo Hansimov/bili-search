@@ -56,9 +56,17 @@ from ranks.constants import (
     SLOT_MIN_RELEVANCE,
     RANK_SHORT_DURATION_THRESHOLD,
     RANK_SHORT_DURATION_PENALTY,
+    RANK_VERY_SHORT_DURATION_THRESHOLD,
+    RANK_VERY_SHORT_DURATION_PENALTY,
+    RANK_SHORT_TITLE_THRESHOLD,
+    RANK_SHORT_TITLE_PENALTY,
+    RANK_LOW_ENGAGEMENT_THRESHOLD,
+    RANK_LOW_ENGAGEMENT_PENALTY,
     TITLE_MATCH_BONUS,
+    OWNER_MATCH_BONUS,
     SLOT_RELEVANCE_DECAY_THRESHOLD,
     SLOT_RELEVANCE_DECAY_POWER,
+    SLOT_QUALITY_TIEBREAKER,
 )
 
 # Slot allocation presets
@@ -152,17 +160,26 @@ class DiversifiedRanker:
 
         Computes and stores dimension scores in each hit dict:
         - relevance_score: Normalized BM25/hybrid/rerank score [0, 1],
-          with title-match bonus applied
-        - quality_score: Stat quality from DocScorer [0, 1), with content penalty
+          with title-match and owner-match bonuses applied
+        - quality_score: Stat quality from DocScorer [0, 1), with content
+          penalties for short titles, short duration, low engagement
         - recency_score: Normalized time factor [0, 1]
         - popularity_score: Log-normalized view count [0, 1]
         - headline_score: Composite score for top-3 selection [0, 1]
 
         Title-match bonus:
         Docs tagged with _title_matched=True get TITLE_MATCH_BONUS added
+        to their normalized relevance score (capped at 1.0).
+
+        Owner-match bonus:
+        Docs tagged with _owner_matched=True get OWNER_MATCH_BONUS added
         to their normalized relevance score (capped at 1.0). This ensures
-        docs whose title matches the query are strongly preferred in all
-        ranking phases.
+        docs from creators matching the query are strongly preferred.
+
+        Content quality penalties:
+        - Short titles (< RANK_SHORT_TITLE_THRESHOLD chars): reduce quality
+        - Short duration (< 30s): reduce quality
+        - Low engagement (< RANK_LOW_ENGAGEMENT_THRESHOLD views): reduce quality
 
         Args:
             hits: List of hit dicts to score.
@@ -199,16 +216,32 @@ class DiversifiedRanker:
             if hit.get("_title_matched"):
                 rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
 
+            # Apply owner-match bonus: docs from creators matching query
+            if hit.get("_owner_matched"):
+                rel_norm = min(rel_norm + OWNER_MATCH_BONUS, 1.0)
+
             hit["relevance_score"] = round(rel_norm, 4)
 
             # Quality: bounded [0, 1) from DocScorer
             stats = dict_get(hit, "stat", {})
             quality = self.stats_scorer.calc(stats)
 
-            # Apply short-duration penalty
+            # Apply tiered short-duration penalty
             duration = hit.get("duration", 0) or 0
-            if 0 < duration < RANK_SHORT_DURATION_THRESHOLD:
+            if 0 < duration < RANK_VERY_SHORT_DURATION_THRESHOLD:
+                quality *= RANK_VERY_SHORT_DURATION_PENALTY
+            elif 0 < duration < RANK_SHORT_DURATION_THRESHOLD:
                 quality *= RANK_SHORT_DURATION_PENALTY
+
+            # Apply short-title penalty: very short titles indicate low-effort content
+            title = hit.get("title", "") or ""
+            if 0 < len(title) < RANK_SHORT_TITLE_THRESHOLD:
+                quality *= RANK_SHORT_TITLE_PENALTY
+
+            # Apply low-engagement penalty: few views indicate low-value content
+            views = dict_get(hit, "stat.view", 0) or 0
+            if views < RANK_LOW_ENGAGEMENT_THRESHOLD:
+                quality *= RANK_LOW_ENGAGEMENT_PENALTY
 
             hit["quality_score"] = round(quality, 4)
 
@@ -223,13 +256,16 @@ class DiversifiedRanker:
 
             # Headline quality: composite score for top-3 selection
             w = HEADLINE_WEIGHTS
-            hit["headline_score"] = round(
+            headline = (
                 w["relevance"] * hit["relevance_score"]
                 + w["quality"] * hit["quality_score"]
                 + w["recency"] * hit["recency_score"]
-                + w["popularity"] * hit["popularity_score"],
-                4,
+                + w["popularity"] * hit["popularity_score"]
             )
+            # Owner match bonus in headline: boost owner-matched docs visibility
+            if hit.get("_owner_matched"):
+                headline += 0.10
+            hit["headline_score"] = round(headline, 4)
 
     def _select_headline_top_n(
         self,
@@ -356,7 +392,10 @@ class DiversifiedRanker:
                 else:
                     relevance_factor = 0.0
 
-                h[f"_gated_{dimension}"] = dim_score * relevance_factor
+                h[f"_gated_{dimension}"] = (
+                    dim_score * relevance_factor
+                    + SLOT_QUALITY_TIEBREAKER * h.get("quality_score", 0)
+                )
 
             gated_field = f"_gated_{dimension}"
             sorted_hits = sorted(
