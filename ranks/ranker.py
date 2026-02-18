@@ -723,4 +723,5 @@ class VideoHitsRanker:
             diversify_top_n=diversify_top_n,
             headline_top_n=headline_top_n,
             query=kwargs.get("query", ""),
+            pool_hints=kwargs.get("pool_hints"),
         )

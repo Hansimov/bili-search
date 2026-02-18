@@ -10,9 +10,9 @@
   - [2.4 辅助搜索](#24-辅助搜索)
 - [3. 探索模式](#3-探索模式)
   - [3.1 统一入口 (unified_explore)](#31-统一入口-unified_explore)
-  - [3.2 词语探索 (explore)](#32-词语探索-explore)
-  - [3.3 向量探索 (knn_explore)](#33-向量探索-knn_explore)
-  - [3.4 混合探索 (hybrid_explore)](#34-混合探索-hybrid_explore)
+  - [3.2 词语探索 (explore_v2)](#32-词语探索-explore_v2)
+  - [3.3 向量探索 (knn_explore_v2)](#33-向量探索-knn_explore_v2)
+  - [3.4 混合探索 (hybrid_explore_v2)](#34-混合探索-hybrid_explore_v2)
 - [4. 查询语法 (DSL)](#4-查询语法-dsl)
   - [4.1 基本语法](#41-基本语法)
   - [4.2 搜索模式 (qmod)](#42-搜索模式-qmod)
@@ -25,8 +25,6 @@
 - [7. 注意事项](#7-注意事项)
 - [附录 A: VideoSearcherV2 完整参数](#附录-a-videosearcherv2-完整参数)
 - [附录 B: VideoExplorer 完整参数](#附录-b-videoexplorer-完整参数)
-- [附录 C: 常量配置速查](#附录-c-常量配置速查)
-- [附录 D: 排序策略配置](#附录-d-排序策略配置)
 
 ---
 
@@ -51,7 +49,7 @@ explorer = VideoExplorer(
     elastic_env_name=ELASTIC_DEV,          # "elastic_dev"
 )
 
-# 搜索（默认混合模式）
+# 搜索（默认混合模式 q=wv）
 result = explorer.unified_explore(query="影视飓风")
 
 # 遍历步骤结果
@@ -212,15 +210,13 @@ result = explorer.unified_explore(
 )
 ```
 
-### 3.2 词语探索 (explore)
+### 3.2 词语探索 (explore_v2)
 
-适用于 `q=w` 和 `q=wr` 模式。
+适用于 `q=w` 和 `q=wr` 模式。使用 6 车道并行召回 + 3 轮渐进补充 + UP主意图感知排序。
 
 ```python
-result = explorer.explore(
+result = explorer.explore_v2(
     query="黑神话 悟空",
-    most_relevant_limit=10000,   # 初始搜索范围
-    rank_method="stats",         # 按热度排序
     rank_top_k=400,              # 返回 Top-400
     group_owner_limit=25,        # UP 主分组上限
     enable_rerank=False,         # 是否精排
@@ -228,48 +224,36 @@ result = explorer.explore(
 )
 ```
 
-### 3.3 向量探索 (knn_explore)
+### 3.3 向量探索 (knn_explore_v2)
 
 适用于 `q=v` 和 `q=vr` 模式。自动包含词语补充召回和精排。
 
 ```python
-result = explorer.knn_explore(
+result = explorer.knn_explore_v2(
     query="原神 角色",
     knn_k=400,                    # 每分片近邻数
     knn_num_candidates=10000,     # 每分片候选数
     enable_rerank=True,           # 精排（默认开启）
     word_recall_enabled=True,     # 词语补充召回（默认开启）
     word_recall_limit=1000,       # 词语搜索上限
-    rank_method="relevance",      # 纯相关度排序
     rank_top_k=400,
     group_owner_limit=25,
     verbose=True,
 )
 ```
 
-**禁用词语补充召回：**
+### 3.4 混合探索 (hybrid_explore_v2)
+
+适用于 `q=wv` 和 `q=wvr` 模式。6 车道词语召回 + KNN 向量召回并行。
 
 ```python
-result = explorer.knn_explore(
-    query="原神",
-    word_recall_enabled=False,   # 仅使用 KNN 结果
-    verbose=True,
-)
-```
-
-### 3.4 混合探索 (hybrid_explore)
-
-适用于 `q=wv` 和 `q=wvr` 模式。
-
-```python
-result = explorer.hybrid_explore(
+result = explorer.hybrid_explore_v2(
     query="深度学习 教程 d>2024",
     rrf_k=60,                    # RRF 常数
     fusion_method="rrf",         # "rrf" 或 "weighted"
-    rank_method="tiered",        # 分层排序
     rank_top_k=400,
     group_owner_limit=25,
-    enable_rerank=False,         # 混合搜索通常不需要精排
+    enable_rerank=False,
     verbose=True,
 )
 ```
@@ -420,11 +404,18 @@ for step in result["data"]:
 | `tname` | str | 分区名称 |
 | `score` | float | ES BM25 原始分数 |
 | `rank_score` | float | 排序综合分数 |
-| `stat_score` | float | 预计算文档质量分（来自 ES 索引，由 DocScorer 生成） |
-| `stats_score` | float | 排序时计算的统计分（调试用，由 StatsScorer 生成） |
+| `stat_score` | float | 预计算文档质量分（来自 ES 索引，由 DocScorer 生成，∈ [0,1)） |
+| `relevance_score` | float | 归一化相关性分数（含 TM/OM 加成、深度惩罚等） |
+| `quality_score` | float | 质量维度分数 |
+| `recency_score` | float | 时效维度分数 |
+| `popularity_score` | float | 热度维度分数（对数归一化） |
+| `headline_score` | float | 复合头部分数（Phase 1 使用） |
 | `rerank_score` | float | 精排分数（如有） |
 | `cosine_similarity` | float | 余弦相似度（如有） |
 | `hybrid_score` | float | 混合融合分数（如有） |
+| `_title_matched` | bool | 标题/标签是否匹配查询关键词 |
+| `_owner_matched` | bool | UP主名是否匹配查询 |
+| `_matched_owner_name` | str | 匹配的 UP主 名称（如有） |
 | `highlights` | dict | 高亮信息 |
 | `region_info` | dict | 分区详细信息 |
 
@@ -450,57 +441,102 @@ for author in authors:
 
 ### 测试文件
 
-测试文件位于 `elastics/tests/` 目录：
+测试文件位于 `elastics/tests/` 和 `recalls/tests/` 目录：
 
 ```bash
-# 运行全部测试
+# 综合功能测试
 python -m elastics.tests.test_videos
 
-# 优化测试（6 个代表性查询的 recall + rank 质量评估）
+# 7 查询 recall+rank 质量评估（核心测试）
 python -m elastics.tests.test_optimization_v2
 
-# 诊断脚本
-python -m elastics.tests.diag_deep          # 向量质量诊断
-python -m elastics.tests.diag_float_vs_lsh  # Float vs LSH 对比
-python -m elastics.tests.diag_knn           # KNN 召回诊断
+# 单查询诊断（详细 top-20 输出）
+python -m elastics.tests.diag_single "红警08"
+
+# UP主召回诊断
+python -m elastics.tests.diag_owner_recall
+
+# 与官方 Bilibili 结果对比
+python -m elastics.tests.compare_official
+
+# 向量质量诊断
+python -m elastics.tests.diag_deep
+python -m elastics.tests.diag_float_vs_lsh
+
+# 召回模块单元测试
+python -m pytest recalls/tests/ -v
 ```
+
+### 核心测试查询
+
+`test_optimization_v2` 使用 7 个代表性查询评估系统质量：
+
+| 查询 | 类型 | 评估重点 |
+|------|------|----------|
+| `红警08` | UP主查询 | UP主 `红警HBK08` 内容应占主导 (om_top20≈16) |
+| `小红书推荐系统` | 技术话题 | CJK 连续子串匹配准确性 |
+| `吴恩达大模型` | 混合 (UP主+话题) | UP主内容与话题内容平衡 |
+| `chatgpt` | 纯话题 | 无过度 UP主 提升 |
+| `gta` | 纯话题 | 内容深度惩罚（短标题处理） |
+| `米娜` | 歧义查询 | UP主 `大聪明罗米娜` 不被过度提升 |
+| `蝴蝶刀` | 纯话题 | 数据健壮性（负值/异常数据处理） |
+
+评估指标：
+- **tm_top20**：Top-20 中标题匹配查询的文档数
+- **om_top20**：Top-20 中 UP主 匹配查询的文档数
+- **short_top20**：Top-20 中短标题（≤5 字符）文档数
 
 ### 测试覆盖
 
-测试文件包含以下类别的测试：
-
-| 测试类别 | 测试函数 | 说明 |
-|----------|----------|------|
-| 基础搜索 | `test_search`, `test_filter`, `test_suggest` | 词语搜索基本功能 |
-| KNN 搜索 | `test_knn_search`, `test_knn_search_with_filters` | 向量搜索 |
-| 混合搜索 | `test_hybrid_search`, `test_rrf_fusion_fill` | 混合搜索和融合 |
-| 探索模式 | `test_explore`, `test_knn_explore`, `test_unified_explore` | 多步骤探索 |
-| 过滤搜索 | `test_filter_only_search`, `test_filter_only_explore` | 纯过滤 |
-| 窄过滤器 | `test_narrow_filter_detection`, `test_knn_filter_bug` | 用户/BV 过滤 |
-| 精排 | `test_rerank_step_by_step`, `test_owner_name_keyword_boost` | 精排机制 |
-| 词语召回 | `test_word_recall_supplement`, `test_word_recall_overlap_improvement` | 补充召回 |
-| DSL 解析 | `test_qmod_parser`, `test_dsl_query_construction` | 查询解析 |
-| 分组 | `test_author_grouper_unit`, `test_author_ordering` | UP 主分组 |
-| KNN 召回 | `test_knn_num_candidates_recall` | num_candidates 对召回的影响 |
-| 查询模式 | `test_qmod_recall_comparison` | 各 qmod 模式召回重合度 |
-| 排序质量 | `test_stat_score_in_ranking` | stat_score 参与排序验证 |
-| 优化质量 | `test_optimization_v2` | 6 查询 recall+rank 综合评估 (tm/om/short) |
+| 测试类别 | 文件 | 说明 |
+|----------|------|------|
+| 基础搜索 | `test_videos.py` | 词语/KNN/混合搜索基本功能 |
+| 质量评估 | `test_optimization_v2.py` | 7 查询 recall+rank 质量评估 |
+| 单查询诊断 | `diag_single.py` | 详细 top-20 分析 |
+| UP主召回诊断 | `diag_owner_recall.py` | UP主 分数分布、位置分析 |
+| 官方对比 | `compare_official.py` | 与 Bilibili 官方结果对比 |
+| 向量诊断 | `diag_deep.py`, `diag_float_vs_lsh.py` | 向量质量和 LSH 精度 |
+| 召回单元 | `recalls/tests/test_base.py` | RecallPool 合并逻辑 |
+| 排序单元 | `recalls/tests/test_diversified.py` | 多样化排序逻辑 |
+| 噪声过滤 | `recalls/tests/test_noise.py` | 三层噪声过滤 |
+| 召回优化 | `recalls/tests/test_recall_optimization.py` | 召回优化集成 |
 
 ---
 
 ## 7. 注意事项
 
+### 默认搜索模式
+
+未指定 `q=` 时，默认使用 `QMOD = ["word", "vector"]`（混合搜索），分发到 `hybrid_explore_v2()`。
+
 ### 向量搜索 (q=v) 始终开启精排
 
 `q=v` 模式下精排（rerank）始终开启，即使未显式指定 `r`。这是因为 LSH hamming 距离的分数精度有限（分数集中在 0.01-0.02 的范围内），直接使用 hamming 分数排序效果不佳。精排使用 float 向量的余弦相似度，提供更精细的排序。
 
+### 多样化排序 (diversified) 为默认排序策略
+
+所有 V2 explore 方法默认使用 `diversified` 排序策略（三阶段排序 + UP主意图感知），而不是旧版的 `stats` 或 `tiered` 排序。
+
+### UP主意图自适应
+
+系统会自动检测查询中的 UP主 意图并动态调整排序行为：
+- **强 UP主 意图**（如 `红警08`）：owner_intent_strength ≈ 1.0，UP主 视频获得显著提升
+- **弱 UP主 意图**（如 `米娜`）：intent ≈ 0.3，UP主 匹配适度影响
+- **纯话题查询**（如 `chatgpt`）：intent ≈ 0.1，UP主 匹配几乎不影响排序
+
+这一行为由 RecallPoolOptimizer 分析召回池自动决定，无需用户干预。
+
 ### 实体查询的语义漏召
 
-搜索"影视飓风"（一个 UP 主的名字）时，嵌入模型会将其理解为"影视 + 飓风"，返回与飓风/气象相关的视频。补充词语召回机制通过并行运行关键词搜索来弥补这一不足。
+搜索"影视飓风"（一个 UP 主的名字）时，嵌入模型会将其理解为"影视 + 飓风"，返回与飓风/气象相关的视频。6 车道词语召回中的 `owner_name` 和 `title_match` 车道以及补充词语召回机制通过关键词搜索来弥补这一不足。
 
 ### 窄过滤器自动切换
 
 包含 UP 主过滤器（`u=xxx`）或 BV 号过滤器的查询会自动切换到 filter-first 模式（`dual_sort_filter_search`），避免 KNN 搜索在小结果集上的低效问题。
+
+### 健壮性处理
+
+排序阶段对每条文档的评分使用 try/except 保护，单条文档的异常数据（如负播放量、缺失字段）不会导致整体流程崩溃。`math.log1p` 对负值进行安全处理 (`max(0, value)`)。
 
 ### 环境配置
 
@@ -521,26 +557,15 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `query` | str | — | 查询字符串（可含 DSL 表达式） |
-| `match_fields` | list[str] | `["title.words", "tags.words", "owner.name.words", "desc.words"]` | 搜索匹配字段 |
+| `match_fields` | list[str] | `SEARCH_MATCH_FIELDS` | 搜索匹配字段 |
 | `source_fields` | list[str] | `SOURCE_FIELDS` | 返回的文档字段 |
 | `match_type` | str | `"cross_fields"` | 匹配类型 |
 | `match_bool` | str | `"must"` | 布尔逻辑 |
 | `match_operator` | str | `"or"` | 词语间操作符 |
 | `extra_filters` | list[dict] | `[]` | 额外过滤条件 |
-| `suggest_info` | dict | `{}` | 建议信息 |
-| `request_type` | str | `"search"` | 请求类型 (`"search"` / `"suggest"`) |
-| `parse_hits` | bool | `True` | 是否解析命中结果 |
-| `drop_no_highlights` | bool | `False` | 是否丢弃无高亮结果 |
-| `add_region_info` | bool | `True` | 添加分区信息 |
-| `add_highlights_info` | bool | `True` | 添加高亮汇总 |
-| `is_explain` | bool | `False` | ES explain 模式 |
-| `is_profile` | bool | `False` | ES profile 模式 |
-| `is_highlight` | bool | `True` | 是否启用高亮 |
 | `boost` | bool | `True` | 是否使用字段加权 |
 | `boosted_fields` | dict | `SEARCH_BOOSTED_FIELDS` | 字段权重配置 |
-| `use_script_score` | bool | `False` | 是否使用脚本评分 |
 | `rank_method` | str | `"stats"` | 排序方法 |
-| `score_threshold` | float | `None` | 最低分数阈值 |
 | `limit` | int | `50` | 返回结果数上限 |
 | `rank_top_k` | int | `50` | 排序后取 Top-K |
 | `terminate_after` | int | `2000000` | ES terminate_after |
@@ -552,18 +577,12 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `query` | str | — | 查询字符串 |
-| `source_fields` | list[str] | `SOURCE_FIELDS` | 返回字段 |
-| `extra_filters` | list[dict] | `[]` | 额外过滤 |
 | `knn_field` | str | `"text_emb"` | 向量字段名 |
 | `k` | int | `400` | 每分片返回近邻数 |
 | `num_candidates` | int | `10000` | 每分片候选数 |
-| `similarity` | float | `None` | 最低相似度阈值 |
-| `parse_hits` | bool | `True` | 解析命中 |
-| `add_region_info` | bool | `True` | 分区信息 |
 | `rank_method` | str | `"stats"` | 排序方法 |
 | `limit` | int | `50` | 结果上限 |
 | `rank_top_k` | int | `50` | Top-K |
-| `skip_ranking` | bool | `False` | 跳过排序 |
 | `timeout` | float | `8` | 超时 |
 | `verbose` | bool | `False` | 详细日志 |
 
@@ -574,8 +593,6 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `query` | str | — | 查询字符串 |
 | `fusion_method` | str | `"rrf"` | 融合方法 (`"rrf"` / `"weighted"`) |
 | `rrf_k` | int | `60` | RRF 常数 k |
-| `word_weight` | float | `0.5` | 词语权重 (weighted 模式) |
-| `vector_weight` | float | `0.5` | 向量权重 (weighted 模式) |
 | `knn_k` | int | `400` | KNN 近邻数 |
 | `knn_num_candidates` | int | `10000` | KNN 候选数 |
 | 其余参数 | — | — | 同 search() |
@@ -593,38 +610,25 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `extra_filters` | list[dict] | `[]` | 额外过滤 |
 | `suggest_info` | dict | `{}` | 建议信息 |
 | `verbose` | bool | `False` | 详细日志 |
-| `most_relevant_limit` | int | `10000` | 初始搜索范围 |
-| `rank_method` | str | `"stats"` | 排序方法 |
 | `rank_top_k` | int | `400` | 返回 Top-K |
 | `group_owner_limit` | int | `25` | UP 主分组上限 |
 | `knn_field` | str | `"text_emb"` | KNN 向量字段 |
 | `knn_k` | int | `400` | KNN 近邻数 |
 | `knn_num_candidates` | int | `10000` | KNN 候选数 |
 
-### explore()
+### explore_v2()
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `query` | str | — | 查询字符串 |
-| `query_dsl_dict` | dict | `None` | 预构建的 DSL 字典 |
-| `match_fields` | list[str] | `SEARCH_MATCH_FIELDS` | 匹配字段 |
-| `match_type` | str | `"cross_fields"` | 匹配类型 |
 | `extra_filters` | list[dict] | `[]` | 额外过滤 |
-| `suggest_info` | dict | `{}` | 建议信息 |
 | `boost` | bool | `True` | 字段加权 |
-| `boosted_fields` | dict | `EXPLORE_BOOSTED_FIELDS` | 权重配置 |
 | `verbose` | bool | `False` | 详细日志 |
-| `most_relevant_limit` | int | `10000` | 初始搜索范围 |
-| `rank_method` | str | `"stats"` | 排序方法 |
 | `rank_top_k` | int | `400` | Top-K |
 | `group_owner_limit` | int | `25` | UP 主分组上限 |
 | `enable_rerank` | bool | `False` | 是否精排 |
-| `rerank_max_hits` | int | `2000` | 精排候选上限 |
-| `rerank_keyword_boost` | float | `1.5` | 关键词加权 |
-| `rerank_title_keyword_boost` | float | `2.0` | 标题关键词加权 |
-| `rerank_text_fields` | list[str] | `["title","tags","desc","owner.name"]` | 精排文本字段 |
 
-### knn_explore()
+### knn_explore_v2()
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -634,194 +638,24 @@ explore 方法返回的结果可直接用 FastAPI 的 `jsonable_encoder` 序列�
 | `knn_field` | str | `"text_emb"` | 向量字段 |
 | `knn_k` | int | `400` | 每分片近邻数 |
 | `knn_num_candidates` | int | `10000` | 每分片候选数 |
-| `similarity` | float | `None` | 最低相似度 |
 | `enable_rerank` | bool | `True` | 是否精排 |
-| `rerank_max_hits` | int | `2000` | 精排候选上限 |
-| `rerank_keyword_boost` | float | `1.5` | 关键词加权 |
-| `rerank_title_keyword_boost` | float | `2.0` | 标题关键词加权 |
-| `rerank_text_fields` | list[str] | `["title","tags","desc","owner.name"]` | 精排文本字段 |
 | `word_recall_enabled` | bool | `True` | 启用词语补充召回 |
 | `word_recall_limit` | int | `1000` | 词语搜索上限 |
-| `word_recall_timeout` | float | `3` | 词语搜索超时（秒） |
-| `most_relevant_limit` | int | `10000` | 搜索范围 |
-| `rank_method` | str | `"relevance"` | 排序方法 |
 | `rank_top_k` | int | `400` | Top-K |
 | `group_owner_limit` | int | `25` | UP 主分组上限 |
-| `group_sort_field` | str | `"first_appear_order"` | UP 主排序字段 |
 
-### hybrid_explore()
+### hybrid_explore_v2()
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `query` | str | — | 查询字符串 |
 | `extra_filters` | list[dict] | `[]` | 额外过滤 |
-| `suggest_info` | dict | `{}` | 建议信息 |
 | `verbose` | bool | `False` | 详细日志 |
 | `knn_field` | str | `"text_emb"` | 向量字段 |
 | `knn_k` | int | `400` | KNN 近邻数 |
 | `knn_num_candidates` | int | `10000` | KNN 候选数 |
 | `rrf_k` | int | `60` | RRF 常数 |
 | `fusion_method` | str | `"rrf"` | 融合方法 |
-| `most_relevant_limit` | int | `10000` | 搜索范围 |
-| `rank_method` | str | `"tiered"` | 排序方法 |
 | `rank_top_k` | int | `400` | Top-K |
 | `group_owner_limit` | int | `25` | UP 主分组上限 |
-| `group_sort_field` | str | `"first_appear_order"` | UP 主排序字段 |
 | `enable_rerank` | bool | `False` | 是否精排 |
-| `rerank_max_hits` | int | `2000` | 精排候选上限 |
-
----
-
-## 附录 C: 常量配置速查
-
-> 配置文件：`elastics/videos/constants.py` 和 `ranks/constants.py`
-
-### 搜索字段配置
-
-```python
-# 搜索时使用的匹配字段（.words 子字段，由 es_tok 分词器索引）
-SEARCH_MATCH_FIELDS = ["title.words", "tags.words", "owner.name.words", "desc.words"]
-
-# 字段权重（用于 boosted multi_match / cross_fields）
-SEARCH_BOOSTED_FIELDS = {
-    "title": 3, "title.words": 3,        # 标题权重最高
-    "tags": 2.5, "tags.words": 2.5,      # 标签次之
-    "owner.name": 2, "owner.name.words": 2,  # UP主名
-    "desc": 0.1, "desc.words": 0.1,      # 简介权重较低
-    "title.pinyin": 0.25,                # 拼音（v6 已移除）
-    "tags.pinyin": 0.2,
-    "owner.name.pinyin": 0.2,
-    "desc.pinyin": 0.01,
-}
-```
-
-### KNN 设置
-
-```python
-KNN_TEXT_EMB_FIELD = "text_emb"     # 向量字段
-KNN_K = 400                         # 每分片近邻数
-KNN_NUM_CANDIDATES = 10000          # 每分片候选数 (25× K)
-KNN_TIMEOUT = 8                     # KNN 搜索超时
-KNN_SIMILARITY = "hamming"          # 距离度量
-KNN_LSH_BITN = 2048                 # LSH bit 数
-```
-
-### 词语补充召回
-
-```python
-KNN_WORD_RECALL_ENABLED = True      # 启用
-KNN_WORD_RECALL_LIMIT = 1000        # 词语搜索上限
-KNN_WORD_RECALL_TIMEOUT = 3         # 超时（秒）
-```
-
-### 精排配置
-
-```python
-RERANK_ENABLED = True               # 默认启用
-RERANK_MAX_HITS = 2000              # 最大精排候选
-RERANK_KEYWORD_BOOST = 1.5          # 一般关键词加权
-RERANK_TITLE_KEYWORD_BOOST = 2.0    # 标题关键词加权
-RERANK_TEXT_FIELDS = ["title", "tags", "desc", "owner.name"]
-RERANK_TIMEOUT = 30                 # 精排超时
-RERANK_MAX_PASSAGE_LENGTH = 4096    # 最大段落长度
-```
-
-### 多样化排序配置
-
-```python
-# 标题匹配 & UP主匹配加成
-TITLE_MATCH_BONUS = 0.20            # 标题匹配 relevance 加成
-OWNER_MATCH_BONUS = 0.30            # UP主匹配 relevance 加成（需标题有关键词）
-
-# 内容深度惩罚（抑制超短标题 BM25 膨胀）
-RANK_CONTENT_DEPTH_MIN_FACTOR = 0.30  # 深度因子下限
-RANK_CONTENT_DEPTH_NORM_LENGTH = 20   # 标准化长度（剩余字符数）
-
-# 时长过滤
-RANK_HEADLINE_MIN_DURATION = 30     # Phase 1 最低时长（秒）
-RANK_SLOT_MIN_DURATION = 15         # Phase 2 最低时长（秒）
-
-# 标题关键词惩罚
-RANK_NO_TITLE_KEYWORD_PENALTY = 0.50  # 标题无关键词时 relevance 乘数
-
-# 相关性门控阈值
-HEADLINE_MIN_RELEVANCE = 0.50       # Phase 1 最低 relevance
-SLOT_MIN_RELEVANCE = 0.55           # Phase 2 最低 relevance
-```
-
-### UP主意图检测配置
-
-```python
-# 浓度分析
-OWNER_DOMINANT_MIN_DOCS = 5         # 单一 UP主 最少文档数
-OWNER_DOMINANT_RATIO = 0.15         # 单一 UP主 最低占比
-OWNER_DISPERSE_MAX_OWNERS = 6       # 分散判断：最大匹配 UP主 数
-```
-
----
-
-## 附录 D: 排序策略配置
-
-### stats — 统计排序
-
-```python
-# 分数融合公式: (STATS_BASE + stats_score) × pubdate_score × (relate_score³)
-# stats_score 由 blux.doc_score.DocScorer 计算，有界 ∈ [0, 1)
-# 包含: 饱和评分 (view, like, coin, favorite, danmaku, reply 加权平均) × 异常检测因子
-STATS_BASE = 0.1  # 偏移量，防止零统计量文档被完全压制
-
-# 时效性衰减
-PUBDATE_SCORE_POINTS = [
-    (0, 4.0),    # 今天
-    (7, 1.0),    # 1 周
-    (30, 0.6),   # 1 月
-    (365, 0.3),  # 1 年
-]
-```
-
-### relevance — 纯相关度
-
-```python
-RELEVANCE_MIN_SCORE = 0.4           # 最低分数
-RELEVANCE_SCORE_POWER = 2.0         # 幂变换指数
-HIGH_RELEVANCE_THRESHOLD = 0.85     # 高相关度阈值
-HIGH_RELEVANCE_BOOST = 2.0          # 高相关度加权
-```
-
-### tiered — 分层排序
-
-```python
-TIERED_HIGH_RELEVANCE_THRESHOLD = 0.7   # 高相关区阈值
-TIERED_SIMILARITY_THRESHOLD = 0.05      # 等价相关度阈值
-TIERED_STATS_WEIGHT = 0.7               # 统计权重
-TIERED_RECENCY_WEIGHT = 0.3             # 时效权重
-```
-
-### RRF — 倒数排序融合
-
-```python
-RRF_K = 60                          # RRF 常数
-RRF_WEIGHTS = {
-    "score": 5.0,                   # 相关度 (最高)
-    "pubdate": 2.0,                 # 发布日期
-    "stat.view": 1.0,               # 播放量
-    "stat.favorite": 1.0,           # 收藏数
-    "stat.coin": 1.0,               # 投币数
-}
-```
-
-### diversified — 多样化三阶段排序（默认）
-
-```python
-# Phase 1 权重 (headline_score)
-HEADLINE_WEIGHTS = {"relevance": 0.50, "quality": 0.30, "recency": 0.10, "popularity": 0.10}
-# Phase 2 槽位预设
-SLOT_PRESETS = {
-    "balanced":          {"relevance": 2, "quality": 1, "recency": 1, "popularity": 1},  # 默认
-    "prefer_relevance":  {"relevance": 3, "quality": 1, "recency": 1, "popularity": 1},
-    "prefer_quality":    {"relevance": 1, "quality": 2, "recency": 1, "popularity": 1},
-    "prefer_recency":    {"relevance": 1, "quality": 1, "recency": 3, "popularity": 1},
-}
-# Phase 3 权重 (fused_score)
-FUSED_WEIGHTS = {"relevance": 0.50, "quality": 0.20, "recency": 0.15, "popularity": 0.15}
-```

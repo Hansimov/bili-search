@@ -338,6 +338,7 @@ class VideoExplorer(VideoSearcherV2):
         rerank_title_keyword_boost: float = KNN_RERANK_TITLE_KEYWORD_BOOST,
         extra_filters: list[dict] = [],
         verbose: bool = False,
+        pool_hints: object = None,
     ) -> tuple[dict, dict]:
         """Fetch full docs for recall hits, optionally rerank, then rank.
 
@@ -416,6 +417,7 @@ class VideoExplorer(VideoSearcherV2):
             top_k=rank_top_k,
             prefer=prefer,
             query=query,
+            pool_hints=pool_hints,
         )
 
         # Add char-level highlighting AFTER ranking — only highlights the
@@ -599,6 +601,7 @@ class VideoExplorer(VideoSearcherV2):
             rerank_title_keyword_boost=rerank_title_keyword_boost,
             extra_filters=extra_filters,
             verbose=verbose,
+            pool_hints=recall_pool.pool_hints,
         )
         search_res["total_hits"] = recall_pool.total_hits
         search_res["recall_info"] = recall_pool.lanes_info

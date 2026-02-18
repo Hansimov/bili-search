@@ -1,7 +1,7 @@
 """
 Optimization Test Suite V2
 
-Tests for the 6 target queries to measure recall & rank quality.
+Tests for the 7 target queries to measure recall & rank quality.
 Uses ELASTIC_DEV environment.
 
 Target queries:
@@ -11,6 +11,7 @@ Target queries:
 4. chatgpt - short English keyword (short-text noise issue)
 5. gta - short English keyword (short-text noise issue)
 6. 米娜 - common name (owner over-recall issue)
+7. 蝴蝶刀 - topic keyword (negative stat robustness)
 """
 
 from tclogger import logger
@@ -131,6 +132,7 @@ def test_all_queries():
         "chatgpt",
         "gta",
         "米娜",
+        "蝴蝶刀",
     ]
 
     results = {}

@@ -139,6 +139,12 @@ TITLE_MATCH_BONUS = 0.20  # Added to normalized relevance when title matches que
 # (prevents boosting irrelevant uploads from matching owners).
 OWNER_MATCH_BONUS = 0.30  # Added to normalized relevance for owner-matched docs
 
+# For strong owner intent queries, set a minimum relevance floor for
+# owner-matched docs. This ensures the creator's videos compete with
+# pure BM25 matches even when their titles don't contain the exact query.
+# Scaled by owner_intent_strength: floor = OWNER_RELEVANCE_FLOOR * strength.
+OWNER_RELEVANCE_FLOOR = 0.75
+
 # Title-keyword overlap: when no query keyword appears in the title,
 # the BM25 score comes entirely from non-title fields (owner.name, desc, tags).
 # This suggests the doc's actual content is NOT about the query,

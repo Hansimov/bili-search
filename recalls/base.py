@@ -50,6 +50,7 @@ class RecallPool:
         took_ms: Total wall-clock time for all recalls.
         timed_out: Whether any lane timed out.
         lane_tags: Dict mapping bvid -> set of lane names it came from.
+        pool_hints: Optional optimization hints from RecallPoolOptimizer.
     """
 
     hits: list[dict] = field(default_factory=list)
@@ -58,6 +59,7 @@ class RecallPool:
     took_ms: float = 0.0
     timed_out: bool = False
     lane_tags: dict = field(default_factory=dict)
+    pool_hints: object = None  # Optional[PoolHints] — avoid import cycle
 
     @staticmethod
     def merge(*results: RecallResult) -> "RecallPool":

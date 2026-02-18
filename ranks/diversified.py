@@ -69,6 +69,7 @@ from ranks.constants import (
     RANK_LOW_ENGAGEMENT_PENALTY,
     TITLE_MATCH_BONUS,
     OWNER_MATCH_BONUS,
+    OWNER_RELEVANCE_FLOOR,
     RANK_NO_TITLE_KEYWORD_PENALTY,
     SLOT_RELEVANCE_DECAY_THRESHOLD,
     SLOT_RELEVANCE_DECAY_POWER,
@@ -214,7 +215,11 @@ class DiversifiedRanker:
         return affinity_tags
 
     def _score_all_dimensions(
-        self, hits: list[dict], now_ts: float = None, query: str = ""
+        self,
+        hits: list[dict],
+        now_ts: float = None,
+        query: str = "",
+        pool_hints: object = None,
     ) -> None:
         """Score each hit on all four dimensions + headline quality.
 
@@ -263,7 +268,10 @@ class DiversifiedRanker:
             raw_scores.append(
                 h.get("rerank_score") or h.get("hybrid_score") or h.get("score") or 0
             )
-            raw_views.append(dict_get(h, "stat.view", 0) or 0)
+            # Ensure views are non-negative: corrupted/missing data can have
+            # negative values which cause math.log1p to fail (domain error).
+            view_val = dict_get(h, "stat.view", 0) or 0
+            raw_views.append(max(view_val, 0))
 
         # Max-normalization for relevance (BM25/cosine scores are well-distributed)
         max_score = max(raw_scores) if raw_scores else 1.0
@@ -276,119 +284,277 @@ class DiversifiedRanker:
         if max_log_view <= 0:
             max_log_view = 1.0
 
+        # Pre-compute query analysis (shared across all hits)
+        query_lower = query.lower().strip() if query else ""
+        query_cjk = re.sub(r"[^\u4e00-\u9fff]", "", query_lower) if query_lower else ""
+        q_terms = (
+            [t for t in re.split(r"[\s\-_,，。、/\\|]+", query_lower) if t]
+            if query_lower
+            else []
+        )
+
+        # Analyze owner intent across all hits: compute owner concentration
+        # to dynamically adjust owner_match_bonus.
+        # Prefer pre-computed value from pool_hints (uses _owner_matched flags
+        # from the recall phase which are more accurate than re-analyzing).
+        if pool_hints and hasattr(pool_hints, "owner_analysis"):
+            owner_intent_strength = pool_hints.owner_analysis.intent_strength
+        else:
+            owner_intent_strength = self._analyze_owner_intent_strength(
+                hits, query_lower, query_cjk, q_terms
+            )
+
         for i, hit in enumerate(hits):
-            # Relevance: use best available score, normalized to [0, 1]
-            rel_norm = min(raw_scores[i] / max_score, 1.0) if max_score > 0 else 0.0
+            try:
+                self._score_single_hit(
+                    hit,
+                    i,
+                    raw_scores,
+                    log_views,
+                    max_score,
+                    max_log_view,
+                    now_ts,
+                    query_lower,
+                    query_cjk,
+                    q_terms,
+                    owner_intent_strength,
+                )
+            except Exception:
+                # Robustness: if scoring fails for one hit, assign default
+                # scores so the pipeline doesn't crash.
+                hit.setdefault("relevance_score", 0.0)
+                hit.setdefault("quality_score", 0.0)
+                hit.setdefault("recency_score", 0.0)
+                hit.setdefault("popularity_score", 0.0)
+                hit.setdefault("headline_score", 0.0)
 
-            # Content depth penalty: BM25 inflates scores for ultra-short titles
-            # that are essentially just the query keywords. Penalize relevance
-            # proportionally to how much meaningful content the title adds
-            # beyond the query terms.
-            title = (hit.get("title") or "").strip()
-            query_lower = query.lower().strip()
-            title_lower = title.lower() if title else ""
+    @staticmethod
+    def _analyze_owner_intent_strength(
+        hits: list[dict],
+        query_lower: str,
+        query_cjk: str,
+        q_terms: list[str],
+    ) -> float:
+        """Analyze hits to determine how strongly the query targets an owner.
 
-            # Check how many query tokens appear in the title.
-            # For CJK compound queries like "小红书推荐系统", use the longest
-            # contiguous CJK substring match to handle partial matches.
-            # E.g., "小红书推荐用户及冷启动" contains "小红书推荐" (5/6 CJK chars
-            # from "小红书推荐系统", coverage 83%) → keyword match.
-            title_has_query_keywords = False
-            if title_lower and query_lower:
-                # Extract CJK characters from query
-                query_cjk = re.sub(r"[^\u4e00-\u9fff]", "", query_lower)
+        Returns a value in [0, 1]:
+        - ~1.0 = strong owner intent (e.g., '红警08' → '红警HBK08')
+        - ~0.0 = topic query where owner matches are incidental (e.g., '米娜')
+
+        Uses two complementary signals:
+        1. **Recall-based**: The `_owner_matched` flag from the recall phase,
+           which uses precise token-set matching. This is the primary signal.
+        2. **Concentration analysis**: Among the recall-flagged hits, check
+           whether they're concentrated on 1-2 owners (strong intent) or
+           dispersed across many (topic query).
+
+        This allows dynamic adjustment of OWNER_MATCH_BONUS.
+        """
+        if not query_lower or not hits:
+            return 0.5  # neutral default
+
+        # Primary signal: use _owner_matched flags from recall phase.
+        # These flags were set by _tag_owner_matches() in word.py (precise
+        # token-set + CJK matching) and by _owner_focused_recall in manager.py.
+        owner_match_counts: dict[str, int] = {}
+        total_with_owner_match = 0
+        title_match_count = 0
+
+        for hit in hits:
+            # Count title matches for context
+            title = (hit.get("title") or "").lower()
+            title_has_kw = False
+            if title and q_terms:
                 if len(query_cjk) >= 4:
-                    # Longest contiguous CJK substring match
-                    max_match = 0
                     for start in range(len(query_cjk)):
                         for end in range(start + 2, len(query_cjk) + 1):
-                            if query_cjk[start:end] in title_lower:
-                                max_match = max(max_match, end - start)
-                    title_has_query_keywords = max_match >= len(query_cjk) * 0.5
+                            if query_cjk[start:end] in title:
+                                if end - start >= len(query_cjk) * 0.5:
+                                    title_has_kw = True
+                                    break
+                        if title_has_kw:
+                            break
                 else:
-                    # Short/non-CJK query: full-string match
-                    q_terms = [
-                        t for t in re.split(r"[\s\-_,，。、/\\|]+", query_lower) if t
-                    ]
-                    title_has_query_keywords = any(t in title_lower for t in q_terms)
+                    title_has_kw = any(t in title for t in q_terms)
+            if title_has_kw:
+                title_match_count += 1
 
-            if title and query_lower:
-                # Remove query-like substrings from title to measure "depth"
-                remaining = title_lower
-                for term in re.split(r"[\s\-_,，。、/\\|]+", query_lower):
-                    if term:
-                        remaining = remaining.replace(term, "")
-                # Strip non-alphanumeric debris
-                meaningful_chars = len(re.sub(r"[^\u4e00-\u9fff\w]", "", remaining))
-                depth_factor = min(
-                    meaningful_chars / RANK_CONTENT_DEPTH_NORM_LENGTH, 1.0
-                )
-                depth_factor = max(depth_factor, RANK_CONTENT_DEPTH_MIN_FACTOR)
-                rel_norm *= depth_factor
+            # Use recall-phase _owner_matched flag (already precise)
+            if hit.get("_owner_matched"):
+                owner = hit.get("owner")
+                owner_name = ""
+                if isinstance(owner, dict):
+                    owner_name = (owner.get("name") or "").lower()
+                elif hit.get("_matched_owner_name"):
+                    owner_name = hit["_matched_owner_name"].lower()
+                if owner_name:
+                    owner_match_counts[owner_name] = (
+                        owner_match_counts.get(owner_name, 0) + 1
+                    )
+                total_with_owner_match += 1
 
-            # Title-keyword overlap penalty: if NO query keywords appear in the
-            # title, the BM25 score comes from owner.name/desc/tags — the doc's
-            # actual content is likely NOT about the query.
-            if title_lower and query_lower and not title_has_query_keywords:
+        if total_with_owner_match == 0:
+            return 0.0  # no owner matches → no owner intent
+
+        num_matching_owners = len(owner_match_counts)
+        total_hits = len(hits)
+
+        # Factor 1: Owner concentration (one dominant owner = strong intent)
+        top_owner_count = max(owner_match_counts.values()) if owner_match_counts else 0
+        concentration = top_owner_count / max(total_with_owner_match, 1)
+
+        # Factor 2: Owner diversity (many owners = topic, not owner)
+        # Inverse: more owners → weaker intent
+        diversity_penalty = min(num_matching_owners / 6.0, 1.0)
+
+        # Factor 3: Ratio of owner-matched docs to total
+        owner_ratio = total_with_owner_match / max(total_hits, 1)
+
+        # Combine: strong when concentrated on few owners, weak when dispersed
+        strength = concentration * (1.0 - diversity_penalty * 0.7)
+        # Boost when owner ratio is moderate (not too many, not too few)
+        if num_matching_owners <= 2 and top_owner_count >= 3:
+            strength = min(strength + 0.3, 1.0)
+        # Penalize when too many diverse owners match
+        if num_matching_owners >= 5 and concentration < 0.3:
+            strength *= 0.2
+
+        return max(0.0, min(strength, 1.0))
+
+    def _score_single_hit(
+        self,
+        hit: dict,
+        idx: int,
+        raw_scores: list[float],
+        log_views: list[float],
+        max_score: float,
+        max_log_view: float,
+        now_ts: float,
+        query_lower: str,
+        query_cjk: str,
+        q_terms: list[str],
+        owner_intent_strength: float,
+    ) -> None:
+        """Score a single hit on all dimensions. Extracted for robustness."""
+        # Relevance: use best available score, normalized to [0, 1]
+        rel_norm = min(raw_scores[idx] / max_score, 1.0) if max_score > 0 else 0.0
+
+        # Content depth penalty: BM25 inflates scores for ultra-short titles
+        # that are essentially just the query keywords.
+        title = (hit.get("title") or "").strip()
+        title_lower = title.lower() if title else ""
+
+        # Check how many query tokens appear in the title.
+        title_has_query_keywords = False
+        if title_lower and query_lower:
+            if len(query_cjk) >= 4:
+                # Longest contiguous CJK substring match
+                max_match = 0
+                for start in range(len(query_cjk)):
+                    for end in range(start + 2, len(query_cjk) + 1):
+                        if query_cjk[start:end] in title_lower:
+                            max_match = max(max_match, end - start)
+                title_has_query_keywords = max_match >= len(query_cjk) * 0.5
+            else:
+                # Short/non-CJK query: full-string match
+                title_has_query_keywords = any(t in title_lower for t in q_terms)
+
+        if title and query_lower:
+            # Remove query-like substrings from title to measure "depth"
+            remaining = title_lower
+            for term in q_terms:
+                if term:
+                    remaining = remaining.replace(term, "")
+            # Strip non-alphanumeric debris
+            meaningful_chars = len(re.sub(r"[^\u4e00-\u9fff\w]", "", remaining))
+            depth_factor = min(meaningful_chars / RANK_CONTENT_DEPTH_NORM_LENGTH, 1.0)
+            depth_factor = max(depth_factor, RANK_CONTENT_DEPTH_MIN_FACTOR)
+            rel_norm *= depth_factor
+
+        # Title-keyword overlap penalty: if NO query keywords appear in the
+        # title, the BM25 score comes from owner.name/desc/tags — the doc's
+        # actual content is likely NOT about the query.
+        # Exception: for strong owner intent, owner-recalled docs are exempt
+        # because the user wants content from this creator regardless of title.
+        is_owner_intent_doc = hit.get("_owner_matched") and owner_intent_strength >= 0.6
+        if title_lower and query_lower and not title_has_query_keywords:
+            if not is_owner_intent_doc:
                 rel_norm *= RANK_NO_TITLE_KEYWORD_PENALTY
 
-            # Apply title-match bonus: docs with query in title get a boost
-            if hit.get("_title_matched"):
-                rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
+        # Apply title-match bonus: docs with query in title get a boost
+        if hit.get("_title_matched"):
+            rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
 
-            # Apply owner-match bonus: docs from creators matching query.
-            # Only apply if title also contains query keywords — prevents
-            # boosting irrelevant uploads (e.g., 喜羊羊 from UP "吴恩达大模型课程")
-            if hit.get("_owner_matched") and title_has_query_keywords:
-                rel_norm = min(rel_norm + OWNER_MATCH_BONUS, 1.0)
+        # Apply owner-match bonus: dynamically scaled by owner intent strength.
+        # Strong owner intent (concentrated on few owners): full bonus
+        # Weak owner intent (dispersed across many owners): reduced/zero bonus
+        # For weak intent, require title keywords to prevent boosting
+        # irrelevant uploads. For strong intent, apply unconditionally.
+        if hit.get("_owner_matched"):
+            if is_owner_intent_doc or title_has_query_keywords:
+                effective_owner_bonus = OWNER_MATCH_BONUS * owner_intent_strength
+                rel_norm = min(rel_norm + effective_owner_bonus, 1.0)
 
-            hit["relevance_score"] = round(rel_norm, 4)
+            # For strong owner intent, set a relevance floor so that the
+            # creator's docs can compete with pure BM25 matches. Without
+            # this, owner docs with low BM25 scores (e.g., "红警..." titles
+            # when query is "红警08") get rel_norm ~0.24 and are buried.
+            if is_owner_intent_doc:
+                owner_floor = OWNER_RELEVANCE_FLOOR * owner_intent_strength
+                rel_norm = max(rel_norm, owner_floor)
 
-            # Quality: bounded [0, 1) from DocScorer
-            stats = dict_get(hit, "stat", {})
-            quality = self.stats_scorer.calc(stats)
+        hit["relevance_score"] = round(rel_norm, 4)
 
-            # Apply tiered short-duration penalty
-            duration = hit.get("duration", 0) or 0
-            if 0 < duration < RANK_VERY_SHORT_DURATION_THRESHOLD:
-                quality *= RANK_VERY_SHORT_DURATION_PENALTY
-            elif 0 < duration < RANK_SHORT_DURATION_THRESHOLD:
-                quality *= RANK_SHORT_DURATION_PENALTY
+        # Quality: bounded [0, 1) from DocScorer
+        stats = dict_get(hit, "stat", {})
+        if not isinstance(stats, dict):
+            stats = {}
+        quality = self.stats_scorer.calc(stats)
 
-            # Apply short-title penalty: very short titles indicate low-effort content
-            title = hit.get("title", "") or ""
-            if 0 < len(title) < RANK_SHORT_TITLE_THRESHOLD:
-                quality *= RANK_SHORT_TITLE_PENALTY
+        # Apply tiered short-duration penalty
+        duration = hit.get("duration", 0) or 0
+        if not isinstance(duration, (int, float)):
+            try:
+                duration = int(duration)
+            except (ValueError, TypeError):
+                duration = 0
+        if 0 < duration < RANK_VERY_SHORT_DURATION_THRESHOLD:
+            quality *= RANK_VERY_SHORT_DURATION_PENALTY
+        elif 0 < duration < RANK_SHORT_DURATION_THRESHOLD:
+            quality *= RANK_SHORT_DURATION_PENALTY
 
-            # Apply low-engagement penalty: few views indicate low-value content
-            views = dict_get(hit, "stat.view", 0) or 0
-            if views < RANK_LOW_ENGAGEMENT_THRESHOLD:
-                quality *= RANK_LOW_ENGAGEMENT_PENALTY
+        # Apply short-title penalty: very short titles indicate low-effort content
+        if 0 < len(title) < RANK_SHORT_TITLE_THRESHOLD:
+            quality *= RANK_SHORT_TITLE_PENALTY
 
-            hit["quality_score"] = round(quality, 4)
+        # Apply low-engagement penalty: few views indicate low-value content
+        views = max(dict_get(hit, "stat.view", 0) or 0, 0)
+        if views < RANK_LOW_ENGAGEMENT_THRESHOLD:
+            quality *= RANK_LOW_ENGAGEMENT_PENALTY
 
-            # Recency: normalized time factor [0, 1]
-            pubdate = dict_get(hit, "pubdate", 0)
-            time_factor = self.pubdate_scorer.calc(pubdate, now_ts=now_ts)
-            hit["recency_score"] = round(self.pubdate_scorer.normalize(time_factor), 4)
-            hit["time_factor"] = round(time_factor, 4)
+        hit["quality_score"] = round(quality, 4)
 
-            # Popularity: log-scale normalization
-            hit["popularity_score"] = round(log_views[i] / max_log_view, 4)
+        # Recency: normalized time factor [0, 1]
+        pubdate = dict_get(hit, "pubdate", 0) or 0
+        time_factor = self.pubdate_scorer.calc(pubdate, now_ts=now_ts)
+        hit["recency_score"] = round(self.pubdate_scorer.normalize(time_factor), 4)
+        hit["time_factor"] = round(time_factor, 4)
 
-            # Headline quality: composite score for top-3 selection
-            w = HEADLINE_WEIGHTS
-            headline = (
-                w["relevance"] * hit["relevance_score"]
-                + w["quality"] * hit["quality_score"]
-                + w["recency"] * hit["recency_score"]
-                + w["popularity"] * hit["popularity_score"]
-            )
-            # Owner match bonus in headline: boost owner-matched docs visibility
-            # (only if the title contains query keywords — same guard as relevance)
-            if hit.get("_owner_matched") and title_has_query_keywords:
-                headline += 0.10
-            hit["headline_score"] = round(headline, 4)
+        # Popularity: log-scale normalization
+        hit["popularity_score"] = round(log_views[idx] / max_log_view, 4)
+
+        # Headline quality: composite score for top-3 selection
+        w = HEADLINE_WEIGHTS
+        headline = (
+            w["relevance"] * hit["relevance_score"]
+            + w["quality"] * hit["quality_score"]
+            + w["recency"] * hit["recency_score"]
+            + w["popularity"] * hit["popularity_score"]
+        )
+        # Owner match bonus in headline: scaled by intent strength
+        if hit.get("_owner_matched") and title_has_query_keywords:
+            headline += 0.10 * owner_intent_strength
+        hit["headline_score"] = round(headline, 4)
 
     def _select_headline_top_n(
         self,
@@ -659,6 +825,7 @@ class DiversifiedRanker:
         diversify_top_n: int = 10,
         headline_top_n: int = HEADLINE_TOP_N,
         query: str = "",
+        pool_hints: object = None,
     ) -> dict:
         """Three-phase ranking: headline → diversified → fused.
 
@@ -698,7 +865,9 @@ class DiversifiedRanker:
         now_ts = _time.time()
 
         # Score all dimensions (relevance, quality, recency, popularity, headline)
-        self._score_all_dimensions(hits, now_ts=now_ts, query=query)
+        self._score_all_dimensions(
+            hits, now_ts=now_ts, query=query, pool_hints=pool_hints
+        )
 
         # Pseudo-relevance feedback: extract dominant tags from top docs
         # to boost topically coherent results in phase 3 fused scoring.

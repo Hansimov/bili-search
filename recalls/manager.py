@@ -20,6 +20,7 @@ from tclogger import logger
 from recalls.base import RecallPool, RecallResult
 from recalls.word import MultiLaneWordRecall
 from recalls.vector import VectorRecall
+from recalls.optimizer import RecallPoolOptimizer, PoolHints
 from ranks.constants import EXPLORE_RANK_TOP_K
 
 
@@ -45,6 +46,7 @@ class RecallManager:
     def __init__(self):
         self.word_recall = MultiLaneWordRecall()
         self.vector_recall = VectorRecall()
+        self.optimizer = RecallPoolOptimizer()
 
     def recall(
         self,
@@ -147,11 +149,22 @@ class RecallManager:
 
         pool.took_ms = round((time.perf_counter() - start) * 1000, 2)
 
+        # =====================================================================
+        # Post-processing: Analyze pool for optimization hints
+        # =====================================================================
+        pool_hints = self.optimizer.analyze(
+            hits=pool.hits,
+            query=query,
+            lane_tags=pool.lane_tags,
+        )
+        pool.pool_hints = pool_hints
+
         if verbose:
             logger.mesg(
                 f"  RecallManager final: {len(pool.hits)} candidates "
                 f"in {pool.took_ms:.0f}ms"
             )
+            logger.mesg(f"  Pool hints: {pool_hints.summary}")
 
         return pool
 
@@ -503,6 +516,10 @@ class RecallManager:
         fetch more content from that creator to ensure they're well-represented
         in the candidate pool.
 
+        Owner-recalled docs get a synthetic BM25-like score based on the
+        existing pool's score distribution. This prevents them from being
+        ranked at the very bottom due to having score=0 from the filter query.
+
         Args:
             pool: Current recall pool.
             searcher: VideoSearcherV2 instance.
@@ -521,6 +538,21 @@ class RecallManager:
 
         if verbose:
             logger.mesg(f"  Owner intent detected: {owner_names[:3]}")
+
+        # Compute synthetic score for owner-recalled docs: use the median
+        # score from the existing pool. This ensures owner docs compete
+        # fairly with regular recalls in the ranking phase.
+        pool_scores = sorted(
+            [h.get("score", 0) or 0 for h in pool.hits if (h.get("score") or 0) > 0],
+            reverse=True,
+        )
+        if pool_scores:
+            # Use the score at the 25th percentile — high enough that
+            # owner docs compete with real BM25 matches after normalization.
+            p25_idx = min(int(len(pool_scores) * 0.25), len(pool_scores) - 1)
+            synthetic_score = pool_scores[p25_idx]
+        else:
+            synthetic_score = 1.0
 
         existing_bvids = {h.get("bvid") for h in pool.hits if h.get("bvid")}
         all_new_hits = []
@@ -560,7 +592,10 @@ class RecallManager:
                 owner_hits = []
                 for rh in raw_hits:
                     src = rh.get("_source", {})
-                    src["score"] = rh.get("_score") or 0
+                    # Filter queries produce no _score, so assign a
+                    # synthetic score derived from the existing pool.
+                    es_score = rh.get("_score")
+                    src["score"] = es_score if es_score else synthetic_score
                     owner_hits.append(src)
 
                 # Tag and add only new docs
