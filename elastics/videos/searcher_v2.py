@@ -1283,6 +1283,7 @@ class VideoSearcherV2:
         self,
         query_vector: list[int],
         filter_clauses: list[dict] = None,
+        constraint_filter: dict = None,
         source_fields: list[str] = SOURCE_FIELDS,
         knn_field: str = KNN_TEXT_EMB_FIELD,
         k: int = KNN_K,
@@ -1297,6 +1298,8 @@ class VideoSearcherV2:
         Args:
             query_vector: Query vector as byte array (signed int8 list).
             filter_clauses: Filter clauses to apply during KNN search.
+            constraint_filter: Optional es_tok_constraints query dict for
+                token-level filtering via the es-tok plugin.
             source_fields: Fields to include in _source.
             knn_field: The dense_vector field to search.
             k: Number of nearest neighbors to return.
@@ -1315,6 +1318,7 @@ class VideoSearcherV2:
             k=k,
             num_candidates=num_candidates,
             filter_clauses=filter_clauses,
+            constraint_filter=constraint_filter,
             similarity=similarity,
         )
 
@@ -1334,6 +1338,7 @@ class VideoSearcherV2:
         query: str,
         source_fields: list[str] = SOURCE_FIELDS,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         knn_field: str = KNN_TEXT_EMB_FIELD,
         k: int = KNN_K,
         num_candidates: int = KNN_NUM_CANDIDATES,
@@ -1360,6 +1365,8 @@ class VideoSearcherV2:
             query: Query string (can include DSL expressions for filtering).
             source_fields: Fields to include in results.
             extra_filters: Additional filter clauses.
+            constraint_filter: Optional es_tok_constraints query dict for
+                token-level filtering via the es-tok plugin.
             knn_field: The dense_vector field to search.
             k: Number of nearest neighbors.
             num_candidates: Candidates per shard.
@@ -1475,6 +1482,7 @@ class VideoSearcherV2:
         search_body = self.construct_knn_search_body(
             query_vector=query_vector,
             filter_clauses=filter_clauses if filter_clauses else None,
+            constraint_filter=constraint_filter,
             source_fields=source_fields,
             knn_field=knn_field,
             k=k,
@@ -1570,6 +1578,7 @@ class VideoSearcherV2:
         match_fields: list[str] = SEARCH_MATCH_FIELDS,
         match_type: MATCH_TYPE = SEARCH_MATCH_TYPE,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         suggest_info: dict = {},
         # Word search params
         boost: bool = True,
@@ -1608,6 +1617,8 @@ class VideoSearcherV2:
             match_fields: Fields for word matching.
             match_type: Type of matching for word search.
             extra_filters: Additional filter clauses.
+            constraint_filter: Optional es_tok_constraints query dict for
+                token-level filtering via the es-tok plugin.
             suggest_info: Suggestion info from previous searches.
             boost: Whether to boost fields.
             boosted_fields: Field boost weights.
@@ -1697,6 +1708,7 @@ class VideoSearcherV2:
             "query": query,
             "source_fields": source_fields,
             "extra_filters": extra_filters,
+            "constraint_filter": constraint_filter,
             "knn_field": knn_field,
             "k": knn_limit,  # k must be <= num_candidates
             "num_candidates": knn_num_candidates,

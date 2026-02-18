@@ -33,6 +33,10 @@ SEARCH_MATCH_FIELDS = [
     # *SEARCH_MATCH_FIELDS_PINYIN,
 ]
 
+# constraint fields: fields checked by es_tok_constraints KNN pre-filter.
+# Using title.words and tags.words gives the best precision for filtering.
+CONSTRAINT_FIELDS_DEFAULT = ["title.words", "tags.words"]
+
 # suggest match fields
 SUGGEST_MATCH_FIELDS_DFAULT = ["title", "tags", "owner.name"]
 SUGGEST_MATCH_FIELDS_WORDS = [f"{field}.words" for field in SUGGEST_MATCH_FIELDS_DFAULT]

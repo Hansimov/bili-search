@@ -156,6 +156,59 @@ def test_recall_pool_merge_skips_no_bvid():
     logger.success("  PASSED")
 
 
+def test_recall_pool_merge_max_score():
+    """When merging, duplicate docs should get the MAX score across lanes.
+
+    This ensures that a doc appearing in both KNN (low hamming score) and
+    word supplement (high BM25 score) gets the BM25 score, preventing the
+    noise filter from discarding relevant candidates.
+    """
+    logger.note("> Test: RecallPool.merge uses max score")
+
+    # KNN lane: low hamming similarity score
+    r1 = RecallResult(
+        hits=[_make_hit("BV001", score=0.62, title="飓风营救")],
+        lane="knn",
+    )
+    # Word supplement: high BM25 score
+    r2 = RecallResult(
+        hits=[_make_hit("BV001", score=93.77, title="飓风营救")],
+        lane="word_supplement",
+    )
+
+    pool = RecallPool.merge(r1, r2)
+
+    assert len(pool.hits) == 1
+    hit = pool.hits[0]
+
+    # Should get the MAX score (BM25 93.77, not KNN 0.62)
+    assert hit["score"] == 93.77, f"Expected max score 93.77, got {hit['score']}"
+
+    # First occurrence's non-score data preserved
+    assert hit["title"] == "飓风营救"
+
+    # Both lane ranks present
+    assert hit["knn_rank"] == 0
+    assert hit["word_supplement_rank"] == 0
+
+    # Tagged with both lanes
+    assert pool.lane_tags["BV001"] == {"knn", "word_supplement"}
+
+    # Also test: first lane has HIGHER score (should preserve it)
+    r3 = RecallResult(
+        hits=[_make_hit("BV002", score=50.0)],
+        lane="word",
+    )
+    r4 = RecallResult(
+        hits=[_make_hit("BV002", score=0.5)],
+        lane="knn",
+    )
+    pool2 = RecallPool.merge(r3, r4)
+    assert pool2.hits[0]["score"] == 50.0, "Max score should be from first lane"
+
+    logger.success("  PASSED")
+
+
 def test_recall_pool_merge_four_lanes():
     """Test merging all 4 lanes as in the multi-lane recall scenario."""
     logger.note("> Test: RecallPool.merge 4-lane scenario")
@@ -220,5 +273,6 @@ if __name__ == "__main__":
     test_recall_pool_merge_timeout_propagation()
     test_recall_pool_merge_empty()
     test_recall_pool_merge_skips_no_bvid()
+    test_recall_pool_merge_max_score()
     test_recall_pool_merge_four_lanes()
     logger.success("\n✓ All recalls/base tests passed")

@@ -113,6 +113,14 @@ class RecallPool:
                     merged_hits[idx][rank_key] = rank
                     lane_tags[bvid].add(lane_name)
 
+                    # Use the max score across lanes so noise filter
+                    # doesn't discard relevant docs due to a low KNN
+                    # hamming score overriding a high BM25 score.
+                    existing_score = merged_hits[idx].get("score", 0) or 0
+                    new_score = hit.get("score", 0) or 0
+                    if new_score > existing_score:
+                        merged_hits[idx]["score"] = new_score
+
         # Store lane tags in hits for downstream use
         for hit in merged_hits:
             bvid = hit.get("bvid")

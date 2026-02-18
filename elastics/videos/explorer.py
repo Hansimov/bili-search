@@ -4,7 +4,8 @@ from tclogger import logger
 from typing import Union
 
 from converters.highlight.char_match import get_char_highlighter
-from elastics.videos.constants import EXPLORE_TIMEOUT
+from elastics.structure import build_auto_constraint_filter
+from elastics.videos.constants import CONSTRAINT_FIELDS_DEFAULT, EXPLORE_TIMEOUT
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
 from elastics.videos.constants import QMOD
@@ -370,17 +371,10 @@ class VideoExplorer(VideoSearcherV2):
         # Merge recall scores into full docs
         self.merge_scores_into_hits(full_hits, recall_hits)
 
-        # Add char-level highlighting
+        # Parse query info (needed for both reranking and highlighting)
         query_info = self.query_rewriter.get_query_info(query)
         keywords_body = query_info.get("keywords_body", [])
         embed_text = " ".join(keywords_body) if keywords_body else query
-        char_highlighter = get_char_highlighter()
-        char_highlighter.add_highlights_to_hits(
-            hits=full_hits,
-            keywords=embed_text,
-            fields=["title", "tags", "desc", "owner.name"],
-            tag="hit",
-        )
 
         # Optional reranking
         rerank_info = {}
@@ -411,7 +405,7 @@ class VideoExplorer(VideoSearcherV2):
                     "perf": rerank_perf,
                 }
 
-        # Apply ranking
+        # Apply ranking (trims to rank_top_k)
         full_doc_res["hits"] = full_hits
         full_doc_res = self.hit_ranker.rank(
             full_doc_res,
@@ -419,7 +413,23 @@ class VideoExplorer(VideoSearcherV2):
             top_k=rank_top_k,
             prefer=prefer,
         )
+
+        # Add char-level highlighting AFTER ranking — only highlights the
+        # final ranked results instead of all recall candidates. This is safe
+        # because neither the reranker nor the ranker reads highlight fields.
+        highlight_start = time.perf_counter()
+        ranked_hits = full_doc_res.get("hits", [])
+        char_highlighter = get_char_highlighter()
+        char_highlighter.add_highlights_to_hits(
+            hits=ranked_hits,
+            keywords=embed_text,
+            fields=["title", "tags", "desc", "owner.name"],
+            tag="hit",
+        )
+        highlight_ms = round((time.perf_counter() - highlight_start) * 1000, 2)
+
         full_doc_res["fetch_ms"] = fetch_ms
+        full_doc_res["highlight_ms"] = highlight_ms
 
         return full_doc_res, rerank_info
 
@@ -452,6 +462,7 @@ class VideoExplorer(VideoSearcherV2):
         recall_mode: str,
         step_name: str,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         suggest_info: dict = {},
         verbose: bool = False,
         rank_method: RANK_METHOD_TYPE = RANK_METHOD,
@@ -542,6 +553,8 @@ class VideoExplorer(VideoSearcherV2):
             timeout=recall_timeout,
             verbose=verbose,
         )
+        if constraint_filter:
+            recall_kwargs["constraint_filter"] = constraint_filter
         if recall_source_fields:
             recall_kwargs["source_fields"] = recall_source_fields
         if suggest_info:
@@ -585,9 +598,14 @@ class VideoExplorer(VideoSearcherV2):
         )
         search_res["total_hits"] = recall_pool.total_hits
         search_res["recall_info"] = recall_pool.lanes_info
+        perf["fetch_ms"] = search_res.get("fetch_ms", 0)
+        perf["highlight_ms"] = search_res.get("highlight_ms", 0)
+        perf["recall_candidates"] = len(recall_pool.hits)
         steps.update_step(step, search_res)
 
         if rerank_info:
+            perf["rerank_ms"] = rerank_info.get("rerank_ms", 0)
+            perf["reranked_count"] = rerank_info.get("reranked_count", 0)
             steps.add_step(
                 "rerank",
                 output=rerank_info,
@@ -665,6 +683,7 @@ class VideoExplorer(VideoSearcherV2):
         self,
         query: str,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         verbose: bool = False,
         # KNN params
         knn_field: str = KNN_TEXT_EMB_FIELD,
@@ -685,6 +704,7 @@ class VideoExplorer(VideoSearcherV2):
             recall_mode="vector",
             step_name="knn_search",
             extra_filters=extra_filters,
+            constraint_filter=constraint_filter,
             verbose=verbose,
             rank_method=rank_method,
             rank_top_k=rank_top_k,
@@ -702,6 +722,7 @@ class VideoExplorer(VideoSearcherV2):
         self,
         query: str,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         suggest_info: dict = {},
         verbose: bool = False,
         # KNN params
@@ -723,6 +744,7 @@ class VideoExplorer(VideoSearcherV2):
             recall_mode="hybrid",
             step_name="hybrid_search",
             extra_filters=extra_filters,
+            constraint_filter=constraint_filter,
             suggest_info=suggest_info,
             verbose=verbose,
             rank_method=rank_method,
@@ -752,6 +774,8 @@ class VideoExplorer(VideoSearcherV2):
         query: str,
         qmod: Union[str, list[str]] = None,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
+        auto_constraint: bool = True,
         suggest_info: dict = {},
         verbose: bool = False,
         # Common explore params
@@ -792,6 +816,13 @@ class VideoExplorer(VideoSearcherV2):
             query: Query string.
             qmod: Override mode(s).
             extra_filters: Additional filter clauses.
+            constraint_filter: Explicit constraint filter. If provided, used
+                as-is. If None and auto_constraint is True, one is built
+                automatically from the query's tokenization.
+            auto_constraint: When True and constraint_filter is None, auto-
+                build a constraint filter from query tokens using the index
+                tokenizer. This dramatically improves precision for compound
+                queries by ensuring KNN results contain the key terms.
             suggest_info: Suggestion info.
             verbose: Enable verbose logging.
             most_relevant_limit: Max docs for searches.
@@ -822,11 +853,34 @@ class VideoExplorer(VideoSearcherV2):
         has_vector = "vector" in qmod
         enable_rerank = has_rerank_qmod(qmod)
 
+        # Auto-build constraint filter for vector/hybrid modes
+        if constraint_filter is None and auto_constraint and has_vector:
+            try:
+                # Extract raw keywords (without DSL modifiers like q=v)
+                query_info = self.query_rewriter.get_query_info(query)
+                keywords_body = query_info.get("keywords_body", [])
+                raw_query = " ".join(keywords_body) if keywords_body else ""
+                if raw_query:
+                    constraint_filter = build_auto_constraint_filter(
+                        es_client=self.es.client,
+                        index_name=self.index_name,
+                        query=raw_query,
+                        fields=CONSTRAINT_FIELDS_DEFAULT,
+                    )
+                    if constraint_filter:
+                        logger.hint(
+                            f"> Auto-constraint: {constraint_filter}",
+                            verbose=verbose,
+                        )
+            except Exception as e:
+                logger.warn(f"Auto-constraint build failed: {e}")
+
         if is_hybrid:
             # Hybrid mode: combined word+vector recall + diversified ranking
             result = self.hybrid_explore_v2(
                 query=query,
                 extra_filters=extra_filters,
+                constraint_filter=constraint_filter,
                 suggest_info=suggest_info,
                 verbose=verbose,
                 knn_field=knn_field,
@@ -845,6 +899,7 @@ class VideoExplorer(VideoSearcherV2):
             result = self.knn_explore_v2(
                 query=query,
                 extra_filters=extra_filters,
+                constraint_filter=constraint_filter,
                 verbose=verbose,
                 knn_field=knn_field,
                 rank_method=rank_method,

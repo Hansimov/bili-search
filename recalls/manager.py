@@ -43,6 +43,7 @@ class RecallManager:
         mode: str = "word",
         source_fields: list[str] = None,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         suggest_info: dict = {},
         knn_field: str = "text_emb",
         timeout: float = 5.0,
@@ -56,6 +57,8 @@ class RecallManager:
             mode: Recall mode - "word", "vector", or "hybrid".
             source_fields: Fields to retrieve from ES.
             extra_filters: Additional filter clauses.
+            constraint_filter: Optional es_tok_constraints query dict for
+                token-level filtering via the es-tok plugin.
             suggest_info: Suggestion info for query rewriting.
             knn_field: Dense vector field for KNN.
             timeout: Timeout per search in seconds.
@@ -77,13 +80,23 @@ class RecallManager:
                 verbose=verbose,
             )
         elif mode == "vector":
+            # When constraint_filter is active, KNN results already contain
+            # the query's covering tokens (high precision). The word supplement
+            # mainly catches BM25-relevant docs outside embedding range.
+            # Reduce its limit to speed up downstream fetch/rerank.
+            word_limit = None
+            if constraint_filter:
+                word_limit = max(200, self.vector_recall.word_recall_limit // 2)
+
             pool = self.vector_recall.recall(
                 searcher=searcher,
                 query=query,
                 source_fields=source_fields,
                 extra_filters=extra_filters,
+                constraint_filter=constraint_filter,
                 knn_field=knn_field,
                 enable_word_supplement=True,
+                word_recall_limit=word_limit,
                 timeout=timeout,
                 verbose=verbose,
             )
@@ -104,6 +117,7 @@ class RecallManager:
                 query=query,
                 source_fields=source_fields,
                 extra_filters=extra_filters,
+                constraint_filter=constraint_filter,
                 knn_field=knn_field,
                 enable_word_supplement=False,  # Word recall already done above
                 timeout=timeout,

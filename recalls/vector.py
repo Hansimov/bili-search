@@ -58,8 +58,10 @@ class VectorRecall:
         query: str,
         source_fields: list[str],
         extra_filters: list[dict],
+        limit: int = None,
     ) -> RecallResult:
         """Run supplemental word recall in parallel with KNN."""
+        effective_limit = limit if limit is not None else self.word_recall_limit
         start = time.perf_counter()
         try:
             res = searcher.search(
@@ -72,8 +74,8 @@ class VectorRecall:
                 is_highlight=False,
                 boost=True,
                 rank_method="heads",
-                limit=self.word_recall_limit,
-                rank_top_k=self.word_recall_limit,
+                limit=effective_limit,
+                rank_top_k=effective_limit,
                 timeout=self.word_recall_timeout,
                 verbose=False,
             )
@@ -96,8 +98,9 @@ class VectorRecall:
         query: str,
         source_fields: list[str],
         extra_filters: list[dict],
-        knn_field: str,
-        timeout: float,
+        constraint_filter: dict = None,
+        knn_field: str = "text_emb",
+        timeout: float = 8.0,
     ) -> RecallResult:
         """Run KNN vector search."""
         start = time.perf_counter()
@@ -106,6 +109,7 @@ class VectorRecall:
                 query=query,
                 source_fields=source_fields,
                 extra_filters=extra_filters,
+                constraint_filter=constraint_filter,
                 knn_field=knn_field,
                 k=self.knn_k,
                 num_candidates=self.num_candidates,
@@ -180,8 +184,10 @@ class VectorRecall:
         query: str,
         source_fields: list[str] = None,
         extra_filters: list[dict] = [],
+        constraint_filter: dict = None,
         knn_field: str = "text_emb",
         enable_word_supplement: bool = True,
+        word_recall_limit: int = None,
         timeout: float = 8.0,
         verbose: bool = False,
     ) -> RecallPool:
@@ -192,8 +198,12 @@ class VectorRecall:
             query: Search query.
             source_fields: Fields to retrieve.
             extra_filters: Additional filter clauses.
+            constraint_filter: Optional es_tok_constraints query dict for
+                token-level filtering via the es-tok plugin.
             knn_field: Dense vector field name.
             enable_word_supplement: Whether to run word recall in parallel.
+            word_recall_limit: Override word supplement limit. If None, uses
+                self.word_recall_limit.
             timeout: Timeout for KNN search.
             verbose: Enable verbose logging.
 
@@ -243,6 +253,7 @@ class VectorRecall:
                     query=query,
                     source_fields=source_fields,
                     extra_filters=extra_filters,
+                    constraint_filter=constraint_filter,
                     knn_field=knn_field,
                     timeout=timeout,
                 )
@@ -255,6 +266,7 @@ class VectorRecall:
                         query=query,
                         source_fields=source_fields,
                         extra_filters=extra_filters,
+                        limit=word_recall_limit,
                     )
 
                 # Collect results
