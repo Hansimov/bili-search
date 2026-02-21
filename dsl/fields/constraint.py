@@ -292,6 +292,63 @@ class ConstraintTreeConverter:
 
         return constraints, expr_tree
 
+    def normalize_constraints_in_tree(
+        self, expr_tree: DslExprNode
+    ) -> tuple[list[str], list[str], DslExprNode]:
+        """Normalize constraint word_exprs in the expression tree.
+
+        For `+token` (must-include): extract the text and remove the atom from
+        the tree. The caller should add these as individual bool.filter clauses,
+        ensuring each +token is independently required (AND semantics).
+
+        For `-token`/`!token` (must-exclude): extract the text and remove the
+        atom from the tree. The caller should add these as bool.must_not
+        clauses using the same query mechanism as regular word search.
+
+        Regular (unprefixed) words remain in the tree and go through the normal
+        query pipeline (merged into a single es_tok_query_string query).
+
+        Args:
+            expr_tree: The full expression tree (will be modified in-place).
+
+        Returns:
+            Tuple of:
+            - must_have_texts: list of text strings that must be present (from + tokens)
+            - must_not_texts: list of text strings to exclude (from - tokens)
+            - modified expr_tree: constraint tokens removed, regular words kept
+        """
+        word_expr_nodes = expr_tree.find_all_childs_with_key("word_expr")
+        constraint_word_nodes = [
+            n for n in word_expr_nodes if is_constraint_word_expr(n)
+        ]
+
+        if not constraint_word_nodes:
+            return [], [], expr_tree
+
+        must_have_texts = []
+        must_not_texts = []
+
+        for word_node in constraint_word_nodes:
+            pp_key = get_constraint_pp_key(word_node)
+            text = get_constraint_text(word_node)
+            if not text:
+                continue
+
+            if pp_key == "pl":
+                # +token: extract text and remove atom from tree
+                must_have_texts.append(text)
+                atom_node = word_node.find_parent_with_key("atom")
+                if atom_node and atom_node.parent:
+                    atom_node.disconnect_from_parent()
+            elif pp_key in ["mi", "nq"]:
+                # -token/!token: extract text and remove atom from tree
+                must_not_texts.append(text)
+                atom_node = word_node.find_parent_with_key("atom")
+                if atom_node and atom_node.parent:
+                    atom_node.disconnect_from_parent()
+
+        return must_have_texts, must_not_texts, expr_tree
+
 
 def constraints_to_filter(constraints: list[dict], fields: list[str] = None) -> dict:
     """Convert a list of constraint dicts to an es_tok_constraints filter.

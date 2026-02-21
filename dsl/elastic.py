@@ -15,9 +15,9 @@ from dsl.fields.word import WordExprElasticConverter
 from dsl.fields.word import WordNodeToExprConstructor
 from dsl.fields.bool import BoolElasticReducer
 from dsl.fields.qmod import QmodExprElasticConverter
-from dsl.fields.constraint import ConstraintTreeConverter, constraints_to_filter
+from dsl.fields.constraint import ConstraintTreeConverter
 from elastics.videos.constants import SEARCH_MATCH_TYPE, QUERY_TYPE_DEFAULT
-from elastics.videos.constants import CONSTRAINT_FIELDS_DEFAULT
+from elastics.videos.constants import SEARCH_MATCH_FIELDS
 
 BMM = BM_MAP[QUERY_TYPE_DEFAULT]["BM"]
 BMMQ = BM_MAP[QUERY_TYPE_DEFAULT]["BMQ"]
@@ -147,35 +147,51 @@ class DslExprToElasticConverter:
     def expr_tree_to_dict(
         self,
         expr_tree: DslExprNode,
-        constraint_fields: list[str] = None,
     ) -> dict:
         expr_tree = self.flatter.flatten(expr_tree)
-        # Extract constraint word_exprs (+token, -token) before regular conversion
-        constraints, expr_tree = (
-            self.constraint_converter.extract_constraints_with_bool_structure(expr_tree)
+        # Normalize constraint word_exprs:
+        #   +token → extract text, remove from tree (added as constraint below)
+        #   -token → extract text, remove from tree (added as constraint below)
+        # Regular words remain in the tree and merge into the main query.
+        must_have_texts, must_not_texts, expr_tree = (
+            self.constraint_converter.normalize_constraints_in_tree(expr_tree)
         )
         elastic_dict = self.node_to_elastic_dict(expr_tree)
-        # If constraints were found, add them as es_tok_constraints filter
-        if constraints:
-            fields = constraint_fields or CONSTRAINT_FIELDS_DEFAULT
-            constraint_filter = constraints_to_filter(constraints, fields=fields)
-            # Merge constraint filter into the elastic dict's bool.filter
+
+        # Build es_tok_constraints for +/- tokens.
+        # Uses exact token matching (have_token) instead of analyzed query_string,
+        # ensuring "达芬奇" matches as a complete token — not partial sub-tokens
+        # like "达芬". All constraints go into a single es_tok_constraints dict
+        # in bool.filter.
+        if must_have_texts or must_not_texts:
+            constraints = []
+            for text in must_have_texts:
+                constraints.append({"have_token": [text]})
+            for text in must_not_texts:
+                constraints.append({"NOT": {"have_token": [text]}})
+            constraint_filter = {
+                "es_tok_constraints": {
+                    "constraints": constraints,
+                    "fields": SEARCH_MATCH_FIELDS,
+                }
+            }
+
             if not elastic_dict:
-                elastic_dict = {"bool": {"filter": constraint_filter}}
-            else:
-                bool_dict = elastic_dict.setdefault("bool", {})
-                existing_filter = bool_dict.get("filter", None)
-                if existing_filter is None:
-                    bool_dict["filter"] = constraint_filter
-                elif isinstance(existing_filter, list):
-                    existing_filter.append(constraint_filter)
-                elif isinstance(existing_filter, dict):
-                    bool_dict["filter"] = [existing_filter, constraint_filter]
+                elastic_dict = {"bool": {}}
+            bool_dict = elastic_dict.setdefault("bool", {})
+            existing_filter = bool_dict.get("filter", None)
+            if existing_filter is None:
+                bool_dict["filter"] = constraint_filter
+            elif isinstance(existing_filter, list):
+                existing_filter.append(constraint_filter)
+            elif isinstance(existing_filter, dict):
+                bool_dict["filter"] = [existing_filter, constraint_filter]
+
         return elastic_dict
 
-    def expr_to_dict(self, expr: str, constraint_fields: list[str] = None) -> dict:
+    def expr_to_dict(self, expr: str) -> dict:
         expr_tree = self.construct_expr_tree(expr)
-        return self.expr_tree_to_dict(expr_tree, constraint_fields=constraint_fields)
+        return self.expr_tree_to_dict(expr_tree)
 
 
 class DslTreeToExprConstructor(DslExprToElasticConverter):

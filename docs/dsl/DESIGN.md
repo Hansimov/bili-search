@@ -63,14 +63,18 @@ Input Query String
 atom > pa (parentheses) > and > co (implicit AND) > or
 ```
 
-### Token Constraints (New)
-Words with `+`/`-` prefixes are treated as token constraints, not regular word matches:
-- `+token` → `es_tok_constraints` with `have_token`
-- `-token` → `es_tok_constraints` with `NOT have_token`
+### Token Constraints
+Words with `+`/`-` prefixes are treated as token constraints:
+- `+token` → converted to a regular word in the search query (same matching as normal words)
+- `-token` → converted to a `bool.must_not` clause using the same query mechanism
 
-This allows combining keyword search with precise token filtering:
+Both use `es_tok_query_string` with all search match fields, ensuring consistent
+analyzer behavior and full field coverage. This replaces the old approach of using
+`es_tok_constraints` with `have_token` which did exact token-level matching and
+bypassed the analyzer — causing poor recall for mixed-script tokens.
+
 ```
-世界 +影视飓风 -广告    → search "世界" + must have "影视飓风" + must NOT have "广告"
+世界 +影视飓风 -广告    → search "世界 影视飓风" + must NOT match "广告"
 ```
 
 ### Query Mode (qmod)

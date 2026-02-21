@@ -49,11 +49,13 @@ The DSL is designed for programmatic generation by LLM agents during search and 
 
 ### Constraint-Based Filtering
 
-Token constraints (`+`/`-`) map to `es_tok_constraints` for efficient token-level filtering.
-They work independently from keyword search and are especially useful for:
+Token constraints (`+`/`-`) are handled through the same query mechanism as regular words:
+- `+token`: Becomes a regular word in the search query (same analyzer, same fields)
+- `-token`: Added as a `bool.must_not` clause (excluded from results)
+
+They are especially useful for:
 
 - **Precision**: Ensure results contain or exclude specific tokens
-- **KNN filtering**: Applied as pre-filters during vector search
 - **Iterative refinement**: Add/remove constraints without changing the main query
 
 ### Query Mode Control
@@ -93,12 +95,6 @@ converter = DslExprToElasticConverter()
 # Simple query
 result = converter.expr_to_dict("影视飓风 v>10k")
 
-# With constraints
+# With constraints (+token included in query, -token excluded via must_not)
 result = converter.expr_to_dict("+影视飓风 -广告 v>10k")
-
-# Custom constraint fields
-result = converter.expr_to_dict(
-    "+影视飓风",
-    constraint_fields=["title.words", "tags.words"]
-)
 ```

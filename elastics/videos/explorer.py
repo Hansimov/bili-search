@@ -877,20 +877,31 @@ class VideoExplorer(VideoSearcherV2):
             try:
                 # Extract raw keywords (without DSL modifiers like q=v)
                 query_info = self.query_rewriter.get_query_info(query)
-                keywords_body = query_info.get("keywords_body", [])
-                raw_query = " ".join(keywords_body) if keywords_body else ""
-                if raw_query:
-                    constraint_filter = build_auto_constraint_filter(
-                        es_client=self.es.client,
-                        index_name=self.index_name,
-                        query=raw_query,
-                        fields=CONSTRAINT_FIELDS_DEFAULT,
+
+                # Use DSL-specified constraint_filter (+/-tokens) if available
+                dsl_constraint = query_info.get("constraint_filter", {})
+                if dsl_constraint:
+                    constraint_filter = dsl_constraint
+                    logger.hint(
+                        f"> DSL constraint: {constraint_filter}",
+                        verbose=verbose,
                     )
-                    if constraint_filter:
-                        logger.hint(
-                            f"> Auto-constraint: {constraint_filter}",
-                            verbose=verbose,
+                else:
+                    # Fall back to auto-building from keywords
+                    keywords_body = query_info.get("keywords_body", [])
+                    raw_query = " ".join(keywords_body) if keywords_body else ""
+                    if raw_query:
+                        constraint_filter = build_auto_constraint_filter(
+                            es_client=self.es.client,
+                            index_name=self.index_name,
+                            query=raw_query,
+                            fields=CONSTRAINT_FIELDS_DEFAULT,
                         )
+                        if constraint_filter:
+                            logger.hint(
+                                f"> Auto-constraint: {constraint_filter}",
+                                verbose=verbose,
+                            )
             except Exception as e:
                 logger.warn(f"Auto-constraint build failed: {e}")
 

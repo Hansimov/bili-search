@@ -818,7 +818,13 @@ def test_constraint_unit():
 
 
 def test_constraint_simple():
-    """Test simple +/- token constraint ES conversion."""
+    """Test simple +/- token constraint ES conversion.
+
+    With the new approach:
+    - +token → es_tok_constraints with have_token in bool.filter (exact match)
+    - -token → es_tok_constraints with NOT have_token in bool.filter (exact match)
+    - Both +/- go into a single es_tok_constraints dict
+    """
     logger.note("TEST: Token Constraints (Simple)")
     logger.note("=" * 60)
 
@@ -830,53 +836,73 @@ def test_constraint_simple():
     passed = 0
     failed = 0
 
-    def has_constraint(d):
-        return "es_tok_constraints" in str(d) if d else False
+    CT = "es_tok_constraints"
 
-    def has_have_token(d, token):
-        s = str(d)
-        return f"'have_token': ['{token}']" in s or f'"have_token": ["{token}"]' in s
+    def get_constraints(d):
+        """Extract constraints list from the es_tok_constraints in bool.filter."""
+        filt = d.get("bool", {}).get("filter", {})
+        if isinstance(filt, dict):
+            return filt.get(CT, {}).get("constraints", [])
+        elif isinstance(filt, list):
+            for f in filt:
+                if CT in f:
+                    return f[CT].get("constraints", [])
+        return []
 
-    def has_not_have_token(d, token):
-        s = str(d)
-        return ("'NOT'" in s or '"NOT"' in s) and (
-            f"'have_token': ['{token}']" in s or f'"have_token": ["{token}"]' in s
-        )
+    def has_have_token(d, text):
+        """Check that constraints include have_token for text."""
+        for c in get_constraints(d):
+            if c.get("have_token") == [text]:
+                return True
+        return False
+
+    def has_not_have_token(d, text):
+        """Check that constraints include NOT have_token for text."""
+        for c in get_constraints(d):
+            not_c = c.get("NOT", {})
+            if not_c.get("have_token") == [text]:
+                return True
+        return False
+
+    def has_constraint_filter(d):
+        """Check that bool.filter contains es_tok_constraints."""
+        filt = d.get("bool", {}).get("filter", {})
+        return CT in str(filt)
 
     test_cases = [
         (
             "+影视飓风",
-            "have_token constraint",
-            lambda d: has_constraint(d) and has_have_token(d, "影视飓风"),
+            "+constraint → es_tok_constraints with have_token",
+            lambda d: has_have_token(d, "影视飓风") and has_constraint_filter(d),
         ),
         (
             "-广告",
-            "NOT have_token constraint",
-            lambda d: has_constraint(d) and has_not_have_token(d, "广告"),
+            "-constraint → es_tok_constraints with NOT have_token",
+            lambda d: has_not_have_token(d, "广告") and has_constraint_filter(d),
         ),
         (
             "!广告",
-            "! → NOT have_token constraint",
-            lambda d: has_constraint(d) and has_not_have_token(d, "广告"),
+            "! → es_tok_constraints with NOT have_token (same as -)",
+            lambda d: has_not_have_token(d, "广告") and has_constraint_filter(d),
         ),
         (
             "+影视飓风 -小米",
-            "AND of +/-",
-            lambda d: has_constraint(d)
-            and has_have_token(d, "影视飓风")
-            and has_not_have_token(d, "小米"),
+            "+/- mix: single es_tok_constraints with both",
+            lambda d: has_have_token(d, "影视飓风")
+            and has_not_have_token(d, "小米")
+            and len(get_constraints(d)) == 2,
         ),
         (
             '+"影视飓风"',
-            "quoted +constraint",
-            lambda d: has_constraint(d) and has_have_token(d, "影视飓风"),
+            "quoted +constraint → es_tok_constraints with have_token",
+            lambda d: has_have_token(d, "影视飓风") and has_constraint_filter(d),
         ),
         (
             '+"影视飓风" !"李四维"',
-            "two constraints",
-            lambda d: has_constraint(d)
-            and has_have_token(d, "影视飓风")
-            and has_not_have_token(d, "李四维"),
+            "two constraints: have_token + NOT have_token",
+            lambda d: has_have_token(d, "影视飓风")
+            and has_not_have_token(d, "李四维")
+            and len(get_constraints(d)) == 2,
         ),
     ]
 
@@ -895,7 +921,13 @@ def test_constraint_simple():
 
 
 def test_constraint_mixed():
-    """Test token constraints mixed with regular word search and filters."""
+    """Test token constraints mixed with regular word search and filters.
+
+    With the new approach:
+    - +token becomes es_tok_constraints with have_token in bool.filter
+    - -token becomes es_tok_constraints with NOT have_token in bool.filter
+    - Regular words use es_tok_query_string in bool.must
+    """
     logger.note("TEST: Token Constraints (Mixed)")
     logger.note("=" * 60)
 
@@ -907,50 +939,57 @@ def test_constraint_mixed():
     passed = 0
     failed = 0
 
+    CT = "es_tok_constraints"
+
     test_cases = [
         (
             '世界 +"影视飓风" -小米',
-            "word search + constraints → must + filter with es_tok_constraints",
+            "word + +constraint + -constraint → must + es_tok_constraints filter",
             lambda d: (
                 "bool" in d
-                and "must" in d["bool"]
                 and "filter" in d["bool"]
-                and "es_tok_constraints" in str(d)
+                and CT in str(d["bool"]["filter"])
+                and "影视飓风" in str(d["bool"]["filter"])
+                and "小米" in str(d["bool"]["filter"])
+                and "世界" in str(d["bool"].get("must", {}))
             ),
         ),
         (
             "+影视飓风 -小米 v>10k",
-            "constraints + stat filter → filter has both",
+            "constraints + stat filter → es_tok_constraints + range in filter",
             lambda d: (
                 "bool" in d
                 and "filter" in d["bool"]
-                and "es_tok_constraints" in str(d)
+                and CT in str(d["bool"]["filter"])
+                and "影视飓风" in str(d["bool"]["filter"])
+                and "小米" in str(d["bool"]["filter"])
                 and "range" in str(d)
             ),
         ),
         (
             "影视飓风 d=2024",
-            "no +/- prefix → no es_tok_constraints",
-            lambda d: "es_tok_constraints" not in str(d),
+            "no +/- → no es_tok_constraints",
+            lambda d: CT not in str(d),
         ),
         (
             "+影视飓风 u=何同学",
-            "constraint + user filter",
+            "+constraint + user filter → es_tok_constraints + term in filter",
             lambda d: (
                 "bool" in d
-                and "filter" in d["bool"]
-                and "es_tok_constraints" in str(d)
+                and CT in str(d["bool"].get("filter", {}))
+                and "影视飓风" in str(d["bool"]["filter"])
                 and ("term" in str(d) or "terms" in str(d))
             ),
         ),
         (
             "世界 +影视飓风 u!=[何同学] v>10k",
-            "word + constraint + user exclusion + stat",
+            "word + constraint + user exclusion + stat → es_tok_constraints in filter",
             lambda d: (
                 "bool" in d
-                and "must" in d["bool"]
                 and "filter" in d["bool"]
-                and "es_tok_constraints" in str(d)
+                and "世界" in str(d["bool"].get("must", {}))
+                and CT in str(d["bool"]["filter"])
+                and "影视飓风" in str(d["bool"]["filter"])
             ),
         ),
     ]
@@ -970,7 +1009,12 @@ def test_constraint_mixed():
 
 
 def test_constraint_boolean():
-    """Test complex boolean constraint expressions."""
+    """Test complex boolean constraint expressions.
+
+    With the new approach, +tokens become es_tok_constraints (have_token)
+    and -tokens become es_tok_constraints (NOT have_token).
+    Boolean structure is preserved for regular words.
+    """
     logger.note("TEST: Token Constraints (Boolean)")
     logger.note("=" * 60)
 
@@ -982,26 +1026,35 @@ def test_constraint_boolean():
     passed = 0
     failed = 0
 
+    CT = "es_tok_constraints"
+
     test_cases = [
         (
             "(+影视飓风 & +小米) | (+小米 & -苹果)",
-            "OR of AND constraints",
-            lambda d: "'OR'" in str(d) and "'AND'" in str(d),
+            "OR of AND groups with constraints",
+            lambda d: (
+                "bool" in d and CT in str(d) and "苹果" in str(d) and "小米" in str(d)
+            ),
         ),
         (
             "+A & +B",
-            "explicit AND of constraints",
-            lambda d: "es_tok_constraints" in str(d),
+            "two + constraints → es_tok_constraints with 2 have_token",
+            lambda d: (
+                "bool" in d
+                and CT in str(d["bool"].get("filter", {}))
+                and "A" in str(d["bool"]["filter"])
+                and "B" in str(d["bool"]["filter"])
+            ),
         ),
         (
             "+A | +B",
-            "OR of constraints",
-            lambda d: "'OR'" in str(d) and "es_tok_constraints" in str(d),
+            "OR of + constraints → OR structure",
+            lambda d: ("bool" in d and "should" in d["bool"] and CT in str(d)),
         ),
         (
             '(+"雷军" || +"小米") (+"影视飓风" || +"tim")',
-            "two OR groups → constraints extracted",
-            lambda d: "es_tok_constraints" in str(d),
+            "two OR groups of + → OR structure with constraints",
+            lambda d: ("bool" in d and "should" in str(d) and CT in str(d)),
         ),
     ]
 
@@ -1020,7 +1073,12 @@ def test_constraint_boolean():
 
 
 def test_constraint_fields():
-    """Test that constraint fields parameter works correctly."""
+    """Test that constraints use the correct fields and format.
+
+    With the new approach, +/- constraints use es_tok_constraints with
+    have_token/NOT have_token for exact token matching.
+    The constraint fields should include all search match fields.
+    """
     logger.note("TEST: Token Constraints (Fields)")
     logger.note("=" * 60)
 
@@ -1032,25 +1090,59 @@ def test_constraint_fields():
     passed = 0
     failed = 0
 
-    # Default fields
-    d_default = converter.expr_to_dict("+影视飓风")
-    s_default = str(d_default)
-    if "'title.words'" in s_default and "'tags.words'" in s_default:
-        logger.mesg(f"{ok} Default fields: title.words, tags.words")
+    CT = "es_tok_constraints"
+    all_fields = ["title.words", "tags.words", "owner.name.words", "desc.words"]
+
+    # +constraint uses es_tok_constraints with all search match fields
+    d_plus = converter.expr_to_dict("+影视飓风")
+    filt = d_plus.get("bool", {}).get("filter", {})
+    constraint_fields = filt.get(CT, {}).get("fields", [])
+    if set(constraint_fields) == set(all_fields):
+        logger.mesg(f"{ok} +constraint uses all search match fields")
         passed += 1
     else:
-        logger.fail(f"{fail} Default fields not found: {d_default}")
+        logger.fail(f"{fail} +constraint fields: {constraint_fields}")
         failed += 1
 
-    # Custom fields
-    custom_fields = ["description.words"]
-    d_custom = converter.expr_to_dict("+影视飓风", constraint_fields=custom_fields)
-    s_custom = str(d_custom)
-    if "'description.words'" in s_custom and "'title.words'" not in s_custom:
-        logger.mesg(f"{ok} Custom fields: description.words (no default)")
+    # +constraint uses have_token (exact match, not es_tok_query_string)
+    constraints = filt.get(CT, {}).get("constraints", [])
+    if len(constraints) == 1 and constraints[0].get("have_token") == ["影视飓风"]:
+        logger.mesg(f"{ok} +constraint uses have_token for exact match")
         passed += 1
     else:
-        logger.fail(f"{fail} Custom fields not applied: {d_custom}")
+        logger.fail(f"{fail} +constraint format wrong: {constraints}")
+        failed += 1
+
+    # -constraint uses NOT have_token
+    d_minus = converter.expr_to_dict("-广告")
+    filt_m = d_minus.get("bool", {}).get("filter", {})
+    constraints_m = filt_m.get(CT, {}).get("constraints", [])
+    if len(constraints_m) == 1 and constraints_m[0].get("NOT", {}).get(
+        "have_token"
+    ) == ["广告"]:
+        logger.mesg(f"{ok} -constraint uses NOT have_token for exact match")
+        passed += 1
+    else:
+        logger.fail(f"{fail} -constraint format wrong: {constraints_m}")
+        failed += 1
+
+    # Combined +A -B has single es_tok_constraints with 2 constraints
+    d_both = converter.expr_to_dict("+A -B")
+    filt_b = d_both.get("bool", {}).get("filter", {})
+    constraints_b = filt_b.get(CT, {}).get("constraints", [])
+    if len(constraints_b) == 2:
+        logger.mesg(f"{ok} +A -B has single es_tok_constraints with 2 constraints")
+        passed += 1
+    else:
+        logger.fail(f"{fail} +A -B constraints count: {len(constraints_b)}")
+        failed += 1
+
+    # No es_tok_query_string in constraint output
+    if "es_tok_query_string" not in str(d_both):
+        logger.mesg(f"{ok} No es_tok_query_string in constraint-only output")
+        passed += 1
+    else:
+        logger.fail(f"{fail} Unexpected es_tok_query_string: {d_both}")
         failed += 1
 
     logger.note(f"Constraint fields: {passed} passed, {failed} failed")
@@ -1172,31 +1264,260 @@ def test_constraint_tree_converter():
         logger.fail(f"{fail} node_to_constraint(+A | +B): {or_constraint}")
         failed += 1
 
-    # --- extract_constraints_with_bool_structure: simple ---
+    # --- extract via normalize_constraints_in_tree: simple ---
     simple_tree = converter.construct_expr_tree("+X -Y")
     flat_simple = converter.flatter.flatten(simple_tree)
-    constraints, remaining = ctc.extract_constraints_with_bool_structure(flat_simple)
-    if len(constraints) >= 1:
-        logger.mesg(
-            f"{ok} extract_constraints(+X -Y): {len(constraints)} constraint(s)"
-        )
+    must_have_texts, must_not_texts, remaining = ctc.normalize_constraints_in_tree(
+        flat_simple
+    )
+    if len(must_have_texts) == 1 and must_have_texts[0] == "X":
+        logger.mesg(f"{ok} normalize_constraints(+X -Y): must_have=['X']")
         passed += 1
     else:
-        logger.fail(f"{fail} extract_constraints(+X -Y): {constraints}")
+        logger.fail(f"{fail} normalize_constraints(+X -Y): must_have={must_have_texts}")
         failed += 1
 
-    # --- extract_constraints_with_bool_structure: no constraints ---
-    no_constraint_tree = converter.construct_expr_tree("hello world")
-    flat_nc = converter.flatter.flatten(no_constraint_tree)
-    nc_constraints, nc_remaining = ctc.extract_constraints_with_bool_structure(flat_nc)
-    if len(nc_constraints) == 0:
-        logger.mesg(f"{ok} extract_constraints(hello world): 0 constraints")
+    if len(must_not_texts) == 1 and must_not_texts[0] == "Y":
+        logger.mesg(f"{ok} normalize_constraints(+X -Y): must_not=['Y']")
         passed += 1
     else:
-        logger.fail(f"{fail} extract_constraints(hello world): {nc_constraints}")
+        logger.fail(f"{fail} normalize_constraints(+X -Y): must_not={must_not_texts}")
+        failed += 1
+
+    # --- normalize_constraints_in_tree: no constraints ---
+    no_constraint_tree = converter.construct_expr_tree("hello world")
+    flat_nc = converter.flatter.flatten(no_constraint_tree)
+    nc_must_have, nc_must_not, nc_remaining = ctc.normalize_constraints_in_tree(flat_nc)
+    if len(nc_must_have) == 0 and len(nc_must_not) == 0:
+        logger.mesg(f"{ok} normalize_constraints(hello world): 0 must_have, 0 must_not")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} normalize_constraints(hello world): must_have={nc_must_have}, must_not={nc_must_not}"
+        )
         failed += 1
 
     logger.note(f"ConstraintTreeConverter: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_constraint_regression():
+    """Test specific constraint bugs that were fixed.
+
+    Bug 1 (v1→v3): `08 +V神` originally used es_tok_constraints/have_token
+    which was exact-only → switched to es_tok_query_string (partial match) →
+    now uses es_tok_constraints again but with proper handling.
+
+    Bug 2: `-token` must check all 4 search fields via NOT have_token.
+
+    Bug 3: `+08 +V神` must produce different query from `08 V神` (AND semantics
+    via independent have_token constraints, not merged query_string).
+
+    Bug 4: `+达芬奇 +影视飓风` must use exact token matching (have_token),
+    not analyzed matching (es_tok_query_string) which causes partial matches.
+    """
+    logger.note("TEST: Constraint Regression (Bug Fixes)")
+    logger.note("=" * 60)
+
+    from dsl.elastic import DslExprToElasticConverter
+    from dsl.rewrite import DslExprRewriter
+    import json
+
+    converter = DslExprToElasticConverter()
+    rewriter = DslExprRewriter()
+    ok = logstr.okay("✓")
+    fail = logstr.fail("×")
+    passed = 0
+    failed = 0
+
+    CT = "es_tok_constraints"
+    ALL_FIELDS = ["title.words", "tags.words", "owner.name.words", "desc.words"]
+
+    # --- Bug 1 (v3): `08 +V神` should have V神 as constraint, 08 as must ---
+    d_plain = converter.expr_to_dict("08 V神")
+    d_plus = converter.expr_to_dict("08 +V神")
+    # They should differ: +V神 is a constraint, not a regular word
+    if json.dumps(d_plain, sort_keys=True) != json.dumps(d_plus, sort_keys=True):
+        logger.mesg(f"{ok} '08 +V神' differs from '08 V神' (constraint vs must)")
+        passed += 1
+    else:
+        logger.fail(f"{fail} '08 +V神' should differ from '08 V神'")
+        failed += 1
+
+    # Check that +V神 is in es_tok_constraints filter
+    if CT in str(d_plus.get("bool", {}).get("filter", {})):
+        logger.mesg(f"{ok} '08 +V神': V神 is in es_tok_constraints filter")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '08 +V神': V神 not in constraint filter: {json.dumps(d_plus, ensure_ascii=False)}"
+        )
+        failed += 1
+
+    # Check that 08 is in bool.must
+    if "08" in str(d_plus.get("bool", {}).get("must", {})):
+        logger.mesg(f"{ok} '08 +V神': 08 is in bool.must")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '08 +V神': 08 not in must: {json.dumps(d_plus, ensure_ascii=False)}"
+        )
+        failed += 1
+
+    # --- Bug 2: `-85` must use NOT have_token with all search fields ---
+    d_exclude = converter.expr_to_dict("+08 V神 -85")
+    filt = d_exclude.get("bool", {}).get("filter", {})
+    if isinstance(filt, dict):
+        filt_constraints = filt
+    elif isinstance(filt, list):
+        filt_constraints = next((f for f in filt if CT in f), {})
+    else:
+        filt_constraints = {}
+    constraint_fields = filt_constraints.get(CT, {}).get("fields", [])
+    if set(constraint_fields) == set(ALL_FIELDS):
+        logger.mesg(f"{ok} constraints check all 4 search fields")
+        passed += 1
+    else:
+        logger.fail(f"{fail} constraint fields: {constraint_fields} (expected all 4)")
+        failed += 1
+
+    # -85 should be NOT have_token
+    constraints_list = filt_constraints.get(CT, {}).get("constraints", [])
+    has_not_85 = any(
+        c.get("NOT", {}).get("have_token") == ["85"] for c in constraints_list
+    )
+    if has_not_85:
+        logger.mesg(f"{ok} '-85' uses NOT have_token")
+        passed += 1
+    else:
+        logger.fail(f"{fail} '-85' NOT have_token not found: {constraints_list}")
+        failed += 1
+
+    # --- All constraint output uses es_tok_constraints ---
+    for q in ["08 +V神", "+08 V神 -85", "+A -B", "-only"]:
+        d = converter.expr_to_dict(q)
+        if CT in str(d):
+            logger.mesg(f"{ok} '{q}' uses es_tok_constraints")
+            passed += 1
+        else:
+            logger.fail(f"{fail} '{q}' missing es_tok_constraints: {d}")
+            failed += 1
+
+    # --- Bug 3: `+08 +V神` must differ from `08 V神` (AND semantics) ---
+    d_both_plus = converter.expr_to_dict("+08 +V神")
+    d_both_plain = converter.expr_to_dict("08 V神")
+    if json.dumps(d_both_plus, sort_keys=True) != json.dumps(
+        d_both_plain, sort_keys=True
+    ):
+        logger.mesg(f"{ok} '+08 +V神' differs from '08 V神' (AND vs OR)")
+        passed += 1
+    else:
+        logger.fail(f"{fail} '+08 +V神' should differ from '08 V神'")
+        failed += 1
+
+    # Each +token should be an independent have_token constraint
+    filt_both = d_both_plus.get("bool", {}).get("filter", {})
+    filt_str = str(filt_both)
+    if "08" in filt_str and "V神" in filt_str and CT in filt_str:
+        logger.mesg(f"{ok} '+08 +V神': both tokens in es_tok_constraints")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '+08 +V神': tokens missing: {json.dumps(d_both_plus, ensure_ascii=False)}"
+        )
+        failed += 1
+
+    # Constraints list should have 2 have_token entries
+    both_constraints = filt_both.get(CT, {}).get("constraints", [])
+    if len(both_constraints) == 2 and all("have_token" in c for c in both_constraints):
+        logger.mesg(f"{ok} '+08 +V神': 2 independent have_token constraints")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '+08 +V神': expected 2 have_token, got: {both_constraints}"
+        )
+        failed += 1
+
+    # --- Bug 4: `+达芬奇 +影视飓风` uses have_token (exact), not query_string ---
+    d_exact = converter.expr_to_dict("+达芬奇 +影视飓风")
+    if CT in str(d_exact) and "es_tok_query_string" not in str(d_exact):
+        logger.mesg(
+            f"{ok} '+达芬奇 +影视飓风' uses es_tok_constraints, not es_tok_query_string"
+        )
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '+达芬奇 +影视飓风': wrong query type: {json.dumps(d_exact, ensure_ascii=False)}"
+        )
+        failed += 1
+
+    exact_filt = d_exact.get("bool", {}).get("filter", {})
+    exact_constraints = exact_filt.get(CT, {}).get("constraints", [])
+    has_dafinqi = any(c.get("have_token") == ["达芬奇"] for c in exact_constraints)
+    has_yingsj = any(c.get("have_token") == ["影视飓风"] for c in exact_constraints)
+    if has_dafinqi and has_yingsj:
+        logger.mesg(f"{ok} '+达芬奇 +影视飓风': exact have_token for each")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '+达芬奇 +影视飓风': missing have_token: {exact_constraints}"
+        )
+        failed += 1
+
+    # --- keywords_body should include +token text, exclude -tokens ---
+    info = rewriter.get_query_info("08 +V神")
+    kb = info["keywords_body"]
+    if kb == ["08", "V神"]:
+        logger.mesg(f"{ok} keywords_body('08 +V神') = {kb}")
+        passed += 1
+    else:
+        logger.fail(f"{fail} keywords_body('08 +V神') = {kb} (expected ['08', 'V神'])")
+        failed += 1
+
+    info2 = rewriter.get_query_info("+08 V神 -85")
+    kb2 = info2["keywords_body"]
+    if kb2 == ["08", "V神"]:
+        logger.mesg(f"{ok} keywords_body('+08 V神 -85') = {kb2} (-85 excluded)")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} keywords_body('+08 V神 -85') = {kb2} (expected ['08', 'V神'])"
+        )
+        failed += 1
+
+    # --- constraint_filter should be returned from get_query_info ---
+    info3 = rewriter.get_query_info("+达芬奇 -广告")
+    cf = info3.get("constraint_filter", {})
+    if CT in cf:
+        logger.mesg(f"{ok} get_query_info('+达芬奇 -广告') returns constraint_filter")
+        passed += 1
+    else:
+        logger.fail(f"{fail} get_query_info missing constraint_filter: {cf}")
+        failed += 1
+
+    cf_constraints = cf.get(CT, {}).get("constraints", [])
+    has_df = any(c.get("have_token") == ["达芬奇"] for c in cf_constraints)
+    has_not_gg = any(
+        c.get("NOT", {}).get("have_token") == ["广告"] for c in cf_constraints
+    )
+    if has_df and has_not_gg:
+        logger.mesg(f"{ok} constraint_filter has correct have_token and NOT")
+        passed += 1
+    else:
+        logger.fail(f"{fail} constraint_filter wrong: {cf_constraints}")
+        failed += 1
+
+    # --- No constraint_filter for queries without +/- ---
+    info4 = rewriter.get_query_info("影视飓风")
+    cf4 = info4.get("constraint_filter", {})
+    if not cf4:
+        logger.mesg(f"{ok} No constraint_filter for query without +/-")
+        passed += 1
+    else:
+        logger.fail(f"{fail} Unexpected constraint_filter: {cf4}")
+        failed += 1
+
+    logger.note(f"Constraint regression: {passed} passed, {failed} failed")
     return failed == 0
 
 
@@ -1272,6 +1593,7 @@ def run_all_tests():
     results.append(
         run_test_suite("Constraint Tree Converter", test_constraint_tree_converter)
     )
+    results.append(run_test_suite("Constraint Regression", test_constraint_regression))
     results.append(run_test_suite("Query Mode", test_qmod))
     results.append(run_test_suite("Edge Cases", test_edge_cases))
 
