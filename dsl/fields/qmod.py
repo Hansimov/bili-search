@@ -25,8 +25,8 @@ reranking to the fused results for improved precision.
 
 from typing import Literal, Union
 
-from converters.dsl.node import DslExprNode
-from converters.dsl.constants import QMOD_CHARS
+from dsl.node import DslExprNode
+from dsl.constants import QMOD_CHARS
 
 
 # Single query mode types (retrieval modes)
@@ -257,7 +257,7 @@ def extract_qmod_from_expr_tree(expr_tree: DslExprNode) -> list[str]:
 
 def test_qmod_parser():
     """Test qmod parsing."""
-    from converters.dsl.elastic import DslExprToElasticConverter
+    from dsl.elastic import DslExprToElasticConverter
     from tclogger import logger
 
     converter = DslExprToElasticConverter()
@@ -291,4 +291,4 @@ def test_qmod_parser():
 if __name__ == "__main__":
     test_qmod_parser()
 
-    # python -m converters.dsl.fields.qmod
+    # python -m dsl.fields.qmod

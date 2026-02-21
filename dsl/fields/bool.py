@@ -1,7 +1,7 @@
 from collections import defaultdict
 
-from converters.dsl.constants import ES_BOOL_OPS, ES_BOOL_OP_TYPE, MSM
-from converters.dsl.constants import MSM, BM_MAP
+from dsl.constants import ES_BOOL_OPS, ES_BOOL_OP_TYPE, MSM
+from dsl.constants import MSM, BM_MAP
 from elastics.videos.constants import QUERY_TYPE_DEFAULT
 
 BMM = BM_MAP[QUERY_TYPE_DEFAULT]["BM"]

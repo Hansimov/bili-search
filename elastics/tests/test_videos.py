@@ -410,11 +410,11 @@ def test_unified_explore():
 
 def test_qmod_parser():
     """Test qmod parsing from DSL."""
-    from converters.dsl.fields.qmod import (
+    from dsl.fields.qmod import (
         extract_qmod_from_expr_tree,
         QMOD,
     )
-    from converters.dsl.elastic import DslExprToElasticConverter
+    from dsl.elastic import DslExprToElasticConverter
 
     converter = DslExprToElasticConverter()
     test_cases = [
@@ -2033,11 +2033,11 @@ def test_constants_refactoring():
         "  ✓ elastics.videos.constants: USE_SCRIPT_SCORE, QMOD, KNN_SIMILARITY"
     )
 
-    # Test converters.dsl.fields.qmod renamed constants
-    from converters.dsl.fields.qmod import QMOD as QMOD_FROM_QMOD
+    # Test dsl.fields.qmod renamed constants
+    from dsl.fields.qmod import QMOD as QMOD_FROM_QMOD
 
     assert QMOD_FROM_QMOD == ["word", "vector"]
-    logger.success("  ✓ converters.dsl.fields.qmod: QMOD")
+    logger.success("  ✓ dsl.fields.qmod: QMOD")
 
     # Test that old names no longer exist
     try:
@@ -2496,7 +2496,7 @@ def test_es_tok_query_params():
     which causes search to return empty results (timed_out=True, took=-1).
     """
     import json
-    from converters.dsl.elastic import DslExprToElasticConverter
+    from dsl.elastic import DslExprToElasticConverter
     from elastics.structure import construct_boosted_fields
     from elastics.videos.constants import (
         SEARCH_MATCH_FIELDS,
@@ -2562,9 +2562,9 @@ def test_dsl_query_construction():
     Validates the full pipeline from query string -> DSL expression tree ->
     Elasticsearch query dict, ensuring the output is well-formed.
     """
-    from converters.dsl.elastic import DslExprToElasticConverter
-    from converters.dsl.rewrite import DslExprRewriter
-    from converters.dsl.filter import QueryDslDictFilterMerger
+    from dsl.elastic import DslExprToElasticConverter
+    from dsl.rewrite import DslExprRewriter
+    from dsl.filter import QueryDslDictFilterMerger
     from elastics.structure import construct_boosted_fields
     from elastics.videos.constants import (
         SEARCH_MATCH_FIELDS,
@@ -2938,9 +2938,9 @@ def test_search_body_structure():
     - _source fields
     - size/limit
     """
-    from converters.dsl.elastic import DslExprToElasticConverter
-    from converters.dsl.rewrite import DslExprRewriter
-    from converters.dsl.filter import QueryDslDictFilterMerger
+    from dsl.elastic import DslExprToElasticConverter
+    from dsl.rewrite import DslExprRewriter
+    from dsl.filter import QueryDslDictFilterMerger
     from elastics.structure import construct_boosted_fields
     from elastics.videos.constants import (
         SEARCH_MATCH_FIELDS,

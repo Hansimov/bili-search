@@ -1,6 +1,6 @@
 import re
 from tclogger import logger
-from converters.dsl.node import DslExprNode
+from dsl.node import DslExprNode
 
 DURA_UNIT_MAP = {"d": 86400, "h": 3600, "m": 60, "s": 1}
 DURA_OP_MAP = {

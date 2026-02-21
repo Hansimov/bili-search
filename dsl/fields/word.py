@@ -1,7 +1,7 @@
 from typing import Literal, Union
 
-from converters.dsl.node import DslExprNode
-from converters.dsl.constants import WORD_OPS, TEXT_TYPES
+from dsl.node import DslExprNode
+from dsl.constants import WORD_OPS, TEXT_TYPES
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS, SUGGEST_BOOSTED_FIELDS
 from elastics.videos.constants import DATE_MATCH_FIELDS, DATE_BOOSTED_FIELDS

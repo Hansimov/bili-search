@@ -1,6 +1,6 @@
 import re
 
-from converters.dsl.node import DslExprNode
+from dsl.node import DslExprNode
 from collections import defaultdict
 
 

@@ -1,9 +1,9 @@
 from collections import defaultdict
 from tclogger import logger, logstr, dict_to_str, brk
 
-from converters.dsl.node import DslExprNode
-from converters.dsl.rewrite import DslExprRewriter
-from converters.dsl.elastic import DslExprToElasticConverter
+from dsl.node import DslExprNode
+from dsl.rewrite import DslExprRewriter
+from dsl.elastic import DslExprToElasticConverter
 
 date_queries = [
     ["date=1d", ("date_expr", 1)],
@@ -257,4 +257,4 @@ if __name__ == "__main__":
     # test_rewriter()
     test_expr_tree()
 
-    # python -m converters.dsl.test
+    # python -m tests.dsl.test_expr_tree

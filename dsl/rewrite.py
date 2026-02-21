@@ -1,8 +1,8 @@
 from tclogger import tcdatetime, get_now
 
-from converters.dsl.node import DslExprNode
-from converters.dsl.elastic import DslExprToElasticConverter, DslTreeToExprConstructor
-from converters.dsl.fields.word import WordNodeToExprConstructor
+from dsl.node import DslExprNode
+from dsl.elastic import DslExprToElasticConverter, DslTreeToExprConstructor
+from dsl.fields.word import WordNodeToExprConstructor
 from converters.times import DateFormatChecker
 
 
@@ -126,7 +126,7 @@ class DslExprRewriter:
         """Get rewrite_info with query_info and suggest_info.
 
         Input:
-            - Format of query_info:   # LINK converters/dsl/rewrite.py#query_info
+            - Format of query_info:   # LINK dsl/rewrite.py#query_info
             - Format of suggest_info: # LINK elastics/videos/hits.py#suggest_info
 
         Example output:

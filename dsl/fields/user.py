@@ -1,5 +1,5 @@
-from converters.dsl.constants import USER_OPS
-from converters.dsl.node import DslExprNode
+from dsl.constants import USER_OPS
+from dsl.node import DslExprNode
 
 
 class UserExprElasticConverter:

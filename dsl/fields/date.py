@@ -3,7 +3,7 @@ from datetime import timedelta
 from tclogger import logger, tcdatetime, ts_to_str
 from typing import Union, Literal
 
-from converters.dsl.node import DslExprNode
+from dsl.node import DslExprNode
 
 TIME_DELTA_1US = timedelta(microseconds=1)
 

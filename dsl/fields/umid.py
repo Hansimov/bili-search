@@ -1,4 +1,4 @@
-from converters.dsl.node import DslExprNode
+from dsl.node import DslExprNode
 
 UID_FIELD = "owner.mid"
 

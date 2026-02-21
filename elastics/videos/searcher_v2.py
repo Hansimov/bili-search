@@ -6,9 +6,9 @@ from typing import Union, Literal
 
 from configs.envs import MONGO_ENVS, SECRETS, ELASTIC_PRO_ENVS
 from converters.query.dsl import ScriptScoreQueryDSLConstructor
-from converters.dsl.rewrite import DslExprRewriter
-from converters.dsl.elastic import DslExprToElasticConverter
-from converters.dsl.filter import QueryDslDictFilterMerger
+from dsl.rewrite import DslExprRewriter
+from dsl.elastic import DslExprToElasticConverter
+from dsl.filter import QueryDslDictFilterMerger
 from elastics.structure import get_highlight_settings, construct_boosted_fields
 from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
@@ -37,8 +37,8 @@ from elastics.videos.constants import KNN_TIMEOUT
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
 from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.es_logger import get_es_debug_logger
-from converters.embed.embed_client import TextEmbedClient
-from converters.dsl.fields.qmod import extract_qmod_from_expr_tree
+from converters.embed.embed_client import TextEmbedClient, get_embed_client
+from dsl.fields.qmod import extract_qmod_from_expr_tree
 
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
@@ -97,9 +97,13 @@ class VideoSearcherV2:
 
     @property
     def embed_client(self) -> TextEmbedClient:
-        """Lazy-initialized embed client for KNN search."""
+        """Lazy-initialized embed client for KNN search.
+
+        Uses the singleton instance so that the app-level warmup and
+        keepalive are shared, avoiding redundant 60s health checks.
+        """
         if self._embed_client is None:
-            self._embed_client = TextEmbedClient(lazy_init=True)
+            self._embed_client = get_embed_client()
         return self._embed_client
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
@@ -1225,9 +1229,10 @@ class VideoSearcherV2:
             )
             filter_dict = self.elastic_converter.expr_tree_to_dict(filter_expr_tree)
 
-            # Extract filter clauses from the dict
-            filter_clauses = self.filter_merger.get_query_filters_from_query_dsl_dict(
-                filter_dict
+            # Extract all bool clauses (filter + must_not) from the dict
+            # This ensures user exclusions (u!=[...]) are preserved in KNN pre-filters
+            filter_clauses = (
+                self.filter_merger.get_all_bool_clauses_from_query_dsl_dict(filter_dict)
             )
         else:
             filter_clauses = []

@@ -6,8 +6,8 @@ from lark import Token, Tree
 from tclogger import logger, logstr
 from typing import Union, Literal, Any
 
-from converters.dsl.constants import START_EXPR, MAIN_EXPRS, ATOM_EXPRS, ITEM_EXPRS
-from converters.dsl.constants import PA_EXPRS, BOOL_OPS, BOOL_EXPRS
+from dsl.constants import START_EXPR, MAIN_EXPRS, ATOM_EXPRS, ITEM_EXPRS
+from dsl.constants import PA_EXPRS, BOOL_OPS, BOOL_EXPRS
 
 
 class DslNode:

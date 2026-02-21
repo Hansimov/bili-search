@@ -65,6 +65,37 @@ class QueryDslDictFilterMerger:
             query_filters = [query_filters]
         return query_filters
 
+    def get_all_bool_clauses_from_query_dsl_dict(
+        self, query_dsl_dict: dict
+    ) -> list[dict]:
+        """Extract all bool clauses (filter, must_not, must) from query_dsl_dict
+        as a flat list of filter-compatible clauses for use in KNN pre-filters.
+
+        This method ensures that must_not clauses (e.g., user exclusion u!=[...])
+        are not lost when constructing KNN search filters.
+
+        Returns a list of filter dicts. must_not clauses are wrapped in
+        {"bool": {"must_not": ...}} to preserve their semantics.
+        """
+        bool_dict = query_dsl_dict.get("bool", {})
+        result = []
+
+        # Extract filter clauses
+        filter_clauses = bool_dict.get("filter", [])
+        if isinstance(filter_clauses, dict):
+            filter_clauses = [filter_clauses]
+        result.extend(filter_clauses)
+
+        # Extract must_not clauses and wrap them as bool filters
+        must_not_clauses = bool_dict.get("must_not", None)
+        if must_not_clauses is not None:
+            if isinstance(must_not_clauses, dict):
+                must_not_clauses = [must_not_clauses]
+            for clause in must_not_clauses:
+                result.append({"bool": {"must_not": clause}})
+
+        return result
+
     def set_filters_to_query_dsl_dict(
         self, query_dsl_dict: dict, filters: list[dict]
     ) -> dict:
@@ -171,7 +202,7 @@ class QueryDslDictFilterMerger:
                     if len(filter_value) > 1:
                         res.append({"terms": {filter_field: filter_value}})
                     else:
-                        res.append({"term": filter_value[0]})
+                        res.append({"term": {filter_field: filter_value[0]}})
                 else:
                     res.append({"term": {filter_field: filter_value}})
             elif filter_type == "bool":
@@ -285,4 +316,4 @@ if __name__ == "__main__":
     test_merge_range_values()
     test_merge_term_values()
 
-    # python -m converters.dsl.filter
+    # python -m dsl.filter

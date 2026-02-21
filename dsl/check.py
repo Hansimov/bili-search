@@ -28,10 +28,10 @@ class DslSyntaxChecker:
 
 
 def test_syntax_checker():
-    from converters.dsl.test import queries
+    from tests.dsl.test_expr_tree import queries_of_atoms
 
     checker = DslSyntaxChecker(verbose=True)
-    for query in queries:
+    for query, *_ in queries_of_atoms:
         res = checker.check(query)
         logger.mesg(res.pretty(), verbose=bool(res))
 
@@ -39,4 +39,4 @@ def test_syntax_checker():
 if __name__ == "__main__":
     test_syntax_checker()
 
-    # python -m converters.dsl.check
+    # python -m dsl.check

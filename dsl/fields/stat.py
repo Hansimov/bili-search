@@ -1,6 +1,6 @@
 from tclogger import logger
-from converters.dsl.constants import STAT_KEYS
-from converters.dsl.node import DslExprNode
+from dsl.constants import STAT_KEYS
+from dsl.node import DslExprNode
 from typing import Union
 
 STAT_UNIT_MAP = {"百": 100, "千kK": 1000, "万wW": 10000, "mM": 1000000, "亿": 100000000}

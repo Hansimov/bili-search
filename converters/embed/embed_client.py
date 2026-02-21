@@ -34,6 +34,11 @@ LSH_CACHE_SIZE = 1024
 KEEPALIVE_INTERVAL = 60  # Send keep-alive every 60 seconds
 KEEPALIVE_TIMEOUT = 300  # Consider connection stale after 5 minutes of no activity
 
+# Initialization timeout - max seconds to wait for TEIClients construction
+# TEIClients constructor does health checks blocking 60s per endpoint;
+# this timeout prevents startup and request-time hangs
+INIT_TIMEOUT = 10
+
 
 def get_tei_endpoints() -> list[str]:
     """Get TEI client endpoints from secrets config."""
@@ -69,6 +74,7 @@ class TextEmbedClient:
         endpoints: list[str] = None,
         bitn: int = KNN_LSH_BITN,
         lazy_init: bool = True,
+        init_timeout: float = INIT_TIMEOUT,
     ):
         """Initialize the text embedding client.
 
@@ -76,13 +82,19 @@ class TextEmbedClient:
             endpoints: List of TEI service endpoints. If None, reads from secrets.
             bitn: Number of bits for LSH (must match text_emb field dims).
             lazy_init: If True, delay TEIClients initialization until first use.
+            init_timeout: Max seconds to wait for TEIClients construction.
         """
         self.endpoints = endpoints or get_tei_endpoints()
         self.bitn = bitn
+        self.init_timeout = init_timeout
         self._clients = None
         self._initialized = False
+        self._healthy = False  # True only when healthy machines exist
         self._cache = {}  # Simple cache for text -> hex mappings
         self._cache_max_size = LSH_CACHE_SIZE
+
+        # Initialization lock to prevent concurrent init attempts
+        self._init_lock = threading.Lock()
 
         # Keep-alive state
         self._last_activity_time = 0.0
@@ -104,31 +116,94 @@ class TextEmbedClient:
         elapsed = time.time() - self._last_activity_time
         return elapsed > KEEPALIVE_TIMEOUT
 
+    def _check_health_quick(self) -> bool:
+        """Non-blocking health check using cached machine health state.
+
+        After TEIClients construction, machines already have health status
+        from the constructor's health checks. This avoids another blocking call.
+        """
+        if self._clients is None:
+            return False
+        try:
+            healthy = self._clients.machine_scheduler.get_healthy_machines()
+            return len(healthy) > 0
+        except Exception:
+            return False
+
     def _ensure_initialized(self) -> bool:
-        """Ensure TEIClients is initialized. Returns True if ready."""
+        """Ensure TEIClients is initialized. Returns True if ready.
+
+        Uses a timeout to prevent blocking when TEI endpoints are unreachable.
+        TEIClients constructor does health checks that block 60s per endpoint;
+        the timeout allows fast failure detection.
+        """
         if self._initialized:
             return True
 
-        if not self.endpoints:
-            logger.warn("× Cannot initialize TextEmbedClient: no endpoints")
-            return False
+        with self._init_lock:
+            # Double-check after acquiring lock
+            if self._initialized:
+                return True
 
-        try:
-            from tfmx import TEIClients
+            if not self.endpoints:
+                logger.warn("× Cannot initialize TextEmbedClient: no endpoints")
+                return False
 
-            self._clients = TEIClients(endpoints=self.endpoints)
+            result_holder = {}
+
+            def _init_worker():
+                try:
+                    from tfmx import TEIClients
+
+                    result_holder["clients"] = TEIClients(endpoints=self.endpoints)
+                except ImportError:
+                    result_holder["error"] = ImportError(
+                        "tfmx library not installed. Embedding features unavailable."
+                    )
+                except Exception as e:
+                    result_holder["error"] = e
+
+            thread = threading.Thread(target=_init_worker, daemon=True)
+            thread.start()
+            thread.join(timeout=self.init_timeout)
+
+            if thread.is_alive():
+                logger.warn(
+                    f"× TEIClients init timed out ({self.init_timeout}s), "
+                    f"TEI service may be unavailable"
+                )
+                return False
+
+            if "error" in result_holder:
+                err = result_holder["error"]
+                if isinstance(err, ImportError):
+                    logger.warn(f"× {err}")
+                else:
+                    logger.warn(f"× Failed to initialize TEIClients: {err}")
+                return False
+
+            if "clients" not in result_holder:
+                logger.warn("× TEIClients init produced no result")
+                return False
+
+            self._clients = result_holder["clients"]
             self._initialized = True
             self._update_activity_time()
+
+            # Check health from cached state (no network call)
+            self._healthy = self._check_health_quick()
+
+            if self._healthy:
+                logger.success(f"  TEIClients initialized with healthy machines")
+            else:
+                logger.warn(
+                    "× TEIClients initialized but no healthy machines available"
+                )
+
             return True
-        except ImportError:
-            logger.warn("× tfmx library not installed. Embedding features unavailable.")
-            return False
-        except Exception as e:
-            logger.warn(f"× Failed to initialize TEIClients: {e}")
-            return False
 
     def warmup(self, verbose: bool = False) -> bool:
-        """Warmup the connection by sending a health check and test request.
+        """Warmup the connection by verifying health and sending a test request.
 
         This is useful to call before the first real request to avoid
         cold-start latency. Should be called after long idle periods.
@@ -137,65 +212,88 @@ class TextEmbedClient:
             verbose: If True, log warmup details.
 
         Returns:
-            True if warmup succeeded, False otherwise.
+            True if warmup succeeded (healthy machines + LSH test passed).
         """
         if not self._ensure_initialized():
+            if verbose:
+                logger.warn("  [warmup] Failed: initialization failed or timed out")
+            return False
+
+        # If init already determined no healthy machines, skip expensive operations
+        if not self._healthy:
+            if verbose:
+                logger.warn("  [warmup] No healthy instances available")
             return False
 
         try:
             t0 = time.time()
 
-            # Step 1: Health check to verify connectivity
-            # Note: TEIClients.health() returns ClientsHealthResponse with
-            # healthy_instances/total_instances (not healthy/total)
-            health = self._clients.health()
+            # LSH test to warm up the model (only if healthy)
+            _ = self._clients.lsh(["warmup test"], bitn=self.bitn)
             t1 = time.time()
 
             if verbose:
-                logger.mesg(
-                    f"  [warmup] Health check: {(t1-t0)*1000:.0f}ms, "
-                    f"healthy_instances={health.healthy_instances}/{health.total_instances}"
-                )
-
-            # Step 2: Small LSH request to warm up the model
-            _ = self._clients.lsh(["warmup test"], bitn=self.bitn)
-            t2 = time.time()
-
-            if verbose:
-                logger.mesg(f"  [warmup] LSH test: {(t2-t1)*1000:.0f}ms")
+                logger.mesg(f"  [warmup] LSH test: {(t1-t0)*1000:.0f}ms")
 
             self._update_activity_time()
             return True
 
         except Exception as e:
+            self._healthy = False
             if verbose:
                 logger.warn(f"  [warmup] Failed: {e}")
             return False
 
     def _keepalive_worker(self) -> None:
-        """Background worker that sends periodic health checks."""
+        """Background worker that sends periodic health checks.
+
+        Also handles:
+        - Retrying initialization if it previously timed out
+        - Detecting service recovery (unhealthy -> healthy)
+        - Detecting service failure (healthy -> unhealthy)
+        """
         while not self._keepalive_stop_event.is_set():
             # Wait for interval or stop signal
             if self._keepalive_stop_event.wait(timeout=KEEPALIVE_INTERVAL):
                 break  # Stop event was set
 
-            # Check if we need to send keep-alive
+            # If not initialized, retry initialization
+            if not self._initialized:
+                if self._ensure_initialized():
+                    logger.mesg("  [keepalive] TEIClients initialized successfully")
+                continue
+
             with self._keepalive_lock:
-                if not self._initialized or self._clients is None:
+                if self._clients is None:
                     continue
 
                 elapsed = time.time() - self._last_activity_time
-                if elapsed < KEEPALIVE_INTERVAL:
-                    # Recent activity, no need for keep-alive
+                if elapsed < KEEPALIVE_INTERVAL and self._healthy:
+                    # Recent activity and healthy, no need for keep-alive
                     continue
 
                 try:
-                    # Send health check to keep connection alive
-                    self._clients.health()
+                    # Refresh health check (this may block, but we're in
+                    # background thread so it's acceptable)
+                    health = self._clients.health()
+                    was_healthy = self._healthy
+                    self._healthy = health.healthy_instances > 0
                     self._update_activity_time()
+
+                    if not was_healthy and self._healthy:
+                        logger.mesg(
+                            f"  [keepalive] Embed service recovered, "
+                            f"healthy={health.healthy_instances}/{health.total_instances}"
+                        )
+                    elif was_healthy and not self._healthy:
+                        logger.warn(
+                            f"  [keepalive] Embed service became unhealthy, "
+                            f"healthy={health.healthy_instances}/{health.total_instances}"
+                        )
                 except Exception:
-                    # Connection might be broken, will be refreshed on next use
-                    pass
+                    if self._healthy:
+                        logger.warn("  [keepalive] Embed service health check failed")
+                    self._healthy = False
 
     def start_keepalive(self) -> None:
         """Start background keep-alive thread.
@@ -228,46 +326,29 @@ class TextEmbedClient:
             logger.mesg("  [keepalive] Stopped background keep-alive thread")
 
     def refresh_if_stale(self, verbose: bool = False) -> bool:
-        """Refresh connection if it might be stale.
+        """Check if the client is available and healthy.
 
-        Call this before a request if the service has been idle for a while.
-        This is lighter than warmup() - just does a health check.
+        With the keepalive thread handling periodic health checks,
+        this simply returns the current availability state.
 
         Args:
-            verbose: If True, log refresh details.
+            verbose: If True, log status details.
 
         Returns:
             True if connection is ready, False otherwise.
         """
-        if not self._ensure_initialized():
-            return False
-
-        if not self._is_connection_stale():
-            return True  # Connection is fresh
-
-        try:
-            t0 = time.time()
-            # Note: TEIClients.health() returns ClientsHealthResponse
-            health = self._clients.health()
-            elapsed = (time.time() - t0) * 1000
-
-            if verbose:
-                logger.mesg(
-                    f"  [refresh] Health check: {elapsed:.0f}ms, "
-                    f"healthy_instances={health.healthy_instances}/{health.total_instances}"
-                )
-
-            self._update_activity_time()
-            return health.healthy_instances > 0
-
-        except Exception as e:
-            if verbose:
-                logger.warn(f"  [refresh] Failed: {e}")
-            return False
+        return self.is_available()
 
     def is_available(self) -> bool:
-        """Check if the client is available and ready."""
-        return self._ensure_initialized()
+        """Check if the client is available with healthy machines.
+
+        Returns True only when:
+        1. TEIClients is successfully initialized
+        2. At least one machine has healthy status
+        """
+        if not self._ensure_initialized():
+            return False
+        return self._healthy
 
     # ========== LSH Methods (for KNN Search) ==========
 
@@ -281,6 +362,7 @@ class TextEmbedClient:
             return results[0] if results else ""
         except Exception as e:
             logger.warn(f"× Failed to compute LSH for text: {e}")
+            self._healthy = False
             return ""
 
     def _get_from_cache(self, text: str) -> str:
@@ -426,6 +508,7 @@ class TextEmbedClient:
 
             return results[0] if results else []
         except Exception as e:
+            self._healthy = False
             logger.warn(f"× Failed to rerank: {e}")
             return []
 
@@ -455,6 +538,7 @@ class TextEmbedClient:
             self._update_activity_time()
             return results
         except Exception as e:
+            self._healthy = False
             logger.warn(f"× Failed to batch rerank: {e}")
             return []
 
@@ -533,6 +617,7 @@ class TextEmbedClient:
                 pass
             self._clients = None
             self._initialized = False
+            self._healthy = False
             self._last_activity_time = 0.0
 
     def __enter__(self):

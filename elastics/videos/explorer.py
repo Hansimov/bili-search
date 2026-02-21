@@ -10,7 +10,7 @@ from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
 from elastics.videos.constants import QMOD
 from elastics.videos.searcher_v2 import VideoSearcherV2
-from converters.dsl.fields.qmod import (
+from dsl.fields.qmod import (
     is_hybrid_qmod,
     has_rerank_qmod,
 )
@@ -844,7 +844,7 @@ class VideoExplorer(VideoSearcherV2):
         Returns:
             Explore results dict (qmod is in first step_result's output).
         """
-        from converters.dsl.fields.qmod import normalize_qmod
+        from dsl.fields.qmod import normalize_qmod
 
         # Extract query mode from query if not provided
         if qmod is None:
@@ -859,6 +859,18 @@ class VideoExplorer(VideoSearcherV2):
         has_word = "word" in qmod
         has_vector = "vector" in qmod
         enable_rerank = has_rerank_qmod(qmod)
+
+        # Graceful fallback: if vector/hybrid mode but embed client is
+        # unavailable, degrade to word-only to avoid hanging
+        if has_vector and not self.embed_client.is_available():
+            logger.warn(
+                f"> Embed client unavailable, falling back from "
+                f"qmod={qmod} to word-only mode"
+            )
+            qmod = ["word"]
+            is_hybrid = False
+            has_word = True
+            has_vector = False
 
         # Auto-build constraint filter for vector/hybrid modes
         if constraint_filter is None and auto_constraint and has_vector:
