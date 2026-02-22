@@ -62,7 +62,22 @@ class DslExprRewriter:
         self.word_constructor = WordNodeToExprConstructor()
         self.word_expander = WordNodeExpander()
 
-    def get_words_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
+    def get_words_from_expr_tree(
+        self, expr_tree: DslExprNode
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Extract scoring keywords, date keywords, and constraint texts from tree.
+
+        Constraint words (+token/-token) are separated from scoring keywords
+        because they don't produce BM25 scoring — they become es_tok_constraints
+        filters. Only regular word_expr nodes produce BM25 scoring clauses.
+
+        Returns:
+            (words_body, words_date, constraint_texts):
+            - words_body: Regular keywords that generate BM25 scoring.
+            - words_date: Date-formatted keywords for date field matching.
+            - constraint_texts: +token texts (for display/embedding, NOT scoring).
+              -token texts are excluded entirely.
+        """
         from dsl.fields.constraint import (
             is_constraint_word_expr,
             get_constraint_pp_key,
@@ -72,6 +87,7 @@ class DslExprRewriter:
         word_expr_nodes = expr_tree.find_all_childs_with_key("word_expr")
         words_body = []
         words_date = []
+        constraint_texts = []
         for word_expr_node in word_expr_nodes:
             # Handle constraint words (+token/-token) specially
             if is_constraint_word_expr(word_expr_node):
@@ -79,10 +95,10 @@ class DslExprRewriter:
                 if pp_key in ["mi", "nq"]:
                     # -token/!token: exclude from keywords entirely
                     continue
-                # +token: include plain text without prefix
+                # +token: collect as constraint text (NOT a scoring keyword)
                 text = get_constraint_text(word_expr_node)
                 if text:
-                    words_body.append(text)
+                    constraint_texts.append(text)
                 continue
 
             word_val_node = word_expr_node.find_child_with_key("word_val_single")
@@ -91,7 +107,7 @@ class DslExprRewriter:
                 words_date.append(word_expr)
             else:
                 words_body.append(word_expr)
-        return words_body, words_date
+        return words_body, words_date, constraint_texts
 
     def get_constraint_filter_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
         """Build es_tok_constraints filter from +/- constraint words in the tree.
@@ -124,9 +140,11 @@ class DslExprRewriter:
             if not text:
                 continue
             if pp_key == "pl":
-                constraints.append({"have_token": [text]})
+                t = text.lower()
+                constraints.append({"have_token": [t]})
             elif pp_key in ["mi", "nq"]:
-                constraints.append({"NOT": {"have_token": [text]}})
+                t = text.lower()
+                constraints.append({"NOT": {"have_token": [t]}})
 
         if not constraints:
             return {}
@@ -163,8 +181,9 @@ class DslExprRewriter:
         {
             "query":             str,
             "words_expr":        str
-            "keywords_body":     list[str]
+            "keywords_body":     list[str]  # Scoring keywords only (no constraints)
             "keywords_date":     list[str]
+            "constraint_texts":  list[str]  # +token texts (for display/embedding)
             "query_expr_tree":   DslExprNode(...)
             "constraint_filter": dict  # es_tok_constraints dict, or {}
         }
@@ -173,7 +192,9 @@ class DslExprRewriter:
         """
         expr_tree = self.expr_to_tree(expr)
         words_expr_tree = expr_tree.filter_atoms_by_keys(include_keys=["word_expr"])
-        words_body, words_date = self.get_words_from_expr_tree(words_expr_tree)
+        words_body, words_date, constraint_texts = self.get_words_from_expr_tree(
+            words_expr_tree
+        )
         words_expr = self.expr_constructor.construct(words_expr_tree)
         constraint_filter = self.get_constraint_filter_from_expr_tree(words_expr_tree)
         return {
@@ -181,6 +202,7 @@ class DslExprRewriter:
             "words_expr": words_expr,
             "keywords_body": words_body,
             "keywords_date": words_date,
+            "constraint_texts": constraint_texts,
             "query_expr_tree": expr_tree,
             "constraint_filter": constraint_filter,
         }

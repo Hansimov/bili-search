@@ -62,6 +62,10 @@ def word_expr_to_constraint(node: DslExprNode) -> dict:
     """Convert a +/-/! prefixed word_expr to a constraint dict.
     node key should be 'word_expr'.
 
+    Uses have_token for exact token matching. The es-tok tokenizer
+    preserves eng/arab categ tokens and generates bigrams before
+    dropping CJK categ tokens, so have_token is sufficient.
+
     Returns:
         {"have_token": ["text"]} for + prefix
         {"NOT": {"have_token": ["text"]}} for -/! prefix

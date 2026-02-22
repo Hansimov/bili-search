@@ -159,16 +159,19 @@ class DslExprToElasticConverter:
         elastic_dict = self.node_to_elastic_dict(expr_tree)
 
         # Build es_tok_constraints for +/- tokens.
-        # Uses exact token matching (have_token) instead of analyzed query_string,
-        # ensuring "达芬奇" matches as a complete token — not partial sub-tokens
-        # like "达芬". All constraints go into a single es_tok_constraints dict
-        # in bool.filter.
+        # Uses have_token for exact token matching. The es-tok tokenizer
+        # preserves eng/arab categ tokens (like "08", "hbk") even when
+        # covered by boundary vocab words, and generates bigrams before
+        # dropping CJK categ tokens, so have_token is sufficient.
+        # All constraints go into a single es_tok_constraints dict in bool.filter.
         if must_have_texts or must_not_texts:
             constraints = []
             for text in must_have_texts:
-                constraints.append({"have_token": [text]})
+                t = text.lower()
+                constraints.append({"have_token": [t]})
             for text in must_not_texts:
-                constraints.append({"NOT": {"have_token": [text]}})
+                t = text.lower()
+                constraints.append({"NOT": {"have_token": [t]}})
             constraint_filter = {
                 "es_tok_constraints": {
                     "constraints": constraints,

@@ -639,17 +639,23 @@ class MultiLaneWordRecall:
             return
 
         # Extract meaningful terms from query (skip single chars for multi-term queries)
-        # Simple approach: split by spaces and common delimiters
+        # Strip constraint prefixes (+/-/!) before matching — these are DSL
+        # operators, not part of the actual text that appears in titles.
+        # E.g., "+seedance +2.0 科幻" → terms ["seedance", "2.0", "科幻"]
         import re
 
-        terms = re.split(r"[\s\-_,，。、/\\|]+", query.strip())
-        terms = [t.lower() for t in terms if t]
-
-        if not terms:
-            return
-
-        # For very short queries (1-2 chars total), do simple substring match
-        query_clean = query.strip().lower()
+        raw_terms = re.split(r"[\s\-_,，。、/\\|]+", query.strip())
+        terms = []
+        for t in raw_terms:
+            if not t:
+                continue
+            # Strip leading constraint prefixes (+, !)
+            t_clean = t.lstrip("+!")
+            if t_clean:
+                terms.append(t_clean.lower())
+        # Also build a clean query string without constraint prefixes
+        # for substring matching
+        query_clean = " ".join(terms)
 
         for hit in hits:
             # Skip if already tagged by title_match lane

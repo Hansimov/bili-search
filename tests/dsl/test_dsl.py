@@ -1038,12 +1038,12 @@ def test_constraint_boolean():
         ),
         (
             "+A & +B",
-            "two + constraints → es_tok_constraints with 2 have_token",
+            "two + constraints → es_tok_constraints with 2 have_token (lowercased)",
             lambda d: (
                 "bool" in d
                 and CT in str(d["bool"].get("filter", {}))
-                and "A" in str(d["bool"]["filter"])
-                and "B" in str(d["bool"]["filter"])
+                and "a" in str(d["bool"]["filter"])
+                and "b" in str(d["bool"]["filter"])
             ),
         ),
         (
@@ -1104,10 +1104,10 @@ def test_constraint_fields():
         logger.fail(f"{fail} +constraint fields: {constraint_fields}")
         failed += 1
 
-    # +constraint uses have_token (exact match, not es_tok_query_string)
+    # +constraint uses have_token for exact token matching
     constraints = filt.get(CT, {}).get("constraints", [])
     if len(constraints) == 1 and constraints[0].get("have_token") == ["影视飓风"]:
-        logger.mesg(f"{ok} +constraint uses have_token for exact match")
+        logger.mesg(f"{ok} +constraint uses have_token")
         passed += 1
     else:
         logger.fail(f"{fail} +constraint format wrong: {constraints}")
@@ -1117,10 +1117,9 @@ def test_constraint_fields():
     d_minus = converter.expr_to_dict("-广告")
     filt_m = d_minus.get("bool", {}).get("filter", {})
     constraints_m = filt_m.get(CT, {}).get("constraints", [])
-    if len(constraints_m) == 1 and constraints_m[0].get("NOT", {}).get(
-        "have_token"
-    ) == ["广告"]:
-        logger.mesg(f"{ok} -constraint uses NOT have_token for exact match")
+    not_inner = constraints_m[0].get("NOT", {}) if len(constraints_m) == 1 else {}
+    if not_inner.get("have_token") == ["广告"]:
+        logger.mesg(f"{ok} -constraint uses NOT have_token")
         passed += 1
     else:
         logger.fail(f"{fail} -constraint format wrong: {constraints_m}")
@@ -1315,6 +1314,12 @@ def test_constraint_regression():
 
     Bug 4: `+达芬奇 +影视飓风` must use exact token matching (have_token),
     not analyzed matching (es_tok_query_string) which causes partial matches.
+
+    Bug 5: have_token must be lowercased (ES tokens are all lowercase).
+
+    Bug 6: `+红警 +08` must produce constraints with have_token only.
+    The es-tok tokenizer preserves eng/arab categ tokens (like "08") even
+    when covered by boundary vocab words, so have_token alone suffices.
     """
     logger.note("TEST: Constraint Regression (Bug Fixes)")
     logger.note("=" * 60)
@@ -1418,8 +1423,8 @@ def test_constraint_regression():
     # Each +token should be an independent have_token constraint
     filt_both = d_both_plus.get("bool", {}).get("filter", {})
     filt_str = str(filt_both)
-    if "08" in filt_str and "V神" in filt_str and CT in filt_str:
-        logger.mesg(f"{ok} '+08 +V神': both tokens in es_tok_constraints")
+    if "08" in filt_str and "v神" in filt_str and CT in filt_str:
+        logger.mesg(f"{ok} '+08 +V神': both tokens in es_tok_constraints (lowercased)")
         passed += 1
     else:
         logger.fail(
@@ -1464,24 +1469,36 @@ def test_constraint_regression():
         )
         failed += 1
 
-    # --- keywords_body should include +token text, exclude -tokens ---
+    # --- keywords_body should only contain scoring keywords ---
+    # +token texts go to constraint_texts, NOT keywords_body.
+    # This ensures has_search_keywords() correctly identifies constraint-only
+    # queries and routes them to filter_only_search.
     info = rewriter.get_query_info("08 +V神")
     kb = info["keywords_body"]
-    if kb == ["08", "V神"]:
-        logger.mesg(f"{ok} keywords_body('08 +V神') = {kb}")
+    ct = info.get("constraint_texts", [])
+    if kb == ["08"] and ct == ["V神"]:
+        logger.mesg(f"{ok} '08 +V神': keywords_body={kb}, constraint_texts={ct}")
         passed += 1
     else:
-        logger.fail(f"{fail} keywords_body('08 +V神') = {kb} (expected ['08', 'V神'])")
+        logger.fail(
+            f"{fail} '08 +V神': keywords_body={kb} (expected ['08']), "
+            f"constraint_texts={ct} (expected ['V神'])"
+        )
         failed += 1
 
     info2 = rewriter.get_query_info("+08 V神 -85")
     kb2 = info2["keywords_body"]
-    if kb2 == ["08", "V神"]:
-        logger.mesg(f"{ok} keywords_body('+08 V神 -85') = {kb2} (-85 excluded)")
+    ct2 = info2.get("constraint_texts", [])
+    if kb2 == ["V神"] and ct2 == ["08"]:
+        logger.mesg(
+            f"{ok} '+08 V神 -85': keywords_body={kb2}, constraint_texts={ct2} "
+            f"(-85 excluded entirely)"
+        )
         passed += 1
     else:
         logger.fail(
-            f"{fail} keywords_body('+08 V神 -85') = {kb2} (expected ['08', 'V神'])"
+            f"{fail} '+08 V神 -85': keywords_body={kb2} (expected ['V神']), "
+            f"constraint_texts={ct2} (expected ['08'])"
         )
         failed += 1
 
@@ -1515,6 +1532,105 @@ def test_constraint_regression():
         passed += 1
     else:
         logger.fail(f"{fail} Unexpected constraint_filter: {cf4}")
+        failed += 1
+
+    # --- Bug 5: have_token must be lowercased (ES tokens are all lowercase) ---
+    # +红警HBK08 → have_token should be ["红警hbk08"], not ["红警HBK08"]
+    d_case = converter.expr_to_dict("+红警HBK08")
+    case_filt = d_case.get("bool", {}).get("filter", {})
+    case_constraints = case_filt.get(CT, {}).get("constraints", [])
+    has_lower = any(c.get("have_token") == ["红警hbk08"] for c in case_constraints)
+    if has_lower:
+        logger.mesg(f"{ok} '+红警HBK08': have_token lowercased to '红警hbk08'")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '+红警HBK08': have_token not lowercased: {case_constraints}"
+        )
+        failed += 1
+
+    # constraint_filter from rewriter should also be lowercased
+    info_case = rewriter.get_query_info("+红警HBK08 一块地")
+    cf_case = info_case.get("constraint_filter", {})
+    cf_case_constraints = cf_case.get(CT, {}).get("constraints", [])
+    has_lower_cf = any(
+        c.get("have_token") == ["红警hbk08"] for c in cf_case_constraints
+    )
+    if has_lower_cf:
+        logger.mesg(f"{ok} constraint_filter also lowercased '红警hbk08'")
+        passed += 1
+    else:
+        logger.fail(f"{fail} constraint_filter not lowercased: {cf_case_constraints}")
+        failed += 1
+
+    # constraint_texts should preserve original case (for display/embedding)
+    # keywords_body should only have scoring keywords ("一块地"), not constraint texts
+    kb_case = info_case.get("keywords_body", [])
+    ct_case = info_case.get("constraint_texts", [])
+    if "红警HBK08" in ct_case and "一块地" in kb_case:
+        logger.mesg(
+            f"{ok} constraint_texts preserves original case: {ct_case}, "
+            f"keywords_body has scoring keywords: {kb_case}"
+        )
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} constraint_texts={ct_case} (expected ['红警HBK08']), "
+            f"keywords_body={kb_case} (expected ['一块地'])"
+        )
+        failed += 1
+
+    # -token should also be lowercased
+    d_neg_case = converter.expr_to_dict("-ABCdef")
+    neg_filt = d_neg_case.get("bool", {}).get("filter", {})
+    neg_constraints = neg_filt.get(CT, {}).get("constraints", [])
+    has_neg_lower = any(
+        c.get("NOT", {}).get("have_token") == ["abcdef"] for c in neg_constraints
+    )
+    if has_neg_lower:
+        logger.mesg(f"{ok} '-ABCdef': NOT have_token lowercased to 'abcdef'")
+        passed += 1
+    else:
+        logger.fail(
+            f"{fail} '-ABCdef': NOT have_token not lowercased: {neg_constraints}"
+        )
+        failed += 1
+
+    # --- Bug 6: `+红警 +08` uses have_token (tokenizer preserves eng/arab) ---
+    # The es-tok tokenizer now preserves eng/arab categ tokens like "08"
+    # even when covered by boundary vocab words, and generates bigrams
+    # before dropping CJK categ tokens. So have_token alone is sufficient.
+    d_multi = converter.expr_to_dict("+红警 +08 一块地")
+    multi_filt = d_multi.get("bool", {}).get("filter", {})
+    multi_constraints = multi_filt.get(CT, {}).get("constraints", [])
+    assert_count = 0
+    # Should have 2 constraints (one for each +token)
+    if len(multi_constraints) == 2:
+        assert_count += 1
+    else:
+        logger.fail(
+            f"{fail} Bug 6: expected 2 constraints, got {len(multi_constraints)}"
+        )
+        failed += 1
+    # Each constraint should have have_token only (no with_contains)
+    for c in multi_constraints:
+        ht = c.get("have_token")
+        wc = c.get("with_contains")
+        if ht and not wc:
+            assert_count += 1
+        else:
+            logger.fail(f"{fail} Bug 6: unexpected constraint format: {c}")
+            failed += 1
+    if assert_count == 3:
+        logger.mesg(f"{ok} Bug 6: '+红警 +08' has 2 constraints with have_token only")
+        passed += 1
+    # Verify the specific tokens are lowercased
+    tokens_found = {c.get("have_token", [None])[0] for c in multi_constraints}
+    if tokens_found == {"红警", "08"}:
+        logger.mesg(f"{ok} Bug 6: constraint tokens are {tokens_found}")
+        passed += 1
+    else:
+        logger.fail(f"{fail} Bug 6: unexpected constraint tokens: {tokens_found}")
         failed += 1
 
     logger.note(f"Constraint regression: {passed} passed, {failed} failed")
@@ -1566,6 +1682,313 @@ def test_edge_cases():
     return failed == 0
 
 
+def test_constraint_only_routing():
+    """Test Bug 1: constraint-only queries must route to filter_only path.
+
+    For queries like "+seedance +2.0", "+红警 +08", "+达芬奇":
+    - keywords_body must be EMPTY (no scoring keywords)
+    - constraint_texts must contain the +token texts
+    - constraint_filter must have the es_tok_constraints
+    - The ES query dict (from expr_tree_to_dict) must have ONLY bool.filter,
+      no scoring clause (must/should), confirming no BM25 scoring.
+
+    This is the root cause of Bug 1: when constraint texts were in keywords_body,
+    has_search_keywords() returned True, sending constraint-only queries through
+    the BM25 recall + diversified ranking pipeline where all docs get identical
+    _score, producing uniform rank_score ≈ 0.7.
+    """
+    logger.note("TEST: Constraint-Only Routing (Bug 1)")
+    logger.note("=" * 60)
+
+    from dsl.elastic import DslExprToElasticConverter
+    from dsl.rewrite import DslExprRewriter
+
+    rewriter = DslExprRewriter()
+    converter = DslExprToElasticConverter()
+    ok = logstr.okay("✓")
+    fail = logstr.fail("×")
+    passed = 0
+    failed = 0
+
+    CT = "es_tok_constraints"
+
+    # Test case from the original bug report
+    constraint_only_cases = [
+        # (query, expected_constraint_texts, expected_keywords_body, desc)
+        ("+seedance +2.0", ["seedance", "2.0"], [], "Bug 1 original case"),
+        ("+红警 +08", ["红警", "08"], [], "CJK + numeric constraints"),
+        ("+达芬奇", ["达芬奇"], [], "Single constraint"),
+        (
+            "+影视飓风 +评测",
+            ["影视飓风", "评测"],
+            [],
+            "Two CJK constraints",
+        ),
+    ]
+
+    for query, exp_ct, exp_kb, desc in constraint_only_cases:
+        info = rewriter.get_query_info(query)
+        kb = info.get("keywords_body", [])
+        ct = info.get("constraint_texts", [])
+        cf = info.get("constraint_filter", {})
+
+        # 1. keywords_body must be empty (no scoring keywords)
+        if kb == exp_kb:
+            logger.mesg(f"{ok} {desc}: keywords_body={kb} (empty, correct)")
+            passed += 1
+        else:
+            logger.fail(f"{fail} {desc}: keywords_body={kb}, expected {exp_kb}")
+            failed += 1
+
+        # 2. constraint_texts must contain +token texts
+        if ct == exp_ct:
+            logger.mesg(f"{ok} {desc}: constraint_texts={ct}")
+            passed += 1
+        else:
+            logger.fail(f"{fail} {desc}: constraint_texts={ct}, expected {exp_ct}")
+            failed += 1
+
+        # 3. constraint_filter must exist
+        if CT in cf:
+            logger.mesg(f"{ok} {desc}: has constraint_filter")
+            passed += 1
+        else:
+            logger.fail(f"{fail} {desc}: missing constraint_filter")
+            failed += 1
+
+        # 4. ES query dict must have NO scoring clause
+        d = converter.expr_to_dict(query)
+        bool_dict = d.get("bool", {})
+        has_must = "must" in bool_dict
+        has_should = "should" in bool_dict
+        has_filter = "filter" in bool_dict
+        if has_filter and not has_must and not has_should:
+            logger.mesg(f"{ok} {desc}: ES dict has only filter (no scoring)")
+            passed += 1
+        else:
+            logger.fail(
+                f"{fail} {desc}: ES dict unexpected structure: "
+                f"must={has_must}, should={has_should}, filter={has_filter}"
+            )
+            failed += 1
+
+    logger.note(f"Constraint-only routing: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_constraint_plus_keyword_routing():
+    """Test Bug 2: constraint+keyword queries must have correct routing and tagging.
+
+    For queries like "+seedance +2.0 科幻":
+    - keywords_body must contain only scoring keywords ["科幻"]
+    - constraint_texts must contain +token texts ["seedance", "2.0"]
+    - ES query dict must have BOTH scoring clause AND filter clause
+    - Title match tagging must handle +/- prefixes correctly
+    """
+    logger.note("TEST: Constraint + Keyword Routing (Bug 2)")
+    logger.note("=" * 60)
+
+    from dsl.elastic import DslExprToElasticConverter
+    from dsl.rewrite import DslExprRewriter
+
+    rewriter = DslExprRewriter()
+    converter = DslExprToElasticConverter()
+    ok = logstr.okay("✓")
+    fail = logstr.fail("×")
+    passed = 0
+    failed = 0
+
+    CT = "es_tok_constraints"
+
+    mixed_cases = [
+        # (query, expected_kb, expected_ct, desc)
+        ("+seedance +2.0 科幻", ["科幻"], ["seedance", "2.0"], "Bug 2 original case"),
+        ("+红警 +08 一块地", ["一块地"], ["红警", "08"], "CJK constraint + keyword"),
+        (
+            "+达芬奇 -广告 文艺复兴",
+            ["文艺复兴"],
+            ["达芬奇"],
+            "Plus + minus + keyword",
+        ),
+        (
+            "好看的 +4K +HDR",
+            ["好看的"],
+            ["4K", "HDR"],
+            "Keyword first, then constraints",
+        ),
+    ]
+
+    for query, exp_kb, exp_ct, desc in mixed_cases:
+        info = rewriter.get_query_info(query)
+        kb = info.get("keywords_body", [])
+        ct = info.get("constraint_texts", [])
+        cf = info.get("constraint_filter", {})
+
+        # 1. keywords_body must contain only scoring keywords
+        if kb == exp_kb:
+            logger.mesg(f"{ok} {desc}: keywords_body={kb}")
+            passed += 1
+        else:
+            logger.fail(f"{fail} {desc}: keywords_body={kb}, expected {exp_kb}")
+            failed += 1
+
+        # 2. constraint_texts must contain +token texts
+        if ct == exp_ct:
+            logger.mesg(f"{ok} {desc}: constraint_texts={ct}")
+            passed += 1
+        else:
+            logger.fail(f"{fail} {desc}: constraint_texts={ct}, expected {exp_ct}")
+            failed += 1
+
+        # 3. constraint_filter must exist
+        if CT in cf:
+            logger.mesg(f"{ok} {desc}: has constraint_filter")
+            passed += 1
+        else:
+            logger.fail(f"{fail} {desc}: missing constraint_filter")
+            failed += 1
+
+        # 4. ES query dict must have BOTH scoring clause AND filter
+        d = converter.expr_to_dict(query)
+        bool_dict = d.get("bool", {})
+        has_scoring = "must" in bool_dict or "should" in bool_dict
+        has_filter = "filter" in bool_dict
+        if has_scoring and has_filter:
+            logger.mesg(f"{ok} {desc}: ES dict has scoring + filter")
+            passed += 1
+        else:
+            logger.fail(
+                f"{fail} {desc}: ES dict: scoring={has_scoring}, filter={has_filter}"
+            )
+            failed += 1
+
+    # --- Test title match tagging strips constraint prefixes ---
+    from recalls.word import MultiLaneWordRecall
+
+    tag_cases = [
+        # (query, title, tags, expected_matched)
+        (
+            "+seedance +2.0 科幻",
+            "Seedance 2.0 科幻风格演示",
+            "AI 视频生成",
+            True,
+        ),
+        (
+            "+红警 +08 解说",
+            "红警08解说视频合集",
+            "红警 游戏",
+            True,
+        ),
+        (
+            "+达芬奇 文艺复兴",
+            "达芬奇与文艺复兴",
+            "",
+            True,
+        ),
+        (
+            "+seedance +2.0 科幻",
+            "完全无关的标题",
+            "无关标签",
+            False,
+        ),
+    ]
+
+    for query, title, tags, expected in tag_cases:
+        hits = [{"title": title, "tags": tags}]
+        MultiLaneWordRecall._tag_title_matches(hits, query)
+        matched = hits[0].get("_title_matched", False)
+        if matched == expected:
+            logger.mesg(f"{ok} title_match('{query}', '{title}'): {matched}")
+            passed += 1
+        else:
+            logger.fail(
+                f"{fail} title_match('{query}', '{title}'): "
+                f"got {matched}, expected {expected}"
+            )
+            failed += 1
+
+    logger.note(f"Constraint + keyword routing: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_constraint_filter_in_filter_only():
+    """Test that constraint filters are included in filter-only search path.
+
+    When get_filters_from_query() is called for a constraint-only query,
+    the returned filter_clauses must include the es_tok_constraints filter.
+    Without this, constraint-only queries would return ALL docs (no filtering).
+    """
+    logger.note("TEST: Constraint Filter in Filter-Only Path")
+    logger.note("=" * 60)
+
+    from dsl.rewrite import DslExprRewriter
+
+    rewriter = DslExprRewriter()
+    ok = logstr.okay("✓")
+    fail = logstr.fail("×")
+    passed = 0
+    failed = 0
+
+    CT = "es_tok_constraints"
+
+    # Verify constraint_filter is present in query_info for constraint queries
+    cases = [
+        ("+seedance +2.0", 2, "Two plus constraints"),
+        ("+红警 +08", 2, "CJK + numeric"),
+        ("+达芬奇", 1, "Single constraint"),
+        ("+达芬奇 -广告", 2, "Plus + minus"),
+        ("+seedance +2.0 科幻", 2, "Constraints + keyword"),
+    ]
+
+    for query, expected_count, desc in cases:
+        info = rewriter.get_query_info(query)
+        cf = info.get("constraint_filter", {})
+        constraints = cf.get(CT, {}).get("constraints", [])
+
+        if len(constraints) == expected_count:
+            logger.mesg(f"{ok} {desc}: {expected_count} constraint(s) in filter")
+            passed += 1
+        else:
+            logger.fail(
+                f"{fail} {desc}: expected {expected_count} constraints, "
+                f"got {len(constraints)}: {constraints}"
+            )
+            failed += 1
+
+    # Verify constraint-only queries have empty keywords_body
+    constraint_only = ["+seedance +2.0", "+红警 +08", "+达芬奇"]
+    for query in constraint_only:
+        info = rewriter.get_query_info(query)
+        kb = info.get("keywords_body", [])
+        if not kb:
+            logger.mesg(f"{ok} '{query}': empty keywords_body (filter-only)")
+            passed += 1
+        else:
+            logger.fail(
+                f"{fail} '{query}': non-empty keywords_body={kb} "
+                f"(should be empty for filter-only routing)"
+            )
+            failed += 1
+
+    # Verify mixed queries have non-empty keywords_body
+    mixed = [
+        ("+seedance +2.0 科幻", ["科幻"]),
+        ("+红警 +08 一块地", ["一块地"]),
+    ]
+    for query, expected_kb in mixed:
+        info = rewriter.get_query_info(query)
+        kb = info.get("keywords_body", [])
+        if kb == expected_kb:
+            logger.mesg(f"{ok} '{query}': keywords_body={kb} (has scoring keywords)")
+            passed += 1
+        else:
+            logger.fail(f"{fail} '{query}': keywords_body={kb}, expected {expected_kb}")
+            failed += 1
+
+    logger.note(f"Constraint filter in filter-only: {passed} passed, {failed} failed")
+    return failed == 0
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -1596,6 +2019,19 @@ def run_all_tests():
     results.append(run_test_suite("Constraint Regression", test_constraint_regression))
     results.append(run_test_suite("Query Mode", test_qmod))
     results.append(run_test_suite("Edge Cases", test_edge_cases))
+    results.append(
+        run_test_suite("Constraint-Only Routing", test_constraint_only_routing)
+    )
+    results.append(
+        run_test_suite(
+            "Constraint+Keyword Routing", test_constraint_plus_keyword_routing
+        )
+    )
+    results.append(
+        run_test_suite(
+            "Constraint Filter-Only Path", test_constraint_filter_in_filter_only
+        )
+    )
 
     logger.note("=" * 60)
     logger.note("SUMMARY")

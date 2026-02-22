@@ -1239,6 +1239,17 @@ class VideoSearcherV2:
 
         # Combine with extra_filters
         all_filters = filter_clauses + list(extra_filters)
+
+        # Also include constraint filters from +/- token expressions.
+        # These are word_expr nodes that become es_tok_constraints filters,
+        # not BM25 scoring clauses. Without this, constraint-only queries
+        # (e.g., "+seedance +2.0") would have no constraint filtering in
+        # filter_only_search, returning all docs instead of just those
+        # containing the required tokens.
+        constraint_filter = query_info.get("constraint_filter", {})
+        if constraint_filter:
+            all_filters.append(constraint_filter)
+
         return query_info, all_filters
 
     def has_narrow_filters(self, filter_clauses: list[dict]) -> bool:
@@ -1409,9 +1420,12 @@ class VideoSearcherV2:
         # Get query words for embedding
         words_expr = query_info.get("words_expr", "")
         keywords_body = query_info.get("keywords_body", [])
+        constraint_texts = query_info.get("constraint_texts", [])
 
-        # Check if there are actual search keywords
-        # If no keywords, fall back to filter-only search
+        # Check if there are actual search keywords (scoring keywords).
+        # Constraint texts (+token) don't produce BM25 scoring, so a query
+        # with only constraints (e.g., "+seedance +2.0") has no scoring
+        # keywords and should use filter-only search.
         if not keywords_body:
             logger.hint(
                 "> No search keywords found, falling back to filter-only search",
@@ -1432,8 +1446,12 @@ class VideoSearcherV2:
                 verbose=verbose,
             )
 
-        # Build text for embedding from query words
-        embed_text = " ".join(keywords_body)
+        # Build text for embedding from scoring keywords + constraint texts.
+        # Constraint texts are included because they add semantic context
+        # (e.g., "+seedance +2.0 科幻" → embed "seedance 2.0 科幻" for
+        # better semantic matching), even though they don't score via BM25.
+        all_embed_parts = keywords_body + constraint_texts
+        embed_text = " ".join(all_embed_parts)
 
         # Convert query text to embedding vector
         if not self.embed_client.is_available():

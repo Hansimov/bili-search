@@ -378,7 +378,11 @@ class VideoExplorer(VideoSearcherV2):
         # Parse query info (needed for both reranking and highlighting)
         query_info = self.query_rewriter.get_query_info(query)
         keywords_body = query_info.get("keywords_body", [])
-        embed_text = " ".join(keywords_body) if keywords_body else query
+        constraint_texts = query_info.get("constraint_texts", [])
+        # Include constraint texts in embed_text for semantic context,
+        # but fall back to raw query if no keywords at all.
+        all_embed_parts = keywords_body + constraint_texts
+        embed_text = " ".join(all_embed_parts) if all_embed_parts else query
 
         # Optional reranking
         rerank_info = {}
