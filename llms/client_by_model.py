@@ -3,7 +3,7 @@ import asyncio
 from typing import Literal
 
 from configs.envs import LLMS_ENVS
-from llms.client import LLMClient
+from webu.llms.client import LLMClient
 
 MODEL_CONFIG_TYPE = Literal["deepseek", "qwen2-72b", "volcengine"]
 
