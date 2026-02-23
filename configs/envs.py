@@ -5,7 +5,7 @@ configs_root = Path(__file__).parents[1] / "configs"
 envs_path = configs_root / "envs.json"
 ENVS_ENVER = OSEnver(envs_path)
 SEARCH_APP_ENVS = ENVS_ENVER["search_app"]
-WEBSOCKET_APP_ENVS = ENVS_ENVER["websocket_app"]
+CHAT_APP_ENVS = ENVS_ENVER["chat_app"]
 LOGS_ENVS = ENVS_ENVER["logs"]
 
 secrets_path = configs_root / "secrets.json"

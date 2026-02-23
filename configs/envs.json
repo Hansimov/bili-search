@@ -16,18 +16,23 @@
         },
         "version": "0.0.1"
     },
-    "websocket_app": {
-        "app_name": "Bili Websocket App",
+    "chat_app": {
+        "app_name": "Bili Chat App",
         "mode": "prod",
         "host": {
             "prod": "0.0.0.0",
             "dev": "0.0.0.0"
         },
         "port": {
-            "prod": 20003,
-            "dev": 21003
+            "prod": 20005,
+            "dev": 21005
         },
-        "version": "0.0.1"
+        "search_app_url": {
+            "prod": "http://localhost:20001",
+            "dev": "http://localhost:21001"
+        },
+        "llm_config": "deepseek",
+        "version": "0.1.0"
     },
     "logs": {
         "video_indexer": "video_indexer.log"
