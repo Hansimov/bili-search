@@ -1,6 +1,6 @@
 """Tests for llms.tools — tool definitions and executor.
 
-Uses mocked SearchServiceClient for unit tests.
+Uses mocked search service for unit tests.
 
 Run:
     python -m tests.llm.test_tools
@@ -13,7 +13,6 @@ from tclogger import logger
 from llms.llm_client import ToolCall
 from llms.tools.defs import TOOL_DEFINITIONS
 from llms.tools.executor import ToolExecutor
-from llms.search_service import SearchServiceClient
 
 
 # ============================================================
@@ -114,7 +113,7 @@ def test_execute_search_videos():
     logger.note("=" * 60)
     logger.note("[TEST] execute search_videos")
 
-    mock_client = MagicMock(spec=SearchServiceClient)
+    mock_client = MagicMock()
     mock_client.explore.return_value = MOCK_EXPLORE_RESULT
 
     executor = ToolExecutor(search_client=mock_client)
@@ -148,7 +147,7 @@ def test_execute_check_author():
     logger.note("=" * 60)
     logger.note("[TEST] execute check_author")
 
-    mock_client = MagicMock(spec=SearchServiceClient)
+    mock_client = MagicMock()
     mock_client.suggest.return_value = MOCK_SUGGEST_RESULT
 
     executor = ToolExecutor(search_client=mock_client)
@@ -180,7 +179,7 @@ def test_execute_unknown_tool():
     logger.note("=" * 60)
     logger.note("[TEST] execute unknown tool")
 
-    mock_client = MagicMock(spec=SearchServiceClient)
+    mock_client = MagicMock()
     executor = ToolExecutor(search_client=mock_client)
 
     tc = ToolCall(
@@ -201,7 +200,7 @@ def test_execute_empty_query():
     logger.note("=" * 60)
     logger.note("[TEST] execute empty query")
 
-    mock_client = MagicMock(spec=SearchServiceClient)
+    mock_client = MagicMock()
     executor = ToolExecutor(search_client=mock_client)
 
     tc = ToolCall(
@@ -222,7 +221,7 @@ def test_execute_search_error():
     logger.note("=" * 60)
     logger.note("[TEST] execute search error")
 
-    mock_client = MagicMock(spec=SearchServiceClient)
+    mock_client = MagicMock()
     mock_client.explore.return_value = {
         "error": "connection_failed",
         "hits": [],
@@ -271,7 +270,7 @@ def test_max_results_limit():
         ],
     }
 
-    mock_client = MagicMock(spec=SearchServiceClient)
+    mock_client = MagicMock()
     mock_client.explore.return_value = explore_result
 
     executor = ToolExecutor(search_client=mock_client, max_results=10)

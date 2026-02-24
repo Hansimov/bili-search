@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch, call
 from tclogger import logger
 
 from llms.llm_client import LLMClient, ChatResponse, ToolCall
-from llms.search_service import SearchServiceClient
 from llms.chat.handler import ChatHandler
 
 
@@ -103,7 +102,7 @@ def test_direct_content_response():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = make_content_response("你好！我是AI助手。")
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 
@@ -133,7 +132,7 @@ def test_single_tool_call():
         make_content_response("找到了10个黑神话相关视频。"),
     ]
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -180,7 +179,7 @@ def test_multi_tool_calls():
         make_content_response("影视飓风最近7天发布了以下视频..."),
     ]
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
     mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
@@ -217,7 +216,7 @@ def test_max_iterations():
         "search_videos", {"query": "test"}
     )
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(
@@ -243,7 +242,7 @@ def test_streaming_response():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = make_content_response("你好世界！")
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 
@@ -287,7 +286,7 @@ def test_streaming_with_tools():
         make_content_response("找到了结果。"),
     ]
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -314,7 +313,7 @@ def test_system_prompt_included():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = make_content_response("OK")
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 
@@ -340,7 +339,7 @@ def test_response_format():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = make_content_response("Test response")
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 
@@ -369,7 +368,7 @@ def test_multi_turn_conversation():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = make_content_response("好的，这是最近3天的视频。")
 
-    mock_search = MagicMock(spec=SearchServiceClient)
+    mock_search = MagicMock()
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 

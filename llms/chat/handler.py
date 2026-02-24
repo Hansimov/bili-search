@@ -15,7 +15,6 @@ from tclogger import logger
 from typing import Generator
 
 from llms.llm_client import LLMClient, ChatResponse, create_llm_client
-from llms.search_service import SearchServiceClient
 from llms.tools.defs import TOOL_DEFINITIONS
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt
@@ -34,9 +33,10 @@ class ChatHandler:
     sending the full message list with each request (OpenAI-compatible).
 
     Usage:
+        from llms.tools.executor import SearchService
         handler = ChatHandler(
             llm_client=create_llm_client("deepseek"),
-            search_client=SearchServiceClient("http://localhost:20001"),
+            search_client=SearchService(video_searcher, video_explorer),
         )
 
         # Non-streaming
@@ -50,7 +50,7 @@ class ChatHandler:
     def __init__(
         self,
         llm_client: LLMClient,
-        search_client: SearchServiceClient,
+        search_client,
         max_iterations: int = MAX_TOOL_ITERATIONS,
         max_tool_results: int = 15,
         temperature: float = None,

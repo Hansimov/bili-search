@@ -1,10 +1,14 @@
 import argparse
+import asyncio
+import json
 import sys
 import uvicorn
 
 from copy import deepcopy
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 from tclogger import TCLogger, dict_to_str
 from typing import Optional, List, Union
 
@@ -26,6 +30,24 @@ from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD
 logger = TCLogger()
 
 
+class ChatMessage(BaseModel):
+    """A single chat message."""
+
+    role: str = Field(..., description="Message role: system/user/assistant")
+    content: str = Field(..., description="Message content")
+
+
+class ChatCompletionRequest(BaseModel):
+    """OpenAI-compatible chat completion request."""
+
+    messages: list[ChatMessage] = Field(..., description="Conversation messages")
+    stream: Optional[bool] = Field(False, description="Enable SSE streaming")
+    temperature: Optional[float] = Field(None, description="Sampling temperature")
+    model: Optional[str] = Field(
+        None, description="Model override (unused, for compatibility)"
+    )
+
+
 class SearchApp:
     def __init__(self, app_envs: dict = {}):
         self.title = app_envs.get("app_name")
@@ -39,9 +61,10 @@ class SearchApp:
         self.app_envs = app_envs
         self.init_searchers()
         self.init_embed_client()
-        # self.allow_cors()
+        self.init_chat_handler()
+        self.allow_cors()
         self.setup_routes()
-        logger.success(f"> {self.title} - v{self.version}")
+        logger.okay(f"> {self.title} - v{self.version}")
 
     def init_searchers(self):
         self.mode = self.app_envs.get("mode", "prod")
@@ -63,6 +86,38 @@ class SearchApp:
         """
         logger.hint("> Initializing embed client with keepalive...")
         init_embed_client_with_keepalive()
+
+    def init_chat_handler(self):
+        """Initialize the LLM chat handler for /chat/completions.
+
+        Uses the video_searcher and video_explorer directly (no HTTP),
+        wrapping them in a SearchService for the tool executor.
+        """
+        llm_config = self.app_envs.get("llm_config", "")
+        if not llm_config:
+            self.chat_handler = None
+            logger.hint("> Chat handler disabled (no llm_config)")
+            return
+
+        from llms.llm_client import create_llm_client
+        from llms.tools.executor import SearchService
+        from llms.chat.handler import ChatHandler
+
+        self.llm_client = create_llm_client(
+            model_config=llm_config,
+            verbose=True,
+        )
+        search_service = SearchService(
+            video_searcher=self.video_searcher,
+            video_explorer=self.video_explorer,
+            verbose=True,
+        )
+        self.chat_handler = ChatHandler(
+            llm_client=self.llm_client,
+            search_client=search_service,
+            verbose=True,
+        )
+        logger.okay(f"  Chat: LLM={llm_config} ({self.llm_client.model})")
 
     def allow_cors(self):
         self.app.add_middleware(
@@ -270,6 +325,73 @@ class SearchApp:
             summary="Hybrid search combining word and vector retrieval",
         )(self.hybrid_search)
 
+        # Chat endpoints (only if chat handler is initialized)
+        if self.chat_handler is not None:
+            self.app.post(
+                "/chat/completions",
+                summary="Chat completion (OpenAI-compatible)",
+                description="Send messages and receive AI-generated responses with integrated video search.",
+            )(self.chat_completions)
+
+            self.app.post(
+                "/v1/chat/completions",
+                summary="Chat completion (OpenAI SDK compatible path)",
+                include_in_schema=False,
+            )(self.chat_completions)
+
+            self.app.get(
+                "/health",
+                summary="Health check",
+            )(self.health)
+
+    async def chat_completions(self, request: ChatCompletionRequest):
+        """OpenAI-compatible chat completion endpoint.
+
+        Processes the conversation, internally executing search tools as needed,
+        and returns the final response.
+        """
+        messages = [msg.model_dump() for msg in request.messages]
+
+        if request.stream:
+            return EventSourceResponse(
+                self._stream_response(messages, request.temperature),
+                media_type="text/event-stream",
+            )
+        else:
+            result = await asyncio.to_thread(
+                self.chat_handler.handle,
+                messages=messages,
+                temperature=request.temperature,
+            )
+            return result
+
+    async def _stream_response(
+        self,
+        messages: list[dict],
+        temperature: float = None,
+    ):
+        """Generate SSE events for streaming response."""
+        chunks = await asyncio.to_thread(
+            lambda: list(
+                self.chat_handler.handle_stream(
+                    messages=messages,
+                    temperature=temperature,
+                )
+            )
+        )
+        for chunk in chunks:
+            yield {"data": chunk}
+
+    async def health(self):
+        """Health check endpoint."""
+        status = {
+            "status": "ok",
+            "search_service": "integrated",
+        }
+        if self.chat_handler is not None:
+            status["llm_model"] = self.llm_client.model
+        return status
+
 
 class SearchAppArgParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -308,6 +430,14 @@ class SearchAppArgParser(argparse.ArgumentParser):
             type=str,
             help=f"Elastic env name in secrets.json",
         )
+        self.add_argument(
+            "-lc",
+            "--llm-config",
+            type=str,
+            default="",
+            help="LLM config name from secrets.json (e.g. deepseek, volcengine). "
+            "Enables /chat/completions endpoint when set.",
+        )
 
         self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
 
@@ -327,6 +457,8 @@ class SearchAppArgParser(argparse.ArgumentParser):
             new_app_envs["elastic_index"] = self.args.elastic_index
         if self.args.elastic_env_name:
             new_app_envs["elastic_env_name"] = self.args.elastic_env_name
+        if self.args.llm_config:
+            new_app_envs["llm_config"] = self.args.llm_config
 
         self.new_app_envs = new_app_envs
 
@@ -350,3 +482,6 @@ if __name__ == "__main__":
     # Development mode:
     # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev
     # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -p 21001
+
+    # With LLM config for chat:
+    # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc deepseek

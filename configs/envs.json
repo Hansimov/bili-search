@@ -14,23 +14,6 @@
             "prod": "bili_videos_pro1",
             "dev": "bili_videos_dev6"
         },
-        "version": "0.0.1"
-    },
-    "chat_app": {
-        "app_name": "Bili Chat App",
-        "mode": "prod",
-        "host": {
-            "prod": "0.0.0.0",
-            "dev": "0.0.0.0"
-        },
-        "port": {
-            "prod": 20005,
-            "dev": 21005
-        },
-        "search_app_url": {
-            "prod": "http://localhost:20001",
-            "dev": "http://localhost:21001"
-        },
         "llm_config": "deepseek",
         "version": "0.1.0"
     },

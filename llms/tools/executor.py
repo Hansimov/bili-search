@@ -1,7 +1,7 @@
 """Tool executor for dispatching and executing tool calls.
 
 Handles the execution of search_videos and check_author tools,
-communicating with the Search App service via SearchServiceClient.
+using a search service that provides explore() and suggest() methods.
 """
 
 import json
@@ -9,12 +9,47 @@ import json
 from tclogger import logger
 
 from llms.llm_client import ToolCall
-from llms.search_service import SearchServiceClient
 from llms.tools.utils import (
     format_hits_for_llm,
     extract_explore_hits,
     analyze_suggest_for_authors,
 )
+
+
+class SearchService:
+    """Direct search service wrapping VideoSearcherV2 and VideoExplorer.
+
+    Provides the same explore/suggest interface as the old SearchServiceClient,
+    but calls the search components directly instead of over HTTP.
+
+    Usage:
+        service = SearchService(video_searcher, video_explorer)
+        result = service.explore("黑神话 :view>=1w")
+        suggest = service.suggest("影视飓风")
+    """
+
+    def __init__(self, video_searcher, video_explorer, verbose: bool = False):
+        self.video_searcher = video_searcher
+        self.video_explorer = video_explorer
+        self.verbose = verbose
+
+    def explore(self, query: str, qmod=None, verbose: bool = False) -> dict:
+        """Call unified_explore directly."""
+        try:
+            return self.video_explorer.unified_explore(
+                query=query, qmod=qmod, verbose=verbose
+            )
+        except Exception as e:
+            logger.warn(f"× Search explore error: {e}")
+            return {"error": str(e), "data": []}
+
+    def suggest(self, query: str, limit: int = 25, verbose: bool = False) -> dict:
+        """Call suggest directly."""
+        try:
+            return self.video_searcher.suggest(query, limit=limit, verbose=verbose)
+        except Exception as e:
+            logger.warn(f"× Search suggest error: {e}")
+            return {"error": str(e), "hits": [], "total_hits": 0}
 
 
 class ToolExecutor:
@@ -24,13 +59,13 @@ class ToolExecutor:
     results for feeding back to the LLM.
 
     Usage:
-        executor = ToolExecutor(search_client)
+        executor = ToolExecutor(search_service)
         result_message = executor.execute(tool_call)
     """
 
     def __init__(
         self,
-        search_client: SearchServiceClient,
+        search_client,
         max_results: int = 15,
         verbose: bool = False,
     ):

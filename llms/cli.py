@@ -1,13 +1,13 @@
 """CLI interactive chat mode for testing.
 
 Provides a command-line interface for interacting with the search copilot.
-Useful for development and testing without running a full HTTP server.
+Uses direct search (in-process) instead of HTTP, so no separate search server needed.
 
 Usage:
     python -m llms.cli
     python -m llms.cli --llm-config volcengine
-    python -m llms.cli --search-url http://localhost:21001
     python -m llms.cli --verbose
+    python -m llms.cli --elastic-index bili_videos_dev6 --elastic-env-name elastic_dev
 """
 
 import argparse
@@ -26,10 +26,16 @@ def main():
         help="LLM config name (e.g. deepseek, volcengine)",
     )
     parser.add_argument(
-        "--search-url",
+        "--elastic-index",
         type=str,
-        default="http://localhost:20001",
-        help="Search App URL",
+        default=None,
+        help="Elastic videos index name (default: from envs.json)",
+    )
+    parser.add_argument(
+        "--elastic-env-name",
+        type=str,
+        default=None,
+        help="Elastic env name in secrets.json",
     )
     parser.add_argument(
         "--verbose",
@@ -46,40 +52,48 @@ def main():
     args = parser.parse_args()
 
     # Lazy imports to avoid slow startup for --help
+    from configs.envs import SEARCH_APP_ENVS
+    from elastics.videos.searcher_v2 import VideoSearcherV2
+    from elastics.videos.explorer import VideoExplorer
     from llms.llm_client import create_llm_client
-    from llms.search_service import SearchServiceClient
+    from llms.tools.executor import SearchService
     from llms.chat.handler import ChatHandler
+
+    # Resolve elastic index
+    elastic_index = args.elastic_index
+    elastic_env_name = args.elastic_env_name
+    if not elastic_index:
+        # Use default from envs.json (prod mode)
+        idx = SEARCH_APP_ENVS.get("elastic_index", {})
+        elastic_index = idx.get("prod", idx) if isinstance(idx, dict) else idx
 
     # Initialize components
     logger.note("> Initializing Bili Search Copilot CLI...")
     logger.mesg(f"  LLM config: {args.llm_config}")
-    logger.mesg(f"  Search URL: {args.search_url}")
+    logger.mesg(f"  Elastic index: {elastic_index}")
+    if elastic_env_name:
+        logger.mesg(f"  Elastic env: {elastic_env_name}")
+
+    video_searcher = VideoSearcherV2(elastic_index, elastic_env_name=elastic_env_name)
+    video_explorer = VideoExplorer(elastic_index, elastic_env_name=elastic_env_name)
 
     llm_client = create_llm_client(
         model_config=args.llm_config,
         verbose=args.verbose,
     )
-    search_client = SearchServiceClient(
-        base_url=args.search_url,
+    search_service = SearchService(
+        video_searcher=video_searcher,
+        video_explorer=video_explorer,
         verbose=args.verbose,
     )
     handler = ChatHandler(
         llm_client=llm_client,
-        search_client=search_client,
+        search_client=search_service,
         temperature=args.temperature,
         verbose=args.verbose,
     )
 
-    # Check search service availability
-    if search_client.is_available():
-        logger.success("> Search service is available")
-    else:
-        logger.warn(
-            f"× Search service at {args.search_url} is not reachable. "
-            "Make sure the search app is running."
-        )
-
-    logger.success("> Ready! Type your question (Ctrl+C to exit)\n")
+    logger.success("> Ready! Type your question (Ctrl+C to exit)\\n")
 
     # Conversation history
     messages = []
@@ -156,4 +170,4 @@ if __name__ == "__main__":
 
     # python -m llms.cli
     # python -m llms.cli --llm-config deepseek --verbose
-    # python -m llms.cli --search-url http://localhost:21001
+    # python -m llms.cli --elastic-index bili_videos_dev6 --elastic-env-name elastic_dev

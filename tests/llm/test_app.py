@@ -1,6 +1,6 @@
-"""Tests for llms.app — FastAPI chat completions endpoint.
+"""Tests for SearchApp chat endpoints — integrated /chat/completions.
 
-Uses TestClient for endpoint testing with mocked handler.
+Uses TestClient for endpoint testing with mocked handler and search components.
 
 Run:
     python -m tests.llm.test_app
@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 from tclogger import logger
 
 from fastapi.testclient import TestClient
-from llms.app import ChatApp
 
 
 # ============================================================
@@ -20,26 +19,35 @@ from llms.app import ChatApp
 
 
 def create_test_app():
-    """Create a ChatApp with mocked internals for testing."""
-    with patch("llms.app.create_llm_client") as mock_create_llm, patch(
-        "llms.app.SearchServiceClient"
-    ) as mock_search_cls:
+    """Create a SearchApp with mocked search and chat internals for testing."""
+    with patch("apps.search_app.init_embed_client_with_keepalive") as mock_embed, patch(
+        "apps.search_app.VideoSearcherV2"
+    ) as mock_searcher_cls, patch(
+        "apps.search_app.VideoExplorer"
+    ) as mock_explorer_cls, patch(
+        "llms.llm_client.create_llm_client"
+    ) as mock_create_llm:
+
+        mock_searcher = MagicMock()
+        mock_explorer = MagicMock()
+        mock_searcher_cls.return_value = mock_searcher
+        mock_explorer_cls.return_value = mock_explorer
 
         mock_llm = MagicMock()
-        mock_create_llm.return_value = mock_llm
         mock_llm.model = "test-model"
+        mock_create_llm.return_value = mock_llm
 
-        mock_search = MagicMock()
-        mock_search_cls.return_value = mock_search
+        from apps.search_app import SearchApp
 
         app_envs = {
-            "app_name": "Test Chat App",
+            "app_name": "Test Search App",
             "version": "0.0.1",
+            "mode": "test",
+            "elastic_index": "test_index",
             "llm_config": "deepseek",
-            "search_app_url": "http://localhost:20001",
         }
-        chat_app = ChatApp(app_envs)
-        return chat_app, mock_llm, mock_search
+        search_app = SearchApp(app_envs)
+        return search_app, mock_llm, mock_searcher, mock_explorer
 
 
 # ============================================================
@@ -52,17 +60,15 @@ def test_health_endpoint():
     logger.note("=" * 60)
     logger.note("[TEST] /health endpoint")
 
-    chat_app, _, mock_search = create_test_app()
-    mock_search.is_available.return_value = True
-
-    client = TestClient(chat_app.app)
+    search_app, _, _, _ = create_test_app()
+    client = TestClient(search_app.app)
     resp = client.get("/health")
     assert resp.status_code == 200
 
     data = resp.json()
     assert data["status"] == "ok"
     assert data["llm_model"] == "test-model"
-    assert data["search_service"] == "available"
+    assert data["search_service"] == "integrated"
 
     logger.success("[PASS] /health endpoint")
 
@@ -72,9 +78,8 @@ def test_chat_completions_endpoint():
     logger.note("=" * 60)
     logger.note("[TEST] /chat/completions endpoint")
 
-    chat_app, mock_llm, _ = create_test_app()
+    search_app, mock_llm, _, _ = create_test_app()
 
-    # Mock the handler's handle method
     from llms.llm_client import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
@@ -83,7 +88,7 @@ def test_chat_completions_endpoint():
         usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
     )
 
-    client = TestClient(chat_app.app)
+    client = TestClient(search_app.app)
     resp = client.post(
         "/chat/completions",
         json={
@@ -105,7 +110,7 @@ def test_chat_completions_v1_path():
     logger.note("=" * 60)
     logger.note("[TEST] /v1/chat/completions path")
 
-    chat_app, mock_llm, _ = create_test_app()
+    search_app, mock_llm, _, _ = create_test_app()
     from llms.llm_client import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
@@ -114,7 +119,7 @@ def test_chat_completions_v1_path():
         usage={},
     )
 
-    client = TestClient(chat_app.app)
+    client = TestClient(search_app.app)
     resp = client.post(
         "/v1/chat/completions",
         json={
@@ -132,8 +137,8 @@ def test_chat_request_validation():
     logger.note("=" * 60)
     logger.note("[TEST] request validation")
 
-    chat_app, _, _ = create_test_app()
-    client = TestClient(chat_app.app)
+    search_app, _, _, _ = create_test_app()
+    client = TestClient(search_app.app)
 
     # Missing messages
     resp = client.post("/chat/completions", json={})
@@ -154,7 +159,7 @@ def test_streaming_response():
     logger.note("=" * 60)
     logger.note("[TEST] streaming response")
 
-    chat_app, mock_llm, _ = create_test_app()
+    search_app, mock_llm, _, _ = create_test_app()
     from llms.llm_client import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
@@ -163,7 +168,7 @@ def test_streaming_response():
         usage={},
     )
 
-    client = TestClient(chat_app.app)
+    client = TestClient(search_app.app)
     resp = client.post(
         "/chat/completions",
         json={
@@ -184,14 +189,14 @@ def test_cors_headers():
     logger.note("=" * 60)
     logger.note("[TEST] CORS headers")
 
-    chat_app, mock_llm, _ = create_test_app()
+    search_app, mock_llm, _, _ = create_test_app()
     from llms.llm_client import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
         content="OK", finish_reason="stop", usage={}
     )
 
-    client = TestClient(chat_app.app)
+    client = TestClient(search_app.app)
 
     # OPTIONS request should return CORS headers
     resp = client.options(
@@ -207,6 +212,37 @@ def test_cors_headers():
     logger.success("[PASS] CORS headers")
 
 
+def test_no_chat_without_llm_config():
+    """Test that chat endpoints are not registered when llm_config is empty."""
+    logger.note("=" * 60)
+    logger.note("[TEST] no chat without llm_config")
+
+    with patch("apps.search_app.init_embed_client_with_keepalive"), patch(
+        "apps.search_app.VideoSearcherV2"
+    ), patch("apps.search_app.VideoExplorer"):
+        from apps.search_app import SearchApp
+
+        app_envs = {
+            "app_name": "Test Search App",
+            "version": "0.0.1",
+            "mode": "test",
+            "elastic_index": "test_index",
+            "llm_config": "",
+        }
+        search_app = SearchApp(app_envs)
+
+        client = TestClient(search_app.app)
+
+        # Chat endpoints should not exist
+        resp = client.post(
+            "/chat/completions",
+            json={"messages": [{"role": "user", "content": "test"}]},
+        )
+        assert resp.status_code in (404, 405)
+
+    logger.success("[PASS] no chat without llm_config")
+
+
 if __name__ == "__main__":
     tests = [
         ("health_endpoint", test_health_endpoint),
@@ -215,6 +251,7 @@ if __name__ == "__main__":
         ("request_validation", test_chat_request_validation),
         ("streaming_response", test_streaming_response),
         ("cors_headers", test_cors_headers),
+        ("no_chat_without_llm_config", test_no_chat_without_llm_config),
     ]
 
     results = {}
