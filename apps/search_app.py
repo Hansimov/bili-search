@@ -435,7 +435,7 @@ class SearchAppArgParser(argparse.ArgumentParser):
             "--llm-config",
             type=str,
             default="",
-            help="LLM config name from secrets.json (e.g. deepseek, volcengine). "
+            help="LLM config name from secrets.json (e.g. deepseek, gpt, volcengine). "
             "Enables /chat/completions endpoint when set.",
         )
 
@@ -485,3 +485,4 @@ if __name__ == "__main__":
 
     # With LLM config for chat:
     # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+    # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc gpt

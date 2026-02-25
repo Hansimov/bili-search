@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from tclogger import logger
 
 from fastapi.testclient import TestClient
+from configs.envs import LLM_CONFIG
 
 
 # ============================================================
@@ -44,7 +45,7 @@ def create_test_app():
             "version": "0.0.1",
             "mode": "test",
             "elastic_index": "test_index",
-            "llm_config": "deepseek",
+            "llm_config": LLM_CONFIG,
         }
         search_app = SearchApp(app_envs)
         return search_app, mock_llm, mock_searcher, mock_explorer

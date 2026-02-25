@@ -350,7 +350,7 @@ class LLMClient:
 
 
 def create_llm_client(
-    model_config: str = "deepseek",
+    model_config: str = None,
     verbose: bool = False,
 ) -> LLMClient:
     """Create an LLMClient from config name in secrets.json.
@@ -359,12 +359,17 @@ def create_llm_client(
     This is the main factory function for creating LLM clients.
 
     Args:
-        model_config: Key in LLMS_ENVS (e.g. "deepseek", "volcengine").
+        model_config: Key in LLMS_ENVS (e.g. "deepseek", "gpt", "volcengine").
+            Defaults to LLM_CONFIG from configs/envs.py if not specified.
         verbose: Enable verbose logging.
 
     Returns:
         Configured LLMClient instance.
     """
+    if model_config is None:
+        from configs.envs import LLM_CONFIG
+
+        model_config = LLM_CONFIG
     from configs.envs import LLMS_ENVS
 
     if model_config not in LLMS_ENVS:

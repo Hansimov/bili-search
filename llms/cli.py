@@ -175,11 +175,13 @@ def _run_interactive(handler, temperature: float = None):
 
 def main():
     parser = argparse.ArgumentParser(description="Bili Search Copilot CLI")
+    from configs.envs import LLM_CONFIG
+
     parser.add_argument(
         "--llm-config",
         type=str,
-        default="deepseek",
-        help="LLM config name (e.g. deepseek, volcengine)",
+        default=LLM_CONFIG,
+        help="LLM config name (e.g. deepseek, gpt, volcengine)",
     )
     parser.add_argument(
         "--elastic-index",

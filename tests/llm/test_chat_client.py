@@ -2,7 +2,7 @@
 
 Includes:
 - Unit tests with mocked HTTP responses (no external deps)
-- Integration tests that call real DeepSeek API (marked slow)
+- Integration tests that call real LLM API (marked slow)
 
 Run:
     python -m tests.llm.test_chat_client
@@ -13,6 +13,7 @@ import json
 from unittest.mock import patch, MagicMock
 from tclogger import logger
 
+from configs.envs import LLM_CONFIG
 from llms.llm_client import LLMClient, ChatResponse, ToolCall, create_llm_client
 
 
@@ -302,11 +303,12 @@ def test_create_llm_client():
     logger.note("=" * 60)
     logger.note("[TEST] create_llm_client")
 
-    client = create_llm_client("deepseek", verbose=False)
+    client = create_llm_client(LLM_CONFIG, verbose=False)
     assert isinstance(client, LLMClient)
-    assert "deepseek" in client.model.lower() or client.endpoint.find("deepseek") >= 0
+    assert client.endpoint, "endpoint should be set"
+    assert client.model, "model should be set"
 
-    logger.success("[PASS] create_llm_client")
+    logger.success(f"[PASS] create_llm_client (config={LLM_CONFIG})")
 
 
 def test_create_llm_client_invalid():
@@ -340,15 +342,15 @@ def test_tool_call_parse_bad_json():
 # ============================================================
 
 
-def test_deepseek_chat_integration():
-    """Integration test: actual chat with DeepSeek API.
+def test_llm_chat_integration():
+    """Integration test: actual chat with LLM API.
 
-    Requires DeepSeek API key in configs/secrets.json.
+    Requires LLM API key in configs/secrets.json.
     """
     logger.note("=" * 60)
-    logger.note("[TEST] DeepSeek API integration (live)")
+    logger.note(f"[TEST] LLM API integration (live, config={LLM_CONFIG})")
 
-    client = create_llm_client("deepseek", verbose=True)
+    client = create_llm_client(LLM_CONFIG, verbose=True)
 
     result = client.chat(
         messages=[
@@ -362,15 +364,15 @@ def test_deepseek_chat_integration():
     assert len(result.content) > 0
     assert result.finish_reason == "stop"
     logger.success(f"  Response: {result.content}")
-    logger.success("[PASS] DeepSeek API integration")
+    logger.success(f"[PASS] LLM API integration (config={LLM_CONFIG})")
 
 
-def test_deepseek_function_calling_integration():
-    """Integration test: function calling with DeepSeek API."""
+def test_llm_function_calling_integration():
+    """Integration test: function calling with LLM API."""
     logger.note("=" * 60)
-    logger.note("[TEST] DeepSeek function calling integration (live)")
+    logger.note(f"[TEST] LLM function calling integration (live, config={LLM_CONFIG})")
 
-    client = create_llm_client("deepseek", verbose=True)
+    client = create_llm_client(LLM_CONFIG, verbose=True)
 
     tools = [
         {
@@ -405,7 +407,7 @@ def test_deepseek_function_calling_integration():
     args = result.tool_calls[0].parse_arguments()
     assert "location" in args
     logger.success(f"  Tool call: {result.tool_calls[0].name}({args})")
-    logger.success("[PASS] DeepSeek function calling integration")
+    logger.success(f"[PASS] LLM function calling integration (config={LLM_CONFIG})")
 
 
 if __name__ == "__main__":
@@ -426,8 +428,8 @@ if __name__ == "__main__":
 
     # Integration tests (require live API)
     integration_tests = [
-        ("deepseek_chat_integration", test_deepseek_chat_integration),
-        ("deepseek_function_calling", test_deepseek_function_calling_integration),
+        ("llm_chat_integration", test_llm_chat_integration),
+        ("llm_function_calling", test_llm_function_calling_integration),
     ]
 
     results = {}

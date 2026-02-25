@@ -69,7 +69,7 @@ class ChatHandler:
     Usage:
         from llms.tools.executor import SearchService
         handler = ChatHandler(
-            llm_client=create_llm_client("deepseek"),
+            llm_client=create_llm_client(),  # uses LLM_CONFIG from configs/envs.py
             search_client=SearchService(video_searcher, video_explorer),
         )
 

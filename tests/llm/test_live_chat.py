@@ -157,10 +157,12 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Live LLM Chat Tests")
+    from configs.envs import LLM_CONFIG
+
     parser.add_argument(
         "--llm-config",
         type=str,
-        default="deepseek",
+        default=LLM_CONFIG,
         help="LLM config name",
     )
     parser.add_argument(
