@@ -34,7 +34,7 @@ def make_content_response(content: str, extra_usage: dict = None) -> ChatRespons
 def make_tool_call_response(
     name: str, arguments: dict, call_id: str = "call_1", extra_usage: dict = None
 ) -> ChatResponse:
-    """Build a ChatResponse with a tool call."""
+    """Build a ChatResponse with a single tool call."""
     usage = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
     if extra_usage:
         usage.update(extra_usage)
@@ -46,6 +46,32 @@ def make_tool_call_response(
                 name=name,
                 arguments=json.dumps(arguments, ensure_ascii=False),
             )
+        ],
+        finish_reason="tool_calls",
+        usage=usage,
+    )
+
+
+def make_multi_tool_call_response(
+    calls: list[tuple[str, dict, str]], extra_usage: dict = None
+) -> ChatResponse:
+    """Build a ChatResponse with multiple parallel tool calls.
+
+    Args:
+        calls: List of (name, arguments, call_id) tuples.
+    """
+    usage = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+    if extra_usage:
+        usage.update(extra_usage)
+    return ChatResponse(
+        content=None,
+        tool_calls=[
+            ToolCall(
+                id=call_id,
+                name=name,
+                arguments=json.dumps(args, ensure_ascii=False),
+            )
+            for name, args, call_id in calls
         ],
         finish_reason="tool_calls",
         usage=usage,
@@ -133,7 +159,7 @@ def test_single_tool_call():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [
         # First call: tool call
-        make_tool_call_response("search_videos", {"query": "黑神话"}),
+        make_tool_call_response("search_videos", {"queries": ["黑神话"]}),
         # Second call: content response
         make_content_response("找到了10个黑神话相关视频。"),
     ]
@@ -179,7 +205,7 @@ def test_multi_tool_calls():
         make_tool_call_response("check_author", {"name": "影视飓风"}, "call_1"),
         # 2. Search videos
         make_tool_call_response(
-            "search_videos", {"query": ":user=影视飓风 :date<=7d"}, "call_2"
+            "search_videos", {"queries": [":user=影视飓风 :date<=7d"]}, "call_2"
         ),
         # 3. Final content
         make_content_response("影视飓风最近7天发布了以下视频..."),
@@ -220,7 +246,7 @@ def test_cache_token_accumulation():
     mock_llm.chat.side_effect = [
         make_tool_call_response(
             "search_videos",
-            {"query": "test"},
+            {"queries": ["test"]},
             extra_usage={
                 "prompt_cache_hit_tokens": 100,
                 "prompt_cache_miss_tokens": 50,
@@ -262,9 +288,9 @@ def test_max_iterations():
     # First 3 calls: always tool calls (simulates infinite loop)
     # 4th call: forced content response (tools=None)
     mock_llm.chat.side_effect = [
-        make_tool_call_response("search_videos", {"query": "test"}),
-        make_tool_call_response("search_videos", {"query": "test"}),
-        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
         make_content_response("根据搜索结果，找到了以下视频..."),
     ]
 
@@ -303,9 +329,9 @@ def test_dsml_sanitization():
         "</｜DSML｜invoke></｜DSML｜function_calls>"
     )
     mock_llm.chat.side_effect = [
-        make_tool_call_response("search_videos", {"query": "test"}),
-        make_tool_call_response("search_videos", {"query": "test"}),
-        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
         make_content_response(dsml_content),
     ]
 
@@ -376,7 +402,7 @@ def test_streaming_with_tools():
 
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [
-        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"queries": ["test"]}),
         make_content_response("找到了结果。"),
     ]
 
@@ -487,11 +513,98 @@ def test_multi_turn_conversation():
     logger.success("[PASS] multi-turn conversation")
 
 
+def test_parallel_tool_calls():
+    """Test handler with parallel tool calls (multiple tools in one response)."""
+    logger.note("=" * 60)
+    logger.note("[TEST] parallel tool calls")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        # 1. LLM calls both check_author in parallel
+        make_multi_tool_call_response(
+            [
+                ("check_author", {"name": "何同学"}, "call_p1"),
+                ("check_author", {"name": "影视飓风"}, "call_p2"),
+            ]
+        ),
+        # 2. Search with multi-query
+        make_tool_call_response(
+            "search_videos",
+            {"queries": [":user=何同学 :date<=15d", ":user=影视飓风 :date<=15d"]},
+            "call_p3",
+        ),
+        # 3. Final content
+        make_content_response("这是何同学和影视飓风最近的视频..."),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "何同学和影视飓风最近有什么新视频？"}]
+    )
+
+    content = result["choices"][0]["message"]["content"]
+    assert "何同学" in content or "影视飓风" in content
+
+    # LLM called 3 times
+    assert mock_llm.chat.call_count == 3
+
+    # Both check_author calls should have been made (parallel)
+    assert mock_search.suggest.call_count == 2
+
+    # Search was called (from the multi-query call)
+    assert mock_search.explore.call_count >= 1
+
+    # Verify usage accumulated from all 3 calls (30 + 30 + 15 = 75)
+    assert result["usage"]["total_tokens"] == 75
+
+    logger.success("[PASS] parallel tool calls")
+
+
+def test_multi_query_search():
+    """Test handler with multi-query search_videos (queries array)."""
+    logger.note("=" * 60)
+    logger.note("[TEST] multi-query search")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        # Multi-query search
+        make_tool_call_response(
+            "search_videos",
+            {"queries": ["黑神话 :view>=1w", "原神 :view>=1w"]},
+            "call_mq1",
+        ),
+        # Content
+        make_content_response("黑神话和原神的热门视频如下..."),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "黑神话和原神播放量最高的视频对比"}]
+    )
+
+    assert mock_llm.chat.call_count == 2
+    # explore should be called twice (once per query)
+    assert mock_search.explore.call_count == 2
+
+    logger.success("[PASS] multi-query search")
+
+
 if __name__ == "__main__":
     tests = [
         ("direct_content_response", test_direct_content_response),
         ("single_tool_call", test_single_tool_call),
         ("multi_tool_calls", test_multi_tool_calls),
+        ("parallel_tool_calls", test_parallel_tool_calls),
+        ("multi_query_search", test_multi_query_search),
         ("cache_token_accumulation", test_cache_token_accumulation),
         ("max_iterations", test_max_iterations),
         ("dsml_sanitization", test_dsml_sanitization),

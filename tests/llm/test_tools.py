@@ -105,6 +105,14 @@ def test_tool_definitions_format():
     assert "search_videos" in names
     assert "check_author" in names
 
+    # Verify search_videos uses queries array
+    search_tool = [
+        t for t in TOOL_DEFINITIONS if t["function"]["name"] == "search_videos"
+    ][0]
+    search_params = search_tool["function"]["parameters"]
+    assert "queries" in search_params["properties"]
+    assert search_params["properties"]["queries"]["type"] == "array"
+
     logger.success("[PASS] tool definitions format")
 
 
@@ -121,7 +129,7 @@ def test_execute_search_videos():
     tc = ToolCall(
         id="call_test_1",
         name="search_videos",
-        arguments=json.dumps({"query": "黑神话"}),
+        arguments=json.dumps({"queries": ["黑神话"]}),
     )
     result_msg = executor.execute(tc)
 
@@ -206,7 +214,7 @@ def test_execute_empty_query():
     tc = ToolCall(
         id="call_test_4",
         name="search_videos",
-        arguments=json.dumps({"query": ""}),
+        arguments=json.dumps({"queries": [""]}),
     )
     result_msg = executor.execute(tc)
 
@@ -233,7 +241,7 @@ def test_execute_search_error():
     tc = ToolCall(
         id="call_test_5",
         name="search_videos",
-        arguments=json.dumps({"query": "test"}),
+        arguments=json.dumps({"queries": ["test"]}),
     )
     result_msg = executor.execute(tc)
 
@@ -316,7 +324,7 @@ def test_max_results_limit():
     tc = ToolCall(
         id="call_test_6",
         name="search_videos",
-        arguments=json.dumps({"query": "test"}),
+        arguments=json.dumps({"queries": ["test"]}),
     )
     result_msg = executor.execute(tc)
 
@@ -325,6 +333,66 @@ def test_max_results_limit():
     assert result_data["total_hits"] == 100  # Total is preserved
 
     logger.success("[PASS] max_results limit")
+
+
+def test_multi_query_search():
+    """Test search_videos with multiple queries."""
+    logger.note("=" * 60)
+    logger.note("[TEST] multi-query search")
+
+    mock_client = MagicMock()
+    mock_client.explore.return_value = MOCK_EXPLORE_RESULT
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_mq1",
+        name="search_videos",
+        arguments=json.dumps(
+            {"queries": ["黑神话 :view>=1w", ":user=影视飓风 :date<=7d"]}
+        ),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    # Multi-query returns { "results": [...] }
+    assert "results" in result_data
+    assert len(result_data["results"]) == 2
+    assert result_data["results"][0]["query"] == "黑神话 :view>=1w"
+    assert result_data["results"][1]["query"] == ":user=影视飓风 :date<=7d"
+
+    # explore should be called twice
+    assert mock_client.explore.call_count == 2
+
+    logger.success("[PASS] multi-query search")
+
+
+def test_legacy_query_string():
+    """Test search_videos backward compatibility with single 'query' string."""
+    logger.note("=" * 60)
+    logger.note("[TEST] legacy query string")
+
+    mock_client = MagicMock()
+    mock_client.explore.return_value = MOCK_EXPLORE_RESULT
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_legacy",
+        name="search_videos",
+        arguments=json.dumps({"query": "黑神话"}),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    # Single legacy query returns flat result
+    assert result_data["query"] == "黑神话"
+    assert "total_hits" in result_data
+    assert "hits" in result_data
+
+    mock_client.explore.assert_called_once_with(query="黑神话")
+
+    logger.success("[PASS] legacy query string")
 
 
 if __name__ == "__main__":
@@ -337,6 +405,8 @@ if __name__ == "__main__":
         ("execute_empty_query", test_execute_empty_query),
         ("execute_search_error", test_execute_search_error),
         ("max_results_limit", test_max_results_limit),
+        ("multi_query_search", test_multi_query_search),
+        ("legacy_query_string", test_legacy_query_string),
     ]
 
     results = {}

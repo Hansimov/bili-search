@@ -270,6 +270,9 @@ class ChatHandler:
     ):
         """Execute tool calls and append results to the message list.
 
+        Supports parallel tool calls — when the LLM returns multiple tool_calls
+        in one response, all are executed and their results appended.
+
         Follows the OpenAI conversation format:
         1. Append the assistant message with tool_calls
         2. Append each tool result as a tool message
@@ -278,6 +281,7 @@ class ChatHandler:
         messages.append(response.to_message_dict())
 
         # Execute each tool call and append results
+        num_calls = len(response.tool_calls)
         for tool_call in response.tool_calls:
             result_message = self.tool_executor.execute(tool_call)
             messages.append(result_message)
@@ -286,6 +290,7 @@ class ChatHandler:
                 logger.mesg(
                     f"  Tool '{tool_call.name}' → "
                     f"{len(result_message.get('content', ''))} chars"
+                    + (f" ({num_calls} parallel)" if num_calls > 1 else "")
                 )
 
     def _format_completion(

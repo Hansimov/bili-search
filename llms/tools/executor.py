@@ -120,15 +120,35 @@ class ToolExecutor:
         }
 
     def _search_videos(self, args: dict) -> dict:
-        """Execute the search_videos tool.
+        """Execute the search_videos tool with multi-query support.
 
-        Calls the /explore endpoint and formats results for the LLM.
+        Accepts `queries` (array of strings) or legacy `query` (single string).
+        Each query is executed independently and results are merged.
         """
-        query = args.get("query", "")
-        if not query:
-            return {"error": "Missing query parameter", "hits": []}
+        # Support both new `queries` (array) and legacy `query` (string)
+        queries = args.get("queries", [])
+        if not queries:
+            query = args.get("query", "")
+            queries = [query] if query else []
+        if not queries:
+            return {"error": "Missing queries parameter", "results": []}
 
-        # Use explore endpoint for best results (multi-lane recall + ranking)
+        results = []
+        for query in queries:
+            result = self._search_single_query(query)
+            results.append(result)
+
+        # For single query, return flat result for backward compatibility
+        if len(results) == 1:
+            return results[0]
+
+        return {"results": results}
+
+    def _search_single_query(self, query: str) -> dict:
+        """Execute a single search query via explore endpoint."""
+        if not query:
+            return {"query": query, "error": "Empty query", "hits": [], "total_hits": 0}
+
         explore_result = self.search_client.explore(query=query)
 
         if "error" in explore_result:
@@ -139,7 +159,6 @@ class ToolExecutor:
                 "total_hits": 0,
             }
 
-        # Extract and format hits
         hits, total_hits = extract_explore_hits(explore_result)
         formatted_hits = format_hits_for_llm(hits, max_hits=self.max_results)
 

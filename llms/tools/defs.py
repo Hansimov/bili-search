@@ -9,25 +9,27 @@ SEARCH_VIDEOS_TOOL = {
     "function": {
         "name": "search_videos",
         "description": (
-            "搜索B站视频。根据搜索语句返回视频结果列表。"
+            "搜索B站视频。支持一次传入多个搜索语句，并行搜索并合并结果。"
             "搜索语句支持关键词和DSL过滤器。"
             "过滤器以冒号':'开头，格式为 :<字段><操作符><值>。"
             "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
-            "示例：'黑神话'、'黑神话 :view>=1w :date<=30d'、':user=影视飓风 :date<=7d'。"
+            "示例queries：['黑神话 :view>=1w', ':user=影视飓风 :date<=7d']。"
+            "当需要搜索不同关键词或不同UP主时，应传入多个query以提高效率。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
                     "description": (
-                        "搜索语句，可包含关键词和/或DSL过滤器。"
+                        "搜索语句列表。每个语句可包含关键词和/或DSL过滤器。"
                         "关键词用空格分隔，过滤器以冒号':'起始。"
-                        "示例: '黑神话 :view>=1w' ':user=影视飓风 :date<=7d'"
+                        "示例: ['黑神话 :view>=1w', ':user=影视飓风 :date<=7d']"
                     ),
                 },
             },
-            "required": ["query"],
+            "required": ["queries"],
         },
     },
 }
