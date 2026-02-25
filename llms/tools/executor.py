@@ -9,11 +9,17 @@ import json
 from tclogger import logger
 
 from llms.llm_client import ToolCall
+from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.utils import (
     format_hits_for_llm,
     extract_explore_hits,
     analyze_suggest_for_authors,
 )
+
+# Whitelist-based spec registry — only these documents can be read
+SPEC_REGISTRY = {
+    "search_syntax": SEARCH_SYNTAX,
+}
 
 
 class SearchService:
@@ -92,14 +98,19 @@ class ToolExecutor:
             result = self._search_videos(args)
         elif name == "check_author":
             result = self._check_author(args)
+        elif name == "read_spec":
+            result = self._read_spec(args)
         else:
             logger.warn(f"× Unknown tool: {name}")
             result = {"error": f"Unknown tool: {name}"}
 
-        result_str = json.dumps(result, ensure_ascii=False, indent=2)
+        result_str = json.dumps(result, ensure_ascii=False)
 
         if self.verbose:
-            preview = result_str[:200] + "..." if len(result_str) > 200 else result_str
+            preview_str = json.dumps(result, ensure_ascii=False, indent=2)
+            preview = (
+                preview_str[:200] + "..." if len(preview_str) > 200 else preview_str
+            )
             logger.success(f"  Tool result ({len(result_str)} chars): {preview}")
 
         return {
@@ -159,3 +170,15 @@ class ToolExecutor:
             }
 
         return analyze_suggest_for_authors(suggest_result, query=name)
+
+    def _read_spec(self, args: dict) -> dict:
+        """Return a whitelisted spec document by name.
+
+        Only documents registered in SPEC_REGISTRY can be read.
+        No filesystem access — all content is pre-loaded in memory.
+        """
+        name = args.get("name", "")
+        if name not in SPEC_REGISTRY:
+            available = list(SPEC_REGISTRY.keys())
+            return {"error": f"Unknown spec: {name}", "available": available}
+        return {"name": name, "content": SPEC_REGISTRY[name]}

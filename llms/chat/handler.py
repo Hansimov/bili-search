@@ -5,9 +5,16 @@ Implements the iterative tool-calling pattern:
   1. Send user message + system prompt + tool defs to LLM
   2. If LLM returns tool_calls → execute tools → feed results back → repeat
   3. If LLM returns content → return as final response
+
+Token optimization strategy:
+  - Each iteration re-sends the full conversation, so fewer iterations = fewer tokens
+  - Compact DSL syntax is inline in the system prompt (no read_spec round-trip)
+  - Tool results use compact JSON (no indent)
+  - If max iterations exhausted, inject a nudge message to force content generation
 """
 
 import json
+import re
 import time
 import uuid
 
@@ -19,11 +26,38 @@ from llms.tools.defs import TOOL_DEFINITIONS
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt
 
-# Maximum tool-calling iterations to prevent infinite loops
-MAX_TOOL_ITERATIONS = 8
+# Maximum tool-calling iterations to prevent infinite loops.
+# Typical flow: check_author → search_videos → content = 2 tool calls + 1 content.
+# 3 allows check_author + 2 searches before forcing content.
+MAX_TOOL_ITERATIONS = 3
 
 # Default chunk size for simulated streaming (chars per chunk)
 STREAM_CHUNK_SIZE = 4
+
+# Regex to strip leaked DeepSeek DSML function-calling markup from content
+_DSML_PATTERN = re.compile(r"<｜.*?｜>")
+_DSML_BLOCK_PATTERN = re.compile(
+    r"<｜DSML｜function_calls>.*?</｜DSML｜function_calls>", re.DOTALL
+)
+
+# Nudge message injected before forcing content generation
+_FORCE_CONTENT_NUDGE = (
+    "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
+    "不要再调用任何工具。如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
+)
+
+
+def _sanitize_content(content: str) -> str:
+    """Strip leaked DeepSeek DSML function-calling markup from content.
+
+    DeepSeek may emit raw `<｜DSML｜...>` tags when tools=None is passed
+    after a tool-calling conversation. This sanitizes the output.
+    """
+    # Remove full DSML blocks first
+    content = _DSML_BLOCK_PATTERN.sub("", content)
+    # Remove any remaining DSML tags
+    content = _DSML_PATTERN.sub("", content)
+    return content.strip()
 
 
 class ChatHandler:
@@ -52,7 +86,7 @@ class ChatHandler:
         llm_client: LLMClient,
         search_client,
         max_iterations: int = MAX_TOOL_ITERATIONS,
-        max_tool_results: int = 15,
+        max_tool_results: int = 8,
         temperature: float = None,
         verbose: bool = False,
     ):
@@ -66,6 +100,82 @@ class ChatHandler:
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.verbose = verbose
+
+    @staticmethod
+    def _accumulate_usage(total: dict, new: dict):
+        """Accumulate all numeric usage fields dynamically.
+
+        Picks up standard fields (prompt_tokens, completion_tokens, total_tokens)
+        as well as provider-specific fields like DeepSeek's
+        prompt_cache_hit_tokens and prompt_cache_miss_tokens.
+        """
+        for key, value in new.items():
+            if isinstance(value, (int, float)):
+                total[key] = total.get(key, 0) + value
+
+    def _run_tool_loop(
+        self,
+        full_messages: list[dict],
+        temperature: float = None,
+    ) -> tuple[str, dict]:
+        """Run the tool-calling loop and return (content, usage).
+
+        Shared between handle() and handle_stream() to avoid duplication.
+        If the loop exhausts max_iterations without producing content,
+        injects a nudge message and makes one final tools=None call.
+
+        Returns:
+            Tuple of (final_content, total_usage_dict).
+        """
+        final_content = None
+        total_usage = {}
+
+        for iteration in range(self.max_iterations):
+            if self.verbose:
+                logger.hint(f"> Iteration {iteration + 1}/{self.max_iterations}")
+
+            response = self.llm_client.chat(
+                messages=full_messages,
+                tools=self.tool_defs,
+                temperature=temperature,
+            )
+            self._accumulate_usage(total_usage, response.usage)
+
+            if response.has_tool_calls:
+                if response.content:
+                    final_content = response.content
+                self._process_tool_calls(full_messages, response)
+                continue
+            else:
+                final_content = response.content or ""
+                break
+        else:
+            # Max iterations exhausted — nudge LLM to produce content
+            logger.warn(
+                f"× Tool loop hit {self.max_iterations} iterations, "
+                "forcing content generation"
+            )
+            # Inject a nudge message to guide the LLM
+            full_messages.append(
+                {
+                    "role": "user",
+                    "content": _FORCE_CONTENT_NUDGE,
+                }
+            )
+            response = self.llm_client.chat(
+                messages=full_messages,
+                tools=None,  # No tools → LLM must generate content
+                temperature=temperature,
+            )
+            self._accumulate_usage(total_usage, response.usage)
+            final_content = (
+                response.content or final_content or "[抱歉，处理超时，请重试]"
+            )
+
+        # Sanitize any leaked DSML markup
+        final_content = _sanitize_content(final_content)
+
+        return final_content, total_usage
 
     def handle(
         self,
@@ -88,42 +198,8 @@ class ChatHandler:
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
 
-        # Build full message list with system prompt
         full_messages = self._build_messages(messages)
-
-        # Tool-calling loop
-        final_content = None
-        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-
-        for iteration in range(self.max_iterations):
-            if self.verbose:
-                logger.hint(f"> Iteration {iteration + 1}/{self.max_iterations}")
-
-            response = self.llm_client.chat(
-                messages=full_messages,
-                tools=self.tool_defs,
-                temperature=temp,
-            )
-
-            # Accumulate usage
-            for key in total_usage:
-                total_usage[key] += response.usage.get(key, 0)
-
-            if response.has_tool_calls:
-                # Execute tools and append results to conversation
-                self._process_tool_calls(full_messages, response)
-                continue
-            else:
-                # Final content response
-                final_content = response.content or ""
-                break
-        else:
-            # Max iterations reached
-            logger.warn(
-                f"× Max iterations ({self.max_iterations}) reached, "
-                "returning last available content"
-            )
-            final_content = final_content or "[抱歉，处理超时，请重试]"
+        final_content, total_usage = self._run_tool_loop(full_messages, temp)
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
         if self.verbose:
@@ -151,29 +227,8 @@ class ChatHandler:
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
 
-        # Build full message list with system prompt
         full_messages = self._build_messages(messages)
-
-        # Tool-calling loop (non-streaming, internal)
-        final_content = None
-        for iteration in range(self.max_iterations):
-            if self.verbose:
-                logger.hint(f"> Stream iteration {iteration + 1}/{self.max_iterations}")
-
-            response = self.llm_client.chat(
-                messages=full_messages,
-                tools=self.tool_defs,
-                temperature=temp,
-            )
-
-            if response.has_tool_calls:
-                self._process_tool_calls(full_messages, response)
-                continue
-            else:
-                final_content = response.content or ""
-                break
-        else:
-            final_content = final_content or "[抱歉，处理超时，请重试]"
+        final_content, _usage = self._run_tool_loop(full_messages, temp)
 
         # Stream the final content as SSE chunks
         # First chunk: role

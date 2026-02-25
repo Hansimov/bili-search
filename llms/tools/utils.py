@@ -5,18 +5,17 @@ import re
 from tclogger import ts_to_str, get_now_ts, dt_to_zh_str
 
 
-# Source fields to keep when formatting hits for the LLM
+# Source fields to keep when formatting hits for the LLM.
+# Minimized to reduce token consumption — only include what the LLM needs
+# to generate a useful response. desc/tags/pic/coin/danmaku are omitted
+# because the LLM only lists title, author, view count, and pubdate.
 LLM_HIT_FIELDS = [
     "title",
+    "tags",
     "bvid",
     "owner",
     "pubdate",
     "stat.view",
-    "stat.coin",
-    "stat.danmaku",
-    "desc",
-    "tags",
-    "pic",
 ]
 
 
@@ -80,15 +79,26 @@ def add_pub_to_now_str(hit: dict) -> dict:
     return hit
 
 
+# Maximum number of tags to keep per hit (to limit token consumption)
+MAX_TAGS_PER_HIT = 5
+
+
 def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
     """Format a single hit for LLM consumption.
 
-    Shrinks to relevant fields and adds link + time strings.
+    Shrinks to relevant fields, adds link + time strings,
+    truncates tags, and removes raw pubdate timestamp.
     """
     result = shrink_hit(hit, fields)
     add_link(result)
     add_pubdate_str(result)
     add_pub_to_now_str(result)
+    # Remove raw timestamp — pubdate_str and pub_to_now_str are sufficient
+    result.pop("pubdate", None)
+    # Truncate tags to save tokens
+    if "tags" in result and isinstance(result["tags"], str):
+        tag_list = [t.strip() for t in result["tags"].split(",")]
+        result["tags"] = ", ".join(tag_list[:MAX_TAGS_PER_HIT])
     return result
 
 

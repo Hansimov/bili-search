@@ -10,8 +10,10 @@ SEARCH_VIDEOS_TOOL = {
         "name": "search_videos",
         "description": (
             "搜索B站视频。根据搜索语句返回视频结果列表。"
-            "搜索语句支持关键词和DSL过滤器语法（参见 SEARCH_SYNTAX）。"
-            "示例查询：'黑神话'、'黑神话 :view>=1w :date<=30d'、':user=影视飓风 :date<=7d'。"
+            "搜索语句支持关键词和DSL过滤器。"
+            "过滤器以冒号':'开头，格式为 :<字段><操作符><值>。"
+            "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
+            "示例：'黑神话'、'黑神话 :view>=1w :date<=30d'、':user=影视飓风 :date<=7d'。"
         ),
         "parameters": {
             "type": "object",
@@ -21,6 +23,7 @@ SEARCH_VIDEOS_TOOL = {
                     "description": (
                         "搜索语句，可包含关键词和/或DSL过滤器。"
                         "关键词用空格分隔，过滤器以冒号':'起始。"
+                        "示例: '黑神话 :view>=1w' ':user=影视飓风 :date<=7d'"
                     ),
                 },
             },
@@ -51,5 +54,31 @@ CHECK_AUTHOR_TOOL = {
     },
 }
 
-# All tool definitions for the chat handler
+READ_SPEC_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_spec",
+        "description": (
+            "读取搜索引擎的完整规格文档。"
+            "系统提示中已包含常用DSL语法速查，大部分查询不需要调用此工具。"
+            "仅在需要查阅完整语法细节（如范围过滤器、搜索模式等高级用法）时使用。"
+            "可用文档: search_syntax"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "文档名称。可选值: search_syntax",
+                    "enum": ["search_syntax"],
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+# Default tool definitions for the chat handler.
+# read_spec is available but not in the default list since DSL syntax
+# is already inline in the system prompt.
 TOOL_DEFINITIONS = [SEARCH_VIDEOS_TOOL, CHECK_AUTHOR_TOOL]

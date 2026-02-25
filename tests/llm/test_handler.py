@@ -19,19 +19,25 @@ from llms.chat.handler import ChatHandler
 # ============================================================
 
 
-def make_content_response(content: str) -> ChatResponse:
+def make_content_response(content: str, extra_usage: dict = None) -> ChatResponse:
     """Build a ChatResponse with content."""
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    if extra_usage:
+        usage.update(extra_usage)
     return ChatResponse(
         content=content,
         finish_reason="stop",
-        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        usage=usage,
     )
 
 
 def make_tool_call_response(
-    name: str, arguments: dict, call_id: str = "call_1"
+    name: str, arguments: dict, call_id: str = "call_1", extra_usage: dict = None
 ) -> ChatResponse:
     """Build a ChatResponse with a tool call."""
+    usage = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+    if extra_usage:
+        usage.update(extra_usage)
     return ChatResponse(
         content=None,
         tool_calls=[
@@ -42,7 +48,7 @@ def make_tool_call_response(
             )
         ],
         finish_reason="tool_calls",
-        usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        usage=usage,
     )
 
 
@@ -205,16 +211,62 @@ def test_multi_tool_calls():
     logger.success("[PASS] multi tool calls")
 
 
+def test_cache_token_accumulation():
+    """Test that cache hit/miss tokens are accumulated in usage."""
+    logger.note("=" * 60)
+    logger.note("[TEST] cache token accumulation")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_call_response(
+            "search_videos",
+            {"query": "test"},
+            extra_usage={
+                "prompt_cache_hit_tokens": 100,
+                "prompt_cache_miss_tokens": 50,
+            },
+        ),
+        make_content_response(
+            "结果如下...",
+            extra_usage={
+                "prompt_cache_hit_tokens": 200,
+                "prompt_cache_miss_tokens": 30,
+            },
+        ),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(messages=[{"role": "user", "content": "test"}])
+
+    usage = result["usage"]
+    assert usage["prompt_cache_hit_tokens"] == 300  # 100 + 200
+    assert usage["prompt_cache_miss_tokens"] == 80  # 50 + 30
+    assert usage["prompt_tokens"] == 30  # 20 + 10
+    assert usage["completion_tokens"] == 15  # 10 + 5
+
+    logger.success(f"  Cache hit: {usage['prompt_cache_hit_tokens']}")
+    logger.success(f"  Cache miss: {usage['prompt_cache_miss_tokens']}")
+    logger.success("[PASS] cache token accumulation")
+
+
 def test_max_iterations():
-    """Test that handler stops at max iterations."""
+    """Test that handler stops at max iterations and forces content."""
     logger.note("=" * 60)
     logger.note("[TEST] max iterations")
 
     mock_llm = MagicMock(spec=LLMClient)
-    # Always return tool calls (infinite loop)
-    mock_llm.chat.return_value = make_tool_call_response(
-        "search_videos", {"query": "test"}
-    )
+    # First 3 calls: always tool calls (simulates infinite loop)
+    # 4th call: forced content response (tools=None)
+    mock_llm.chat.side_effect = [
+        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"query": "test"}),
+        make_content_response("根据搜索结果，找到了以下视频..."),
+    ]
 
     mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
@@ -225,13 +277,55 @@ def test_max_iterations():
 
     result = handler.handle(messages=[{"role": "user", "content": "test"}])
 
-    # Should have stopped after max_iterations
-    assert mock_llm.chat.call_count == 3
-    # Should return a timeout message
+    # 3 iterations + 1 forced content call = 4
+    assert mock_llm.chat.call_count == 4
+    # The forced call should have tools=None
+    last_call = mock_llm.chat.call_args_list[-1]
+    assert last_call.kwargs.get("tools") is None
+    # Should have real content, not a timeout
     content = result["choices"][0]["message"]["content"]
-    assert "超时" in content or "重试" in content
+    assert "搜索结果" in content
 
     logger.success("[PASS] max iterations")
+
+
+def test_dsml_sanitization():
+    """Test that leaked DSML markup is stripped from content."""
+    logger.note("=" * 60)
+    logger.note("[TEST] DSML sanitization")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    # Simulate DSML leakage in forced content response
+    dsml_content = (
+        "让我搜索一下：\n\n"
+        '<｜DSML｜function_calls><｜DSML｜invoke name="search_videos">'
+        '<｜DSML｜parameter name="query" string="true">test</｜DSML｜parameter>'
+        "</｜DSML｜invoke></｜DSML｜function_calls>"
+    )
+    mock_llm.chat.side_effect = [
+        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"query": "test"}),
+        make_tool_call_response("search_videos", {"query": "test"}),
+        make_content_response(dsml_content),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(
+        llm_client=mock_llm, search_client=mock_search, max_iterations=3
+    )
+
+    result = handler.handle(messages=[{"role": "user", "content": "test"}])
+
+    content = result["choices"][0]["message"]["content"]
+    # DSML markup should be stripped
+    assert "DSML" not in content
+    assert "function_calls" not in content
+    # Real text should be preserved
+    assert "让我搜索一下" in content
+
+    logger.success("[PASS] DSML sanitization")
 
 
 def test_streaming_response():
@@ -398,7 +492,9 @@ if __name__ == "__main__":
         ("direct_content_response", test_direct_content_response),
         ("single_tool_call", test_single_tool_call),
         ("multi_tool_calls", test_multi_tool_calls),
+        ("cache_token_accumulation", test_cache_token_accumulation),
         ("max_iterations", test_max_iterations),
+        ("dsml_sanitization", test_dsml_sanitization),
         ("streaming_response", test_streaming_response),
         ("streaming_with_tools", test_streaming_with_tools),
         ("system_prompt_included", test_system_prompt_included),

@@ -60,11 +60,12 @@ class ChatResponse:
     def to_message_dict(self) -> dict:
         """Convert to a message dict for appending to conversation history."""
         msg = {"role": "assistant"}
-        if self.content is not None:
-            msg["content"] = self.content
         if self.tool_calls:
-            msg["content"] = self.content  # can be None
+            # Tool call message: content can be None per OpenAI spec
+            msg["content"] = self.content
             msg["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
+        elif self.content is not None:
+            msg["content"] = self.content
         return msg
 
 

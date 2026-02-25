@@ -244,6 +244,44 @@ def test_execute_search_error():
     logger.success("[PASS] execute search error")
 
 
+def test_execute_read_spec():
+    """Test read_spec tool execution."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute read_spec")
+
+    mock_client = MagicMock()
+    executor = ToolExecutor(search_client=mock_client)
+
+    # Test valid spec name
+    tc = ToolCall(
+        id="call_test_spec_1",
+        name="read_spec",
+        arguments=json.dumps({"name": "search_syntax"}),
+    )
+    result_msg = executor.execute(tc)
+
+    assert result_msg["role"] == "tool"
+    assert result_msg["tool_call_id"] == "call_test_spec_1"
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["name"] == "search_syntax"
+    assert "SEARCH_SYNTAX" in result_data["content"]
+    assert ":view>=1w" in result_data["content"]  # Contains syntax examples
+
+    # Test unknown spec name
+    tc_bad = ToolCall(
+        id="call_test_spec_2",
+        name="read_spec",
+        arguments=json.dumps({"name": "nonexistent"}),
+    )
+    result_bad = executor.execute(tc_bad)
+    result_bad_data = json.loads(result_bad["content"])
+    assert "error" in result_bad_data
+    assert "available" in result_bad_data
+
+    logger.success("[PASS] execute read_spec")
+
+
 def test_max_results_limit():
     """Test that executor limits the number of results."""
     logger.note("=" * 60)
@@ -294,6 +332,7 @@ if __name__ == "__main__":
         ("tool_definitions_format", test_tool_definitions_format),
         ("execute_search_videos", test_execute_search_videos),
         ("execute_check_author", test_execute_check_author),
+        ("execute_read_spec", test_execute_read_spec),
         ("execute_unknown_tool", test_execute_unknown_tool),
         ("execute_empty_query", test_execute_empty_query),
         ("execute_search_error", test_execute_search_error),
