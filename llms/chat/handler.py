@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 
-from tclogger import logger
+from tclogger import logger, dt_to_str
 from typing import Generator
 
 from llms.llm_client import LLMClient, ChatResponse, create_llm_client
@@ -27,9 +27,8 @@ from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt
 
 # Maximum tool-calling iterations to prevent infinite loops.
-# Typical flow: check_author → search_videos → content = 2 tool calls + 1 content.
-# 3 allows check_author + 2 searches before forcing content.
-MAX_TOOL_ITERATIONS = 3
+# 5 allows multi-hop searches: parallel check_author+search → refine → follow-up → content.
+MAX_TOOL_ITERATIONS = 5
 
 # Default chunk size for simulated streaming (chars per chunk)
 STREAM_CHUNK_SIZE = 4
@@ -108,10 +107,23 @@ class ChatHandler:
         Picks up standard fields (prompt_tokens, completion_tokens, total_tokens)
         as well as provider-specific fields like DeepSeek's
         prompt_cache_hit_tokens and prompt_cache_miss_tokens.
+
+        Also handles OpenAI/GPT nested usage structures:
+        - prompt_tokens_details.cached_tokens
+        - completion_tokens_details.reasoning_tokens
+        These are flattened into top-level keys for uniform access.
         """
         for key, value in new.items():
             if isinstance(value, (int, float)):
                 total[key] = total.get(key, 0) + value
+            elif isinstance(value, dict):
+                # Flatten nested dicts (e.g. prompt_tokens_details, completion_tokens_details)
+                # into top-level keys like "prompt_tokens_details.cached_tokens"
+                if key not in total:
+                    total[key] = {}
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, (int, float)):
+                        total[key][sub_key] = total[key].get(sub_key, 0) + sub_value
 
     def _run_tool_loop(
         self,
@@ -201,14 +213,19 @@ class ChatHandler:
         full_messages = self._build_messages(messages)
         final_content, total_usage = self._run_tool_loop(full_messages, temp)
 
-        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+        elapsed_seconds = time.perf_counter() - start_time
+        elapsed_ms = round(elapsed_seconds * 1000, 1)
         if self.verbose:
             logger.success(f"> Chat completed in {elapsed_ms}ms")
+
+        # Compute performance stats
+        perf_stats = self._compute_perf_stats(total_usage, elapsed_seconds)
 
         return self._format_completion(
             request_id=request_id,
             content=final_content,
             usage=total_usage,
+            perf_stats=perf_stats,
         )
 
     def handle_stream(
@@ -224,11 +241,15 @@ class ChatHandler:
         Yields:
             SSE data strings (JSON-encoded chunks or "[DONE]").
         """
+        start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
 
         full_messages = self._build_messages(messages)
-        final_content, _usage = self._run_tool_loop(full_messages, temp)
+        final_content, total_usage = self._run_tool_loop(full_messages, temp)
+
+        elapsed_seconds = time.perf_counter() - start_time
+        perf_stats = self._compute_perf_stats(total_usage, elapsed_seconds)
 
         # Stream the final content as SSE chunks
         # First chunk: role
@@ -245,11 +266,12 @@ class ChatHandler:
                 delta={"content": chunk_text},
             )
 
-        # Final chunk
+        # Final chunk with perf_stats
         yield self._format_stream_chunk(
             request_id=request_id,
             delta={},
             finish_reason="stop",
+            perf_stats=perf_stats,
         )
 
         # Done signal
@@ -293,14 +315,59 @@ class ChatHandler:
                     + (f" ({num_calls} parallel)" if num_calls > 1 else "")
                 )
 
+    @staticmethod
+    def _compute_perf_stats(usage: dict, elapsed_seconds: float) -> dict:
+        """Compute performance statistics from usage and elapsed time.
+
+        Returns:
+            Dict with tokens_per_second, elapsed_str, etc.
+        """
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", 0)
+
+        tokens_per_second = (
+            round(completion_tokens / elapsed_seconds, 1)
+            if elapsed_seconds > 0 and completion_tokens > 0
+            else 0
+        )
+
+        elapsed_str = dt_to_str(elapsed_seconds, precision=1)
+
+        # Normalize cache stats: support both DeepSeek flat and GPT nested formats
+        prompt_cache_hit = usage.get("prompt_cache_hit_tokens", 0)
+        prompt_cache_miss = usage.get("prompt_cache_miss_tokens", 0)
+
+        # GPT nested format: prompt_tokens_details.cached_tokens
+        prompt_details = usage.get("prompt_tokens_details", {})
+        if isinstance(prompt_details, dict):
+            gpt_cached = prompt_details.get("cached_tokens", 0)
+            if gpt_cached and not prompt_cache_hit:
+                prompt_cache_hit = gpt_cached
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                prompt_cache_miss = max(0, prompt_tokens - gpt_cached)
+
+        stats = {
+            "tokens_per_second": tokens_per_second,
+            "total_elapsed": elapsed_str,
+            "total_elapsed_ms": round(elapsed_seconds * 1000, 1),
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+        if prompt_cache_hit:
+            stats["prompt_cache_hit_tokens"] = prompt_cache_hit
+        if prompt_cache_miss:
+            stats["prompt_cache_miss_tokens"] = prompt_cache_miss
+        return stats
+
     def _format_completion(
         self,
         request_id: str,
         content: str,
         usage: dict = None,
+        perf_stats: dict = None,
     ) -> dict:
         """Format response as OpenAI-compatible chat completion."""
-        return {
+        result = {
             "id": request_id,
             "object": "chat.completion",
             "choices": [
@@ -315,12 +382,16 @@ class ChatHandler:
             ],
             "usage": usage or {},
         }
+        if perf_stats:
+            result["perf_stats"] = perf_stats
+        return result
 
     def _format_stream_chunk(
         self,
         request_id: str,
         delta: dict,
         finish_reason: str = None,
+        perf_stats: dict = None,
     ) -> str:
         """Format a single SSE stream chunk as JSON string."""
         chunk = {
@@ -334,4 +405,6 @@ class ChatHandler:
                 }
             ],
         }
+        if perf_stats:
+            chunk["perf_stats"] = perf_stats
         return json.dumps(chunk, ensure_ascii=False)

@@ -62,6 +62,43 @@ TEST_CASES = [
             "max_tokens": 20000,
         },
     },
+    {
+        "id": 4,
+        "name": "multi_hop_topic_drill",
+        "description": "多跳搜索 — 先搜索大方向，再根据结果深入搜索具体UP主或话题",
+        "query": "最近一个月B站上最火的AI相关视频是谁发的？帮我找一下这个UP主的其他热门视频",
+        "checks": {
+            # Should mention AI-related content
+            "content_contains": ["AI"],
+            # Should have bilibili links (from both search rounds)
+            "content_pattern": r"bilibili\.com/video/BV",
+            # Might need more tokens due to multi-hop
+            "max_tokens": 30000,
+        },
+    },
+    {
+        "id": 5,
+        "name": "temporal_reasoning_comparison",
+        "description": "时间推理 — 需要理解相对时间概念并对比不同时间段的数据",
+        "query": "对比一下「机器学习」这个话题在最近一周和最近一个月的视频数量和播放量，最近这个话题是变热了还是变冷了？",
+        "checks": {
+            "content_contains": ["机器学习"],
+            # Should have numeric comparison data
+            "content_pattern": r"\d+",
+            "max_tokens": 25000,
+        },
+    },
+    {
+        "id": 6,
+        "name": "rerank_relevance_search",
+        "description": "重排序搜索 — 测试q=vwr语法的使用，验证LLM能在需要高相关性时使用重排序",
+        "query": "有没有讲解 transformer 注意力机制原理的高质量教程？要通俗易懂的",
+        "checks": {
+            "content_contains": ["transformer"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "max_tokens": 20000,
+        },
+    },
 ]
 
 
@@ -94,14 +131,28 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
     content = result["choices"][0]["message"]["content"]
     usage = result.get("usage", {})
+    perf_stats = result.get("perf_stats", {})
     total_tokens = usage.get("total_tokens", 0)
-    cache_hit = usage.get("prompt_cache_hit_tokens", 0)
     prompt = usage.get("prompt_tokens", 0)
 
-    logger.mesg(f"  Time: {elapsed_ms}ms")
+    # Cache stats: support both DeepSeek flat and GPT nested formats
+    cache_hit = usage.get("prompt_cache_hit_tokens", 0)
+    prompt_details = usage.get("prompt_tokens_details", {})
+    if isinstance(prompt_details, dict) and not cache_hit:
+        cache_hit = prompt_details.get("cached_tokens", 0)
+    cache_miss = usage.get("prompt_cache_miss_tokens", 0)
+    if isinstance(prompt_details, dict) and not cache_miss:
+        cache_miss = max(0, prompt - cache_hit) if cache_hit else 0
+
+    tokens_per_second = perf_stats.get("tokens_per_second", 0)
+    total_elapsed = perf_stats.get("total_elapsed", f"{elapsed_ms}ms")
+
+    logger.mesg(f"  Time: {total_elapsed} ({elapsed_ms}ms)")
     logger.mesg(
-        f"  Tokens: {total_tokens} (prompt={prompt}, " f"cache_hit={cache_hit})"
+        f"  Tokens: {total_tokens} (prompt={prompt}, "
+        f"cache_hit={cache_hit}, cache_miss={cache_miss})"
     )
+    logger.mesg(f"  Speed: {tokens_per_second} tokens/s")
 
     # --- Validations ---
     failures = []
@@ -151,6 +202,7 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
         "failures": failures,
         "elapsed_ms": elapsed_ms,
         "total_tokens": total_tokens,
+        "tokens_per_second": tokens_per_second,
         "content_length": len(content),
     }
 
@@ -245,6 +297,7 @@ def main():
             f"  {r['name']}: {r['status']} "
             f"({r.get('elapsed_ms', 0)}ms, "
             f"{r.get('total_tokens', 0)} tokens, "
+            f"{r.get('tokens_per_second', 0)} tok/s, "
             f"{r.get('content_length', 0)} chars)"
         )
     logger.note(f"\n  {passed}/{total} tests passed")
