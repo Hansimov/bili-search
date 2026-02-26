@@ -7,14 +7,17 @@ from tclogger import ts_to_str, get_now_ts, dt_to_zh_str
 
 # Source fields to keep when formatting hits for the LLM.
 # Minimized to reduce token consumption — only include what the LLM needs
-# to generate a useful response. desc/tags/pic/coin/danmaku are omitted
+# to generate a useful response. desc/coin/danmaku are omitted
 # because the LLM only lists title, author, view count, and pubdate.
+# pic and duration are included for frontend display in tool call results.
 LLM_HIT_FIELDS = [
     "title",
     "tags",
     "bvid",
+    "pic",
     "owner",
     "pubdate",
+    "duration",
     "stat.view",
 ]
 

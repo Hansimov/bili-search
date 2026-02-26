@@ -9,6 +9,7 @@ Run:
 import json
 from unittest.mock import MagicMock, patch, call
 from tclogger import logger
+import threading
 
 from llms.llm_client import LLMClient, ChatResponse
 from llms.chat.handler import ChatHandler
@@ -29,6 +30,30 @@ def make_content_response(content: str, extra_usage: dict = None) -> ChatRespons
         finish_reason="stop",
         usage=usage,
     )
+
+
+def make_stream_chunks(
+    content: str, extra_usage: dict = None, reasoning: str = None
+) -> list[dict]:
+    """Build streaming chunks that accumulate to the given content.
+
+    Used for mocking chat_stream() when _chat_interruptible() consumes streaming.
+    """
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    if extra_usage:
+        usage.update(extra_usage)
+    chunks = []
+    if reasoning:
+        chunks.append(
+            {
+                "choices": [
+                    {"delta": {"reasoning_content": reasoning}, "finish_reason": None}
+                ]
+            }
+        )
+    chunks.append({"choices": [{"delta": {"content": content}, "finish_reason": None}]})
+    chunks.append({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": usage})
+    return chunks
 
 
 def make_tool_cmd_response(
@@ -398,6 +423,25 @@ def test_streaming_with_tools():
         make_content_response("找到了结果。"),
     ]
 
+    # Mock Phase 2 streaming: after tool loop, handler calls chat_stream()
+    mock_llm.chat_stream.return_value = iter(
+        [
+            {
+                "choices": [
+                    {"delta": {"content": "找到了结果。"}, "finish_reason": None}
+                ]
+            },
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 10,
+                    "total_tokens": 40,
+                },
+            },
+        ]
+    )
+
     mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
@@ -423,8 +467,10 @@ def test_streaming_with_tools():
     assert "搜索" in thinking  # Analysis should appear as thinking
     assert tool_event_found, "Tool event chunk should be present"
 
-    # chat called twice (tool iteration + content iteration)
+    # chat called twice: once for tool iteration, once to check for more tools
+    # (second response has no commands, so handler breaks to Phase 2 real streaming)
     assert mock_llm.chat.call_count == 2
+    assert mock_llm.chat_stream.call_count == 1
 
     logger.success("[PASS] streaming with tools")
 
@@ -683,6 +729,21 @@ def test_streaming_with_thinking():
         make_content_response("思考后回答"),
     ]
 
+    # Mock Phase 2 streaming for after tool loop
+    mock_llm.chat_stream.return_value = iter(
+        [
+            {"choices": [{"delta": {"content": "思考后回答"}, "finish_reason": None}]},
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 10,
+                    "total_tokens": 40,
+                },
+            },
+        ]
+    )
+
     mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
@@ -700,10 +761,9 @@ def test_streaming_with_thinking():
     assert first_chunk["choices"][0]["delta"]["role"] == "assistant"
     assert first_chunk.get("thinking") is True
 
-    # Find tool event chunk (separate from first chunk now)
+    # Find tool event chunks (pending + completed)
     tool_event_chunks = [json.loads(c) for c in chunks[:-1] if "tool_events" in c]
-    assert len(tool_event_chunks) == 1
-    assert len(tool_event_chunks[0]["tool_events"]) == 1
+    assert len(tool_event_chunks) == 2  # pending + completed
 
     # Last real chunk should have finish_reason and stats
     done_chunk = json.loads(chunks[-2])  # -1 is [DONE]
@@ -903,6 +963,241 @@ def test_usage_normalization_gpt_nested():
     logger.success("[PASS] usage normalization GPT nested")
 
 
+def test_stream_cancellation_before_iteration():
+    """Test that handle_stream stops when cancelled before first iteration."""
+    logger.note("=" * 60)
+    logger.note("[TEST] stream cancellation before iteration")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    # Set cancelled immediately
+    cancelled = threading.Event()
+    cancelled.set()
+
+    chunks = list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "test"}],
+            cancelled=cancelled,
+        )
+    )
+
+    # Should get role chunk + [DONE], but no LLM calls
+    assert chunks[-1] == "[DONE]"
+    assert mock_llm.chat.call_count == 0
+    assert mock_llm.chat_stream.call_count == 0
+
+    logger.success("[PASS] stream cancellation before iteration")
+
+
+def test_stream_cancellation_during_tool_loop():
+    """Test that handle_stream stops between tool execution and next iteration."""
+    logger.note("=" * 60)
+    logger.note("[TEST] stream cancellation during tool loop")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    cancelled = threading.Event()
+
+    # _chat_interruptible uses chat_stream when cancelled is provided.
+    # Return streaming chunks that accumulate to tool command content.
+    tool_content = "分析中\n<search_videos queries='[\"test\"]'/>"
+    tool_usage = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+
+    def chat_stream_side_effect(**kwargs):
+        return iter(make_stream_chunks(tool_content, extra_usage=tool_usage))
+
+    mock_llm.chat_stream.side_effect = chat_stream_side_effect
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = {
+        "data": [
+            {
+                "step": 0,
+                "name": "search",
+                "output": {"hits": [], "total_hits": 0},
+            }
+        ]
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    chunks = []
+    for chunk in handler.handle_stream(
+        messages=[{"role": "user", "content": "test"}],
+        cancelled=cancelled,
+    ):
+        chunks.append(chunk)
+        # After first completed tool event, cancel
+        if '"status": "completed"' in chunk:
+            cancelled.set()
+
+    # Should stop after first iteration
+    assert chunks[-1] == "[DONE]"
+    assert mock_llm.chat_stream.call_count == 1
+
+    logger.success("[PASS] stream cancellation during tool loop")
+
+
+def test_stream_cancellation_during_phase2():
+    """Test that handle_stream stops during Phase 2 streaming."""
+    logger.note("=" * 60)
+    logger.note("[TEST] stream cancellation during Phase 2")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    cancelled = threading.Event()
+
+    # _chat_interruptible uses chat_stream when cancelled is provided.
+    # Call 1 (Phase 1 iter 1): tool command content
+    tool_content = "搜索中\n<search_videos queries='[\"test\"]'/>"
+    tool_chunks = make_stream_chunks(
+        tool_content,
+        extra_usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+    )
+
+    # Call 2 (Phase 1 iter 2): content without tools → breaks to Phase 2
+    no_tool_chunks = make_stream_chunks("没有工具了")
+
+    # Call 3 (Phase 2): real streaming for final content
+    phase2_chunks = [
+        {"choices": [{"delta": {"content": "Hello "}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "World"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "!"}, "finish_reason": "stop"}]},
+    ]
+
+    mock_llm.chat_stream.side_effect = [
+        iter(tool_chunks),
+        iter(no_tool_chunks),
+        iter(phase2_chunks),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = {
+        "data": [
+            {
+                "step": 0,
+                "name": "search",
+                "output": {"hits": [], "total_hits": 0},
+            }
+        ]
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    chunks = []
+    content_count = 0
+    for chunk in handler.handle_stream(
+        messages=[{"role": "user", "content": "test"}],
+        cancelled=cancelled,
+    ):
+        chunks.append(chunk)
+        # Cancel after receiving first content chunk in Phase 2
+        if '"content":' in chunk and "Hello" in chunk:
+            content_count += 1
+            cancelled.set()
+
+    # Should have stopped during Phase 2
+    assert chunks[-1] == "[DONE]"
+    assert content_count >= 1
+
+    logger.success("[PASS] stream cancellation during Phase 2")
+
+
+def test_stream_no_cancellation_completes_normally():
+    """Test that handle_stream completes normally when not cancelled."""
+    logger.note("=" * 60)
+    logger.note("[TEST] stream no cancellation completes normally")
+
+    mock_llm = MagicMock(spec=LLMClient)
+
+    # _chat_interruptible uses chat_stream when cancelled is provided (even if not set)
+    mock_llm.chat_stream.return_value = iter(make_stream_chunks("全部完成"))
+
+    mock_search = MagicMock()
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    # Pass cancelled event but never set it
+    cancelled = threading.Event()
+
+    chunks = list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "完成测试"}],
+            cancelled=cancelled,
+        )
+    )
+
+    # Should complete normally with [DONE]
+    assert chunks[-1] == "[DONE]"
+    # Should have content
+    content_chunks = [c for c in chunks if '"content":' in c and "全部完成" in c]
+    assert len(content_chunks) > 0
+    # Should have used chat_stream (not chat) since cancelled event is provided
+    assert mock_llm.chat_stream.call_count == 1
+
+    logger.success("[PASS] stream no cancellation completes normally")
+
+
+def test_chat_interruptible_cancels_mid_stream():
+    """Test that _chat_interruptible stops consuming chunks when cancelled mid-stream."""
+    logger.note("=" * 60)
+    logger.note("[TEST] _chat_interruptible cancels mid-stream")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    cancelled = threading.Event()
+    chunks_consumed = []
+
+    def slow_stream(**kwargs):
+        """Simulate a streaming response that yields chunks one by one."""
+        for i, chunk in enumerate(
+            [
+                {"choices": [{"delta": {"content": "chunk1 "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "chunk2 "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "chunk3 "}, "finish_reason": None}]},
+                {
+                    "choices": [
+                        {"delta": {"content": "chunk4"}, "finish_reason": "stop"}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                },
+            ]
+        ):
+            chunks_consumed.append(i)
+            # Cancel after consuming 2 chunks
+            if i == 1:
+                cancelled.set()
+            yield chunk
+
+    mock_llm.chat_stream.side_effect = slow_stream
+
+    response = handler._chat_interruptible(
+        messages=[{"role": "user", "content": "test"}],
+        temperature=None,
+        cancelled=cancelled,
+    )
+
+    # Should have consumed chunks 0 and 1, but cancelled is checked BEFORE
+    # processing each chunk, so only chunk 0's content is accumulated.
+    # (cancelled is set in the generator during chunk 1's yield, so it's
+    # detected at the top of the loop before chunk 1 is processed)
+    assert response.finish_reason == "cancelled"
+    assert response.content is not None
+    assert "chunk1" in response.content
+    # chunk2, chunk3, chunk4 should NOT be in the content
+    assert "chunk2" not in (response.content or "")
+    assert "chunk3" not in (response.content or "")
+    assert "chunk4" not in (response.content or "")
+
+    logger.success("[PASS] _chat_interruptible cancels mid-stream")
+
+
 if __name__ == "__main__":
     tests = [
         ("direct_content_response", test_direct_content_response),
@@ -926,6 +1221,23 @@ if __name__ == "__main__":
         ("streaming_with_thinking", test_streaming_with_thinking),
         ("perf_stats_no_overlap_with_usage", test_perf_stats_no_overlap_with_usage),
         ("usage_normalization_gpt_nested", test_usage_normalization_gpt_nested),
+        (
+            "stream_cancellation_before_iteration",
+            test_stream_cancellation_before_iteration,
+        ),
+        (
+            "stream_cancellation_during_tool_loop",
+            test_stream_cancellation_during_tool_loop,
+        ),
+        ("stream_cancellation_during_phase2", test_stream_cancellation_during_phase2),
+        (
+            "stream_no_cancellation_completes_normally",
+            test_stream_no_cancellation_completes_normally,
+        ),
+        (
+            "chat_interruptible_cancels_mid_stream",
+            test_chat_interruptible_cancels_mid_stream,
+        ),
     ]
 
     results = {}

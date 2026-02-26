@@ -18,11 +18,12 @@ Token optimization strategy:
 
 import json
 import re
+import threading
 import time
 import uuid
 
 from tclogger import logger, dt_to_str
-from typing import Generator
+from typing import Generator, Optional
 
 from llms.llm_client import LLMClient, ChatResponse, create_llm_client
 from llms.tools.executor import ToolExecutor
@@ -126,6 +127,68 @@ class ChatHandler:
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.verbose = verbose
+
+    def _chat_interruptible(
+        self,
+        messages: list[dict],
+        temperature: float = None,
+        cancelled: Optional[threading.Event] = None,
+    ) -> ChatResponse:
+        """Chat with LLM, interruptible via cancelled event.
+
+        Uses streaming internally so that cancellation can be checked between
+        chunks rather than blocking for the entire response. Falls back to
+        non-streaming chat() when no cancelled event is provided.
+
+        Returns:
+            ChatResponse with accumulated content and usage.
+            If cancelled mid-stream, returns partial content with
+            finish_reason="cancelled".
+        """
+        if cancelled is None:
+            return self.llm_client.chat(messages=messages, temperature=temperature)
+
+        accumulated_content = ""
+        accumulated_reasoning = ""
+        finish_reason = None
+        usage = {}
+
+        for chunk in self.llm_client.chat_stream(
+            messages=messages,
+            temperature=temperature,
+        ):
+            if cancelled.is_set():
+                logger.warn("> LLM call interrupted by cancellation")
+                return ChatResponse(
+                    content=accumulated_content or None,
+                    reasoning_content=accumulated_reasoning or None,
+                    finish_reason="cancelled",
+                    usage=usage,
+                )
+
+            choices = chunk.get("choices", [])
+            if not choices:
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                continue
+
+            delta = choices[0].get("delta", {})
+            finish_reason = choices[0].get("finish_reason") or finish_reason
+
+            if delta.get("content"):
+                accumulated_content += delta["content"]
+            if delta.get("reasoning_content"):
+                accumulated_reasoning += delta["reasoning_content"]
+
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+
+        return ChatResponse(
+            content=accumulated_content or None,
+            reasoning_content=accumulated_reasoning or None,
+            finish_reason=finish_reason,
+            usage=usage,
+        )
 
     @staticmethod
     def _accumulate_usage(total: dict, new: dict):
@@ -333,11 +396,13 @@ class ChatHandler:
         temperature: float = None,
         thinking: bool = False,
         max_iterations: int = None,
+        cancelled: Optional[threading.Event] = None,
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        Phase 1: Uses non-streaming chat() for the prompt-based tool loop
-        (needs full response to parse XML tool commands). Between iterations,
+        Phase 1: Uses _chat_interruptible() for the prompt-based tool loop
+        (needs full response to parse XML tool commands, but uses streaming
+        internally to allow cancellation between chunks). Between iterations,
         analysis text is yielded as reasoning_content and tool events in real-time.
 
         Phase 2: After tool execution, uses real streaming chat_stream() for
@@ -350,6 +415,8 @@ class ChatHandler:
             temperature: Override temperature for this request.
             thinking: Enable thinking mode for deeper analysis.
             max_iterations: Override max iterations for this request.
+            cancelled: Optional threading.Event for cooperative cancellation.
+                When set, the generator will stop as soon as possible.
 
         Yields:
             SSE data strings (JSON-encoded chunks or "[DONE]").
@@ -375,19 +442,35 @@ class ChatHandler:
             thinking=thinking,
         )
 
-        # --- Phase 1: Prompt-based tool loop using non-streaming chat() ---
-        # Tool loop iterations MUST use non-streaming chat() because we need
-        # the full response to parse XML tool commands.
+        def _is_cancelled() -> bool:
+            return cancelled is not None and cancelled.is_set()
+
+        # --- Phase 1: Prompt-based tool loop ---
+        # Tool loop iterations need the full response to parse XML tool commands.
+        # Uses _chat_interruptible() (streaming internally) so that cancellation
+        # can be detected between chunks instead of blocking for the full response.
         had_tools = False  # Track if any tool commands were executed
 
         for iteration in range(resolved_iterations):
+            if _is_cancelled():
+                logger.warn("> Chat cancelled before iteration")
+                yield "[DONE]"
+                return
+
             if self.verbose:
                 logger.hint(f"> Stream iteration {iteration + 1}/{resolved_iterations}")
 
-            response = self.llm_client.chat(
+            response = self._chat_interruptible(
                 messages=full_messages,
                 temperature=temp,
+                cancelled=cancelled,
             )
+
+            if _is_cancelled():
+                logger.warn("> Chat cancelled during LLM call")
+                yield "[DONE]"
+                return
+
             self._accumulate_usage(total_usage, response.usage)
 
             content = response.content or ""
@@ -395,6 +478,11 @@ class ChatHandler:
 
             if commands:
                 had_tools = True
+
+                if _is_cancelled():
+                    logger.warn("> Chat cancelled after LLM response")
+                    yield "[DONE]"
+                    return
 
                 # Yield thinking content (analysis portion, without commands)
                 analysis = self._strip_tool_commands(content)
@@ -429,6 +517,11 @@ class ChatHandler:
                     delta={},
                     tool_events=[tool_event_pending],
                 )
+
+                if _is_cancelled():
+                    logger.warn("> Chat cancelled before tool execution")
+                    yield "[DONE]"
+                    return
 
                 # Execute commands
                 results = self._execute_tool_commands(commands)
@@ -477,6 +570,9 @@ class ChatHandler:
 
                     if final_reasoning:
                         for i in range(0, len(final_reasoning), _STREAM_CHUNK_SIZE):
+                            if _is_cancelled():
+                                yield "[DONE]"
+                                return
                             yield self._format_stream_chunk(
                                 request_id=request_id,
                                 delta={
@@ -486,6 +582,9 @@ class ChatHandler:
                                 },
                             )
                     for i in range(0, len(final_content), _STREAM_CHUNK_SIZE):
+                        if _is_cancelled():
+                            yield "[DONE]"
+                            return
                         yield self._format_stream_chunk(
                             request_id=request_id,
                             delta={
@@ -524,6 +623,12 @@ class ChatHandler:
         # --- Phase 2: Real streaming for final content generation ---
         # Used after tool iterations completed (had_tools=True) or max iterations hit.
         # Makes a streaming LLM call so tokens arrive in real-time at the frontend.
+
+        if _is_cancelled():
+            logger.warn("> Chat cancelled before Phase 2")
+            yield "[DONE]"
+            return
+
         if self.verbose:
             logger.note("> Phase 2: real streaming for final content")
 
@@ -533,6 +638,10 @@ class ChatHandler:
             messages=full_messages,
             temperature=temp,
         ):
+            if _is_cancelled():
+                logger.warn("> Chat cancelled during Phase 2 streaming")
+                break
+
             choices = chunk.get("choices", [])
             if not choices:
                 # Accumulate usage from stream metadata chunks

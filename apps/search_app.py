@@ -3,6 +3,7 @@ import asyncio
 import json
 import sys
 import threading
+import uuid
 import uvicorn
 
 from copy import deepcopy
@@ -67,6 +68,9 @@ class SearchApp:
             swagger_ui_parameters={"defaultModelsExpandDepth": -1},
         )
         self.app_envs = app_envs
+        # Registry of active chat streams: stream_id → threading.Event
+        # Used by /chat/abort to cancel in-flight requests
+        self._active_streams: dict[str, threading.Event] = {}
         self.init_searchers()
         self.init_embed_client()
         self.init_chat_handler()
@@ -347,6 +351,12 @@ class SearchApp:
                 include_in_schema=False,
             )(self.chat_completions)
 
+            self.app.post(
+                "/chat/abort",
+                summary="Abort an active chat stream",
+                description="Cancel an in-flight streaming chat request by stream_id.",
+            )(self.abort_stream)
+
             self.app.get(
                 "/health",
                 summary="Health check",
@@ -387,6 +397,22 @@ class SearchApp:
             )
             return result
 
+    async def abort_stream(self, stream_id: str = Body(..., embed=True)):
+        """Abort an active chat stream by stream_id.
+
+        Called by the frontend when the user presses the stop button.
+        This is more reliable than relying on TCP disconnect detection
+        through proxies.
+        """
+        event = self._active_streams.get(stream_id)
+        if event:
+            event.set()
+            logger.warn(f"> Stream {stream_id} aborted via /chat/abort")
+            return {"status": "aborted", "stream_id": stream_id}
+        else:
+            logger.warn(f"> Stream {stream_id} not found for abort")
+            return {"status": "not_found", "stream_id": stream_id}
+
     async def _stream_response(
         self,
         messages: list[dict],
@@ -400,11 +426,39 @@ class SearchApp:
         Uses asyncio.Queue to forward chunks from the synchronous
         chat handler generator to the async SSE response in real-time.
 
-        Supports client disconnection detection via http_request.is_disconnected().
+        Cancellation is supported via three mechanisms:
+        1. Background monitor task: checks http_request.is_disconnected()
+           every 0.5s, independently of generator iteration.
+        2. Explicit /chat/abort endpoint: sets cancelled via _active_streams.
+        3. Generator cleanup: try/finally ensures cancelled is set when
+           the generator is closed (e.g. EventSourceResponse calls aclose).
         """
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
         cancelled = threading.Event()
+
+        # Register this stream for explicit abort
+        stream_id = uuid.uuid4().hex[:12]
+        self._active_streams[stream_id] = cancelled
+        logger.note(f"> Stream started: {stream_id}")
+
+        # Background task: monitor client disconnection independently
+        # This runs on the event loop even if the generator is suspended at yield.
+        async def _monitor_disconnect():
+            while not cancelled.is_set():
+                try:
+                    if http_request and await http_request.is_disconnected():
+                        logger.warn(
+                            f"> Stream {stream_id}: "
+                            "client disconnect detected by monitor"
+                        )
+                        cancelled.set()
+                        return
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+
+        monitor_task = asyncio.create_task(_monitor_disconnect())
 
         def _produce():
             try:
@@ -413,9 +467,12 @@ class SearchApp:
                     temperature=temperature,
                     thinking=thinking,
                     max_iterations=max_iterations,
+                    cancelled=cancelled,
                 ):
                     if cancelled.is_set():
-                        logger.warn("> Client disconnected, stopping stream")
+                        logger.warn(
+                            f"> Stream {stream_id}: " "producer stopping (cancelled)"
+                        )
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as e:
@@ -425,26 +482,40 @@ class SearchApp:
 
         fut = loop.run_in_executor(None, _produce)
 
-        while True:
-            # Check for client disconnection
-            if http_request and await http_request.is_disconnected():
-                cancelled.set()
-                break
+        try:
+            # Send stream_id as first SSE event so frontend can use it for /chat/abort
+            yield {"data": json.dumps({"stream_id": stream_id}, ensure_ascii=False)}
 
-            try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                continue
+            while True:
+                if cancelled.is_set():
+                    logger.warn(
+                        f"> Stream {stream_id}: " "consumer stopping (cancelled)"
+                    )
+                    break
 
-            if chunk is None:
-                break
-            if isinstance(chunk, tuple) and chunk[0] == "__error__":
-                break
-            yield {"data": chunk}
+                try:
+                    chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
 
-        # Signal cancellation and wait for producer to finish
-        cancelled.set()
-        await fut
+                if chunk is None:
+                    break
+                if isinstance(chunk, tuple) and chunk[0] == "__error__":
+                    break
+                yield {"data": chunk}
+        finally:
+            # Ensure cancellation on any exit path, including GeneratorExit
+            # when EventSourceResponse stops iterating (client disconnect).
+            if not cancelled.is_set():
+                logger.warn(
+                    f"> Stream {stream_id}: "
+                    "cancelled via generator cleanup (finally)"
+                )
+            cancelled.set()
+            monitor_task.cancel()
+            # Unregister from active streams
+            self._active_streams.pop(stream_id, None)
+            logger.note(f"> Stream ended: {stream_id}")
 
     async def health(self):
         """Health check endpoint."""
