@@ -402,15 +402,49 @@ class ChatHandler:
                             },
                         )
 
-                # Execute commands and yield tool events
-                results = self._execute_tool_commands(commands)
+                # Yield pending tool calls (before execution)
                 tool_names = [cmd["type"] for cmd in commands]
-                tool_event = {"iteration": iteration + 1, "tools": tool_names}
-
+                pending_calls = [
+                    {
+                        "type": cmd["type"],
+                        "args": cmd["args"],
+                        "status": "pending",
+                    }
+                    for cmd in commands
+                ]
+                tool_event_pending = {
+                    "iteration": iteration + 1,
+                    "tools": tool_names,
+                    "calls": pending_calls,
+                }
                 yield self._format_stream_chunk(
                     request_id=request_id,
                     delta={},
-                    tool_events=[tool_event],
+                    tool_events=[tool_event_pending],
+                )
+
+                # Execute commands
+                results = self._execute_tool_commands(commands)
+
+                # Yield completed tool calls (after execution)
+                completed_calls = [
+                    {
+                        "type": r["type"],
+                        "args": r["args"],
+                        "status": "completed",
+                        "result": r["result"],
+                    }
+                    for r in results
+                ]
+                tool_event_completed = {
+                    "iteration": iteration + 1,
+                    "tools": tool_names,
+                    "calls": completed_calls,
+                }
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={},
+                    tool_events=[tool_event_completed],
                 )
 
                 # Inject assistant message + results into conversation
