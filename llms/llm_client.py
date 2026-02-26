@@ -44,11 +44,13 @@ class ChatResponse:
     def __init__(
         self,
         content: str = None,
+        reasoning_content: str = None,
         tool_calls: list[ToolCall] = None,
         finish_reason: str = None,
         usage: dict = None,
     ):
         self.content = content
+        self.reasoning_content = reasoning_content
         self.tool_calls = tool_calls or []
         self.finish_reason = finish_reason
         self.usage = usage or {}
@@ -329,6 +331,7 @@ class LLMClient:
         usage = data.get("usage", {})
 
         content = message.get("content")
+        reasoning_content = message.get("reasoning_content")
         tool_calls = []
 
         if message.get("tool_calls"):
@@ -343,6 +346,7 @@ class LLMClient:
 
         return ChatResponse(
             content=content,
+            reasoning_content=reasoning_content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,

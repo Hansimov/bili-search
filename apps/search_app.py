@@ -46,6 +46,13 @@ class ChatCompletionRequest(BaseModel):
     model: Optional[str] = Field(
         None, description="Model override (unused, for compatibility)"
     )
+    thinking: Optional[bool] = Field(
+        False, description="Enable thinking/reasoning mode for deeper analysis"
+    )
+    max_iterations: Optional[int] = Field(
+        None,
+        description="Override max tool-calling iterations (default: 5, thinking: 10)",
+    )
 
 
 class SearchApp:
@@ -349,12 +356,21 @@ class SearchApp:
 
         Processes the conversation, internally executing search tools as needed,
         and returns the final response.
+
+        When thinking=True:
+        - Increases max tool-calling iterations (default 10 vs 5)
+        - Enables deeper analysis prompting
         """
         messages = [msg.model_dump() for msg in request.messages]
 
         if request.stream:
             return EventSourceResponse(
-                self._stream_response(messages, request.temperature),
+                self._stream_response(
+                    messages,
+                    request.temperature,
+                    thinking=request.thinking or False,
+                    max_iterations=request.max_iterations,
+                ),
                 media_type="text/event-stream",
             )
         else:
@@ -362,6 +378,8 @@ class SearchApp:
                 self.chat_handler.handle,
                 messages=messages,
                 temperature=request.temperature,
+                thinking=request.thinking or False,
+                max_iterations=request.max_iterations,
             )
             return result
 
@@ -369,18 +387,42 @@ class SearchApp:
         self,
         messages: list[dict],
         temperature: float = None,
+        thinking: bool = False,
+        max_iterations: int = None,
     ):
-        """Generate SSE events for streaming response."""
-        chunks = await asyncio.to_thread(
-            lambda: list(
-                self.chat_handler.handle_stream(
+        """Generate SSE events for streaming response.
+
+        Uses asyncio.Queue to forward chunks from the synchronous
+        chat handler generator to the async SSE response in real-time.
+        """
+        queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _produce():
+            try:
+                for chunk in self.chat_handler.handle_stream(
                     messages=messages,
                     temperature=temperature,
-                )
-            )
-        )
-        for chunk in chunks:
+                    thinking=thinking,
+                    max_iterations=max_iterations,
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("__error__", str(e)))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        fut = loop.run_in_executor(None, _produce)
+
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            if isinstance(chunk, tuple) and chunk[0] == "__error__":
+                break
             yield {"data": chunk}
+
+        await fut
 
     async def health(self):
         """Health check endpoint."""

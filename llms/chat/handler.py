@@ -21,7 +21,7 @@ import uuid
 from tclogger import logger, dt_to_str
 from typing import Generator
 
-from llms.llm_client import LLMClient, ChatResponse, create_llm_client
+from llms.llm_client import LLMClient, ChatResponse, ToolCall, create_llm_client
 from llms.tools.defs import TOOL_DEFINITIONS
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt
@@ -30,8 +30,8 @@ from llms.prompts.copilot import build_system_prompt
 # 5 allows multi-hop searches: parallel check_author+search → refine → follow-up → content.
 MAX_TOOL_ITERATIONS = 5
 
-# Default chunk size for simulated streaming (chars per chunk)
-STREAM_CHUNK_SIZE = 4
+# Maximum iterations for thinking mode — allows deeper exploration
+MAX_TOOL_ITERATIONS_THINKING = 10
 
 # Regex to strip leaked DeepSeek DSML function-calling markup from content
 _DSML_PATTERN = re.compile(r"<｜.*?｜>")
@@ -44,6 +44,17 @@ _FORCE_CONTENT_NUDGE = (
     "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
     "不要再调用任何工具。如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
+
+# Thinking mode prompt: prepended to system prompt to encourage deeper reasoning
+_THINKING_PROMPT = (
+    "[思考模式] 你现在处于深度思考模式。请认真分析用户的问题，"
+    "进行更深入、更全面的思考和搜索，给出更有深度和见解的回答。"
+    "你可以进行多轮搜索来获取更全面的信息，"
+    "并综合分析后给出详细、有条理的回答。\n\n"
+)
+
+# Characters per chunk when streaming content from non-streaming responses
+_STREAM_CHUNK_SIZE = 4
 
 
 def _sanitize_content(content: str) -> str:
@@ -129,22 +140,30 @@ class ChatHandler:
         self,
         full_messages: list[dict],
         temperature: float = None,
-    ) -> tuple[str, dict]:
-        """Run the tool-calling loop and return (content, usage).
+        max_iterations: int = None,
+    ) -> tuple[str, dict, list[dict]]:
+        """Run the tool-calling loop and return (content, usage, tool_events).
 
         Shared between handle() and handle_stream() to avoid duplication.
         If the loop exhausts max_iterations without producing content,
         injects a nudge message and makes one final tools=None call.
 
+        Args:
+            full_messages: Full message list including system prompt.
+            temperature: Override temperature.
+            max_iterations: Override max iterations for this request.
+
         Returns:
-            Tuple of (final_content, total_usage_dict).
+            Tuple of (final_content, total_usage_dict, tool_events).
         """
         final_content = None
         total_usage = {}
+        tool_events = []  # Track tool calls for status reporting
+        iterations = max_iterations or self.max_iterations
 
-        for iteration in range(self.max_iterations):
+        for iteration in range(iterations):
             if self.verbose:
-                logger.hint(f"> Iteration {iteration + 1}/{self.max_iterations}")
+                logger.hint(f"> Iteration {iteration + 1}/{iterations}")
 
             response = self.llm_client.chat(
                 messages=full_messages,
@@ -156,6 +175,13 @@ class ChatHandler:
             if response.has_tool_calls:
                 if response.content:
                     final_content = response.content
+                tool_names = [tc.name for tc in response.tool_calls]
+                tool_events.append(
+                    {
+                        "iteration": iteration + 1,
+                        "tools": tool_names,
+                    }
+                )
                 self._process_tool_calls(full_messages, response)
                 continue
             else:
@@ -164,7 +190,7 @@ class ChatHandler:
         else:
             # Max iterations exhausted — nudge LLM to produce content
             logger.warn(
-                f"× Tool loop hit {self.max_iterations} iterations, "
+                f"× Tool loop hit {iterations} iterations, "
                 "forcing content generation"
             )
             # Inject a nudge message to guide the LLM
@@ -187,12 +213,14 @@ class ChatHandler:
         # Sanitize any leaked DSML markup
         final_content = _sanitize_content(final_content)
 
-        return final_content, total_usage
+        return final_content, total_usage, tool_events
 
     def handle(
         self,
         messages: list[dict],
         temperature: float = None,
+        thinking: bool = False,
+        max_iterations: int = None,
     ) -> dict:
         """Handle a chat completion request (non-streaming).
 
@@ -202,6 +230,8 @@ class ChatHandler:
         Args:
             messages: User-provided conversation messages.
             temperature: Override temperature for this request.
+            thinking: Enable thinking mode for deeper analysis.
+            max_iterations: Override max iterations for this request.
 
         Returns:
             OpenAI-compatible chat completion response dict.
@@ -210,33 +240,60 @@ class ChatHandler:
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
 
-        full_messages = self._build_messages(messages)
-        final_content, total_usage = self._run_tool_loop(full_messages, temp)
+        # Resolve max_iterations: explicit override > thinking default > normal default
+        resolved_iterations = max_iterations
+        if resolved_iterations is None:
+            resolved_iterations = (
+                MAX_TOOL_ITERATIONS_THINKING if thinking else self.max_iterations
+            )
+
+        full_messages = self._build_messages(messages, thinking=thinking)
+        final_content, total_usage, tool_events = self._run_tool_loop(
+            full_messages, temp, max_iterations=resolved_iterations
+        )
 
         elapsed_seconds = time.perf_counter() - start_time
         elapsed_ms = round(elapsed_seconds * 1000, 1)
         if self.verbose:
             logger.success(f"> Chat completed in {elapsed_ms}ms")
 
-        # Compute performance stats
-        perf_stats = self._compute_perf_stats(total_usage, elapsed_seconds)
+        # Normalize usage and compute performance stats
+        normalized_usage = self._normalize_usage(total_usage)
+        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
 
         return self._format_completion(
             request_id=request_id,
             content=final_content,
-            usage=total_usage,
+            usage=normalized_usage,
             perf_stats=perf_stats,
+            tool_events=tool_events,
+            thinking=thinking,
         )
 
     def handle_stream(
         self,
         messages: list[dict],
         temperature: float = None,
+        thinking: bool = False,
+        max_iterations: int = None,
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        Runs the tool-calling loop, then yields the final response as
-        SSE-formatted chunks.
+        Uses non-streaming chat() for the tool loop (reliable across all
+        providers/proxies), then chunk-streams the final content to the client.
+        Tool events are yielded in real-time between iterations.
+
+        This hybrid approach avoids streaming API issues (hangs with certain
+        proxies, unsupported stream_options) while still delivering:
+        - Real-time tool event feedback during the tool-calling loop
+        - Progressive content delivery for the final answer
+        - Support for reasoning_content (DeepSeek chain-of-thought)
+
+        Args:
+            messages: User-provided conversation messages.
+            temperature: Override temperature for this request.
+            thinking: Enable thinking mode for deeper analysis.
+            max_iterations: Override max iterations for this request.
 
         Yields:
             SSE data strings (JSON-encoded chunks or "[DONE]").
@@ -245,43 +302,133 @@ class ChatHandler:
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
 
-        full_messages = self._build_messages(messages)
-        final_content, total_usage = self._run_tool_loop(full_messages, temp)
+        # Resolve max_iterations: explicit override > thinking default > normal default
+        resolved_iterations = max_iterations
+        if resolved_iterations is None:
+            resolved_iterations = (
+                MAX_TOOL_ITERATIONS_THINKING if thinking else self.max_iterations
+            )
 
-        elapsed_seconds = time.perf_counter() - start_time
-        perf_stats = self._compute_perf_stats(total_usage, elapsed_seconds)
+        full_messages = self._build_messages(messages, thinking=thinking)
+        total_usage = {}
 
-        # Stream the final content as SSE chunks
-        # First chunk: role
+        # First chunk: role + metadata
         yield self._format_stream_chunk(
             request_id=request_id,
             delta={"role": "assistant", "content": ""},
+            thinking=thinking,
         )
 
-        # Content chunks
-        for i in range(0, len(final_content), STREAM_CHUNK_SIZE):
-            chunk_text = final_content[i : i + STREAM_CHUNK_SIZE]
+        # --- Phase 1: Tool loop using non-streaming chat() ---
+        # Non-streaming is more reliable than chat_stream() across providers
+        final_content = None
+        final_reasoning = None
+
+        for iteration in range(resolved_iterations):
+            if self.verbose:
+                logger.hint(f"> Stream iteration {iteration + 1}/{resolved_iterations}")
+
+            response = self.llm_client.chat(
+                messages=full_messages,
+                tools=self.tool_defs,
+                temperature=temp,
+            )
+            self._accumulate_usage(total_usage, response.usage)
+
+            if response.has_tool_calls:
+                if response.content:
+                    final_content = response.content
+                tool_names = [tc.name for tc in response.tool_calls]
+                tool_event = {"iteration": iteration + 1, "tools": tool_names}
+
+                # Yield tool event in real-time
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={},
+                    tool_events=[tool_event],
+                )
+
+                self._process_tool_calls(full_messages, response)
+                continue
+            else:
+                final_content = response.content or ""
+                final_reasoning = response.reasoning_content
+                break
+        else:
+            # Max iterations exhausted — force content generation
+            if not final_content:
+                logger.warn(
+                    f"× Tool loop hit {resolved_iterations} iterations, "
+                    "forcing content generation"
+                )
+                full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
+                response = self.llm_client.chat(
+                    messages=full_messages,
+                    tools=None,
+                    temperature=temp,
+                )
+                self._accumulate_usage(total_usage, response.usage)
+                final_content = (
+                    response.content or final_content or "[抱歉，处理超时，请重试]"
+                )
+                final_reasoning = response.reasoning_content
+
+        # Sanitize content
+        final_content = _sanitize_content(final_content)
+
+        # --- Phase 2: Stream content in chunks ---
+        # Stream reasoning_content first (e.g. DeepSeek chain-of-thought)
+        if final_reasoning:
+            for i in range(0, len(final_reasoning), _STREAM_CHUNK_SIZE):
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={
+                        "reasoning_content": final_reasoning[i : i + _STREAM_CHUNK_SIZE]
+                    },
+                )
+
+        # Stream main content
+        for i in range(0, len(final_content), _STREAM_CHUNK_SIZE):
             yield self._format_stream_chunk(
                 request_id=request_id,
-                delta={"content": chunk_text},
+                delta={"content": final_content[i : i + _STREAM_CHUNK_SIZE]},
             )
 
-        # Final chunk with perf_stats
+        # Normalize usage and compute perf stats
+        normalized_usage = self._normalize_usage(total_usage)
+        elapsed_seconds = time.perf_counter() - start_time
+        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
+
+        if self.verbose:
+            elapsed_ms = round(elapsed_seconds * 1000, 1)
+            logger.success(f"> Stream completed in {elapsed_ms}ms")
+
+        # Final chunk with stats
         yield self._format_stream_chunk(
             request_id=request_id,
             delta={},
             finish_reason="stop",
+            usage=normalized_usage,
             perf_stats=perf_stats,
         )
 
-        # Done signal
         yield "[DONE]"
 
-    def _build_messages(self, user_messages: list[dict]) -> list[dict]:
-        """Prepend system prompt to user messages."""
+    def _build_messages(
+        self, user_messages: list[dict], thinking: bool = False
+    ) -> list[dict]:
+        """Prepend system prompt to user messages.
+
+        When thinking=True, prepends an additional thinking prompt
+        to encourage deeper analysis.
+        """
+        system_content = build_system_prompt()
+        if thinking:
+            system_content = _THINKING_PROMPT + system_content
+
         system_message = {
             "role": "system",
-            "content": build_system_prompt(),
+            "content": system_content,
         }
         return [system_message] + list(user_messages)
 
@@ -316,48 +463,66 @@ class ChatHandler:
                 )
 
     @staticmethod
+    def _normalize_usage(usage: dict) -> dict:
+        """Normalize usage dict: unify cache token formats across providers.
+
+        Handles both DeepSeek flat format (prompt_cache_hit_tokens) and
+        GPT nested format (prompt_tokens_details.cached_tokens), flattening
+        the latter to the flat format for uniform access.
+
+        Removes nested dict fields from the output to keep it clean.
+
+        Returns:
+            Normalized usage dict with flat keys only.
+        """
+        result = dict(usage)
+
+        # GPT nested → flat
+        prompt_details = result.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            gpt_cached = prompt_details.get("cached_tokens", 0)
+            if gpt_cached and not result.get("prompt_cache_hit_tokens"):
+                result["prompt_cache_hit_tokens"] = gpt_cached
+                prompt_tokens = result.get("prompt_tokens", 0)
+                result["prompt_cache_miss_tokens"] = max(0, prompt_tokens - gpt_cached)
+
+        completion_details = result.get("completion_tokens_details")
+        if isinstance(completion_details, dict):
+            reasoning = completion_details.get("reasoning_tokens", 0)
+            if reasoning:
+                result["reasoning_tokens"] = reasoning
+
+        # Remove nested dicts (keep only flat numeric fields)
+        for key in list(result.keys()):
+            if isinstance(result[key], dict):
+                del result[key]
+
+        return result
+
+    @staticmethod
     def _compute_perf_stats(usage: dict, elapsed_seconds: float) -> dict:
         """Compute performance statistics from usage and elapsed time.
 
+        Only includes timing/rate metrics. Token counts stay in usage.
+
         Returns:
-            Dict with tokens_per_second, elapsed_str, etc.
+            Dict with tokens_per_second and elapsed timing.
         """
         completion_tokens = usage.get("completion_tokens", 0)
-        total_tokens = usage.get("total_tokens", 0)
 
         tokens_per_second = (
-            round(completion_tokens / elapsed_seconds, 1)
+            int(completion_tokens / elapsed_seconds)
             if elapsed_seconds > 0 and completion_tokens > 0
             else 0
         )
 
         elapsed_str = dt_to_str(elapsed_seconds, precision=1)
 
-        # Normalize cache stats: support both DeepSeek flat and GPT nested formats
-        prompt_cache_hit = usage.get("prompt_cache_hit_tokens", 0)
-        prompt_cache_miss = usage.get("prompt_cache_miss_tokens", 0)
-
-        # GPT nested format: prompt_tokens_details.cached_tokens
-        prompt_details = usage.get("prompt_tokens_details", {})
-        if isinstance(prompt_details, dict):
-            gpt_cached = prompt_details.get("cached_tokens", 0)
-            if gpt_cached and not prompt_cache_hit:
-                prompt_cache_hit = gpt_cached
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                prompt_cache_miss = max(0, prompt_tokens - gpt_cached)
-
-        stats = {
+        return {
             "tokens_per_second": tokens_per_second,
             "total_elapsed": elapsed_str,
             "total_elapsed_ms": round(elapsed_seconds * 1000, 1),
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
         }
-        if prompt_cache_hit:
-            stats["prompt_cache_hit_tokens"] = prompt_cache_hit
-        if prompt_cache_miss:
-            stats["prompt_cache_miss_tokens"] = prompt_cache_miss
-        return stats
 
     def _format_completion(
         self,
@@ -365,6 +530,8 @@ class ChatHandler:
         content: str,
         usage: dict = None,
         perf_stats: dict = None,
+        tool_events: list = None,
+        thinking: bool = False,
     ) -> dict:
         """Format response as OpenAI-compatible chat completion."""
         result = {
@@ -384,6 +551,10 @@ class ChatHandler:
         }
         if perf_stats:
             result["perf_stats"] = perf_stats
+        if tool_events:
+            result["tool_events"] = tool_events
+        if thinking:
+            result["thinking"] = True
         return result
 
     def _format_stream_chunk(
@@ -391,7 +562,10 @@ class ChatHandler:
         request_id: str,
         delta: dict,
         finish_reason: str = None,
+        usage: dict = None,
         perf_stats: dict = None,
+        tool_events: list = None,
+        thinking: bool = None,
     ) -> str:
         """Format a single SSE stream chunk as JSON string."""
         chunk = {
@@ -405,6 +579,12 @@ class ChatHandler:
                 }
             ],
         }
+        if usage:
+            chunk["usage"] = usage
         if perf_stats:
             chunk["perf_stats"] = perf_stats
+        if tool_events:
+            chunk["tool_events"] = tool_events
+        if thinking is not None:
+            chunk["thinking"] = thinking
         return json.dumps(chunk, ensure_ascii=False)
