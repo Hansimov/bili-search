@@ -1,14 +1,17 @@
-"""Chat handler with tool-calling loop.
+"""Chat handler with prompt-based tool orchestration.
 
-Orchestrates the conversation between user, LLM, and search tools.
-Implements the iterative tool-calling pattern:
-  1. Send user message + system prompt + tool defs to LLM
-  2. If LLM returns tool_calls → execute tools → feed results back → repeat
-  3. If LLM returns content → return as final response
+Orchestrates the conversation between user, LLM, and search tools
+using inline XML commands in the LLM's response text (no function calling).
+
+The flow:
+  1. Send user message + system prompt → LLM responds with analysis + tool commands
+  2. Parse tool commands from response → execute searches → inject results
+  3. Send results back → LLM generates final answer
+  4. Stream final answer to client
 
 Token optimization strategy:
   - Each iteration re-sends the full conversation, so fewer iterations = fewer tokens
-  - Compact DSL syntax is inline in the system prompt (no read_spec round-trip)
+  - Compact DSL syntax is inline in the system prompt
   - Tool results use compact JSON (no indent)
   - If max iterations exhausted, inject a nudge message to force content generation
 """
@@ -21,8 +24,7 @@ import uuid
 from tclogger import logger, dt_to_str
 from typing import Generator
 
-from llms.llm_client import LLMClient, ChatResponse, ToolCall, create_llm_client
-from llms.tools.defs import TOOL_DEFINITIONS
+from llms.llm_client import LLMClient, ChatResponse, create_llm_client
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt
 
@@ -39,10 +41,23 @@ _DSML_BLOCK_PATTERN = re.compile(
     r"<｜DSML｜function_calls>.*?</｜DSML｜function_calls>", re.DOTALL
 )
 
+# Regex patterns for parsing inline tool commands from LLM responses
+_SEARCH_CMD_RE = re.compile(
+    r"""<search_videos\s+queries='(\[.*?\])'\s*/>""",
+    re.DOTALL,
+)
+_CHECK_AUTHOR_CMD_RE = re.compile(
+    r"""<check_author\s+name="([^"]+)"\s*/>""",
+)
+_TOOL_CMD_PATTERN = re.compile(
+    r"""<(?:search_videos|check_author)\s[^>]*/>""",
+)
+
 # Nudge message injected before forcing content generation
 _FORCE_CONTENT_NUDGE = (
     "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
-    "不要再调用任何工具。如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
+    "不要再输出任何搜索命令（如 <search_videos/> 或 <check_author/>）。"
+    "如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
 
 # Thinking mode prompt: prepended to system prompt to encourage deeper reasoning
@@ -67,6 +82,8 @@ def _sanitize_content(content: str) -> str:
     content = _DSML_BLOCK_PATTERN.sub("", content)
     # Remove any remaining DSML tags
     content = _DSML_PATTERN.sub("", content)
+    # Remove any leaked tool commands
+    content = _TOOL_CMD_PATTERN.sub("", content)
     return content.strip()
 
 
@@ -106,7 +123,6 @@ class ChatHandler:
             max_results=max_tool_results,
             verbose=verbose,
         )
-        self.tool_defs = TOOL_DEFINITIONS
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.verbose = verbose
@@ -136,84 +152,79 @@ class ChatHandler:
                     if isinstance(sub_value, (int, float)):
                         total[key][sub_key] = total[key].get(sub_key, 0) + sub_value
 
-    def _run_tool_loop(
-        self,
-        full_messages: list[dict],
-        temperature: float = None,
-        max_iterations: int = None,
-    ) -> tuple[str, dict, list[dict]]:
-        """Run the tool-calling loop and return (content, usage, tool_events).
+    @staticmethod
+    def _parse_tool_commands(content: str) -> list[dict]:
+        """Parse inline tool commands from LLM response text.
 
-        Shared between handle() and handle_stream() to avoid duplication.
-        If the loop exhausts max_iterations without producing content,
-        injects a nudge message and makes one final tools=None call.
-
-        Args:
-            full_messages: Full message list including system prompt.
-            temperature: Override temperature.
-            max_iterations: Override max iterations for this request.
+        Scans for <search_videos .../> and <check_author .../> XML tags.
 
         Returns:
-            Tuple of (final_content, total_usage_dict, tool_events).
+            List of command dicts with 'type' and 'args' keys.
         """
-        final_content = None
-        total_usage = {}
-        tool_events = []  # Track tool calls for status reporting
-        iterations = max_iterations or self.max_iterations
+        commands = []
+        for match in _SEARCH_CMD_RE.finditer(content):
+            queries_str = match.group(1)
+            try:
+                queries = json.loads(queries_str)
+                if isinstance(queries, list):
+                    commands.append(
+                        {"type": "search_videos", "args": {"queries": queries}}
+                    )
+            except json.JSONDecodeError:
+                pass
+        for match in _CHECK_AUTHOR_CMD_RE.finditer(content):
+            name = match.group(1)
+            commands.append({"type": "check_author", "args": {"name": name}})
+        return commands
 
-        for iteration in range(iterations):
-            if self.verbose:
-                logger.hint(f"> Iteration {iteration + 1}/{iterations}")
+    @staticmethod
+    def _strip_tool_commands(content: str) -> str:
+        """Remove inline tool commands from content, keeping analysis text."""
+        return _TOOL_CMD_PATTERN.sub("", content).strip()
 
-            response = self.llm_client.chat(
-                messages=full_messages,
-                tools=self.tool_defs,
-                temperature=temperature,
-            )
-            self._accumulate_usage(total_usage, response.usage)
+    def _execute_tool_commands(self, commands: list[dict]) -> list[dict]:
+        """Execute parsed tool commands and return results.
 
-            if response.has_tool_calls:
-                if response.content:
-                    final_content = response.content
-                tool_names = [tc.name for tc in response.tool_calls]
-                tool_events.append(
-                    {
-                        "iteration": iteration + 1,
-                        "tools": tool_names,
-                    }
-                )
-                self._process_tool_calls(full_messages, response)
-                continue
+        Dispatches to ToolExecutor's internal methods directly.
+
+        Returns:
+            List of result dicts with 'type', 'args', and 'result' keys.
+        """
+        results = []
+        for cmd in commands:
+            cmd_type = cmd["type"]
+            args = cmd["args"]
+            if cmd_type == "search_videos":
+                result = self.tool_executor._search_videos(args)
+            elif cmd_type == "check_author":
+                result = self.tool_executor._check_author(args)
             else:
-                final_content = response.content or ""
-                break
-        else:
-            # Max iterations exhausted — nudge LLM to produce content
-            logger.warn(
-                f"× Tool loop hit {iterations} iterations, "
-                "forcing content generation"
-            )
-            # Inject a nudge message to guide the LLM
-            full_messages.append(
-                {
-                    "role": "user",
-                    "content": _FORCE_CONTENT_NUDGE,
-                }
-            )
-            response = self.llm_client.chat(
-                messages=full_messages,
-                tools=None,  # No tools → LLM must generate content
-                temperature=temperature,
-            )
-            self._accumulate_usage(total_usage, response.usage)
-            final_content = (
-                response.content or final_content or "[抱歉，处理超时，请重试]"
-            )
+                continue
+            results.append({"type": cmd_type, "args": args, "result": result})
+            if self.verbose:
+                result_str = json.dumps(result, ensure_ascii=False)
+                logger.mesg(f"  {cmd_type} → {len(result_str)} chars")
+        return results
 
-        # Sanitize any leaked DSML markup
-        final_content = _sanitize_content(final_content)
-
-        return final_content, total_usage, tool_events
+    @staticmethod
+    def _format_results_message(results: list[dict]) -> str:
+        """Format tool results as a user message for conversation injection."""
+        parts = ["[搜索结果]"]
+        for r in results:
+            cmd_type = r["type"]
+            args = r["args"]
+            result = r["result"]
+            if cmd_type == "search_videos":
+                queries = args.get("queries", [])
+                parts.append(
+                    f"\nsearch_videos(queries="
+                    f"{json.dumps(queries, ensure_ascii=False)}):"
+                )
+            elif cmd_type == "check_author":
+                name = args.get("name", "")
+                parts.append(f'\ncheck_author(name="{name}"):')
+            parts.append(json.dumps(result, ensure_ascii=False))
+        return "\n".join(parts)
 
     def handle(
         self,
@@ -224,8 +235,8 @@ class ChatHandler:
     ) -> dict:
         """Handle a chat completion request (non-streaming).
 
-        Runs the tool-calling loop synchronously and returns the final
-        response in OpenAI-compatible format.
+        Uses prompt-based tool commands: the LLM outputs XML tool commands
+        inline in its response text, which are parsed and executed.
 
         Args:
             messages: User-provided conversation messages.
@@ -248,9 +259,55 @@ class ChatHandler:
             )
 
         full_messages = self._build_messages(messages, thinking=thinking)
-        final_content, total_usage, tool_events = self._run_tool_loop(
-            full_messages, temp, max_iterations=resolved_iterations
-        )
+        total_usage = {}
+        tool_events = []
+        final_content = None
+
+        for iteration in range(resolved_iterations):
+            if self.verbose:
+                logger.hint(f"> Iteration {iteration + 1}/{resolved_iterations}")
+
+            response = self.llm_client.chat(
+                messages=full_messages,
+                temperature=temp,
+            )
+            self._accumulate_usage(total_usage, response.usage)
+
+            content = response.content or ""
+            commands = self._parse_tool_commands(content)
+
+            if commands:
+                tool_names = [cmd["type"] for cmd in commands]
+                tool_events.append({"iteration": iteration + 1, "tools": tool_names})
+                results = self._execute_tool_commands(commands)
+                full_messages.append({"role": "assistant", "content": content})
+                full_messages.append(
+                    {
+                        "role": "user",
+                        "content": self._format_results_message(results),
+                    }
+                )
+                continue
+            else:
+                final_content = content
+                break
+        else:
+            # Max iterations exhausted — nudge LLM to produce content
+            logger.warn(
+                f"× Tool loop hit {resolved_iterations} iterations, "
+                "forcing content generation"
+            )
+            full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
+            response = self.llm_client.chat(
+                messages=full_messages,
+                temperature=temp,
+            )
+            self._accumulate_usage(total_usage, response.usage)
+            final_content = (
+                response.content or final_content or "[抱歉，处理超时，请重试]"
+            )
+
+        final_content = _sanitize_content(final_content)
 
         elapsed_seconds = time.perf_counter() - start_time
         elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -279,15 +336,10 @@ class ChatHandler:
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        Uses non-streaming chat() for the tool loop (reliable across all
-        providers/proxies), then chunk-streams the final content to the client.
-        Tool events are yielded in real-time between iterations.
-
-        This hybrid approach avoids streaming API issues (hangs with certain
-        proxies, unsupported stream_options) while still delivering:
-        - Real-time tool event feedback during the tool-calling loop
-        - Progressive content delivery for the final answer
-        - Support for reasoning_content (DeepSeek chain-of-thought)
+        Uses non-streaming chat() for the prompt-based tool loop, then
+        chunk-streams the final content to the client.  Between tool
+        iterations the model's analysis text is yielded as reasoning_content
+        and tool events are yielded in real-time.
 
         Args:
             messages: User-provided conversation messages.
@@ -319,8 +371,7 @@ class ChatHandler:
             thinking=thinking,
         )
 
-        # --- Phase 1: Tool loop using non-streaming chat() ---
-        # Non-streaming is more reliable than chat_stream() across providers
+        # --- Phase 1: Prompt-based tool loop using non-streaming chat() ---
         final_content = None
         final_reasoning = None
 
@@ -330,28 +381,49 @@ class ChatHandler:
 
             response = self.llm_client.chat(
                 messages=full_messages,
-                tools=self.tool_defs,
                 temperature=temp,
             )
             self._accumulate_usage(total_usage, response.usage)
 
-            if response.has_tool_calls:
-                if response.content:
-                    final_content = response.content
-                tool_names = [tc.name for tc in response.tool_calls]
+            content = response.content or ""
+            commands = self._parse_tool_commands(content)
+
+            if commands:
+                # Yield thinking content (analysis portion, without commands)
+                analysis = self._strip_tool_commands(content)
+                if analysis:
+                    for i in range(0, len(analysis), _STREAM_CHUNK_SIZE):
+                        yield self._format_stream_chunk(
+                            request_id=request_id,
+                            delta={
+                                "reasoning_content": analysis[
+                                    i : i + _STREAM_CHUNK_SIZE
+                                ]
+                            },
+                        )
+
+                # Execute commands and yield tool events
+                results = self._execute_tool_commands(commands)
+                tool_names = [cmd["type"] for cmd in commands]
                 tool_event = {"iteration": iteration + 1, "tools": tool_names}
 
-                # Yield tool event in real-time
                 yield self._format_stream_chunk(
                     request_id=request_id,
                     delta={},
                     tool_events=[tool_event],
                 )
 
-                self._process_tool_calls(full_messages, response)
+                # Inject assistant message + results into conversation
+                full_messages.append({"role": "assistant", "content": content})
+                full_messages.append(
+                    {
+                        "role": "user",
+                        "content": self._format_results_message(results),
+                    }
+                )
                 continue
             else:
-                final_content = response.content or ""
+                final_content = content
                 final_reasoning = response.reasoning_content
                 break
         else:
@@ -364,7 +436,6 @@ class ChatHandler:
                 full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
                 response = self.llm_client.chat(
                     messages=full_messages,
-                    tools=None,
                     temperature=temp,
                 )
                 self._accumulate_usage(total_usage, response.usage)
@@ -432,36 +503,6 @@ class ChatHandler:
         }
         return [system_message] + list(user_messages)
 
-    def _process_tool_calls(
-        self,
-        messages: list[dict],
-        response: ChatResponse,
-    ):
-        """Execute tool calls and append results to the message list.
-
-        Supports parallel tool calls — when the LLM returns multiple tool_calls
-        in one response, all are executed and their results appended.
-
-        Follows the OpenAI conversation format:
-        1. Append the assistant message with tool_calls
-        2. Append each tool result as a tool message
-        """
-        # Append assistant message with tool_calls
-        messages.append(response.to_message_dict())
-
-        # Execute each tool call and append results
-        num_calls = len(response.tool_calls)
-        for tool_call in response.tool_calls:
-            result_message = self.tool_executor.execute(tool_call)
-            messages.append(result_message)
-
-            if self.verbose:
-                logger.mesg(
-                    f"  Tool '{tool_call.name}' → "
-                    f"{len(result_message.get('content', ''))} chars"
-                    + (f" ({num_calls} parallel)" if num_calls > 1 else "")
-                )
-
     @staticmethod
     def _normalize_usage(usage: dict) -> dict:
         """Normalize usage dict: unify cache token formats across providers.
@@ -516,7 +557,7 @@ class ChatHandler:
             else 0
         )
 
-        elapsed_str = dt_to_str(elapsed_seconds, precision=1)
+        elapsed_str = dt_to_str(elapsed_seconds, precision=0)
 
         return {
             "tokens_per_second": tokens_per_second,
