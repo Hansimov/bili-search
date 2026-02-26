@@ -2,10 +2,11 @@ import argparse
 import asyncio
 import json
 import sys
+import threading
 import uvicorn
 
 from copy import deepcopy
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -351,7 +352,9 @@ class SearchApp:
                 summary="Health check",
             )(self.health)
 
-    async def chat_completions(self, request: ChatCompletionRequest):
+    async def chat_completions(
+        self, request: ChatCompletionRequest, http_request: Request
+    ):
         """OpenAI-compatible chat completion endpoint.
 
         Processes the conversation, internally executing search tools as needed,
@@ -370,6 +373,7 @@ class SearchApp:
                     request.temperature,
                     thinking=request.thinking or False,
                     max_iterations=request.max_iterations,
+                    http_request=http_request,
                 ),
                 media_type="text/event-stream",
             )
@@ -389,14 +393,18 @@ class SearchApp:
         temperature: float = None,
         thinking: bool = False,
         max_iterations: int = None,
+        http_request: Request = None,
     ):
         """Generate SSE events for streaming response.
 
         Uses asyncio.Queue to forward chunks from the synchronous
         chat handler generator to the async SSE response in real-time.
+
+        Supports client disconnection detection via http_request.is_disconnected().
         """
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        cancelled = threading.Event()
 
         def _produce():
             try:
@@ -406,6 +414,9 @@ class SearchApp:
                     thinking=thinking,
                     max_iterations=max_iterations,
                 ):
+                    if cancelled.is_set():
+                        logger.warn("> Client disconnected, stopping stream")
+                        break
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as e:
                 loop.call_soon_threadsafe(queue.put_nowait, ("__error__", str(e)))
@@ -415,13 +426,24 @@ class SearchApp:
         fut = loop.run_in_executor(None, _produce)
 
         while True:
-            chunk = await queue.get()
+            # Check for client disconnection
+            if http_request and await http_request.is_disconnected():
+                cancelled.set()
+                break
+
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+
             if chunk is None:
                 break
             if isinstance(chunk, tuple) and chunk[0] == "__error__":
                 break
             yield {"data": chunk}
 
+        # Signal cancellation and wait for producer to finish
+        cancelled.set()
         await fut
 
     async def health(self):

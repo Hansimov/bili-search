@@ -336,10 +336,14 @@ class ChatHandler:
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        Uses non-streaming chat() for the prompt-based tool loop, then
-        chunk-streams the final content to the client.  Between tool
-        iterations the model's analysis text is yielded as reasoning_content
-        and tool events are yielded in real-time.
+        Phase 1: Uses non-streaming chat() for the prompt-based tool loop
+        (needs full response to parse XML tool commands). Between iterations,
+        analysis text is yielded as reasoning_content and tool events in real-time.
+
+        Phase 2: After tool execution, uses real streaming chat_stream() for
+        the final content generation, yielding token deltas as they arrive
+        from the LLM API. For simple Q&A (no tool calls), fake-streams the
+        already-obtained response since it's typically fast.
 
         Args:
             messages: User-provided conversation messages.
@@ -372,8 +376,9 @@ class ChatHandler:
         )
 
         # --- Phase 1: Prompt-based tool loop using non-streaming chat() ---
-        final_content = None
-        final_reasoning = None
+        # Tool loop iterations MUST use non-streaming chat() because we need
+        # the full response to parse XML tool commands.
+        had_tools = False  # Track if any tool commands were executed
 
         for iteration in range(resolved_iterations):
             if self.verbose:
@@ -389,6 +394,8 @@ class ChatHandler:
             commands = self._parse_tool_commands(content)
 
             if commands:
+                had_tools = True
+
                 # Yield thinking content (analysis portion, without commands)
                 analysis = self._strip_tool_commands(content)
                 if analysis:
@@ -457,47 +464,107 @@ class ChatHandler:
                 )
                 continue
             else:
-                final_content = content
-                final_reasoning = response.reasoning_content
-                break
+                # No tool commands: this is the final content response.
+                if had_tools:
+                    # After tool iterations: discard this non-streaming response
+                    # and use Phase 2 real streaming for better UX.
+                    break
+                else:
+                    # Simple Q&A (no tools used): fake-stream the already-obtained
+                    # response since it's typically fast and short.
+                    final_content = _sanitize_content(content)
+                    final_reasoning = response.reasoning_content
+
+                    if final_reasoning:
+                        for i in range(0, len(final_reasoning), _STREAM_CHUNK_SIZE):
+                            yield self._format_stream_chunk(
+                                request_id=request_id,
+                                delta={
+                                    "reasoning_content": final_reasoning[
+                                        i : i + _STREAM_CHUNK_SIZE
+                                    ]
+                                },
+                            )
+                    for i in range(0, len(final_content), _STREAM_CHUNK_SIZE):
+                        yield self._format_stream_chunk(
+                            request_id=request_id,
+                            delta={
+                                "content": final_content[i : i + _STREAM_CHUNK_SIZE]
+                            },
+                        )
+
+                    # Finalize: compute stats and yield final chunk
+                    normalized_usage = self._normalize_usage(total_usage)
+                    elapsed_seconds = time.perf_counter() - start_time
+                    perf_stats = self._compute_perf_stats(
+                        normalized_usage, elapsed_seconds
+                    )
+
+                    if self.verbose:
+                        elapsed_ms = round(elapsed_seconds * 1000, 1)
+                        logger.success(f"> Stream completed in {elapsed_ms}ms")
+
+                    yield self._format_stream_chunk(
+                        request_id=request_id,
+                        delta={},
+                        finish_reason="stop",
+                        usage=normalized_usage,
+                        perf_stats=perf_stats,
+                    )
+                    yield "[DONE]"
+                    return
         else:
             # Max iterations exhausted — force content generation
-            if not final_content:
-                logger.warn(
-                    f"× Tool loop hit {resolved_iterations} iterations, "
-                    "forcing content generation"
-                )
-                full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-                response = self.llm_client.chat(
-                    messages=full_messages,
-                    temperature=temp,
-                )
-                self._accumulate_usage(total_usage, response.usage)
-                final_content = (
-                    response.content or final_content or "[抱歉，处理超时，请重试]"
-                )
-                final_reasoning = response.reasoning_content
+            logger.warn(
+                f"× Tool loop hit {resolved_iterations} iterations, "
+                "forcing content generation"
+            )
+            full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
 
-        # Sanitize content
-        final_content = _sanitize_content(final_content)
+        # --- Phase 2: Real streaming for final content generation ---
+        # Used after tool iterations completed (had_tools=True) or max iterations hit.
+        # Makes a streaming LLM call so tokens arrive in real-time at the frontend.
+        if self.verbose:
+            logger.note("> Phase 2: real streaming for final content")
 
-        # --- Phase 2: Stream content in chunks ---
-        # Stream reasoning_content first (e.g. DeepSeek chain-of-thought)
-        if final_reasoning:
-            for i in range(0, len(final_reasoning), _STREAM_CHUNK_SIZE):
+        final_content = ""
+        stream_usage = {}
+        for chunk in self.llm_client.chat_stream(
+            messages=full_messages,
+            temperature=temp,
+        ):
+            choices = chunk.get("choices", [])
+            if not choices:
+                # Accumulate usage from stream metadata chunks
+                if chunk.get("usage"):
+                    stream_usage = chunk["usage"]
+                continue
+            delta = choices[0].get("delta", {})
+
+            # Stream reasoning_content delta (chain-of-thought)
+            reasoning_delta = delta.get("reasoning_content", "")
+            if reasoning_delta:
                 yield self._format_stream_chunk(
                     request_id=request_id,
-                    delta={
-                        "reasoning_content": final_reasoning[i : i + _STREAM_CHUNK_SIZE]
-                    },
+                    delta={"reasoning_content": reasoning_delta},
                 )
 
-        # Stream main content
-        for i in range(0, len(final_content), _STREAM_CHUNK_SIZE):
-            yield self._format_stream_chunk(
-                request_id=request_id,
-                delta={"content": final_content[i : i + _STREAM_CHUNK_SIZE]},
-            )
+            # Stream content delta (the actual answer)
+            content_delta = delta.get("content", "")
+            if content_delta:
+                final_content += content_delta
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={"content": content_delta},
+                )
+
+            # Check for usage in the final chunk
+            if chunk.get("usage"):
+                stream_usage = chunk["usage"]
+
+        # Accumulate streaming usage
+        if stream_usage:
+            self._accumulate_usage(total_usage, stream_usage)
 
         # Normalize usage and compute perf stats
         normalized_usage = self._normalize_usage(total_usage)
