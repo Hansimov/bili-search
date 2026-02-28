@@ -54,6 +54,14 @@ _TOOL_CMD_PATTERN = re.compile(
     r"""<(?:search_videos|check_author)\s[^>]*/>""",
 )
 
+# Patterns to strip echoed tool results that the LLM may copy from the
+# conversation context into its content.  The format comes from
+# _format_results_message: "search_videos(queries=[...]):\n{...json...}"
+_RESULTS_HEADER_RE = re.compile(r"\[搜索结果\][ \t]*\n?")
+_RESULTS_ECHO_RE = re.compile(
+    r"(?:search_videos|check_author)\([^\n)]+\):[ \t]*\n?\{[^\n]*\}",
+)
+
 # Nudge message injected before forcing content generation
 _FORCE_CONTENT_NUDGE = (
     "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
@@ -101,10 +109,12 @@ def _has_partial_tool_prefix(text: str) -> bool:
 
 
 def _sanitize_content(content: str) -> str:
-    """Strip leaked DeepSeek DSML function-calling markup from content.
+    """Strip leaked markup and echoed tool results from content.
 
-    DeepSeek may emit raw `<｜DSML｜...>` tags when tools=None is passed
-    after a tool-calling conversation. This sanitizes the output.
+    Handles:
+    - DeepSeek DSML function-calling tags
+    - Inline XML tool commands (<search_videos/>, <check_author/>)
+    - Echoed tool results in _format_results_message format
     """
     # Remove full DSML blocks first
     content = _DSML_BLOCK_PATTERN.sub("", content)
@@ -112,6 +122,11 @@ def _sanitize_content(content: str) -> str:
     content = _DSML_PATTERN.sub("", content)
     # Remove any leaked tool commands
     content = _TOOL_CMD_PATTERN.sub("", content)
+    # Remove echoed tool results (e.g. search_videos(queries=[...]):\n{...})
+    content = _RESULTS_HEADER_RE.sub("", content)
+    content = _RESULTS_ECHO_RE.sub("", content)
+    # Collapse runs of 3+ newlines left by stripped blocks
+    content = re.sub(r"\n{3,}", "\n\n", content)
     return content.strip()
 
 
@@ -524,6 +539,7 @@ class ChatHandler:
             # the analysis text is already in the thinking section and will
             # be retracted/discarded when tools are detected.
             has_reasoning = False
+            accumulated_reasoning = ""
             iter_usage = {}
 
             for chunk in self.llm_client.chat_stream(
@@ -547,6 +563,7 @@ class ChatHandler:
                 reasoning_delta = delta.get("reasoning_content", "")
                 if reasoning_delta:
                     has_reasoning = True
+                    accumulated_reasoning += reasoning_delta
                     yield self._format_stream_chunk(
                         request_id=request_id,
                         delta={"reasoning_content": reasoning_delta},
@@ -711,9 +728,15 @@ class ChatHandler:
                 # finalize the stream with stats.
                 if has_reasoning:
                     # Content was buffered (reasoning was streamed instead).
-                    # Strip leading text that duplicates a prior tool
+                    # Sanitize echoed results, then strip leading text that
+                    # duplicates this iteration's reasoning or a prior tool
                     # analysis to avoid echoing thinking into the answer.
                     final = _sanitize_content(content)
+                    # Strip leading text matching current reasoning
+                    reasoning_text = accumulated_reasoning.strip()
+                    if reasoning_text and final.startswith(reasoning_text):
+                        final = final[len(reasoning_text) :].lstrip("\n")
+                    # Strip leading text matching a prior tool analysis
                     for ta in tool_analyses:
                         if final.startswith(ta):
                             final = final[len(ta) :].lstrip("\n")
