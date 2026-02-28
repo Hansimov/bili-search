@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import json
+import os
+import signal
 import sys
 import threading
 import uuid
@@ -573,6 +575,13 @@ class SearchAppArgParser(argparse.ArgumentParser):
             help="LLM config name from secrets.json (e.g. deepseek, gpt, volcengine). "
             "Enables /chat/completions endpoint when set.",
         )
+        self.add_argument(
+            "-k",
+            "--kill",
+            action="store_true",
+            default=False,
+            help="Kill any existing process that is listening on the target port before starting.",
+        )
 
         self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
 
@@ -607,6 +616,25 @@ if __name__ == "__main__":
     app_envs = SEARCH_APP_ENVS
     arg_parser = SearchAppArgParser()
     new_app_envs = arg_parser.update_app_envs(app_envs)
+
+    if arg_parser.args.kill:
+        _port = new_app_envs["port"]
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                ["lsof", "-t", f"-i:{_port}", "-sTCP:LISTEN"],
+                capture_output=True,
+                text=True,
+            )
+            pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+            for pid in pids:
+                if pid != os.getpid():
+                    logger.warn(f"> Port {_port} in use by PID {pid} — killing it")
+                    os.kill(pid, signal.SIGKILL)
+        except Exception as _e:
+            logger.warn(f"> Could not auto-kill port {_port}: {_e}")
+
     app = SearchApp(new_app_envs).app
     uvicorn.run("__main__:app", host=new_app_envs["host"], port=new_app_envs["port"])
 

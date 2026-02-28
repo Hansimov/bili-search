@@ -243,12 +243,31 @@ def analyze_suggest_for_authors(
             entry["highlighted"] = True
         related_authors[name] = entry
 
-    return {
+    # Determine the best matching author (highlighted + highest ratio)
+    best_author = None
+    best_ratio = 0.0
+    for name, info in related_authors.items():
+        if info.get("highlighted") and info.get("ratio", 0) > best_ratio:
+            best_author = name
+            best_ratio = info["ratio"]
+
+    result = {
         "query": query,
         "total_hits": total_hits,
         "highlighted_keywords": keyword_counts,
         "related_authors": related_authors,
     }
+
+    # Top-level found/name/mid for easy frontend consumption
+    if best_author:
+        result["found"] = True
+        result["name"] = best_author
+        result["mid"] = related_authors[best_author].get("uid")
+        result["ratio"] = best_ratio
+    else:
+        result["found"] = False
+
+    return result
 
 
 def format_view_count(view: int) -> str:

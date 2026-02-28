@@ -69,8 +69,35 @@ _THINKING_PROMPT = (
     "并综合分析后给出详细、有条理的回答。\n\n"
 )
 
-# Characters per chunk when streaming content from non-streaming responses
-_STREAM_CHUNK_SIZE = 4
+# Inline tool command prefixes used for look-ahead detection during content streaming.
+# When these appear in content, it means the LLM is issuing a tool call rather than
+# producing a final answer, so we must stop streaming content to the client.
+_TOOL_PREFIXES: tuple[str, ...] = ("<search_videos", "<check_author")
+_MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
+
+
+def _find_tool_command_start(text: str) -> int | None:
+    """Return the earliest index of any tool command prefix in *text*, or None."""
+    pos = None
+    for prefix in _TOOL_PREFIXES:
+        idx = text.find(prefix)
+        if idx >= 0 and (pos is None or idx < pos):
+            pos = idx
+    return pos
+
+
+def _has_partial_tool_prefix(text: str) -> bool:
+    """Return True if *text* ends with a partial match for any tool prefix.
+
+    Used as a look-ahead guard: if the last few characters of the accumulated
+    content *could* be the start of a tool tag, we withhold them from the
+    client until more data arrives to confirm or deny the match.
+    """
+    for prefix in _TOOL_PREFIXES:
+        for length in range(1, len(prefix)):
+            if text.endswith(prefix[:length]):
+                return True
+    return False
 
 
 def _sanitize_content(content: str) -> str:
@@ -323,6 +350,7 @@ class ChatHandler:
 
         full_messages = self._build_messages(messages, thinking=thinking)
         total_usage = {}
+        last_usage = {}  # Track last LLM call's usage for prompt_tokens
         tool_events = []
         final_content = None
 
@@ -335,6 +363,7 @@ class ChatHandler:
                 temperature=temp,
             )
             self._accumulate_usage(total_usage, response.usage)
+            last_usage = response.usage
 
             content = response.content or ""
             commands = self._parse_tool_commands(content)
@@ -366,6 +395,7 @@ class ChatHandler:
                 temperature=temp,
             )
             self._accumulate_usage(total_usage, response.usage)
+            last_usage = response.usage
             final_content = (
                 response.content or final_content or "[抱歉，处理超时，请重试]"
             )
@@ -377,8 +407,9 @@ class ChatHandler:
         if self.verbose:
             logger.success(f"> Chat completed in {elapsed_ms}ms")
 
-        # Normalize usage and compute performance stats
-        normalized_usage = self._normalize_usage(total_usage)
+        # Use last call's prompt_tokens + accumulated completion_tokens
+        final_usage = self._merge_final_usage(total_usage, last_usage)
+        normalized_usage = self._normalize_usage(final_usage)
         perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
 
         return self._format_completion(
@@ -400,15 +431,30 @@ class ChatHandler:
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        Phase 1: Uses _chat_interruptible() for the prompt-based tool loop
-        (needs full response to parse XML tool commands, but uses streaming
-        internally to allow cancellation between chunks). Between iterations,
-        analysis text is yielded as reasoning_content and tool events in real-time.
+        All content (reasoning + final answer) is streamed in real-time:
 
-        Phase 2: After tool execution, uses real streaming chat_stream() for
-        the final content generation, yielding token deltas as they arrive
-        from the LLM API. For simple Q&A (no tool calls), fake-streams the
-        already-obtained response since it's typically fast.
+        Phase 1: Tool loop — for each iteration, both reasoning_content AND
+        content are yielded to the client token-by-token as they arrive.
+        A look-ahead buffer detects tool command prefixes in content and stops
+        streaming content to the client when a tool call is imminent (so the
+        LLM's XML tags are never shown to the user).  When an iteration ends
+        with tool commands, a ``retract_content`` event is sent to ask the
+        frontend to clear any analysis text that was shown, because it belongs
+        in the thinking section instead.  The full analysis (tool commands
+        stripped) is then forwarded as ``reasoning_content`` so it appears in
+        the thinking section.  Tool events are emitted and the conversation
+        continues to the next iteration.
+
+        When an iteration produces no tool commands, the final answer was
+        already streamed in real-time.  Any look-ahead-buffered tail content
+        is flushed, stats are computed, and the stream finishes.
+
+        Phase 2: Reached only when max iterations are exhausted.  A nudge
+        message forces content generation via real streaming (chat_stream).
+
+        Token usage reporting: prompt_tokens reflects only the LAST LLM call
+        (= actual context size for the final answer), while completion_tokens
+        is accumulated across all iterations (= total output generated).
 
         Args:
             messages: User-provided conversation messages.
@@ -434,6 +480,7 @@ class ChatHandler:
 
         full_messages = self._build_messages(messages, thinking=thinking)
         total_usage = {}
+        last_usage = {}  # Track last LLM call's usage for prompt_tokens
 
         # First chunk: role + metadata
         yield self._format_stream_chunk(
@@ -445,11 +492,13 @@ class ChatHandler:
         def _is_cancelled() -> bool:
             return cancelled is not None and cancelled.is_set()
 
-        # --- Phase 1: Prompt-based tool loop ---
-        # Tool loop iterations need the full response to parse XML tool commands.
-        # Uses _chat_interruptible() (streaming internally) so that cancellation
-        # can be detected between chunks instead of blocking for the full response.
+        # --- Phase 1: Prompt-based tool loop with real-time reasoning streaming ---
+        # Each iteration streams reasoning_content to the client in real-time
+        # while accumulating content locally for tool command parsing.
         had_tools = False  # Track if any tool commands were executed
+        # Collect analysis texts from tool-calling iterations so we can
+        # strip duplicate leading text from the final answer.
+        tool_analyses: list[str] = []
 
         for iteration in range(resolved_iterations):
             if _is_cancelled():
@@ -460,20 +509,108 @@ class ChatHandler:
             if self.verbose:
                 logger.hint(f"> Stream iteration {iteration + 1}/{resolved_iterations}")
 
-            response = self._chat_interruptible(
+            # Stream from LLM: yield reasoning_content AND content in real-time.
+            # Content is also accumulated so tool commands can be parsed after
+            # the full response.  A look-ahead buffer prevents tool command tags
+            # from being sent to the client.
+            accumulated_content = ""
+            # Pointer into accumulated_content: how many chars have already been
+            # sent to the client as content deltas.
+            content_sent_ptr = 0
+            # Set to True once a tool command prefix is confirmed in the stream.
+            tool_prefix_detected = False
+            # Track whether the LLM already sent reasoning_content in this
+            # iteration.  When True, we suppress content streaming because
+            # the analysis text is already in the thinking section and will
+            # be retracted/discarded when tools are detected.
+            has_reasoning = False
+            iter_usage = {}
+
+            for chunk in self.llm_client.chat_stream(
                 messages=full_messages,
                 temperature=temp,
-                cancelled=cancelled,
-            )
+            ):
+                if _is_cancelled():
+                    logger.warn("> Chat cancelled during LLM streaming")
+                    yield "[DONE]"
+                    return
+
+                choices = chunk.get("choices", [])
+                if not choices:
+                    if chunk.get("usage"):
+                        iter_usage = chunk["usage"]
+                    continue
+
+                delta = choices[0].get("delta", {})
+
+                # Stream reasoning_content to frontend in real-time (unchanged)
+                reasoning_delta = delta.get("reasoning_content", "")
+                if reasoning_delta:
+                    has_reasoning = True
+                    yield self._format_stream_chunk(
+                        request_id=request_id,
+                        delta={"reasoning_content": reasoning_delta},
+                    )
+
+                # Accumulate content and stream it in real-time with look-ahead.
+                content_delta = delta.get("content") or ""
+                if content_delta:
+                    accumulated_content += content_delta
+
+                # When the LLM already sent reasoning_content for this
+                # iteration, suppress content streaming — the analysis
+                # text is already in the thinking section.  We still
+                # accumulate and run tool-prefix detection so we can
+                # parse tool commands after the iteration.
+                if content_delta and not tool_prefix_detected:
+                    # Always run tool-prefix detection on accumulated content
+                    tool_start = _find_tool_command_start(accumulated_content)
+                    if tool_start is not None:
+                        if not has_reasoning and tool_start > content_sent_ptr:
+                            safe_text = accumulated_content[content_sent_ptr:tool_start]
+                            if safe_text:
+                                yield self._format_stream_chunk(
+                                    request_id=request_id,
+                                    delta={"content": safe_text},
+                                )
+                                content_sent_ptr = tool_start
+                        tool_prefix_detected = True
+                    elif not has_reasoning:
+                        # No full tool prefix yet.  If the tail of accumulated
+                        # content could be the start of a tool tag, withhold
+                        # the last _MAX_TOOL_PREFIX_LEN chars as a look-ahead
+                        # guard; otherwise yield everything accumulated so far.
+                        if _has_partial_tool_prefix(accumulated_content):
+                            safe_end = max(
+                                content_sent_ptr,
+                                len(accumulated_content) - _MAX_TOOL_PREFIX_LEN,
+                            )
+                        else:
+                            safe_end = len(accumulated_content)
+
+                        if safe_end > content_sent_ptr:
+                            yield self._format_stream_chunk(
+                                request_id=request_id,
+                                delta={
+                                    "content": accumulated_content[
+                                        content_sent_ptr:safe_end
+                                    ]
+                                },
+                            )
+                            content_sent_ptr = safe_end
+
+                if chunk.get("usage"):
+                    iter_usage = chunk["usage"]
 
             if _is_cancelled():
-                logger.warn("> Chat cancelled during LLM call")
+                logger.warn("> Chat cancelled after LLM streaming")
                 yield "[DONE]"
                 return
 
-            self._accumulate_usage(total_usage, response.usage)
+            self._accumulate_usage(total_usage, iter_usage)
+            last_usage = iter_usage
 
-            content = response.content or ""
+            content = accumulated_content
             commands = self._parse_tool_commands(content)
 
             if commands:
@@ -484,17 +621,29 @@ class ChatHandler:
                     yield "[DONE]"
                     return
 
-                # Yield thinking content (analysis portion, without commands)
-                analysis = self._strip_tool_commands(content)
+                # Derive the analysis text (tool commands stripped) for
+                # bookkeeping regardless of whether we re-send it.
+                analysis = self._strip_tool_commands(content).strip()
                 if analysis:
-                    for i in range(0, len(analysis), _STREAM_CHUNK_SIZE):
+                    tool_analyses.append(analysis)
+
+                if has_reasoning:
+                    # The LLM already streamed reasoning_content for this
+                    # iteration — the analysis is already in the thinking
+                    # section.  No retract or re-send needed.
+                    pass
+                else:
+                    # No reasoning was sent; the analysis was streamed as
+                    # content.  Retract it and re-send as reasoning.
+                    if content_sent_ptr > 0:
                         yield self._format_stream_chunk(
                             request_id=request_id,
-                            delta={
-                                "reasoning_content": analysis[
-                                    i : i + _STREAM_CHUNK_SIZE
-                                ]
-                            },
+                            delta={"retract_content": True},
+                        )
+                    if analysis:
+                        yield self._format_stream_chunk(
+                            request_id=request_id,
+                            delta={"reasoning_content": analysis},
                         )
 
                 # Yield pending tool calls (before execution)
@@ -557,61 +706,56 @@ class ChatHandler:
                 )
                 continue
             else:
-                # No tool commands: this is the final content response.
-                if had_tools:
-                    # After tool iterations: discard this non-streaming response
-                    # and use Phase 2 real streaming for better UX.
-                    break
-                else:
-                    # Simple Q&A (no tools used): fake-stream the already-obtained
-                    # response since it's typically fast and short.
-                    final_content = _sanitize_content(content)
-                    final_reasoning = response.reasoning_content
-
-                    if final_reasoning:
-                        for i in range(0, len(final_reasoning), _STREAM_CHUNK_SIZE):
-                            if _is_cancelled():
-                                yield "[DONE]"
-                                return
-                            yield self._format_stream_chunk(
-                                request_id=request_id,
-                                delta={
-                                    "reasoning_content": final_reasoning[
-                                        i : i + _STREAM_CHUNK_SIZE
-                                    ]
-                                },
-                            )
-                    for i in range(0, len(final_content), _STREAM_CHUNK_SIZE):
+                # No tool commands: the final answer.
+                # Flush any content still in the look-ahead buffer, then
+                # finalize the stream with stats.
+                if has_reasoning:
+                    # Content was buffered (reasoning was streamed instead).
+                    # Strip leading text that duplicates a prior tool
+                    # analysis to avoid echoing thinking into the answer.
+                    final = _sanitize_content(content)
+                    for ta in tool_analyses:
+                        if final.startswith(ta):
+                            final = final[len(ta) :].lstrip("\n")
+                            break
+                    if final:
                         if _is_cancelled():
                             yield "[DONE]"
                             return
                         yield self._format_stream_chunk(
                             request_id=request_id,
-                            delta={
-                                "content": final_content[i : i + _STREAM_CHUNK_SIZE]
-                            },
+                            delta={"content": final},
+                        )
+                elif content_sent_ptr < len(content):
+                    remaining = _sanitize_content(content[content_sent_ptr:])
+                    if remaining:
+                        if _is_cancelled():
+                            yield "[DONE]"
+                            return
+                        yield self._format_stream_chunk(
+                            request_id=request_id,
+                            delta={"content": remaining},
                         )
 
-                    # Finalize: compute stats and yield final chunk
-                    normalized_usage = self._normalize_usage(total_usage)
-                    elapsed_seconds = time.perf_counter() - start_time
-                    perf_stats = self._compute_perf_stats(
-                        normalized_usage, elapsed_seconds
-                    )
+                # Finalize: compute stats and yield final chunk
+                final_usage = self._merge_final_usage(total_usage, last_usage)
+                normalized_usage = self._normalize_usage(final_usage)
+                elapsed_seconds = time.perf_counter() - start_time
+                perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
 
-                    if self.verbose:
-                        elapsed_ms = round(elapsed_seconds * 1000, 1)
-                        logger.success(f"> Stream completed in {elapsed_ms}ms")
+                if self.verbose:
+                    elapsed_ms = round(elapsed_seconds * 1000, 1)
+                    logger.success(f"> Stream completed in {elapsed_ms}ms")
 
-                    yield self._format_stream_chunk(
-                        request_id=request_id,
-                        delta={},
-                        finish_reason="stop",
-                        usage=normalized_usage,
-                        perf_stats=perf_stats,
-                    )
-                    yield "[DONE]"
-                    return
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={},
+                    finish_reason="stop",
+                    usage=normalized_usage,
+                    perf_stats=perf_stats,
+                )
+                yield "[DONE]"
+                return
         else:
             # Max iterations exhausted — force content generation
             logger.warn(
@@ -620,9 +764,9 @@ class ChatHandler:
             )
             full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
 
-        # --- Phase 2: Real streaming for final content generation ---
-        # Used after tool iterations completed (had_tools=True) or max iterations hit.
-        # Makes a streaming LLM call so tokens arrive in real-time at the frontend.
+        # --- Phase 2: Real streaming for forced content generation ---
+        # Only reached when max iterations exhausted. Normal tool→answer flow
+        # completes in Phase 1 above.
 
         if _is_cancelled():
             logger.warn("> Chat cancelled before Phase 2")
@@ -630,7 +774,7 @@ class ChatHandler:
             return
 
         if self.verbose:
-            logger.note("> Phase 2: real streaming for final content")
+            logger.note("> Phase 2: real streaming for forced content")
 
         final_content = ""
         stream_usage = {}
@@ -644,13 +788,11 @@ class ChatHandler:
 
             choices = chunk.get("choices", [])
             if not choices:
-                # Accumulate usage from stream metadata chunks
                 if chunk.get("usage"):
                     stream_usage = chunk["usage"]
                 continue
             delta = choices[0].get("delta", {})
 
-            # Stream reasoning_content delta (chain-of-thought)
             reasoning_delta = delta.get("reasoning_content", "")
             if reasoning_delta:
                 yield self._format_stream_chunk(
@@ -658,7 +800,6 @@ class ChatHandler:
                     delta={"reasoning_content": reasoning_delta},
                 )
 
-            # Stream content delta (the actual answer)
             content_delta = delta.get("content", "")
             if content_delta:
                 final_content += content_delta
@@ -667,16 +808,15 @@ class ChatHandler:
                     delta={"content": content_delta},
                 )
 
-            # Check for usage in the final chunk
             if chunk.get("usage"):
                 stream_usage = chunk["usage"]
 
-        # Accumulate streaming usage
         if stream_usage:
             self._accumulate_usage(total_usage, stream_usage)
+            last_usage = stream_usage
 
-        # Normalize usage and compute perf stats
-        normalized_usage = self._normalize_usage(total_usage)
+        final_usage = self._merge_final_usage(total_usage, last_usage)
+        normalized_usage = self._normalize_usage(final_usage)
         elapsed_seconds = time.perf_counter() - start_time
         perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
 
@@ -684,7 +824,6 @@ class ChatHandler:
             elapsed_ms = round(elapsed_seconds * 1000, 1)
             logger.success(f"> Stream completed in {elapsed_ms}ms")
 
-        # Final chunk with stats
         yield self._format_stream_chunk(
             request_id=request_id,
             delta={},
@@ -712,6 +851,44 @@ class ChatHandler:
             "content": system_content,
         }
         return [system_message] + list(user_messages)
+
+    @staticmethod
+    def _merge_final_usage(total_usage: dict, last_usage: dict) -> dict:
+        """Merge accumulated and last-call usage for final reporting.
+
+        prompt_tokens (and related cache fields) come from the LAST LLM call,
+        reflecting the actual context size for the final answer.
+        completion_tokens (and related output fields) come from the ACCUMULATED
+        total, reflecting total output across all iterations.
+
+        This gives users an intuitive view: "input" = what the LLM saw,
+        "output" = total generated content.
+        """
+        result = dict(total_usage)
+
+        # Replace prompt-related fields with last call's values
+        prompt_keys = [
+            "prompt_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+        ]
+        for key in prompt_keys:
+            if key in last_usage:
+                result[key] = last_usage[key]
+            elif key in result:
+                del result[key]
+
+        # Also replace nested prompt_tokens_details if present
+        if "prompt_tokens_details" in last_usage:
+            result["prompt_tokens_details"] = last_usage["prompt_tokens_details"]
+
+        # Recompute total_tokens
+        prompt = result.get("prompt_tokens", 0)
+        completion = result.get("completion_tokens", 0)
+        if prompt or completion:
+            result["total_tokens"] = prompt + completion
+
+        return result
 
     @staticmethod
     def _normalize_usage(usage: dict) -> dict:
