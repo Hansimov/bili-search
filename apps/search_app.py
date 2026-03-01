@@ -90,6 +90,20 @@ class SearchApp:
         self.video_explorer = VideoExplorer(
             self.elastic_videos_index, elastic_env_name=self.elastic_env_name
         )
+        # Owner searcher (optional — enabled if owners index config is present)
+        self.owner_searcher = None
+        owners_index = self.app_envs.get("elastic_owners_index", "")
+        if owners_index:
+            try:
+                from elastics.owners.searcher import OwnerSearcher
+
+                self.owner_searcher = OwnerSearcher(
+                    index_name=owners_index,
+                    elastic_env_name=self.elastic_env_name,
+                )
+                logger.okay(f"  Owner searcher: {owners_index}")
+            except Exception as e:
+                logger.warn(f"  × Owner searcher init failed: {e}")
 
     def init_embed_client(self):
         """Initialize embed client with keepalive for long-running service.
@@ -124,6 +138,7 @@ class SearchApp:
         search_service = SearchService(
             video_searcher=self.video_searcher,
             video_explorer=self.video_explorer,
+            owner_searcher=self.owner_searcher,
             verbose=True,
         )
         self.chat_handler = ChatHandler(
