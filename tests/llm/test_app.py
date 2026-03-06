@@ -7,6 +7,7 @@ Run:
 """
 
 import json
+import sys
 from unittest.mock import MagicMock, patch
 from tclogger import logger
 
@@ -295,6 +296,50 @@ def test_owner_searcher_injected_into_search_app():
     logger.success("[PASS] owner searcher injection")
 
 
+def test_search_app_arg_parser_allows_owner_index_override():
+    """Test SearchAppArgParser accepts elastic_owners_index override."""
+    logger.note("=" * 60)
+    logger.note("[TEST] search app arg parser owner override")
+
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "search_app.py",
+            "-m",
+            "dev",
+            "-ei",
+            "bili_videos_dev6",
+            "-ev",
+            "elastic_dev",
+            "-eoi",
+            "bili_owners_dev1",
+            "-p",
+            "21011",
+        ],
+    ):
+        from apps.search_app import SearchAppArgParser
+
+        parser = SearchAppArgParser()
+        app_envs = {
+            "app_name": "Test Search App",
+            "version": "0.0.1",
+            "mode": "prod",
+            "host": {"prod": "0.0.0.0", "dev": "0.0.0.0"},
+            "port": {"prod": 20001, "dev": 21001},
+            "elastic_index": {"prod": "bili_videos_pro1", "dev": "bili_videos_dev6"},
+            "llm_config": "gpt",
+        }
+        new_envs = parser.update_app_envs(app_envs)
+
+    assert new_envs["elastic_index"] == "bili_videos_dev6"
+    assert new_envs["elastic_env_name"] == "elastic_dev"
+    assert new_envs["elastic_owners_index"] == "bili_owners_dev1"
+    assert new_envs["port"] == 21011
+
+    logger.success("[PASS] search app arg parser owner override")
+
+
 if __name__ == "__main__":
     tests = [
         ("health_endpoint", test_health_endpoint),
@@ -305,6 +350,10 @@ if __name__ == "__main__":
         ("cors_headers", test_cors_headers),
         ("no_chat_without_llm_config", test_no_chat_without_llm_config),
         ("owner_searcher_injection", test_owner_searcher_injected_into_search_app),
+        (
+            "search_app_arg_parser_owner_override",
+            test_search_app_arg_parser_allows_owner_index_override,
+        ),
     ]
 
     results = {}

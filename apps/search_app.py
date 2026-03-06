@@ -584,6 +584,12 @@ class SearchAppArgParser(argparse.ArgumentParser):
             help=f"Elastic env name in secrets.json",
         )
         self.add_argument(
+            "-eoi",
+            "--elastic-owners-index",
+            type=str,
+            help="Elastic owners index name",
+        )
+        self.add_argument(
             "-lc",
             "--llm-config",
             type=str,
@@ -617,6 +623,8 @@ class SearchAppArgParser(argparse.ArgumentParser):
             new_app_envs["elastic_index"] = self.args.elastic_index
         if self.args.elastic_env_name:
             new_app_envs["elastic_env_name"] = self.args.elastic_env_name
+        if self.args.elastic_owners_index:
+            new_app_envs["elastic_owners_index"] = self.args.elastic_owners_index
         if self.args.llm_config:
             new_app_envs["llm_config"] = self.args.llm_config
 
