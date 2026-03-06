@@ -50,8 +50,11 @@ _SEARCH_CMD_RE = re.compile(
 _CHECK_AUTHOR_CMD_RE = re.compile(
     r"""<check_author\s+name="([^"]+)"\s*/>""",
 )
+_SEARCH_OWNERS_CMD_RE = re.compile(
+    r"""<search_owners\s+query="([^"]+)"(?:\s+sort_by="([^"]+)")?\s*/>"""
+)
 _TOOL_CMD_PATTERN = re.compile(
-    r"""<(?:search_videos|check_author)\s[^>]*/>""",
+    r"""<(?:search_videos|check_author|search_owners)\s[^>]*/>""",
 )
 
 # Patterns to strip echoed tool results that the LLM may copy from the
@@ -59,13 +62,13 @@ _TOOL_CMD_PATTERN = re.compile(
 # _format_results_message: "search_videos(queries=[...]):\n{...json...}"
 _RESULTS_HEADER_RE = re.compile(r"\[搜索结果\][ \t]*\n?")
 _RESULTS_ECHO_RE = re.compile(
-    r"(?:search_videos|check_author)\([^\n)]+\):[ \t]*\n?\{[^\n]*\}",
+    r"(?:search_videos|check_author|search_owners)\([^\n)]+\):[ \t]*\n?\{[^\n]*\}",
 )
 
 # Nudge message injected before forcing content generation
 _FORCE_CONTENT_NUDGE = (
     "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
-    "不要再输出任何搜索命令（如 <search_videos/> 或 <check_author/>）。"
+    "不要再输出任何搜索命令（如 <search_videos/>、<check_author/> 或 <search_owners/>）。"
     "如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
 
@@ -80,7 +83,11 @@ _THINKING_PROMPT = (
 # Inline tool command prefixes used for look-ahead detection during content streaming.
 # When these appear in content, it means the LLM is issuing a tool call rather than
 # producing a final answer, so we must stop streaming content to the client.
-_TOOL_PREFIXES: tuple[str, ...] = ("<search_videos", "<check_author")
+_TOOL_PREFIXES: tuple[str, ...] = (
+    "<search_videos",
+    "<check_author",
+    "<search_owners",
+)
 _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 
 
@@ -261,7 +268,8 @@ class ChatHandler:
     def _parse_tool_commands(content: str) -> list[dict]:
         """Parse inline tool commands from LLM response text.
 
-        Scans for <search_videos .../> and <check_author .../> XML tags.
+        Scans for <search_videos .../>, <check_author .../>, and
+        <search_owners .../> XML tags.
 
         Returns:
             List of command dicts with 'type' and 'args' keys.
@@ -280,6 +288,13 @@ class ChatHandler:
         for match in _CHECK_AUTHOR_CMD_RE.finditer(content):
             name = match.group(1)
             commands.append({"type": "check_author", "args": {"name": name}})
+        for match in _SEARCH_OWNERS_CMD_RE.finditer(content):
+            query = match.group(1)
+            sort_by = match.group(2)
+            args = {"query": query}
+            if sort_by:
+                args["sort_by"] = sort_by
+            commands.append({"type": "search_owners", "args": args})
         return commands
 
     @staticmethod
@@ -303,6 +318,8 @@ class ChatHandler:
                 result = self.tool_executor._search_videos(args)
             elif cmd_type == "check_author":
                 result = self.tool_executor._check_author(args)
+            elif cmd_type == "search_owners":
+                result = self.tool_executor._search_owners(args)
             else:
                 continue
             results.append({"type": cmd_type, "args": args, "result": result})
@@ -328,6 +345,10 @@ class ChatHandler:
             elif cmd_type == "check_author":
                 name = args.get("name", "")
                 parts.append(f'\ncheck_author(name="{name}"):')
+            elif cmd_type == "search_owners":
+                query = args.get("query", "")
+                sort_by = args.get("sort_by", "relevance")
+                parts.append(f'\nsearch_owners(query="{query}", sort_by="{sort_by}"):')
             parts.append(json.dumps(result, ensure_ascii=False))
         return "\n".join(parts)
 

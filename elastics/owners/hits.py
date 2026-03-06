@@ -63,7 +63,7 @@ class OwnerHitsParser:
         return {
             "hits": parsed_hits,
             "total": total,
-            "max_score": round(max_score, 4) if max_score else None,
+            "max_score": round(max_score, 4) if max_score is not None else None,
         }
 
     def format_for_api(self, parsed: dict) -> dict:

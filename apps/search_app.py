@@ -101,6 +101,7 @@ class SearchApp:
                     index_name=owners_index,
                     elastic_env_name=self.elastic_env_name,
                 )
+                self.video_explorer.owner_searcher = self.owner_searcher
                 logger.okay(f"  Owner searcher: {owners_index}")
             except Exception as e:
                 logger.warn(f"  × Owner searcher init failed: {e}")

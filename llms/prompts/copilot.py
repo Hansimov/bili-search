@@ -51,6 +51,10 @@ COPILOT_TOOL_COMMANDS = """[TOOL_COMMANDS]
 查询UP主（检查是否匹配B站UP主昵称）：
 <check_author name="UP主名称"/>
 
+搜索UP主：
+<search_owners query="搜索词"/>
+<search_owners query="黑神话悟空" sort_by="influence"/>
+
 使用规则：
 - 先简要说明你的搜索计划（1-2句话），然后输出命令
 - 每个命令独占一行，格式必须严格匹配上述XML格式
@@ -64,7 +68,8 @@ COPILOT_WORKFLOW = """[WORKFLOW]
 处理用户问题的标准流程：
 
 1. 意图分析 + 信息收集（尽量在一次回复中输出所有需要的命令）：
-   - 如果提到可能是UP主名字的词 → 同时输出 <check_author/> 和 <search_videos/> 命令
+  - 如果提到可能是UP主名字的词 → 同时输出 <check_author/> 和 <search_videos/> 命令
+  - 如果用户明确要找某类UP主、推荐创作者或比较创作者 → 使用 <search_owners/>
    - 如果明确是关键词搜索 → 直接输出 <search_videos/> 命令
    - 尽量一次输出所有命令，减少来回轮次
 
@@ -104,6 +109,7 @@ COPILOT_RULES = """[RULES]
 - 用户提到播放量、时间、时长等条件时，必须使用对应的过滤器
 - 不要在搜索语句中添加"视频"等冗余词，本引擎的主体就是视频
 - 当需要搜索多个不同内容时，使用 queries 数组一次完成
+- 当用户明确要找创作者而不是视频时，优先使用 <search_owners/>
 - 搜索模式选择：
   - 默认不需要指定 q=（使用默认的混合搜索 q=wv）
   - 当用户需要高相关性结果时（如"推荐"、"最相关"、"最匹配"、具体话题深度搜索），使用 `q=vwr` 启用重排序
@@ -148,6 +154,11 @@ COPILOT_EXAMPLES = """[EXAMPLES]
   <check_author name="何同学"/>
   <check_author name="影视飓风"/>
   <search_videos queries='["何同学 :date<=15d", "影视飓风 :date<=15d"]'/>
+
+示例 7：找某个领域的UP主
+  用户：推荐几个做黑神话悟空内容的UP主
+  助手：我来搜索这个领域里的创作者。
+  <search_owners query="黑神话悟空" sort_by="influence"/>
 [/EXAMPLES]"""
 
 

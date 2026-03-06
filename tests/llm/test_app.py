@@ -244,6 +244,57 @@ def test_no_chat_without_llm_config():
     logger.success("[PASS] no chat without llm_config")
 
 
+def test_owner_searcher_injected_into_search_app():
+    """Test SearchApp initializes owner_searcher and injects it into explorer/chat."""
+    logger.note("=" * 60)
+    logger.note("[TEST] owner searcher injection")
+
+    with patch("apps.search_app.init_embed_client_with_keepalive"), patch(
+        "apps.search_app.VideoSearcherV2"
+    ) as mock_searcher_cls, patch(
+        "apps.search_app.VideoExplorer"
+    ) as mock_explorer_cls, patch(
+        "llms.llm_client.create_llm_client"
+    ) as mock_create_llm, patch(
+        "elastics.owners.searcher.OwnerSearcher"
+    ) as mock_owner_cls:
+        mock_searcher = MagicMock()
+        mock_explorer = MagicMock()
+        mock_owner = MagicMock()
+        mock_searcher_cls.return_value = mock_searcher
+        mock_explorer_cls.return_value = mock_explorer
+        mock_owner_cls.return_value = mock_owner
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_create_llm.return_value = mock_llm
+
+        from apps.search_app import SearchApp
+
+        app_envs = {
+            "app_name": "Test Search App",
+            "version": "0.0.1",
+            "mode": "test",
+            "elastic_index": "test_index",
+            "elastic_owners_index": "test_owner_index",
+            "elastic_env_name": "elastic_dev",
+            "llm_config": LLM_CONFIG,
+        }
+        search_app = SearchApp(app_envs)
+
+        assert search_app.owner_searcher is mock_owner
+        assert mock_explorer.owner_searcher is mock_owner
+        assert (
+            search_app.chat_handler.tool_executor.search_client.owner_searcher
+            is mock_owner
+        )
+        mock_owner_cls.assert_called_once_with(
+            index_name="test_owner_index", elastic_env_name="elastic_dev"
+        )
+
+    logger.success("[PASS] owner searcher injection")
+
+
 if __name__ == "__main__":
     tests = [
         ("health_endpoint", test_health_endpoint),
@@ -253,6 +304,7 @@ if __name__ == "__main__":
         ("streaming_response", test_streaming_response),
         ("cors_headers", test_cors_headers),
         ("no_chat_without_llm_config", test_no_chat_without_llm_config),
+        ("owner_searcher_injection", test_owner_searcher_injected_into_search_app),
     ]
 
     results = {}

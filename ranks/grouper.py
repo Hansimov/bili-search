@@ -196,6 +196,40 @@ class AuthorGrouper:
             author_info["face"] = user_doc.get("face", "")
         return group_res
 
+    @staticmethod
+    def _merge_owner_doc(author_info: dict, owner_doc: dict) -> dict:
+        """Merge owner-index profile fields into a grouped author item."""
+        if not owner_doc:
+            return author_info
+
+        fields = [
+            "total_videos",
+            "total_view",
+            "influence_score",
+            "quality_score",
+            "activity_score",
+            "top_tags",
+            "latest_pic",
+            "latest_pubdate",
+            "primary_tid",
+            "primary_ptid",
+        ]
+        for field in fields:
+            value = owner_doc.get(field)
+            if value is not None:
+                author_info[field] = value
+
+        if owner_doc.get("name"):
+            author_info["name"] = owner_doc["name"]
+
+        return author_info
+
+    def add_owner_docs(self, group_res: dict, owner_docs: dict) -> dict:
+        """Add owner-index profile fields to grouped author dict results."""
+        for mid, author_info in group_res.items():
+            self._merge_owner_doc(author_info, owner_docs.get(mid, {}))
+        return group_res
+
     def group_as_list(
         self,
         hits: list[dict],
@@ -261,4 +295,13 @@ class AuthorGrouper:
             mid = author_info.get("mid")
             user_doc = user_docs.get(mid, {})
             author_info["face"] = user_doc.get("face", "")
+        return authors_list
+
+    def add_owner_docs_to_list(
+        self, authors_list: list[dict], owner_docs: dict
+    ) -> list[dict]:
+        """Add owner-index profile fields to grouped author list results."""
+        for author_info in authors_list:
+            mid = author_info.get("mid")
+            self._merge_owner_doc(author_info, owner_docs.get(mid, {}))
         return authors_list

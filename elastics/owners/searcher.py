@@ -16,6 +16,7 @@ from elastics.owners.constants import (
     SOURCE_FIELDS_COMPACT,
     NAME_MATCH_BOOSTS,
     DOMAIN_MATCH_BOOSTS,
+    NAME_MATCH_NORM_DENOM,
     SORT_FIELD_TYPE,
     SORT_FIELD_DEFAULT,
     SORT_FIELD_MAP,
@@ -169,6 +170,93 @@ class OwnerSearcher:
             }
         }
 
+    def _build_combined_query(self, query: str) -> dict:
+        """Build a combined owner query for non-relevance sorted searches."""
+        return {
+            "bool": {
+                "should": [
+                    self._build_name_query(query),
+                    self._build_domain_query(query),
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+
+    def _score_to_unit(self, score: float | None) -> float:
+        """Normalize a raw ES score into [0, 1] for fusion scoring."""
+        if not score:
+            return 0.0
+        return min(score / NAME_MATCH_NORM_DENOM, 1.0)
+
+    def _merge_relevance_hits(
+        self,
+        query: str,
+        name_hits: list[dict],
+        domain_hits: list[dict],
+        limit: int,
+    ) -> dict:
+        """Fuse name/domain owner hits with owner-level ranking signals."""
+        merged: dict[int, dict] = {}
+        query_type = detect_owner_query_type(query, name_hits, domain_hits)
+
+        def upsert(hit: dict, score_key: str):
+            mid = hit.get("mid")
+            if mid is None:
+                return
+
+            item = merged.get(mid)
+            if item is None:
+                item = {k: v for k, v in hit.items() if k != "_score"}
+                item["_name_score"] = 0.0
+                item["_domain_score"] = 0.0
+                merged[mid] = item
+            else:
+                for key, value in hit.items():
+                    if key == "_score" or value is None:
+                        continue
+                    if key not in item or item.get(key) in (None, "", [], {}):
+                        item[key] = value
+
+            item[score_key] = max(item.get(score_key, 0.0), hit.get("_score") or 0.0)
+
+        for hit in name_hits:
+            upsert(hit, "_name_score")
+        for hit in domain_hits:
+            upsert(hit, "_domain_score")
+
+        fused_hits = []
+        for item in merged.values():
+            final_score = compute_owner_rank_score(
+                name_match_score=item.get("_name_score", 0.0),
+                domain_score=self._score_to_unit(item.get("_domain_score", 0.0)),
+                influence_score=item.get("influence_score") or 0.0,
+                quality_score=item.get("quality_score") or 0.0,
+                activity_score=item.get("activity_score") or 0.0,
+                query_type=query_type,
+            )
+            item["_score"] = final_score
+            fused_hits.append(item)
+
+        fused_hits.sort(
+            key=lambda hit: (
+                hit.get("_score", 0.0),
+                hit.get("_name_score", 0.0),
+                hit.get("_domain_score", 0.0),
+                hit.get("influence_score", 0.0),
+            ),
+            reverse=True,
+        )
+        fused_hits = fused_hits[:limit]
+
+        max_score = fused_hits[0].get("_score") if fused_hits else None
+        total = max(len(merged), len(name_hits), len(domain_hits))
+        return {
+            "hits": fused_hits,
+            "total": total,
+            "max_score": round(max_score, 4) if max_score is not None else None,
+            "query_type": query_type,
+        }
+
     def _apply_sort(self, body: dict, sort_by: str) -> dict:
         """Apply sort to the search body if sort_by is not relevance."""
         if sort_by and sort_by != "relevance":
@@ -216,21 +304,49 @@ class OwnerSearcher:
         Returns:
             Parsed result dict with "hits", "total", "max_score".
         """
-        es_query = self._build_name_query(query)
-        es_query = self._apply_filters(es_query, filters)
-
         source = SOURCE_FIELDS_COMPACT if compact else SOURCE_FIELDS
-        body = {
-            "query": es_query,
+        if sort_by != "relevance":
+            es_query = self._build_combined_query(query)
+            es_query = self._apply_filters(es_query, filters)
+            body = {
+                "query": es_query,
+                "_source": source,
+                "size": limit,
+                "timeout": f"{int(timeout * 1000)}ms",
+            }
+            body = self._apply_sort(body, sort_by)
+
+            raw = self._submit(body, context="search")
+            return self.hit_parser.parse_response(raw, compact=compact)
+
+        candidate_limit = max(limit * 3, 30)
+        name_query = self._apply_filters(self._build_name_query(query), filters)
+        domain_query = self._apply_filters(self._build_domain_query(query), filters)
+
+        name_body = {
+            "query": name_query,
             "_source": source,
-            "size": limit,
+            "size": candidate_limit,
             "timeout": f"{int(timeout * 1000)}ms",
         }
-        body = self._apply_sort(body, sort_by)
+        domain_body = {
+            "query": domain_query,
+            "_source": source,
+            "size": candidate_limit,
+            "timeout": f"{int(timeout * 1000)}ms",
+        }
 
-        raw = self._submit(body, context="search")
-        parsed = self.hit_parser.parse_response(raw, compact=compact)
-        return parsed
+        raw_name = self._submit(name_body, context="search.name")
+        raw_domain = self._submit(domain_body, context="search.domain")
+        parsed_name = self.hit_parser.parse_response(raw_name, compact=compact)
+        parsed_domain = self.hit_parser.parse_response(raw_domain, compact=compact)
+
+        return self._merge_relevance_hits(
+            query=query,
+            name_hits=parsed_name.get("hits", []),
+            domain_hits=parsed_domain.get("hits", []),
+            limit=limit,
+        )
 
     def search_by_name(
         self,

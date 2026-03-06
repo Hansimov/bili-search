@@ -73,6 +73,7 @@ def _create_handler(args):
             index_name=ELASTIC_OWNERS_INDEX,
             elastic_env_name=elastic_env_name,
         )
+        video_explorer.owner_searcher = owner_searcher
         logger.mesg(f"  Owner searcher: {ELASTIC_OWNERS_INDEX}")
     except Exception as e:
         logger.hint(f"  Owner searcher unavailable: {e}")

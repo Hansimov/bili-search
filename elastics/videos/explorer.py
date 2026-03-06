@@ -119,6 +119,7 @@ class StepBuilder:
 
 class VideoExplorer(VideoSearcherV2):
     def __init__(self, *args, **kwargs):
+        self.owner_searcher = kwargs.pop("owner_searcher", None)
         super().__init__(*args, **kwargs)
         self.recall_manager = RecallManager()
 
@@ -166,6 +167,11 @@ class VideoExplorer(VideoSearcherV2):
             sort_field=sort_field,
             limit=limit,
         )
+
+        if self.owner_searcher is not None and authors_list:
+            mids = [author.get("mid") for author in authors_list if author.get("mid")]
+            owner_docs = self.owner_searcher.get_owners(mids)
+            grouper.add_owner_docs_to_list(authors_list, owner_docs)
 
         # Add user faces from MongoDB
         mids = [author.get("mid") for author in authors_list]

@@ -213,6 +213,7 @@ def test_multi_tool_calls():
     ]
 
     mock_search = MagicMock()
+    mock_search.owner_searcher = None
     mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
@@ -232,10 +233,70 @@ def test_multi_tool_calls():
     mock_search.suggest.assert_called_once()
     mock_search.explore.assert_called_once()
 
-    # Verify usage accumulation (30 + 15 = 45)
-    assert result["usage"]["total_tokens"] == 30 + 15
+    # Final usage uses last prompt_tokens + accumulated completion_tokens.
+    assert result["usage"]["prompt_tokens"] == 10
+    assert result["usage"]["completion_tokens"] == 15
+    assert result["usage"]["total_tokens"] == 25
 
     logger.success("[PASS] multi tool calls")
+
+
+def test_search_owners_tool_call():
+    """Test handler with search_owners command → content response."""
+    logger.note("=" * 60)
+    logger.note("[TEST] search_owners tool call")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我来找做黑神话的UP主。",
+            '<search_owners query="黑神话悟空" sort_by="influence"/>',
+        ),
+        make_content_response("找到了几位做黑神话内容的UP主。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.owner_searcher = MagicMock()
+    mock_search.owner_searcher.search.return_value = {
+        "total": 1,
+        "hits": [
+            {
+                "mid": 101,
+                "name": "黑猴的名义",
+                "total_videos": 246,
+                "total_view": 82000000,
+                "influence_score": 0.73,
+                "quality_score": 0.68,
+                "activity_score": 0.64,
+                "top_tags": "黑神话悟空, 游戏, 攻略",
+                "latest_pic": "https://img.example/101.jpg",
+                "_score": 0.91,
+            }
+        ],
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+    result = handler.handle(
+        messages=[{"role": "user", "content": "推荐做黑神话的UP主"}]
+    )
+
+    assert "黑神话" in result["choices"][0]["message"]["content"]
+    mock_search.owner_searcher.search.assert_called_once_with(
+        query="黑神话悟空", sort_by="influence", limit=10, compact=True
+    )
+
+    second_call_messages = mock_llm.chat.call_args_list[1].kwargs.get("messages")
+    results_message = next(
+        m
+        for m in second_call_messages
+        if m.get("role") == "user" and "[搜索结果]" in m.get("content", "")
+    )
+    assert (
+        'search_owners(query="黑神话悟空", sort_by="influence"):'
+        in results_message["content"]
+    )
+
+    logger.success("[PASS] search_owners tool call")
 
 
 def test_cache_token_accumulation():
@@ -270,10 +331,11 @@ def test_cache_token_accumulation():
     result = handler.handle(messages=[{"role": "user", "content": "test"}])
 
     usage = result["usage"]
-    assert usage["prompt_cache_hit_tokens"] == 300  # 100 + 200
-    assert usage["prompt_cache_miss_tokens"] == 80  # 50 + 30
-    assert usage["prompt_tokens"] == 30  # 20 + 10
+    assert usage["prompt_cache_hit_tokens"] == 200  # last call input context
+    assert usage["prompt_cache_miss_tokens"] == 30  # last call input context
+    assert usage["prompt_tokens"] == 10  # last call prompt only
     assert usage["completion_tokens"] == 15  # 10 + 5
+    assert usage["total_tokens"] == 25
 
     logger.success(f"  Cache hit: {usage['prompt_cache_hit_tokens']}")
     logger.success(f"  Cache miss: {usage['prompt_cache_miss_tokens']}")
@@ -363,7 +425,7 @@ def test_streaming_response():
     logger.note("[TEST] streaming response")
 
     mock_llm = MagicMock(spec=LLMClient)
-    mock_llm.chat.return_value = make_content_response("你好世界！")
+    mock_llm.chat_stream.return_value = iter(make_stream_chunks("你好世界！"))
 
     mock_search = MagicMock()
 
@@ -402,9 +464,8 @@ def test_streaming_response():
             content += delta["content"]
     assert content == "你好世界！"
 
-    # chat should be called (not chat_stream)
-    assert mock_llm.chat.call_count == 1
-    assert mock_llm.chat_stream.call_count == 0
+    assert mock_llm.chat.call_count == 0
+    assert mock_llm.chat_stream.call_count == 1
 
     logger.success("[PASS] streaming response")
 
@@ -415,32 +476,28 @@ def test_streaming_with_tools():
     logger.note("[TEST] streaming with tools")
 
     mock_llm = MagicMock(spec=LLMClient)
-    mock_llm.chat.side_effect = [
-        make_tool_cmd_response(
-            "我来搜索相关视频。",
-            "<search_videos queries='[\"test\"]'/>",
-        ),
-        make_content_response("找到了结果。"),
-    ]
-
-    # Mock Phase 2 streaming: after tool loop, handler calls chat_stream()
-    mock_llm.chat_stream.return_value = iter(
-        [
-            {
-                "choices": [
-                    {"delta": {"content": "找到了结果。"}, "finish_reason": None}
-                ]
-            },
-            {
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": 30,
+    mock_llm.chat_stream.side_effect = [
+        iter(
+            make_stream_chunks(
+                "我来搜索相关视频。\n<search_videos queries='[\"test\"]'/>",
+                extra_usage={
+                    "prompt_tokens": 20,
                     "completion_tokens": 10,
-                    "total_tokens": 40,
+                    "total_tokens": 30,
                 },
-            },
-        ]
-    )
+            )
+        ),
+        iter(
+            make_stream_chunks(
+                "找到了结果。",
+                extra_usage={
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            )
+        ),
+    ]
 
     mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
@@ -456,6 +513,8 @@ def test_streaming_with_tools():
     for chunk_str in chunks[:-1]:
         chunk = json.loads(chunk_str)
         delta = chunk["choices"][0]["delta"]
+        if delta.get("retract_content"):
+            content = ""
         if "content" in delta:
             content += delta["content"]
         if "reasoning_content" in delta:
@@ -467,10 +526,8 @@ def test_streaming_with_tools():
     assert "搜索" in thinking  # Analysis should appear as thinking
     assert tool_event_found, "Tool event chunk should be present"
 
-    # chat called twice: once for tool iteration, once to check for more tools
-    # (second response has no commands, so handler breaks to Phase 2 real streaming)
-    assert mock_llm.chat.call_count == 2
-    assert mock_llm.chat_stream.call_count == 1
+    assert mock_llm.chat.call_count == 0
+    assert mock_llm.chat_stream.call_count == 2
 
     logger.success("[PASS] streaming with tools")
 
@@ -721,28 +778,28 @@ def test_streaming_with_thinking():
     logger.note("[TEST] streaming with thinking")
 
     mock_llm = MagicMock(spec=LLMClient)
-    mock_llm.chat.side_effect = [
-        make_tool_cmd_response(
-            "让我深入搜索。",
-            "<search_videos queries='[\"test\"]'/>",
-        ),
-        make_content_response("思考后回答"),
-    ]
-
-    # Mock Phase 2 streaming for after tool loop
-    mock_llm.chat_stream.return_value = iter(
-        [
-            {"choices": [{"delta": {"content": "思考后回答"}, "finish_reason": None}]},
-            {
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": 30,
+    mock_llm.chat_stream.side_effect = [
+        iter(
+            make_stream_chunks(
+                "让我深入搜索。\n<search_videos queries='[\"test\"]'/>",
+                extra_usage={
+                    "prompt_tokens": 20,
                     "completion_tokens": 10,
-                    "total_tokens": 40,
+                    "total_tokens": 30,
                 },
-            },
-        ]
-    )
+            )
+        ),
+        iter(
+            make_stream_chunks(
+                "思考后回答",
+                extra_usage={
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            )
+        ),
+    ]
 
     mock_search = MagicMock()
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
@@ -798,6 +855,7 @@ def test_parallel_tool_calls():
     mock_search = MagicMock()
     mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+    mock_search.owner_searcher = None
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 
@@ -817,8 +875,9 @@ def test_parallel_tool_calls():
     # Search was called (from the multi-query)
     assert mock_search.explore.call_count >= 1
 
-    # Verify usage accumulated from 2 calls (30 + 15 = 45)
-    assert result["usage"]["total_tokens"] == 45
+    assert result["usage"]["prompt_tokens"] == 10
+    assert result["usage"]["completion_tokens"] == 15
+    assert result["usage"]["total_tokens"] == 25
 
     logger.success("[PASS] parallel tool calls")
 
@@ -861,11 +920,16 @@ def test_streaming_reasoning_content():
     logger.note("[TEST] streaming reasoning content")
 
     mock_llm = MagicMock(spec=LLMClient)
-    mock_llm.chat.return_value = ChatResponse(
-        content="答案是42。",
-        reasoning_content="让我思考一下这个问题...",
-        finish_reason="stop",
-        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    mock_llm.chat_stream.return_value = iter(
+        make_stream_chunks(
+            "答案是42。",
+            extra_usage={
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+            reasoning="让我思考一下这个问题...",
+        )
     )
 
     mock_search = MagicMock()
@@ -1055,10 +1119,7 @@ def test_stream_cancellation_during_phase2():
         extra_usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
     )
 
-    # Call 2 (Phase 1 iter 2): content without tools → breaks to Phase 2
-    no_tool_chunks = make_stream_chunks("没有工具了")
-
-    # Call 3 (Phase 2): real streaming for final content
+    # Call 2 (Phase 2): forced content after max_iterations exhaustion
     phase2_chunks = [
         {"choices": [{"delta": {"content": "Hello "}, "finish_reason": None}]},
         {"choices": [{"delta": {"content": "World"}, "finish_reason": None}]},
@@ -1067,7 +1128,6 @@ def test_stream_cancellation_during_phase2():
 
     mock_llm.chat_stream.side_effect = [
         iter(tool_chunks),
-        iter(no_tool_chunks),
         iter(phase2_chunks),
     ]
 
@@ -1088,6 +1148,7 @@ def test_stream_cancellation_during_phase2():
     content_count = 0
     for chunk in handler.handle_stream(
         messages=[{"role": "user", "content": "test"}],
+        max_iterations=1,
         cancelled=cancelled,
     ):
         chunks.append(chunk)
