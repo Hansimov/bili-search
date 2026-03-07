@@ -270,6 +270,46 @@ def test_search_phrase_route_falls_back_to_relaxed_semantic_query_on_zero_hits()
     assert result["hits"][0]["mid"] == 7
 
 
+def test_search_domain_route_can_use_controlled_semantic_rerank():
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(),
+            _make_response(
+                _make_hit(
+                    1,
+                    "高影响力泛作者",
+                    6.5,
+                    quality_score=0.55,
+                    influence_score=0.95,
+                    semantic_terms="游戏 热门 综合",
+                ),
+                _make_hit(
+                    2,
+                    "纳塔剧情研究员",
+                    4.0,
+                    quality_score=0.82,
+                    influence_score=0.41,
+                    semantic_terms="原神 纳塔 剧情 解析 纳塔剧情 剧情解析",
+                ),
+            ),
+        ]
+    )
+
+    result = searcher.search_by_domain(
+        "纳塔剧情分析",
+        sort_by="quality",
+        limit=3,
+        compact=True,
+    )
+
+    assert len(searcher.calls) == 2
+    assert searcher.calls[0]["context"] == "route.exact_name"
+    assert searcher.calls[1]["context"] == "search_by_domain.domain_semantic"
+    assert "sort" not in searcher.calls[1]["body"]
+    assert result["query_route"] == "domain"
+    assert result["hits"][0]["mid"] == 2
+
+
 @pytest.mark.parametrize(
     ("query", "exact_name_hit", "expected_route"),
     [

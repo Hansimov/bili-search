@@ -34,6 +34,13 @@ cd /home/asimov/repos/bili-search
 python -m debugs.owners_search.eval_owner_panel -i bili_owners_dev_poc3_100k4_v2 -ev elastic_dev
 ```
 
+如果要专门看“高影响力但领域错误”的误召回，可以跑 hard-negative panel：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.eval_owner_panel -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev -p debugs/owners_search/owner_query_panel_hardneg.json
+```
+
 当前 panel 位于：
 
 ```bash

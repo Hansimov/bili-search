@@ -17,6 +17,13 @@ def test_owner_query_panel_has_head_and_tail_coverage():
     assert any(item["tier"] == "head" and item["intent"] == "domain" for item in panel)
     assert any(item["tier"] == "tail" and item["intent"] == "phrase" for item in panel)
 
+    hardneg_panel_path = (
+        ROOT / "debugs" / "owners_search" / "owner_query_panel_hardneg.json"
+    )
+    hardneg_panel = load_panel(hardneg_panel_path)
+    assert len(hardneg_panel) >= 4
+    assert all(item.get("forbidden_any_name") for item in hardneg_panel)
+
 
 def test_evaluate_case_checks_route_name_and_min_hits():
     case = {
@@ -43,3 +50,28 @@ def test_evaluate_case_checks_route_name_and_min_hits():
     assert report["passed"] is True
     assert report["top_names"] == ["别的创作者", "某个创作者"]
     assert len(report["checks"]) == 3
+
+
+def test_evaluate_case_checks_forbidden_names():
+    case = {
+        "id": "hardneg",
+        "tier": "tail",
+        "intent": "phrase",
+        "query": "希区柯克镜头语言",
+        "expected_route": "phrase",
+        "forbidden_any_name": ["圆桌动漫"],
+        "top_k": 3,
+    }
+    result = {
+        "query_route": "phrase",
+        "total": 2,
+        "hits": [
+            {"mid": 1, "name": "DrRedTheRed"},
+            {"mid": 2, "name": "圆桌动漫"},
+        ],
+    }
+
+    report = evaluate_case(case, result)
+
+    assert report["passed"] is False
+    assert any(check["kind"] == "forbidden_name" for check in report["checks"])

@@ -450,6 +450,24 @@ class OwnerSearcher:
             }
         }
 
+    def _should_use_domain_semantic_rerank(self, query: str, sort_by: str) -> bool:
+        if sort_by not in ("quality", "activity"):
+            return False
+
+        text = (query or "").strip().lower()
+        if not text or self._is_phrase_like_domain_query(text):
+            return False
+
+        compact_len = len(re.sub(r"\s+", "", text))
+        latin_tokens = len(self._latin_token_re.findall(text))
+        cjk_chars = sum(len(span) for span in self._cjk_span_re.findall(text))
+        semantic_terms = self._extract_semantic_terms(text, max_terms=12)
+        return (
+            compact_len >= 5
+            and len(semantic_terms) >= 3
+            and (cjk_chars >= 4 or latin_tokens >= 2)
+        )
+
     def _score_to_unit(self, score: float | None) -> float:
         """Normalize a raw ES score into [0, 1] for fusion scoring."""
         if not score:
@@ -625,6 +643,61 @@ class OwnerSearcher:
         fallback_parsed = self.hit_parser.parse_response(fallback_raw, compact=False)
         return fallback_parsed, fallback_body
 
+    def _search_semantic_candidates(
+        self,
+        es_query: dict,
+        filters: list[dict],
+        limit: int,
+        timeout: float,
+        context: str,
+    ) -> tuple[dict, dict]:
+        candidate_limit = max(limit * 8, 80)
+        body = {
+            "query": self._apply_filters(es_query, filters),
+            "_source": SOURCE_FIELDS,
+            "size": candidate_limit,
+            "timeout": f"{int(timeout * 1000)}ms",
+        }
+        raw = self._submit(body, context=context)
+        parsed = self.hit_parser.parse_response(raw, compact=False)
+        return parsed, body
+
+    def _rerank_domain_semantic_hits(
+        self,
+        query: str,
+        parsed: dict,
+        sort_by: str,
+        limit: int,
+        compact: bool,
+    ) -> dict:
+        query_terms = self._extract_semantic_terms(query)
+        hits = list(parsed.get("hits") or [])
+        for hit in hits:
+            semantic_score = self._compute_phrase_semantic_score(query_terms, hit)
+            lexical_score = self._score_to_unit(hit.get("_score"))
+            sort_score = self._normalize_sort_value(hit, sort_by)
+            hybrid_score = (
+                (0.48 * semantic_score) + (0.18 * lexical_score) + (0.34 * sort_score)
+            )
+            hit["_semantic_score"] = round(semantic_score, 4)
+            hit["_score"] = round(hybrid_score, 4)
+
+        hits.sort(
+            key=lambda hit: (
+                hit.get("_score", 0.0),
+                hit.get("_semantic_score", 0.0),
+                self._normalize_sort_value(hit, sort_by),
+                hit.get("influence_score", 0.0),
+            ),
+            reverse=True,
+        )
+        reranked = {
+            "hits": hits[:limit],
+            "total": parsed.get("total", len(hits)),
+            "max_score": hits[0].get("_score") if hits else None,
+        }
+        return self._trim_result(reranked, compact=compact)
+
     def _merge_relevance_hits(
         self,
         query: str,
@@ -769,6 +842,23 @@ class OwnerSearcher:
                     limit=limit,
                     compact=compact,
                 )
+            elif query_route == "domain" and self._should_use_domain_semantic_rerank(
+                query, sort_by
+            ):
+                parsed, body = self._search_semantic_candidates(
+                    es_query=es_query,
+                    filters=filters,
+                    limit=limit,
+                    timeout=timeout,
+                    context="search.domain_semantic",
+                )
+                parsed = self._rerank_domain_semantic_hits(
+                    query=query,
+                    parsed=parsed,
+                    sort_by=sort_by,
+                    limit=limit,
+                    compact=compact,
+                )
             else:
                 es_query = self._apply_filters(es_query, filters)
                 body = {
@@ -879,6 +969,23 @@ class OwnerSearcher:
                 context=context,
             )
             parsed = self._rerank_phrase_hits(
+                query=query,
+                parsed=parsed,
+                sort_by=sort_by,
+                limit=limit,
+                compact=compact,
+            )
+        elif query_route == "domain" and self._should_use_domain_semantic_rerank(
+            query, sort_by
+        ):
+            parsed, body = self._search_semantic_candidates(
+                es_query=es_query,
+                filters=filters,
+                limit=limit,
+                timeout=timeout,
+                context="search_by_domain.domain_semantic",
+            )
+            parsed = self._rerank_domain_semantic_hits(
                 query=query,
                 parsed=parsed,
                 sort_by=sort_by,

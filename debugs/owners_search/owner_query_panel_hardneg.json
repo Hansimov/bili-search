@@ -1,0 +1,72 @@
+[
+    {
+        "id": "hardneg_name_yingshijufeng",
+        "tier": "head",
+        "intent": "name",
+        "query": "影视飓风",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "name",
+        "expected_any_name": [
+            "影视飓风"
+        ],
+        "forbidden_any_name": [
+            "幸运的盆子",
+            "舍长驾到",
+            "五四IAM"
+        ],
+        "top_k": 3,
+        "notes": "防止 name-like query 被高影响力泛影视作者污染。"
+    },
+    {
+        "id": "hardneg_tail_natta",
+        "tier": "tail",
+        "intent": "phrase",
+        "query": "原神纳塔剧情解析",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "forbidden_any_name": [
+            "影视飓风",
+            "老番茄",
+            "腹黑君"
+        ],
+        "top_k": 5,
+        "notes": "长尾游戏剧情 query 不应回到无关头部作者。"
+    },
+    {
+        "id": "hardneg_tail_minecraft",
+        "tier": "tail",
+        "intent": "phrase",
+        "query": "我的世界红石生存",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "forbidden_any_name": [
+            "影视飓风",
+            "老番茄",
+            "幸运的盆子"
+        ],
+        "top_k": 5,
+        "notes": "垂类玩法 query 不应被热门泛娱乐作者顶掉。"
+    },
+    {
+        "id": "hardneg_tail_hitchcock",
+        "tier": "tail",
+        "intent": "domain",
+        "query": "希区柯克镜头语言",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "forbidden_any_name": [
+            "圆桌动漫",
+            "战术级子轩",
+            "病院坂saki"
+        ],
+        "top_k": 5,
+        "notes": "影视分析 query 不应退化到热门无关数码/泛内容作者。"
+    }
+]

@@ -86,6 +86,12 @@
 2. `head-domain`: 热门领域，目标是 recall + quality
 3. `tail-phrase`: 长尾整句，目标是 phrase robustness
 
+另外建议单独维护一组 `hard-negative` panel：
+
+1. query 是明确的 creator/domain intent
+2. top-k 中禁止出现一组已知高影响力但无关的 owner
+3. 单独统计 `forbidden_name` 通过率，而不只看普通 Hit@k
+
 和当前新增的 query panel 对齐，离线指标建议至少看：
 
 1. Hit@1 / Hit@3
@@ -99,7 +105,7 @@
 
 1. 先离线生成 `semantic_terms`，不改线上排序。
 2. 再在 `phrase` route 上加入 semantic rerank，对长尾 query 先试点。
-3. 稳定后再把 `domain` route 接进来。
+3. 稳定后把 semantic rerank 受控扩到 tail-like 的 `domain + quality/activity` 查询。
 4. 最后才考虑是否需要额外的 ANN 或 dense 双塔。
 
 ## 为什么这条路更适合 CPU

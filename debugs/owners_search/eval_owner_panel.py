@@ -31,6 +31,7 @@ def load_panel(panel_path: str | Path) -> list[dict]:
         case.setdefault("sort_by", "influence")
         case.setdefault("top_k", 5)
         case.setdefault("expected_any_name", [])
+        case.setdefault("forbidden_any_name", [])
         case.setdefault("min_hits", 0)
         case.setdefault("notes", "")
         required = ["id", "tier", "intent", "query"]
@@ -97,6 +98,18 @@ def evaluate_case(case: dict, result: dict, default_top_k: int = 5) -> dict:
             }
         )
 
+    forbidden_names = case.get("forbidden_any_name") or []
+    if forbidden_names:
+        forbidden_hits = [name for name in names if name in forbidden_names]
+        checks.append(
+            {
+                "kind": "forbidden_name",
+                "expected": forbidden_names,
+                "actual": names,
+                "passed": not forbidden_hits,
+            }
+        )
+
     min_hits = int(case.get("min_hits") or 0)
     if min_hits:
         checks.append(
@@ -130,17 +143,24 @@ def summarize_results(results: list[dict]) -> dict:
     total = len(results)
     passed = sum(1 for item in results if item.get("passed"))
     by_tier: dict[str, dict] = {}
+    by_check_kind: dict[str, dict] = {}
     for item in results:
         tier = item.get("tier") or "unknown"
         bucket = by_tier.setdefault(tier, {"total": 0, "passed": 0})
         bucket["total"] += 1
         bucket["passed"] += 1 if item.get("passed") else 0
+        for check in item.get("checks") or []:
+            kind = check.get("kind") or "unknown"
+            check_bucket = by_check_kind.setdefault(kind, {"total": 0, "passed": 0})
+            check_bucket["total"] += 1
+            check_bucket["passed"] += 1 if check.get("passed") else 0
     return {
         "total_cases": total,
         "passed_cases": passed,
         "failed_cases": total - passed,
         "pass_rate": round((passed / total), 4) if total else 0.0,
         "by_tier": by_tier,
+        "by_check_kind": by_check_kind,
     }
 
 
