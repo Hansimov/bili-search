@@ -1,0 +1,102 @@
+[
+    {
+        "id": "head_name_yingshijufeng",
+        "tier": "head",
+        "intent": "name",
+        "query": "影视飓风",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "name",
+        "expected_any_name": [
+            "影视飓风"
+        ],
+        "top_k": 3,
+        "notes": "头部明确作者名，要求严格走 name route。"
+    },
+    {
+        "id": "head_name_laofanqie",
+        "tier": "head",
+        "intent": "name",
+        "query": "老番茄",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "name",
+        "expected_any_name": [
+            "老番茄"
+        ],
+        "top_k": 3,
+        "notes": "头部作者名，防止 influence 排序时被泛领域 owner 污染。"
+    },
+    {
+        "id": "head_domain_wukong",
+        "tier": "head",
+        "intent": "domain",
+        "query": "黑神话悟空",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "domain",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "热门领域查询，需要保留足够召回。"
+    },
+    {
+        "id": "head_domain_iphone16",
+        "tier": "head",
+        "intent": "domain",
+        "query": "iPhone 16",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "domain",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "中英混合热门数码领域。"
+    },
+    {
+        "id": "tail_phrase_wangzhe_rank",
+        "tier": "tail",
+        "intent": "phrase",
+        "query": "当你半年不上线的账号打一把王者排位的时候",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "长尾整句短视频标题意图，要求启用 phrase-aware strict domain path。"
+    },
+    {
+        "id": "tail_phrase_natta_plot",
+        "tier": "tail",
+        "intent": "phrase",
+        "query": "原神纳塔剧情解析",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "长尾游戏剧情细分领域。"
+    },
+    {
+        "id": "tail_phrase_minecraft_redstone",
+        "tier": "tail",
+        "intent": "phrase",
+        "query": "我的世界红石生存",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "长尾垂类玩法查询。"
+    },
+    {
+        "id": "tail_domain_hitchcock",
+        "tier": "tail",
+        "intent": "domain",
+        "query": "希区柯克镜头语言",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "影视分析向长尾领域，重点看 quality 排序下的召回质量。"
+    }
+]

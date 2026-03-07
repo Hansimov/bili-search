@@ -6,6 +6,8 @@ scoring parameters, and search limits for the owners ES index.
 
 from typing import Literal
 
+from math import log1p
+
 # =============================================================================
 # Index Configuration
 # =============================================================================
@@ -30,13 +32,8 @@ SOURCE_FIELDS = [
     "total_like",
     "total_coin",
     "total_favorite",
-    "total_danmaku",
-    "total_reply",
-    "total_share",
-    "total_duration",
     "influence_score",
     # quality
-    "avg_view",
     "avg_favorite_rate",
     "avg_coin_rate",
     "avg_like_rate",
@@ -44,13 +41,17 @@ SOURCE_FIELDS = [
     "quality_score",
     # activity
     "latest_pubdate",
-    "earliest_pubdate",
     "latest_bvid",
+    "recent_7d_videos",
+    "recent_30d_videos",
     "publish_freq",
     "days_since_last",
     "activity_score",
     # domain
     "top_tags",
+    "topic_phrases",
+    "domain_text",
+    "semantic_terms",
     "primary_tid",
     "primary_ptid",
     # profile substitute
@@ -73,6 +74,7 @@ SOURCE_FIELDS_COMPACT = [
     "quality_score",
     "activity_score",
     "top_tags",
+    "topic_phrases",
     "latest_pic",
     "latest_pubdate",
     "primary_tid",
@@ -88,15 +90,35 @@ NAME_MATCH_BOOSTS = {
     "name.keyword": 50.0,  # Exact match — highest priority
     "name.words": 10.0,  # Token BM25 match
     "top_tags.words": 3.0,  # Domain tags — auxiliary
+    "topic_phrases.words": 2.5,
+    "domain_text.words": 1.5,
     "mentioned_names.words": 1.5,  # Related user names — auxiliary
 }
 
 # Domain search fields with boosts
 DOMAIN_MATCH_BOOSTS = {
-    "top_tags.words": 5.0,  # Tags are the primary domain signal
-    "name.words": 2.0,  # Name might contain domain keywords
+    "top_tags.words": 4.5,  # Tags are the primary domain signal
+    "topic_phrases.words": 4.0,
+    "domain_text.words": 3.0,
+    "semantic_terms.words": 2.5,
+    "name.words": 1.5,  # Name might contain domain keywords
     "mentioned_names.words": 1.0,  # Related users in similar domain
 }
+
+DOMAIN_STRICT_MATCH_BOOSTS = {
+    "topic_phrases.words": 7.0,
+    "domain_text.words": 6.0,
+    "semantic_terms.words": 5.0,
+    "top_tags.words": 4.5,
+}
+
+DOMAIN_PHRASE_MATCH_BOOSTS = {
+    "topic_phrases.words": 14.0,
+    "domain_text.words": 12.0,
+    "semantic_terms.words": 10.0,
+}
+
+DOMAIN_PHRASE_QUERY_MIN_CHARS = 8
 
 # =============================================================================
 # Sort Fields
@@ -140,6 +162,8 @@ MAX_VIEW = 1e10
 MAX_VIDEOS = 10000
 MAX_LIKE = 1e8
 MAX_COIN = 1e7
+LOG_MAX_VIEW = log1p(MAX_VIEW)
+LOG_MAX_VIDEOS = log1p(MAX_VIDEOS)
 
 # Influence weights
 INFLUENCE_WEIGHTS = {

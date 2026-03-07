@@ -1,8 +1,25 @@
 # Owner Search 改进方案
 
-> 版本：v2.0  
-> 日期：2026-03-01  
-> 状态：方案设计
+> 版本：v3.0  
+> 日期：2026-03-07  
+> 状态：重构中
+
+## v3 核心修正
+
+这次方案需要明确纠偏：不能再把 owner 搜索/训练的主路线建立在 `daily_life`、`other_game`、`douga_anime` 这类粗粒度桶标签上。它们最早只是为了快速备份、做一个极低成本 baseline 和验证链路可跑通，不能继续作为长期算法设计的语义基础。
+
+从 v3 开始，方案主线改为：
+
+1. 放弃“粗标签分类器驱动 owner 搜索”的思路。
+2. 切换到 `owner profile` 预计算和增量 merge。
+3. 训练与索引解耦：原始视频聚合先落 Mongo 中间层，再用于模型训练和 ES 写入。
+4. 在线 ES 只承载检索与轻量重排，不再承担重特征计算。
+
+这一修正不仅是算法语义上的优化，也是为了满足生产级时效目标：
+
+1. 全量数据 `1-3` 天内训完
+2. 每日增量 `1` 小时内训完
+3. 每小时增量 `10` 分钟内训完
 
 ---
 
@@ -194,6 +211,17 @@
 ## 3. 方案总览
 
 ```
+
+### v3 新的分层架构
+
+```
+Mongo videos
+    -> owner_profile_snapshots_full/hourly/daily (Mongo precompute)
+    -> trainer / embedder / sparse-ranker (offline)
+    -> owners ES v2 (online retrieval)
+```
+
+其中最关键的变化是：Mongo 中间层成为训练和索引的统一上游，避免每条链路都去直接扫 `videos`。
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         方案三层架构                                 │
 ├──────────────┬──────────────────────┬───────────────────────────────┤
@@ -212,6 +240,75 @@
 ---
 
 ## 4. 数据层：构建 Owner 索引
+
+### 4.0 v3 数据原则
+
+v3 不再直接把 `videos -> owners ES` 作为唯一主路径，而是拆成两步：
+
+1. `videos -> owner_profile_snapshots_*`（Mongo 预计算层）
+2. `owner_profile_snapshots_* -> owners ES v2`（在线索引层）
+
+这样做的原因：
+
+1. 原始视频聚合是最重的步骤，应该与训练/索引分离。
+2. 增量更新只需要重算受影响 owner，而不是重扫全量视频。
+3. 线上模型替换只需要切换 snapshot/version，而不是在线重建 owner 画像。
+
+### 4.0.1 当前实测吞吐
+
+新的 owner profile 预计算原型已经做过一次大样本实测：
+
+1. 时间窗：`2025-12-15 00:00:00` 到 `2026-03-07 16:00:00`
+2. 产出：`20,000` 个 owner profile
+3. 扫描：`204,583` 条视频
+4. 耗时：`276.18s`
+5. 单进程吞吐：约 `740.77 videos/s`
+
+这组数据对应的生产推演：
+
+1. 全量 `9e8` 视频，单进程约 `14` 天
+2. `8` 个 owner 分片 worker，约 `1.75` 天
+3. `12` 个 owner 分片 worker，约 `1.17` 天
+
+所以要达到 `1-3` 天全量训练目标，架构上必须预留至少 `8-12` 个并行 owner 分片 worker，而不是依赖单机单进程优化。
+
+补充一组更新的真实 DEV 数据点。切换到 hashed subword sparse feature 之后，新的 50k 级 profile build 结果为：
+
+1. 产出：`50,000` 个 owner profile
+2. 扫描：`456,502` 条视频
+3. 耗时：`1390.86s`
+4. 单进程吞吐：`328.22 videos/s`
+5. owner profile 生成速率：`35.95 profiles/s`
+
+随后从 Mongo snapshot 写入 ES v2：
+
+1. Mongo collection: `owner_profile_snapshots_dev_poc2_50k1`
+2. ES index: `bili_owners_dev_poc2_50k1_v2`
+3. 写入量：`50,000` docs
+4. 耗时：`29.06s`
+5. 写入吞吐：`1720.34 docs/s`
+
+这说明当前瓶颈仍然在 `videos -> owner_profile_snapshots` 预计算阶段，而不在 `snapshot -> ES` 写入阶段。
+
+继续放大到 `100,000` owner 后，又做了一轮 `4` shard 并行预计算实验：
+
+1. shard 数：`4`
+2. 每个 shard 目标：`25,000` owner
+3. 总产出：`100,000` owner profile
+4. 总扫描：`876,280` 条视频
+5. wall-clock：约 `1635.02s`
+6. 聚合吞吐：约 `535.94 videos/s`
+7. owner 生成速率：约 `61.16 profiles/s`
+8. Mongo collection: `owner_profile_snapshots_dev_poc3_100k4`
+
+随后写入 ES v2：
+
+1. ES index: `bili_owners_dev_poc3_100k4_v2`
+2. 写入量：`100,000` docs
+3. 耗时：`57.4s`
+4. 写入吞吐：`1742.16 docs/s`
+
+对比单进程 50k build，这轮并行化已经证明“分片并行”方向是对的，但实际 wall-clock 提速仍然不够激进。说明当前按 `owner.mid % N` 做 shard 还不够高效，后续要继续优化分片方式和 Mongo 访问模式。
 
 ### 4.1 数据聚合管线
 
@@ -255,6 +352,99 @@
 ```
 
 #### Stage 1: MongoDB 聚合管线
+
+在 v3 中，Stage 1 的直接产物不再是 ES owner doc，而是 Mongo owner profile snapshot。当前已经实现了一个原型模块：
+
+1. `/home/asimov/repos/bili-search-algo/models/owners/profile.py`
+
+该模块支持：
+
+1. 流式扫描 `videos`
+2. 为每个 owner 生成稀疏 topic profile
+3. 输出 `topic_terms`、`feature_weights`、`recent_7d_videos`、`recent_30d_videos`
+4. 批量写入 Mongo 预计算集合
+5. merge 全量画像与增量画像
+
+这比“先做粗标签分类再搜索”更贴近真实需求，因为 owner 搜索本质上是 profile retrieval，而不是粗桶分类。
+
+这里的 `feature_weights` 也需要明确说明：它已经不是开放词表上的 token 权重，而是 hashed subword bucket 的稀疏特征草图。这样做是为了更好地应对大词表、同义表达、错别字和新词快速进入语料的问题。
+
+### 4.1.2 当前线上检索观察
+
+新链路接入 `OwnerSearcher` 后，在 DEV 上做了几组真实查询：
+
+1. `影视飓风` 可以稳定 top1 命中 owner 本人。
+2. `王者荣耀` 能召回明显相关的游戏 owner。
+3. `黑神话悟空` 能召回部分相关 owner，但 top1 仍可能被更强势的泛游戏 owner 占据。
+
+同时，长尾短句查询 `当你半年不上线的账号打一把王者排位的时候` 暴露了一个明确问题：当前 domain query 仍然过度依赖 analyzer 切出的通用片段，phrase 级约束不够强，导致 top1 出现明显误召回。
+
+因此 v3 的下一阶段重点不应是回头强化 coarse label，而应是：
+
+1. 增加 phrase-aware 的 query 结构
+2. 对 `top_tags`、`topic_phrases`、`profile_text` 做分层召回
+3. 后续再接入更稳的 sparse/dense 融合
+
+这里补充两条更新后的真实结论：
+
+1. `当你半年不上线的账号打一把王者排位的时候` 这类长尾短句，在引入 phrase-aware strict clause 后，已经不再出现之前那种被高影响力无关 owner 顶掉的误召回。
+2. 但 `影视飓风` 这类明显 name-like 的 query，如果强行走 domain-only + `sort_by=influence` 路由，仍可能被更高影响力的泛“影视”账号压过。这说明下一阶段要补的是 query routing，而不是继续只调单一路由的文本匹配。
+
+进一步的最新进展是：当前已经把 query routing 前移到 `OwnerSearcher` 查询入口。
+
+1. phrase-like query 继续走 strict domain route
+2. name-like query 会先做 `name.keyword` exact probe
+3. 非 relevance 排序下，如果 exact probe 命中，则直接切到 strict name route，只保留 `name.keyword + name.words(and)`
+
+实测上，这已经把 `影视飓风` 这类 name-like query 在 DEV 上重新收敛成 owner 本人单一命中，不再被泛“影视”账号污染。
+
+### 4.1.3 planned-range 预计算优化
+
+除了 `% shard` 之外，还补了一条新的 planned-range 路线：
+
+1. 先对当前时间窗中唯一 `owner.mid` 做 `bucketAuto`
+2. 得到近似均衡的 owner 范围分片
+3. 每个 shard 使用显式 `owner_mid_min/owner_mid_max`
+4. 对 range shard 强制使用 `owner.mid_1` Mongo index hint
+
+对应的 100k 真实实验结果：
+
+1. Mongo collection: `owner_profile_snapshots_dev_poc9_100k4_rangeplan`
+2. `100,000` owner profile
+3. 总扫描 `921,308` 视频
+4. wall-clock `1488.37s`
+5. 聚合吞吐 `619.00 videos/s`
+6. profile 生成速率 `67.19 profiles/s`
+
+对比上一轮 `% shard`：
+
+1. throughput 从 `535.94 videos/s` 提升到 `619.00 videos/s`
+2. wall-clock 从 `1635.02s` 降到 `1488.37s`
+
+随后写入 ES：
+
+1. ES index: `bili_owners_dev_poc9_100k4_rangeplan_v2`
+2. `100,000` docs
+3. `53.39s`
+4. `1873.09 docs/s`
+
+但要明确一个约束：在 `range` 分片同时还带 `--max-owners` 截断时，样本会更偏向每个 range 内较早出现的 owner，因此这一轮更适合评估“预计算吞吐”，不适合直接与 `% shard` 100k sample 做检索质量的一一对比。
+
+### 4.1.1 建议新增的 Mongo 中间集合
+
+为了把训练、索引、增量 merge 明确拆开，建议固定以下中间集合：
+
+1. `owner_profile_snapshots_full`
+2. `owner_profile_snapshots_daily`
+3. `owner_profile_snapshots_hourly`
+4. `owner_profile_training_samples`
+5. `owner_profile_embeddings`
+
+这样可以做到：
+
+1. 稀疏主题特征和稠密向量分开更新
+2. 训练和 ES 写入各自消费稳定快照
+3. 在线替换模型时只切 snapshot/version，不需要重新扫原始视频
 
 全量聚合方案 — 利用 MongoDB aggregation pipeline 按 `owner.mid` 分组：
 

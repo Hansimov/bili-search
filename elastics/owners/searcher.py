@@ -6,6 +6,10 @@ Independent of VideoSearcher — can be used standalone or as an
 enhancement to the existing videos search pipeline.
 """
 
+import re
+from collections import Counter
+from math import log1p
+
 from sedb import ElasticOperator
 from tclogger import logger
 
@@ -16,6 +20,11 @@ from elastics.owners.constants import (
     SOURCE_FIELDS_COMPACT,
     NAME_MATCH_BOOSTS,
     DOMAIN_MATCH_BOOSTS,
+    DOMAIN_STRICT_MATCH_BOOSTS,
+    DOMAIN_PHRASE_MATCH_BOOSTS,
+    DOMAIN_PHRASE_QUERY_MIN_CHARS,
+    LOG_MAX_VIEW,
+    LOG_MAX_VIDEOS,
     NAME_MATCH_NORM_DENOM,
     SORT_FIELD_TYPE,
     SORT_FIELD_DEFAULT,
@@ -64,6 +73,8 @@ class OwnerSearcher:
             elastic_envs = ELASTIC_PRO_ENVS
         self.es = ElasticOperator(elastic_envs, connect_cls=self.__class__)
         self.hit_parser = OwnerHitsParser()
+        self._latin_token_re = re.compile(r"[a-z0-9][a-z0-9_\-\.]{1,}")
+        self._cjk_span_re = re.compile(r"[\u4e00-\u9fff]+")
 
     # =========================================================================
     # Internal helpers
@@ -121,9 +132,44 @@ class OwnerSearcher:
                     },
                     {
                         "match": {
+                            "topic_phrases.words": {
+                                "query": query,
+                                "boost": b.get("topic_phrases.words", 2.5),
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "domain_text.words": {
+                                "query": query,
+                                "boost": b.get("domain_text.words", 1.5),
+                            }
+                        }
+                    },
+                    {
+                        "match": {
                             "mentioned_names.words": {
                                 "query": query,
                                 "boost": b.get("mentioned_names.words", 1.5),
+                            }
+                        }
+                    },
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+
+    def _build_name_strict_query(self, query: str) -> dict:
+        return {
+            "bool": {
+                "should": [
+                    {"term": {"name.keyword": {"value": query, "boost": 100.0}}},
+                    {
+                        "match": {
+                            "name.words": {
+                                "query": query,
+                                "operator": "and",
+                                "boost": 20.0,
                             }
                         }
                     },
@@ -138,6 +184,110 @@ class OwnerSearcher:
         Primarily matches top_tags.words with name.words as secondary signal.
         """
         b = boosts or DOMAIN_MATCH_BOOSTS
+        if self._is_phrase_like_domain_query(query):
+            strict_boosts = DOMAIN_STRICT_MATCH_BOOSTS
+            phrase_boosts = DOMAIN_PHRASE_MATCH_BOOSTS
+            strict_clauses = [
+                {
+                    "match_phrase": {
+                        "topic_phrases.words": {
+                            "query": query,
+                            "boost": phrase_boosts.get("topic_phrases.words", 14.0),
+                        }
+                    }
+                },
+                {
+                    "match_phrase": {
+                        "domain_text.words": {
+                            "query": query,
+                            "boost": phrase_boosts.get("domain_text.words", 12.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "topic_phrases.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("topic_phrases.words", 7.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "domain_text.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("domain_text.words", 6.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "semantic_terms.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("semantic_terms.words", 5.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "top_tags.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("top_tags.words", 4.5),
+                        }
+                    }
+                },
+            ]
+            return {
+                "bool": {
+                    "must": [
+                        {
+                            "bool": {
+                                "should": strict_clauses,
+                                "minimum_should_match": 1,
+                            }
+                        }
+                    ],
+                    "should": [
+                        {
+                            "match": {
+                                "top_tags.words": {
+                                    "query": query,
+                                    "boost": b.get("top_tags.words", 4.5),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "topic_phrases.words": {
+                                    "query": query,
+                                    "boost": b.get("topic_phrases.words", 4.0),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "domain_text.words": {
+                                    "query": query,
+                                    "boost": b.get("domain_text.words", 3.0),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "semantic_terms.words": {
+                                    "query": query,
+                                    "boost": b.get("semantic_terms.words", 2.5),
+                                }
+                            }
+                        },
+                    ],
+                    "minimum_should_match": 0,
+                }
+            }
         return {
             "bool": {
                 "should": [
@@ -145,7 +295,31 @@ class OwnerSearcher:
                         "match": {
                             "top_tags.words": {
                                 "query": query,
-                                "boost": b.get("top_tags.words", 5.0),
+                                "boost": b.get("top_tags.words", 4.5),
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "topic_phrases.words": {
+                                "query": query,
+                                "boost": b.get("topic_phrases.words", 4.0),
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "domain_text.words": {
+                                "query": query,
+                                "boost": b.get("domain_text.words", 3.0),
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "semantic_terms.words": {
+                                "query": query,
+                                "boost": b.get("semantic_terms.words", 2.5),
                             }
                         }
                     },
@@ -153,7 +327,7 @@ class OwnerSearcher:
                         "match": {
                             "name.words": {
                                 "query": query,
-                                "boost": b.get("name.words", 2.0),
+                                "boost": b.get("name.words", 1.5),
                             }
                         }
                     },
@@ -170,6 +344,52 @@ class OwnerSearcher:
             }
         }
 
+    def _is_phrase_like_domain_query(self, query: str) -> bool:
+        text = (query or "").strip().lower()
+        if not text:
+            return False
+        compact_len = len(re.sub(r"\s+", "", text))
+        if compact_len < DOMAIN_PHRASE_QUERY_MIN_CHARS:
+            return False
+        latin_tokens = len(self._latin_token_re.findall(text))
+        cjk_chars = sum(len(span) for span in self._cjk_span_re.findall(text))
+        return latin_tokens >= 4 or cjk_chars >= DOMAIN_PHRASE_QUERY_MIN_CHARS
+
+    def _has_exact_name_hit(self, query: str, timeout: float = SUGGEST_TIMEOUT) -> bool:
+        body = {
+            "query": {"term": {"name.keyword": {"value": query}}},
+            "_source": ["mid", "name"],
+            "size": 1,
+            "timeout": f"{int(timeout * 1000)}ms",
+        }
+        raw = self._submit(body, context="route.exact_name")
+        hits = ((raw or {}).get("hits") or {}).get("hits") or []
+        if not hits:
+            return False
+        source = hits[0].get("_source") or {}
+        return source.get("name") == query
+
+    def _detect_query_route(self, query: str, exact_name_hit: bool = None) -> str:
+        text = (query or "").strip().lower()
+        if not text:
+            return "domain"
+        if self._is_phrase_like_domain_query(text):
+            return "phrase"
+
+        compact_len = len(re.sub(r"\s+", "", text))
+        latin_tokens = len(self._latin_token_re.findall(text))
+        cjk_chars = sum(len(span) for span in self._cjk_span_re.findall(text))
+        owner_like_shape = (
+            " " not in text
+            and compact_len <= 24
+            and ((2 <= cjk_chars <= 12) or (1 <= latin_tokens <= 3))
+        )
+        if not owner_like_shape:
+            return "domain"
+        if exact_name_hit is None:
+            exact_name_hit = self._has_exact_name_hit(query)
+        return "name" if exact_name_hit else "domain"
+
     def _build_combined_query(self, query: str) -> dict:
         """Build a combined owner query for non-relevance sorted searches."""
         return {
@@ -182,11 +402,228 @@ class OwnerSearcher:
             }
         }
 
+    def _build_phrase_fallback_query(self, query: str) -> dict:
+        semantic_query = " ".join(self._extract_semantic_terms(query, max_terms=16))
+        if not semantic_query:
+            semantic_query = query
+        return {
+            "bool": {
+                "should": [
+                    {
+                        "match": {
+                            "semantic_terms.words": {
+                                "query": semantic_query,
+                                "minimum_should_match": "35%",
+                                "boost": 6.0,
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "topic_phrases.words": {
+                                "query": semantic_query,
+                                "minimum_should_match": "35%",
+                                "boost": 4.5,
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "domain_text.words": {
+                                "query": semantic_query,
+                                "minimum_should_match": "35%",
+                                "boost": 3.5,
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "top_tags.words": {
+                                "query": semantic_query,
+                                "minimum_should_match": "25%",
+                                "boost": 2.0,
+                            }
+                        }
+                    },
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+
     def _score_to_unit(self, score: float | None) -> float:
         """Normalize a raw ES score into [0, 1] for fusion scoring."""
         if not score:
             return 0.0
         return min(score / NAME_MATCH_NORM_DENOM, 1.0)
+
+    def _extract_semantic_terms(self, text: str, max_terms: int = 24) -> list[str]:
+        content = (text or "").strip().lower()
+        if not content:
+            return []
+
+        counter: Counter = Counter()
+        for token in self._latin_token_re.findall(content):
+            counter[token] += 2.0
+
+        for span in self._cjk_span_re.findall(content):
+            if not span:
+                continue
+            if len(span) == 1:
+                counter[span] += 1.0
+                continue
+
+            counter[span] += 2.5 if len(span) <= 8 else 1.5
+            max_n = 3 if len(span) >= 3 else 2
+            for n in range(2, max_n + 1):
+                for index in range(0, len(span) - n + 1):
+                    counter[span[index : index + n]] += 1.0
+
+        return [
+            term
+            for term, _ in sorted(
+                counter.items(),
+                key=lambda item: (-item[1], -len(item[0]), item[0]),
+            )[:max_terms]
+        ]
+
+    def _build_hit_semantic_terms(self, hit: dict) -> set[str]:
+        semantic_text = (hit.get("semantic_terms") or "").strip()
+        if semantic_text:
+            return set(term for term in semantic_text.split() if term)
+
+        parts = [
+            hit.get("name") or "",
+            hit.get("top_tags") or "",
+            hit.get("topic_phrases") or "",
+            hit.get("domain_text") or "",
+            hit.get("mentioned_names") or "",
+        ]
+        terms: set[str] = set()
+        for part in parts:
+            terms.update(self._extract_semantic_terms(part, max_terms=48))
+        return terms
+
+    def _compute_phrase_semantic_score(
+        self, query_terms: list[str], hit: dict
+    ) -> float:
+        if not query_terms:
+            return 0.0
+        hit_terms = self._build_hit_semantic_terms(hit)
+        if not hit_terms:
+            return 0.0
+
+        matched_terms = [term for term in query_terms if term in hit_terms]
+        if not matched_terms:
+            return 0.0
+
+        coverage = len(matched_terms) / max(len(query_terms), 1)
+        matched_weight = sum(min(len(term), 4) for term in matched_terms)
+        total_weight = sum(min(len(term), 4) for term in query_terms) or 1
+        weighted_coverage = matched_weight / total_weight
+        return round((0.55 * coverage) + (0.45 * weighted_coverage), 4)
+
+    def _normalize_sort_value(self, hit: dict, sort_by: str) -> float:
+        if sort_by == "influence":
+            return min(max(float(hit.get("influence_score") or 0.0), 0.0), 1.0)
+        if sort_by == "quality":
+            return min(max(float(hit.get("quality_score") or 0.0), 0.0), 1.0)
+        if sort_by == "activity":
+            return min(max(float(hit.get("activity_score") or 0.0), 0.0), 1.0)
+        if sort_by == "total_view":
+            return min(
+                log1p(max(int(hit.get("total_view") or 0), 0)) / LOG_MAX_VIEW, 1.0
+            )
+        if sort_by == "total_videos":
+            return min(
+                log1p(max(int(hit.get("total_videos") or 0), 0)) / LOG_MAX_VIDEOS, 1.0
+            )
+        return self._score_to_unit(hit.get("_score"))
+
+    def _trim_result(self, result: dict, compact: bool) -> dict:
+        if not compact:
+            return result
+
+        allowed = set(SOURCE_FIELDS_COMPACT)
+        trimmed_hits = []
+        for hit in result.get("hits") or []:
+            item = {key: value for key, value in hit.items() if key in allowed}
+            if hit.get("_score") is not None:
+                item["_score"] = hit.get("_score")
+            trimmed_hits.append(item)
+
+        return {
+            **result,
+            "hits": trimmed_hits,
+        }
+
+    def _rerank_phrase_hits(
+        self,
+        query: str,
+        parsed: dict,
+        sort_by: str,
+        limit: int,
+        compact: bool,
+    ) -> dict:
+        query_terms = self._extract_semantic_terms(query)
+        hits = list(parsed.get("hits") or [])
+        for hit in hits:
+            semantic_score = self._compute_phrase_semantic_score(query_terms, hit)
+            lexical_score = self._score_to_unit(hit.get("_score"))
+            sort_score = self._normalize_sort_value(hit, sort_by)
+            hybrid_score = (
+                (0.62 * semantic_score) + (0.23 * lexical_score) + (0.15 * sort_score)
+            )
+            hit["_semantic_score"] = round(semantic_score, 4)
+            hit["_score"] = round(hybrid_score, 4)
+
+        hits.sort(
+            key=lambda hit: (
+                hit.get("_score", 0.0),
+                hit.get("_semantic_score", 0.0),
+                self._normalize_sort_value(hit, sort_by),
+            ),
+            reverse=True,
+        )
+        reranked = {
+            "hits": hits[:limit],
+            "total": parsed.get("total", len(hits)),
+            "max_score": hits[0].get("_score") if hits else None,
+        }
+        return self._trim_result(reranked, compact=compact)
+
+    def _search_phrase_candidates(
+        self,
+        query: str,
+        es_query: dict,
+        filters: list[dict],
+        limit: int,
+        timeout: float,
+        context: str,
+    ) -> tuple[dict, dict]:
+        candidate_limit = max(limit * 8, 80)
+        query_body = {
+            "query": self._apply_filters(es_query, filters),
+            "_source": SOURCE_FIELDS,
+            "size": candidate_limit,
+            "timeout": f"{int(timeout * 1000)}ms",
+        }
+        raw = self._submit(query_body, context=context)
+        parsed = self.hit_parser.parse_response(raw, compact=False)
+        if parsed.get("total"):
+            return parsed, query_body
+
+        fallback_body = {
+            "query": self._apply_filters(
+                self._build_phrase_fallback_query(query),
+                filters,
+            ),
+            "_source": SOURCE_FIELDS,
+            "size": candidate_limit,
+            "timeout": f"{int(timeout * 1000)}ms",
+        }
+        fallback_raw = self._submit(fallback_body, context=f"{context}.fallback")
+        fallback_parsed = self.hit_parser.parse_response(fallback_raw, compact=False)
+        return fallback_parsed, fallback_body
 
     def _merge_relevance_hits(
         self,
@@ -306,20 +743,48 @@ class OwnerSearcher:
         """
         source = SOURCE_FIELDS_COMPACT if compact else SOURCE_FIELDS
         if sort_by != "relevance":
-            es_query = self._build_combined_query(query)
-            es_query = self._apply_filters(es_query, filters)
-            body = {
-                "query": es_query,
-                "_source": source,
-                "size": limit,
-                "timeout": f"{int(timeout * 1000)}ms",
-            }
-            body = self._apply_sort(body, sort_by)
-
-            raw = self._submit(body, context="search")
-            return self.hit_parser.parse_response(raw, compact=compact)
+            query_route = self._detect_query_route(query)
+            if query_route == "name":
+                es_query = self._build_name_strict_query(query)
+                context = "search.name_routed"
+            elif query_route == "phrase":
+                es_query = self._build_domain_query(query)
+                context = "search.phrase_routed"
+            else:
+                es_query = self._build_combined_query(query)
+                context = "search"
+            if query_route == "phrase":
+                parsed, body = self._search_phrase_candidates(
+                    query=query,
+                    es_query=es_query,
+                    filters=filters,
+                    limit=limit,
+                    timeout=timeout,
+                    context=context,
+                )
+                parsed = self._rerank_phrase_hits(
+                    query=query,
+                    parsed=parsed,
+                    sort_by=sort_by,
+                    limit=limit,
+                    compact=compact,
+                )
+            else:
+                es_query = self._apply_filters(es_query, filters)
+                body = {
+                    "query": es_query,
+                    "_source": source,
+                    "size": limit,
+                    "timeout": f"{int(timeout * 1000)}ms",
+                }
+                body = self._apply_sort(body, sort_by)
+                raw = self._submit(body, context=context)
+                parsed = self.hit_parser.parse_response(raw, compact=compact)
+            parsed["query_route"] = query_route
+            return parsed
 
         candidate_limit = max(limit * 3, 30)
+        exact_name_hit = any(hit.get("name") == query for hit in [])
         name_query = self._apply_filters(self._build_name_query(query), filters)
         domain_query = self._apply_filters(self._build_domain_query(query), filters)
 
@@ -341,12 +806,20 @@ class OwnerSearcher:
         parsed_name = self.hit_parser.parse_response(raw_name, compact=compact)
         parsed_domain = self.hit_parser.parse_response(raw_domain, compact=compact)
 
-        return self._merge_relevance_hits(
+        exact_name_hit = any(
+            hit.get("name") == query for hit in parsed_name.get("hits", [])
+        )
+        merged = self._merge_relevance_hits(
             query=query,
             name_hits=parsed_name.get("hits", []),
             domain_hits=parsed_domain.get("hits", []),
             limit=limit,
         )
+        merged["query_route"] = self._detect_query_route(
+            query,
+            exact_name_hit=exact_name_hit,
+        )
+        return merged
 
     def search_by_name(
         self,
@@ -387,20 +860,44 @@ class OwnerSearcher:
 
         Best for: "黑神话悟空", "科技数码", "游戏攻略", etc.
         """
-        es_query = self._build_domain_query(query)
-        es_query = self._apply_filters(es_query, filters)
+        query_route = self._detect_query_route(query)
+        if query_route == "name":
+            es_query = self._build_name_strict_query(query)
+            context = "search_by_domain.name_routed"
+        else:
+            es_query = self._build_domain_query(query)
+            context = "search_by_domain"
 
         source = SOURCE_FIELDS_COMPACT if compact else SOURCE_FIELDS
-        body = {
-            "query": es_query,
-            "_source": source,
-            "size": limit,
-            "timeout": f"{int(timeout * 1000)}ms",
-        }
-        body = self._apply_sort(body, sort_by)
-
-        raw = self._submit(body, context="search_by_domain")
-        return self.hit_parser.parse_response(raw, compact=compact)
+        if query_route == "phrase":
+            parsed, body = self._search_phrase_candidates(
+                query=query,
+                es_query=es_query,
+                filters=filters,
+                limit=limit,
+                timeout=timeout,
+                context=context,
+            )
+            parsed = self._rerank_phrase_hits(
+                query=query,
+                parsed=parsed,
+                sort_by=sort_by,
+                limit=limit,
+                compact=compact,
+            )
+        else:
+            es_query = self._apply_filters(es_query, filters)
+            body = {
+                "query": es_query,
+                "_source": source,
+                "size": limit,
+                "timeout": f"{int(timeout * 1000)}ms",
+            }
+            body = self._apply_sort(body, sort_by)
+            raw = self._submit(body, context=context)
+            parsed = self.hit_parser.parse_response(raw, compact=compact)
+        parsed["query_route"] = query_route
+        return parsed
 
     def search_by_relation(
         self,

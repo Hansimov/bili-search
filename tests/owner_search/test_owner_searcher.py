@@ -1,5 +1,8 @@
 import sys
+import re
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -14,6 +17,8 @@ class StubOwnerSearcher(OwnerSearcher):
         self.responses = list(responses)
         self.calls = []
         self.hit_parser = OwnerHitsParser()
+        self._latin_token_re = re.compile(r"[a-z0-9][a-z0-9_\-\.]{1,}")
+        self._cjk_span_re = re.compile(r"[\u4e00-\u9fff]+")
 
     def _submit(self, body: dict, context: str = "search") -> dict:
         self.calls.append({"context": context, "body": body})
@@ -114,6 +119,7 @@ def test_search_relevance_fuses_name_and_domain_hits():
 def test_search_non_relevance_uses_combined_query_and_es_sort():
     searcher = StubOwnerSearcher(
         responses=[
+            _make_response(),
             _make_response(
                 _make_hit(
                     10,
@@ -123,14 +129,165 @@ def test_search_non_relevance_uses_combined_query_and_es_sort():
                     total_view=90000000,
                     influence_score=0.63,
                 )
-            )
+            ),
         ]
     )
 
     result = searcher.search("黑神话悟空", sort_by="influence", limit=3, compact=True)
 
     assert result["hits"][0]["mid"] == 10
-    assert len(searcher.calls) == 1
-    body = searcher.calls[0]["body"]
+    assert result["query_route"] == "domain"
+    assert len(searcher.calls) == 2
+    assert searcher.calls[0]["context"] == "route.exact_name"
+    body = searcher.calls[1]["body"]
     assert body["sort"][0] == {"influence_score": {"order": "desc"}}
     assert body["query"]["bool"]["should"]
+
+
+def test_search_by_domain_long_phrase_requires_strict_phrase_match_before_sort():
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(
+                _make_hit(
+                    10,
+                    "幸运的盆子",
+                    3.5,
+                    total_videos=88,
+                    total_view=90000000,
+                    influence_score=0.63,
+                )
+            )
+        ]
+    )
+
+    searcher.search_by_domain(
+        "当你半年不上线的账号打一把王者排位的时候",
+        sort_by="influence",
+        limit=3,
+        compact=True,
+    )
+
+    assert len(searcher.calls) == 1
+    body = searcher.calls[0]["body"]
+    assert "sort" not in body
+    assert body["size"] >= 24
+    domain_query = body["query"]
+    assert domain_query["bool"]["must"]
+    strict_query = domain_query["bool"]["must"][0]["bool"]
+    assert strict_query["minimum_should_match"] == 1
+    assert any("match_phrase" in clause for clause in strict_query["should"])
+
+
+def test_search_by_domain_name_like_query_routes_to_strict_name_query():
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(_make_hit(1, "影视飓风", 10.0)),
+            _make_response(_make_hit(1, "影视飓风", 8.0, influence_score=0.9)),
+        ]
+    )
+
+    result = searcher.search_by_domain(
+        "影视飓风",
+        sort_by="influence",
+        limit=3,
+        compact=True,
+    )
+
+    assert result["query_route"] == "name"
+    assert len(searcher.calls) == 2
+    assert searcher.calls[0]["context"] == "route.exact_name"
+    assert searcher.calls[1]["context"] == "search_by_domain.name_routed"
+    strict_query = searcher.calls[1]["body"]["query"]
+    should = strict_query["bool"]["should"]
+    assert any(
+        "term" in clause and "name.keyword" in clause["term"] for clause in should
+    )
+    assert any(
+        "match" in clause and "name.words" in clause["match"] for clause in should
+    )
+
+
+def test_search_phrase_route_uses_sparse_semantic_rerank():
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(
+                _make_hit(
+                    1,
+                    "高质量但不够相关",
+                    6.2,
+                    quality_score=0.91,
+                    topic_phrases="影视分析",
+                    semantic_terms="影视 希区柯克 电影 分析",
+                ),
+                _make_hit(
+                    2,
+                    "镜头语言研究室",
+                    4.0,
+                    quality_score=0.63,
+                    topic_phrases="希区柯克镜头语言",
+                    semantic_terms="希区柯克 镜头 语言 希区柯克镜头 镜头语言",
+                ),
+            )
+        ]
+    )
+
+    result = searcher.search(
+        "希区柯克镜头语言", sort_by="quality", limit=2, compact=True
+    )
+
+    assert len(searcher.calls) == 1
+    assert searcher.calls[0]["context"] == "search.phrase_routed"
+    assert searcher.calls[0]["body"]["size"] >= 16
+    assert "sort" not in searcher.calls[0]["body"]
+    assert result["query_route"] == "phrase"
+    assert result["hits"][0]["mid"] == 2
+
+
+def test_search_phrase_route_falls_back_to_relaxed_semantic_query_on_zero_hits():
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(),
+            _make_response(
+                _make_hit(
+                    7,
+                    "纳塔剧情工坊",
+                    3.0,
+                    quality_score=0.62,
+                    semantic_terms="原神 纳塔 剧情 解析 纳塔剧情 剧情解析",
+                )
+            ),
+        ]
+    )
+
+    result = searcher.search(
+        "原神纳塔剧情解析", sort_by="quality", limit=3, compact=True
+    )
+
+    assert len(searcher.calls) == 2
+    assert searcher.calls[0]["context"] == "search.phrase_routed"
+    assert searcher.calls[1]["context"] == "search.phrase_routed.fallback"
+    assert result["query_route"] == "phrase"
+    assert result["hits"][0]["mid"] == 7
+
+
+@pytest.mark.parametrize(
+    ("query", "exact_name_hit", "expected_route"),
+    [
+        ("影视飓风", True, "name"),
+        ("老番茄", True, "name"),
+        ("黑神话悟空", False, "domain"),
+        ("当你半年不上线的账号打一把王者排位的时候", False, "phrase"),
+        ("原神纳塔剧情解析", False, "phrase"),
+    ],
+)
+def test_detect_query_route_covers_head_and_tail_queries(
+    query: str,
+    exact_name_hit: bool,
+    expected_route: str,
+):
+    searcher = StubOwnerSearcher(responses=[])
+
+    assert (
+        searcher._detect_query_route(query, exact_name_hit=exact_name_hit)
+        == expected_route
+    )

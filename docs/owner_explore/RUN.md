@@ -8,6 +8,12 @@
 pytest tests/owner_search -q
 ```
 
+如果只想先验证新的 head + tail query panel 结构，也可以单独跑：
+
+```bash
+pytest tests/owner_search/test_owner_query_panel.py -q
+```
+
 2. 运行 owner 相关旧测试，确认没有直接回归：
 
 ```bash
@@ -20,6 +26,25 @@ pytest tests/llm/test_tools.py -q
 ```bash
 python -m apps.search_app
 ```
+
+如果本地已经有 owner DEV 索引，推荐先跑一次面板化验证，而不是只测单个 query：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.eval_owner_panel -i bili_owners_dev_poc3_100k4_v2 -ev elastic_dev
+```
+
+当前 panel 位于：
+
+```bash
+debugs/owners_search/owner_query_panel.json
+```
+
+面板的设计约束是：
+
+1. 同时覆盖头部明确作者名、头部热门领域、长尾 phrase/domain。
+2. 对明确作者名校验 `expected_route=name`，避免被 influence 排序误污染。
+3. 对长尾 phrase 校验 `expected_route=phrase`，确保 strict phrase path 持续生效。
 
 手工检查以下场景：
 
@@ -59,7 +84,54 @@ cd /home/asimov/repos/bili-scraper
 python -m workers.elastic_owners.commander -ei bili_owners_dev1 -ev elastic_dev -n -m 10000
 ```
 
-4. 基于时间窗口的增量更新：
+4. 先对大分片做 `plan-only`，确认 1/10 owner shard 的真实规模和吞吐：
+
+```bash
+cd /home/asimov/repos/bili-scraper
+PYTHONPATH=. python -m workers.elastic_owners.commander --plan-only -n --owner-partition-count 10 --owner-partition-index 0
+```
+
+这条命令现在不会先卡在静默的 `count_documents()`。对于带 owner 分片的全量计划，它会直接进入流式扫描，并且每 `20` 万视频打印一次进度，例如：
+
+1. `200,000 videos, owners=5,757, rate=4824/s`
+2. `1,000,000 videos, owners=31,733, rate=3274/s`
+3. `2,400,000 videos, owners=80,944, rate=3328/s`
+
+这至少可以区分两类问题：
+
+1. 真正的索引/查询瓶颈
+2. 任务本身规模很大但仍在稳定推进
+
+5. 确认 plan 规模后，按 owner 分片直接写入 DEV：
+
+```bash
+cd /home/asimov/repos/bili-scraper
+PYTHONPATH=. python -m workers.elastic_owners.commander -ei bili_owners_dev1 -ev elastic_dev --ensure-index -n --owner-partition-count 10 --owner-partition-index 0
+```
+
+当前一次真实验证里，我没有继续往 `bili_owners_dev1` 追加，而是单独写到了 `bili_owners_dev10p0_raw1` 以避免污染已有 DEV 索引。raw 1/10 shard 在写入前几个 batch 后，经手动 refresh 验证：
+
+1. 已成功写入 `45,000` 个 owner
+2. `黑神话悟空` 的 domain search 返回 `445` 个 owner
+3. 对返回的 top owner 再做 exact-name search 可以正常命中同一 `mid`
+
+这说明 owner 分片全量写入链路、ES 落盘和独立 owner searcher 查询都已经打通。
+
+如果想先做更聚焦的 DEV 样本，可以把分片和过滤器叠加起来，例如只写最近窗口或高热视频对应的 owner：
+
+```bash
+cd /home/asimov/repos/bili-scraper
+PYTHONPATH=. python -m workers.elastic_owners.commander -ei bili_owners_dev1 -ev elastic_dev --ensure-index -n -x "u:stat.view>=1w" --owner-partition-count 10 --owner-partition-index 0
+```
+
+现在带 `-x` 且带 owner 分片的 full build 也不会再卡在静默的 upfront exact count。它会直接进入流式构建。当前一次真实高热视频 shard 验证中，我把结果写到 `bili_owners_dev10p0_hot1w1`，首个 batch 已成功写入 `5,000` 个 owner；手动 refresh 后：
+
+1. `黑神话悟空` 的 domain search 返回 `48` 个 owner
+2. 结果集明显比 raw shard 更窄，但仍然存在泛二创/泛娱乐噪声
+
+这说明高热视频过滤对“缩小候选集”是有效的，但还不能单独解决 owner domain 的标签噪声问题。
+
+6. 基于时间窗口的增量更新：
 
 ```bash
 cd /home/asimov/repos/bili-scraper
@@ -126,14 +198,14 @@ python -m elastics.tests.diag_search_app_dev -u http://127.0.0.1:21011 -m chat_c
 1. 明确作者时间线请求会在 handler 中过滤 `search_owners`
 2. 如果模型只输出“我来搜/没收到结果”的兜底文本而没有真正发命令，handler 会为明确的视频搜索或作者时间线请求注入最小必要的 fallback 命令
 
-5. 通过 stdin 指定 bvid 的增量更新：
+7. 通过 stdin 指定 bvid 的增量更新：
 
 ```bash
 cd /home/asimov/repos/bili-scraper
 echo -e "BV1xx\nBV2yy" | python -m workers.elastic_owners.commander -ei bili_owners_dev1 -ev elastic_dev --incremental
 ```
 
-6. 定时 action：
+8. 定时 action：
 
 ```bash
 cd /home/asimov/repos/bili-scraper
@@ -177,6 +249,15 @@ python -m models.owners.domain --model compare -m 300 --max-scanned-videos 20000
 当前一次真实对比结果：在同一批 `300` owner 样本、同一随机切分上，`centroid=0.5179`，`naive_bayes=0.5536`，`naive_bayes_weighted=0.6071`，`linear=0.4643`。
 
 这次新增的 `naive_bayes_weighted` 会对 `owner_name`、`top_tags`、`sample_titles`、`desc_samples` 做轻量字段加权。按当前这组预算和切分，它已经明显超过未加权 `naive_bayes`，因此当前最值得继续保留和迭代的低成本 baseline 已变成 `naive_bayes_weighted`。
+
+如果把窗口放大到用户这次已经在 DEV 侧使用的更大时间范围，也可以先跑一个中等预算的对比：
+
+```bash
+cd /home/asimov/repos/bili-search-algo
+python -m models.owners.domain --model compare -m 5000 --max-scanned-videos 2000000 -s "2025-12-15 00:00:00" -e "2026-03-07 16:00:00" --min-videos 5 --sample-per-owner 10
+```
+
+当前一次真实大窗口结果：`5,000` 个 owner 样本来自约 `186,789` 条视频，同一切分上 `centroid=0.5793`，`naive_bayes=0.6034`，`naive_bayes_weighted=0.6185`，`linear=0.5301`。结论仍然是 `naive_bayes_weighted` 最优，但优势已经明显缩小，说明小样本上调出来的字段权重还需要在更大窗口上重新调优。
 
 如果要继续在同一预算下自动调一轮权重和 `alpha`，可以直接跑：
 
