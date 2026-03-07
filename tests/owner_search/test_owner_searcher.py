@@ -144,6 +144,30 @@ def test_search_non_relevance_uses_combined_query_and_es_sort():
     assert body["query"]["bool"]["should"]
 
 
+def test_search_non_relevance_head_domain_uses_strict_domain_gate():
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(),
+            _make_response(_make_hit(10, "黑神话研究所", 4.0, influence_score=0.63)),
+        ]
+    )
+
+    searcher.search("黑神话悟空", sort_by="influence", limit=3, compact=True)
+
+    domain_query = searcher.calls[1]["body"]["query"]["bool"]["should"][1]
+    assert domain_query["bool"]["must"]
+    strict_query = domain_query["bool"]["must"][0]["bool"]
+    assert strict_query["minimum_should_match"] == 1
+    assert any(
+        clause.get("match", {}).get("semantic_terms.words", {}).get("operator") == "and"
+        or clause.get("match", {}).get("topic_phrases.words", {}).get("operator")
+        == "and"
+        or clause.get("match", {}).get("domain_text.words", {}).get("operator") == "and"
+        or clause.get("match", {}).get("top_tags.words", {}).get("operator") == "and"
+        for clause in strict_query["should"]
+    )
+
+
 def test_search_by_domain_long_phrase_requires_strict_phrase_match_before_sort():
     searcher = StubOwnerSearcher(
         responses=[

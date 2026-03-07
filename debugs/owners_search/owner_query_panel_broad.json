@@ -1,0 +1,121 @@
+[
+    {
+        "id": "broad_name_yingshijufeng",
+        "tier": "head",
+        "dimension": "photography",
+        "intent": "name",
+        "query": "影视飓风",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "name",
+        "expected_any_name": [
+            "影视飓风"
+        ],
+        "top_k": 3,
+        "notes": "摄影/数码头部明确作者名。"
+    },
+    {
+        "id": "broad_domain_iphone16",
+        "tier": "head",
+        "dimension": "3c",
+        "intent": "domain",
+        "query": "iPhone 16",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "domain",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "中英混合数码领域。"
+    },
+    {
+        "id": "broad_domain_wukong",
+        "tier": "head",
+        "dimension": "game",
+        "intent": "domain",
+        "query": "黑神话悟空",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "domain",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "热门单机游戏领域。"
+    },
+    {
+        "id": "broad_domain_honkai",
+        "tier": "head",
+        "dimension": "mobile_game",
+        "intent": "domain",
+        "query": "崩坏星穹铁道",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "domain",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "热门二游领域。"
+    },
+    {
+        "id": "broad_phrase_natta",
+        "tier": "tail",
+        "dimension": "mobile_game",
+        "intent": "phrase",
+        "query": "原神纳塔剧情解析",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "长尾剧情解析。"
+    },
+    {
+        "id": "broad_phrase_minecraft",
+        "tier": "tail",
+        "dimension": "sandbox_game",
+        "intent": "phrase",
+        "query": "我的世界红石生存",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "沙盒玩法长尾。"
+    },
+    {
+        "id": "broad_phrase_tripod",
+        "tier": "tail",
+        "dimension": "photography",
+        "intent": "phrase",
+        "query": "三脚架拍摄运镜教程",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "摄影器材+教程长尾。"
+    },
+    {
+        "id": "broad_phrase_hitchcock",
+        "tier": "tail",
+        "dimension": "movie_analysis",
+        "intent": "phrase",
+        "query": "希区柯克镜头语言",
+        "method": "search",
+        "sort_by": "quality",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "电影分析长尾。"
+    },
+    {
+        "id": "broad_phrase_wangzhe",
+        "tier": "tail",
+        "dimension": "moba_game",
+        "intent": "phrase",
+        "query": "当你半年不上线的账号打一把王者排位的时候",
+        "method": "search",
+        "sort_by": "influence",
+        "expected_route": "phrase",
+        "min_hits": 1,
+        "top_k": 5,
+        "notes": "MOBA 长尾整句。"
+    }
+]

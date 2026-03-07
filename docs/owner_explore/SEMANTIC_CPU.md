@@ -92,6 +92,16 @@
 2. top-k 中禁止出现一组已知高影响力但无关的 owner
 3. 单独统计 `forbidden_name` 通过率，而不只看普通 Hit@k
 
+工程上不要只保留两条独立命令，最好固定成一个 regression suite：
+
+1. balanced panel 看总体 head/tail 覆盖
+2. hard-negative panel 看误召回抑制
+3. 最终只认统一 regression summary，而不是单个 query 的偶然表现
+
+现在这条 suite 已经可以直接落成实验记录：每次运行会同时生成 JSON 原始结果和 Markdown 摘要，适合把 routing、hard-negative、后续 storage slim / model tuning 的每一轮结果并排比较。
+
+从 2026-03-08 开始，回归不再只看 head/tail 两个粗桶，还会额外看 `by_dimension`。这是因为当前真正接近上限的不是“能不能再把 coarse 分类准确率提 1-2 个点”，而是不同内容维度在真实 owner retrieval 上是否同时稳定：摄影、3C、热门游戏、长尾影视分析的错误模式并不相同，必须分开看。
+
 和当前新增的 query panel 对齐，离线指标建议至少看：
 
 1. Hit@1 / Hit@3

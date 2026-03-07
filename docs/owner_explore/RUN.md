@@ -41,6 +41,83 @@ cd /home/asimov/repos/bili-search
 python -m debugs.owners_search.eval_owner_panel -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev -p debugs/owners_search/owner_query_panel_hardneg.json
 ```
 
+如果要把 balanced + hard-negative 一次跑完，并拿到统一 summary：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.run_owner_regression -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev
+```
+
+默认还会把这次回归写入：
+
+```bash
+docs/owner_explore/experiments/
+```
+
+同一轮会同时落两份文件：
+
+1. `*.json` 原始 payload
+2. `*.md` 面向对比的摘要记录
+
+如果想给这一轮手工打标签，方便后续对比：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.run_owner_regression -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev --record-tag lean_sem1_baseline
+```
+
+如果只是临时查看 stdout，不想落盘：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.run_owner_regression -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev --no-record
+```
+
+这条命令默认会顺序执行：
+
+1. `debugs/owners_search/owner_query_panel.json`
+2. `debugs/owners_search/owner_query_panel_hardneg.json`
+
+输出里会额外给出跨 panel 聚合后的：
+
+1. `pass_rate`
+2. `by_check_kind`
+3. `forbidden_name` 通过率
+
+如果要先看 Mongo snapshot 和 ES owner doc 的体积分布，再决定下一轮裁剪：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.inspect_owner_storage -c owner_profile_snapshots_dev_poc3_100k4 -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev
+```
+
+如果要在真实索引上补一轮“更宽维度”的 live 验证，可以把 broad panel 也纳入 regression：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m debugs.owners_search.run_owner_regression \
+	-i bili_owners_dev_poc10_100k4_v2slim1_sem64 \
+	-ev elastic_dev \
+	-p debugs/owners_search/owner_query_panel.json \
+	-p debugs/owners_search/owner_query_panel_hardneg.json \
+	-p debugs/owners_search/owner_query_panel_broad.json \
+	--record-tag poc10_broad
+```
+
+当前已完成的一轮真实 slim 重建基线是：
+
+1. Mongo: `owner_profile_snapshots_dev_poc10_100k4_v2slim1`
+2. ES: `bili_owners_dev_poc10_100k4_v2slim1_sem64`
+3. 全量记录: `docs/owner_explore/experiments/20260308_002127__bili_owners_dev_poc10_100k4_v2slim1_sem64__poc10_v2slim1_broad.*`
+4. 加入 head-domain strict gate 后的记录: `docs/owner_explore/experiments/20260308_002431__bili_owners_dev_poc10_100k4_v2slim1_sem64__poc10_v2slim1_broad_gate1.*`
+
+这轮记录除了 `by_check_kind`，还会给出 `by_dimension`，用于判断问题究竟集中在：
+
+1. `3c`
+2. `photography`
+3. `game / mobile_game / moba_game / sandbox_game`
+4. `movie_analysis`
+
 当前 panel 位于：
 
 ```bash

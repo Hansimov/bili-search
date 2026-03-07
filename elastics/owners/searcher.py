@@ -288,6 +288,101 @@ class OwnerSearcher:
                     "minimum_should_match": 0,
                 }
             }
+        if self._should_require_strict_domain_gate(query):
+            strict_boosts = DOMAIN_STRICT_MATCH_BOOSTS
+            strict_clauses = [
+                {
+                    "match": {
+                        "topic_phrases.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("topic_phrases.words", 7.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "domain_text.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("domain_text.words", 6.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "semantic_terms.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("semantic_terms.words", 5.0),
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "top_tags.words": {
+                            "query": query,
+                            "operator": "and",
+                            "boost": strict_boosts.get("top_tags.words", 4.5),
+                        }
+                    }
+                },
+            ]
+            return {
+                "bool": {
+                    "must": [
+                        {
+                            "bool": {
+                                "should": strict_clauses,
+                                "minimum_should_match": 1,
+                            }
+                        }
+                    ],
+                    "should": [
+                        {
+                            "match": {
+                                "top_tags.words": {
+                                    "query": query,
+                                    "boost": b.get("top_tags.words", 4.5),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "topic_phrases.words": {
+                                    "query": query,
+                                    "boost": b.get("topic_phrases.words", 4.0),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "domain_text.words": {
+                                    "query": query,
+                                    "boost": b.get("domain_text.words", 3.0),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "semantic_terms.words": {
+                                    "query": query,
+                                    "boost": b.get("semantic_terms.words", 2.5),
+                                }
+                            }
+                        },
+                        {
+                            "match": {
+                                "name.words": {
+                                    "query": query,
+                                    "boost": b.get("name.words", 1.5),
+                                }
+                            }
+                        },
+                    ],
+                    "minimum_should_match": 0,
+                }
+            }
         return {
             "bool": {
                 "should": [
@@ -354,6 +449,15 @@ class OwnerSearcher:
         latin_tokens = len(self._latin_token_re.findall(text))
         cjk_chars = sum(len(span) for span in self._cjk_span_re.findall(text))
         return latin_tokens >= 4 or cjk_chars >= DOMAIN_PHRASE_QUERY_MIN_CHARS
+
+    def _should_require_strict_domain_gate(self, query: str) -> bool:
+        text = (query or "").strip().lower()
+        if not text or self._is_phrase_like_domain_query(text):
+            return False
+        compact_len = len(re.sub(r"\s+", "", text))
+        latin_tokens = len(self._latin_token_re.findall(text))
+        cjk_chars = sum(len(span) for span in self._cjk_span_re.findall(text))
+        return 4 <= compact_len <= 24 and (latin_tokens >= 2 or cjk_chars >= 4)
 
     def _has_exact_name_hit(self, query: str, timeout: float = SUGGEST_TIMEOUT) -> bool:
         body = {

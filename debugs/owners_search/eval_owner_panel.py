@@ -125,6 +125,7 @@ def evaluate_case(case: dict, result: dict, default_top_k: int = 5) -> dict:
     return {
         "id": case["id"],
         "tier": case["tier"],
+        "dimension": case.get("dimension") or "unknown",
         "intent": case["intent"],
         "query": case["query"],
         "method": case.get("method", "search"),
@@ -143,12 +144,20 @@ def summarize_results(results: list[dict]) -> dict:
     total = len(results)
     passed = sum(1 for item in results if item.get("passed"))
     by_tier: dict[str, dict] = {}
+    by_dimension: dict[str, dict] = {}
     by_check_kind: dict[str, dict] = {}
     for item in results:
         tier = item.get("tier") or "unknown"
         bucket = by_tier.setdefault(tier, {"total": 0, "passed": 0})
         bucket["total"] += 1
         bucket["passed"] += 1 if item.get("passed") else 0
+        dimension = item.get("dimension") or "unknown"
+        dimension_bucket = by_dimension.setdefault(
+            dimension,
+            {"total": 0, "passed": 0},
+        )
+        dimension_bucket["total"] += 1
+        dimension_bucket["passed"] += 1 if item.get("passed") else 0
         for check in item.get("checks") or []:
             kind = check.get("kind") or "unknown"
             check_bucket = by_check_kind.setdefault(kind, {"total": 0, "passed": 0})
@@ -160,6 +169,7 @@ def summarize_results(results: list[dict]) -> dict:
         "failed_cases": total - passed,
         "pass_rate": round((passed / total), 4) if total else 0.0,
         "by_tier": by_tier,
+        "by_dimension": by_dimension,
         "by_check_kind": by_check_kind,
     }
 
