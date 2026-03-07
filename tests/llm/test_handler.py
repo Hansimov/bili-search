@@ -299,6 +299,97 @@ def test_search_owners_tool_call():
     logger.success("[PASS] search_owners tool call")
 
 
+def test_filter_tool_commands_blocks_owner_search_for_author_timeline():
+    """Explicit author timeline requests should not execute search_owners."""
+    logger.note("=" * 60)
+    logger.note("[TEST] filter owner search for author timeline")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    commands = [
+        {"type": "search_videos", "args": {"queries": ["影视飓风 :date<=15d"]}},
+        {"type": "search_owners", "args": {"query": "影视飓风"}},
+    ]
+    filtered = handler._filter_tool_commands(
+        commands,
+        messages=[{"role": "user", "content": "影视飓风最近有什么新视频"}],
+    )
+
+    assert [command["type"] for command in filtered] == ["search_videos"]
+
+    logger.success("[PASS] filter owner search for author timeline")
+
+
+def test_filter_tool_commands_keeps_owner_search_for_creator_discovery():
+    """Creator discovery requests should still allow search_owners."""
+    logger.note("=" * 60)
+    logger.note("[TEST] keep owner search for creator discovery")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    commands = [{"type": "search_owners", "args": {"query": "黑神话悟空"}}]
+    filtered = handler._filter_tool_commands(
+        commands,
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}],
+    )
+
+    assert [command["type"] for command in filtered] == ["search_owners"]
+
+    logger.success("[PASS] keep owner search for creator discovery")
+
+
+def test_fallback_tool_commands_for_single_author_timeline():
+    """Single-author timeline requests should get deterministic fallback tools."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback tool commands for author timeline")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_tool_commands(
+        [],
+        messages=[{"role": "user", "content": "影视飓风最近有什么新视频"}],
+        content="抱歉，我还没收到系统返回的搜索结果，请再试一次。",
+    )
+
+    assert fallback == [
+        {"type": "check_author", "args": {"name": "影视飓风"}},
+        {"type": "search_videos", "args": {"queries": ["影视飓风 :date<=15d"]}},
+    ]
+
+    logger.success("[PASS] fallback tool commands for author timeline")
+
+
+def test_fallback_video_search_commands_for_explicit_video_request():
+    """Explicit video-search intents should get a deterministic search fallback."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback video search commands")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_video_search_commands(
+        [],
+        messages=[{"role": "user", "content": "找几条黑神话悟空剧情解析视频"}],
+        content="好的，我先帮你把黑神话悟空剧情解析视频搜出来。",
+    )
+
+    assert fallback == [
+        {
+            "type": "search_videos",
+            "args": {"queries": ["黑神话悟空剧情解析 q=vwr"]},
+        }
+    ]
+
+    logger.success("[PASS] fallback video search commands")
+
+
 def test_cache_token_accumulation():
     """Test that cache hit/miss tokens are accumulated in usage."""
     logger.note("=" * 60)

@@ -99,6 +99,33 @@ python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -eoi bili_
 2. `/explore` 查询 `黑神话悟空` 时，live 响应里返回 `129644` total hits、`25` 个 author groups
 3. `/chat/completions` 对“推荐几个做黑神话悟空内容的UP主”这类请求，tool events 已真实触发 `search_owners`
 
+如果要批量验证 creator intent 是否稳定走 owner 搜索，可以直接跑内置 chat suite：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m elastics.tests.diag_search_app_dev -u http://127.0.0.1:21011 -m chat_suite --max-iterations 3 --request-timeout 180 --fail-on-miss
+```
+
+当前一次真实 suite 结果：4 个 creator-intent query 全部在第 1 轮触发了 `search_owners`，没有 miss，覆盖了泛推荐、攻略向、剧情解析向、整活搞笑向四类表达。
+
+如果要验证“明确视频搜索 / 明确作者时间线”不会误走 owner 搜索，可以再跑对照 suite：
+
+```bash
+cd /home/asimov/repos/bili-search
+python -m elastics.tests.diag_search_app_dev -u http://127.0.0.1:21011 -m chat_contrast_suite --max-iterations 3 --request-timeout 180 --fail-on-miss
+```
+
+当前一次真实对照结果：3 个非 owner 场景全部通过。
+
+1. `推荐几条高播放的黑神话悟空视频` → 第 1 轮触发 `search_videos`
+2. `影视飓风最近有什么新视频` → 触发 `check_author + search_videos`，后续只继续视频搜索，不再误触发 `search_owners`
+3. `找几条黑神话悟空剧情解析视频` → 第 1 轮触发 `search_videos`
+
+为稳定这组 live 路由，当前服务端除了 prompt 约束，还加了两层轻量 guard：
+
+1. 明确作者时间线请求会在 handler 中过滤 `search_owners`
+2. 如果模型只输出“我来搜/没收到结果”的兜底文本而没有真正发命令，handler 会为明确的视频搜索或作者时间线请求注入最小必要的 fallback 命令
+
 5. 通过 stdin 指定 bvid 的增量更新：
 
 ```bash
@@ -147,9 +174,26 @@ cd /home/asimov/repos/bili-search-algo
 python -m models.owners.domain --model compare -m 300 --max-scanned-videos 200000 -s "2026-02-01 00:00:00" -e "2026-03-07 00:00:00" --min-videos 5 --sample-per-owner 10
 ```
 
-当前一次真实对比结果：在同一批 `300` owner 样本、同一随机切分上，`centroid=0.5179`，`naive_bayes=0.5536`。
+当前一次真实对比结果：在同一批 `300` owner 样本、同一随机切分上，`centroid=0.5179`，`naive_bayes=0.5536`，`naive_bayes_weighted=0.6071`，`linear=0.4643`。
 
-继续加入线性基线后的最新结果：`linear=0.4643`，低于 `naive_bayes`，因此当前最值得保留的低成本 baseline 仍然是 `naive_bayes`。
+这次新增的 `naive_bayes_weighted` 会对 `owner_name`、`top_tags`、`sample_titles`、`desc_samples` 做轻量字段加权。按当前这组预算和切分，它已经明显超过未加权 `naive_bayes`，因此当前最值得继续保留和迭代的低成本 baseline 已变成 `naive_bayes_weighted`。
+
+如果要继续在同一预算下自动调一轮权重和 `alpha`，可以直接跑：
+
+```bash
+cd /home/asimov/repos/bili-search-algo
+python -m models.owners.domain --model tune_naive_bayes_weighted -m 300 --max-scanned-videos 200000 -s "2026-02-01 00:00:00" -e "2026-03-07 00:00:00" --min-videos 5 --sample-per-owner 10
+```
+
+当前一次真实 tuning 结果：best accuracy 提升到 `0.7143`，最佳配置为：
+
+1. `alpha=1.5`
+2. `owner_name=3.0`
+3. `top_tags=3.0`
+4. `sample_titles=1.0`
+5. `desc_samples=0.5`
+
+`owner_domain_metrics.json` 里现在还会额外输出 `error_summary`，方便直接看每个真值 label 最常错到哪里，以及对应的 owner 误判样例。
 
 默认会输出到：
 

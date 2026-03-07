@@ -90,6 +90,25 @@ _TOOL_PREFIXES: tuple[str, ...] = (
 )
 _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 
+_AUTHOR_TIMELINE_HINT_RE = re.compile(
+    r"最近|最新|新视频|新投稿|近\d+[天日周月]|时间线|投稿列表|更新了什么"
+)
+_AUTHOR_TIMELINE_NAME_RE = re.compile(
+    r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
+)
+_OWNER_DISCOVERY_HINT_RE = re.compile(
+    r"UP主|创作者|作者|博主|阿婆主|推荐几个|推荐一些|找.*(?:UP主|创作者|作者)|类似.*(?:UP主|创作者|作者)"
+)
+_MISSING_RESULTS_HINT_RE = re.compile(
+    r"没收到|未收到|没有收到|搜索结果|工具链路|接口|重试|系统返回"
+)
+_VIDEO_SEARCH_INTENT_RE = re.compile(
+    r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放"
+)
+_SEARCH_PLEDGE_HINT_RE = re.compile(
+    r"我来搜索|我先帮你搜|我来帮你搜|我先帮你把|我来帮你找|我先帮你找"
+)
+
 
 def _find_tool_command_start(text: str) -> int | None:
     """Return the earliest index of any tool command prefix in *text*, or None."""
@@ -298,6 +317,150 @@ class ChatHandler:
         return commands
 
     @staticmethod
+    def _get_latest_user_text(messages: list[dict]) -> str:
+        for message in reversed(messages or []):
+            if message.get("role") == "user":
+                return (message.get("content") or "").strip()
+        return ""
+
+    @classmethod
+    def _should_block_owner_search(
+        cls,
+        messages: list[dict],
+        commands: list[dict],
+    ) -> bool:
+        if not any(cmd.get("type") == "search_owners" for cmd in commands):
+            return False
+
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return False
+
+        has_timeline_intent = bool(_AUTHOR_TIMELINE_HINT_RE.search(latest_user_text))
+        has_owner_discovery_intent = bool(
+            _OWNER_DISCOVERY_HINT_RE.search(latest_user_text)
+        )
+        return has_timeline_intent and not has_owner_discovery_intent
+
+    def _filter_tool_commands(
+        self,
+        commands: list[dict],
+        messages: list[dict],
+    ) -> list[dict]:
+        if not self._should_block_owner_search(messages, commands):
+            return commands
+
+        filtered = [
+            command for command in commands if command.get("type") != "search_owners"
+        ]
+        if self.verbose and len(filtered) != len(commands):
+            logger.warn(
+                "> Filtering search_owners for explicit author timeline request"
+            )
+        return filtered
+
+    @classmethod
+    def _extract_timeline_author_name(cls, messages: list[dict]) -> str | None:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return None
+
+        match = _AUTHOR_TIMELINE_NAME_RE.search(latest_user_text)
+        if not match:
+            return None
+
+        name = match.group("name").strip(" ，。！？?：:")
+        if not name:
+            return None
+        if any(sep in name for sep in ["和", "跟", "与", "、", ",", "，"]):
+            return None
+        if len(name) > 24:
+            return None
+        return name
+
+    def _fallback_tool_commands(
+        self,
+        commands: list[dict],
+        messages: list[dict],
+        content: str = "",
+    ) -> list[dict]:
+        if commands:
+            return commands
+        if not self._should_block_owner_search(messages, [{"type": "search_owners"}]):
+            return commands
+        if not _MISSING_RESULTS_HINT_RE.search(content or ""):
+            return commands
+
+        author_name = self._extract_timeline_author_name(messages)
+        if not author_name:
+            return commands
+
+        fallback = [
+            {"type": "check_author", "args": {"name": author_name}},
+            {
+                "type": "search_videos",
+                "args": {"queries": [f"{author_name} :date<=15d"]},
+            },
+        ]
+        if self.verbose:
+            logger.warn(
+                "> Injecting fallback tool commands for explicit author timeline request"
+            )
+        return fallback
+
+    @classmethod
+    def _should_fallback_video_search(cls, messages: list[dict], content: str) -> bool:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return False
+        if cls._should_block_owner_search(messages, [{"type": "search_owners"}]):
+            return False
+        if _OWNER_DISCOVERY_HINT_RE.search(latest_user_text):
+            return False
+        if not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
+            return False
+        return bool(_SEARCH_PLEDGE_HINT_RE.search(content or "")) or bool(
+            _MISSING_RESULTS_HINT_RE.search(content or "")
+        )
+
+    @classmethod
+    def _extract_video_search_query(cls, messages: list[dict]) -> str | None:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return None
+        query = re.sub(
+            r"^(推荐几条|找几条|帮我找|给我找|想看|推荐|找)", "", latest_user_text
+        )
+        query = query.strip(" ，。！？?：:")
+        query = re.sub(r"视频$", "", query).strip()
+        if not query:
+            return None
+        if "q=" not in query:
+            query = f"{query} q=vwr"
+        return query
+
+    def _fallback_video_search_commands(
+        self,
+        commands: list[dict],
+        messages: list[dict],
+        content: str = "",
+    ) -> list[dict]:
+        if commands:
+            return commands
+        if not self._should_fallback_video_search(messages, content):
+            return commands
+
+        query = self._extract_video_search_query(messages)
+        if not query:
+            return commands
+        fallback = [{"type": "search_videos", "args": {"queries": [query]}}]
+        if self.verbose:
+            logger.warn(
+                "> Injecting fallback search_videos command for explicit video search request"
+            )
+        return fallback
+
+    @staticmethod
     def _strip_tool_commands(content: str) -> str:
         """Remove inline tool commands from content, keeping analysis text."""
         return _TOOL_CMD_PATTERN.sub("", content).strip()
@@ -402,7 +565,19 @@ class ChatHandler:
             last_usage = response.usage
 
             content = response.content or ""
-            commands = self._parse_tool_commands(content)
+            commands = self._fallback_tool_commands(
+                self._filter_tool_commands(
+                    self._parse_tool_commands(content),
+                    messages=messages,
+                ),
+                messages=messages,
+                content=content,
+            )
+            commands = self._fallback_video_search_commands(
+                commands,
+                messages=messages,
+                content=content,
+            )
 
             if commands:
                 tool_names = [cmd["type"] for cmd in commands]
@@ -649,7 +824,19 @@ class ChatHandler:
             last_usage = iter_usage
 
             content = accumulated_content
-            commands = self._parse_tool_commands(content)
+            commands = self._fallback_tool_commands(
+                self._filter_tool_commands(
+                    self._parse_tool_commands(content),
+                    messages=messages,
+                ),
+                messages=messages,
+                content=content,
+            )
+            commands = self._fallback_video_search_commands(
+                commands,
+                messages=messages,
+                content=content,
+            )
 
             if commands:
                 had_tools = True
