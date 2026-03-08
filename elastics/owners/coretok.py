@@ -12,22 +12,18 @@ LATIN_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-\.]*")
 CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
 CJK_SPAN_RE = re.compile(r"[\u4e00-\u9fff]+")
 CORETEXT_SPLIT_RE = re.compile(r"[，,。.!！?？、;；:：()（）\[\]【】<>《》\-\|/\\\s]+")
-LOW_INFO_TERMS = {
-    "日常",
-    "生活",
-    "视频",
-    "分享",
-    "记录",
-    "合集",
-    "更新",
-    "原创",
-    "官方",
-    "频道",
-}
 
 
 def normalize_core_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _is_degenerate_text(text: str) -> bool:
+    normalized = normalize_core_text(text)
+    if not normalized:
+        return True
+    unique_chars = {char for char in normalized if not char.isspace()}
+    return len(unique_chars) <= 1
 
 
 def count_mixed_units(text: str) -> int:
@@ -39,19 +35,35 @@ def count_mixed_units(text: str) -> int:
     return cjk_chars + (math.ceil(latin_chars / 3) if latin_chars else 0)
 
 
-def is_low_info_text(text: str) -> bool:
+class _RuntimeCorpusStats:
+    def __init__(self, payload: dict | None = None):
+        payload = payload or {}
+        self.stop_candidates = {
+            normalize_core_text(value)
+            for value in (payload.get("stop_candidates") or [])
+        }
+
+    def is_stop_candidate(self, candidate: str) -> bool:
+        return normalize_core_text(candidate) in self.stop_candidates
+
+
+def is_low_info_text(
+    text: str, corpus_stats: _RuntimeCorpusStats | None = None
+) -> bool:
     normalized = normalize_core_text(text)
-    if not normalized:
+    if _is_degenerate_text(normalized):
         return True
-    if normalized in LOW_INFO_TERMS:
+    if corpus_stats is not None and corpus_stats.is_stop_candidate(normalized):
         return True
-    unique_chars = {char for char in normalized if not char.isspace()}
-    return len(unique_chars) <= 1
+    return False
 
 
-def is_valid_stage1_tag(tag: str) -> bool:
+def is_valid_stage1_tag(
+    tag: str,
+    corpus_stats: _RuntimeCorpusStats | None = None,
+) -> bool:
     normalized = normalize_core_text(tag)
-    if not normalized or is_low_info_text(normalized):
+    if not normalized or is_low_info_text(normalized, corpus_stats=corpus_stats):
         return False
     if count_mixed_units(normalized) > 8:
         return False
@@ -88,7 +100,12 @@ def _balanced_cjk_parts(span: str) -> list[str]:
     ]
 
 
-def extract_core_candidates(text: str, *, for_stage1: bool) -> list[str]:
+def extract_core_candidates(
+    text: str,
+    *,
+    for_stage1: bool,
+    corpus_stats: _RuntimeCorpusStats | None = None,
+) -> list[str]:
     normalized = normalize_core_text(text)
     if not normalized:
         return []
@@ -98,7 +115,11 @@ def extract_core_candidates(text: str, *, for_stage1: bool) -> list[str]:
 
     def add(value: str):
         candidate = normalize_core_text(value)
-        if not candidate or candidate in seen or is_low_info_text(candidate):
+        if (
+            not candidate
+            or candidate in seen
+            or is_low_info_text(candidate, corpus_stats=corpus_stats)
+        ):
             return
         seen.add(candidate)
         candidates.append(candidate)
@@ -192,6 +213,8 @@ class OwnerQueryCoreTokEncoder:
         self.lexicon = _RuntimeLexicon(payload.get("lexicon"))
         tag_cfg = payload.get("tag_tokenizer") or {}
         text_cfg = payload.get("text_tokenizer") or {}
+        self.tag_corpus_stats = _RuntimeCorpusStats(payload.get("tag_corpus_stats"))
+        self.text_corpus_stats = _RuntimeCorpusStats(payload.get("text_corpus_stats"))
         self.tag_reuse_threshold = float(tag_cfg.get("reuse_threshold", 0.5))
         self.text_reuse_threshold = float(text_cfg.get("reuse_threshold", 0.6))
 
@@ -219,19 +242,26 @@ class OwnerQueryCoreTokEncoder:
 
     def encode_query(self, query: str) -> dict:
         tag_token_ids = []
-        if is_valid_stage1_tag(query):
+        if is_valid_stage1_tag(query, corpus_stats=self.tag_corpus_stats):
             tag_token_ids = self._encode_candidates(
-                extract_core_candidates(query, for_stage1=True),
+                extract_core_candidates(
+                    query,
+                    for_stage1=True,
+                    corpus_stats=self.tag_corpus_stats,
+                ),
                 budget=suggest_token_budget(query),
                 reuse_threshold=self.tag_reuse_threshold,
             )
-
         text_budget = 0
         units = count_mixed_units(query)
         if units > 0:
             text_budget = max(1, min(6, math.ceil(units / 3)))
         text_token_ids = self._encode_candidates(
-            extract_core_candidates(query, for_stage1=False),
+            extract_core_candidates(
+                query,
+                for_stage1=False,
+                corpus_stats=self.text_corpus_stats,
+            ),
             budget=text_budget,
             reuse_threshold=self.text_reuse_threshold,
         )

@@ -1,41 +1,8 @@
 # Owner Search Transition Plan 2
 
-## Goal
+## Current state
 
-这一轮不再继续修补旧的 owner 文本特征链路，而是先把线上检索 contract 收紧，为新的 CoreTagTokenizer / CoreTexTokenizer 训练链路让路。
-
-## Why the old profile text path is being removed
-
-当前这批字段已经确认不再适合作为主语义来源：
-
-1. `top_tags`
-2. `topic_phrases`
-3. `domain_text`
-4. `semantic_terms`
-5. `vector_bucket_ids`
-6. `vector_bucket_weights`
-7. `primary_tid`
-8. `primary_ptid`
-9. `latest_pic`
-10. `profile_version`
-
-问题不是某个字段调权不够，而是整条思路本身噪声太大：
-
-1. 词粒度太粗，混入大量无意义 token。
-2. 各字段语义边界不清，重复表达严重。
-3. bucket 和主分区字段并不对应真实 owner 语义。
-4. 这些字段继续在线消费，只会把错误检索结果固化下来。
-
-## Current service contract
-
-从这一版开始，`OwnerSearcher` 只保留四类稳定能力：
-
-1. `name` route
-2. `relation` route
-3. `suggest`
-4. `top_owners`
-
-domain / phrase 检索不再消费旧文本字段，而是只保留 token 接口占位：
+旧的 owner semantic 文本链路已经退场，线上和索引侧现在都只保留 token contract：
 
 1. `core_tag_token_ids`
 2. `core_tag_token_weights`
@@ -44,26 +11,42 @@ domain / phrase 检索不再消费旧文本字段，而是只保留 token 接口
 5. `core_tokenizer_version`
 6. `profile_domain_ready`
 
-如果调用方没有显式提供 query token ids，则 domain route 直接返回空结果，并附带：
+`OwnerSearcher` 也已经支持两种 domain 查询入口：
 
-1. `query_route`
-2. `domain_status=query_tokens_missing`
+1. 显式传入 query token ids
+2. 通过 coretok bundle 在查询时自动编码
 
-这样做是刻意的保守策略，用来阻止旧噪声字段继续在线误召回。
+## What changed
 
-## Integration impact
+这一轮的重点已经从“删旧字段”切到“训练新模型”：
 
-受影响的上层 contract 已同步收口：
+1. `bili-search-algo/models/coretok` 已有 bundle 序列化能力
+2. `bili-search-algo/models/owners/profile.py` 已输出 token snapshot
+3. `bili-scraper` v3 profile-source mapping 已切到 token 字段
+4. `bili-search` 运行时已可加载 bundle 做 query encoding
 
-1. LLM tool 输出不再暴露 `top_tags` / `latest_pic`
-2. author group enrichment 不再回灌旧 profile 文本字段
-3. owner search 单元测试改成验证 token-placeholder 路径
+## Active training strategy
 
-## Next implementation steps
+训练不再依赖固定低信息词表，而是采用数据驱动流程：
 
-下一阶段按下面顺序推进：
+1. 从 tag/title/desc 学习 `CoreCorpusStats`
+2. 自动识别高覆盖 stop candidates
+3. 在 holdout owner retrieval 上评估 tokenizer 和 importance 统计
+4. 按 `tiny -> small -> medium` 分规模扩张
 
-1. 在 `bili-search-algo/models/coretok` 训练 `CoreTagTokenizer`
-2. 在 title / desc 上微调 `CoreTexTokenizer`
-3. 训练 `CoreImpEvaluator`，输出 token importance / information weights
-4. 产出 owner profile token ids 后，再把 domain route 接回线上
+## Acceptance criteria for each scale
+
+每个规模都必须先满足以下条件，才继续放大：
+
+1. `query_coverage` 稳定，不出现大面积空编码
+2. `Recall@5` 和 `MRR` 在多组阈值上有清晰最优点
+3. 指标标准差足够低，说明该规模配置稳定
+4. bundle 词表增长合理，没有失控膨胀
+
+## Operational output
+
+训练和调优结果统一写入：
+
+1. `data/coretok/runs/<run>/events.jsonl`
+2. `data/coretok/runs/<run>/<scale>/summary.json`
+3. `data/coretok/runs/<run>/<scale>/best_bundle.json`
