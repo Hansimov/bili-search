@@ -12,13 +12,24 @@ from elastics.owners.hits import OwnerHitsParser
 from elastics.owners.searcher import OwnerSearcher
 
 
+class DummyQueryEncoder:
+    def __init__(self, encoded: dict):
+        self.encoded = encoded
+        self.queries = []
+
+    def encode_query(self, query: str) -> dict:
+        self.queries.append(query)
+        return dict(self.encoded)
+
+
 class StubOwnerSearcher(OwnerSearcher):
-    def __init__(self, responses: list[dict]):
+    def __init__(self, responses: list[dict], query_encoder=None):
         self.responses = list(responses)
         self.calls = []
         self.hit_parser = OwnerHitsParser()
         self._latin_token_re = re.compile(r"[a-z0-9][a-z0-9_\-\.]{1,}")
         self._cjk_span_re = re.compile(r"[\u4e00-\u9fff]+")
+        self.query_encoder = query_encoder
 
     def _submit(self, body: dict, context: str = "search") -> dict:
         self.calls.append({"context": context, "body": body})
@@ -233,6 +244,78 @@ def test_search_relevance_domain_route_uses_profile_tokens_when_provided():
     assert result["query_route"] == "domain"
     assert result["domain_status"] == "query_tokens_used"
     assert result["hits"][0]["mid"] == 1
+
+
+def test_search_by_domain_auto_encodes_query_tokens_from_bundle_encoder():
+    encoder = DummyQueryEncoder(
+        {
+            "core_tag_token_ids": [11, 11, 12],
+            "core_text_token_ids": [21, 22],
+        }
+    )
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(),
+            _make_response(_make_hit(9, "黑神话研究所", 7.0, influence_score=0.88)),
+        ],
+        query_encoder=encoder,
+    )
+
+    result = searcher.search_by_domain(
+        "黑神话悟空",
+        sort_by="influence",
+        limit=3,
+        compact=True,
+    )
+
+    assert encoder.queries == ["黑神话悟空"]
+    assert result["query_route"] == "domain"
+    assert result["domain_status"] == "query_tokens_encoded"
+    body = searcher.calls[1]["body"]
+    should = body["query"]["bool"]["should"]
+    assert any(
+        clause.get("constant_score", {})
+        .get("filter", {})
+        .get("terms", {})
+        .get("core_tag_token_ids")
+        == [11, 12]
+        for clause in should
+    )
+    assert any(
+        clause.get("constant_score", {})
+        .get("filter", {})
+        .get("terms", {})
+        .get("core_text_token_ids")
+        == [21, 22]
+        for clause in should
+    )
+
+
+def test_search_auto_encoding_without_hits_returns_encoded_status():
+    encoder = DummyQueryEncoder(
+        {
+            "core_tag_token_ids": [],
+            "core_text_token_ids": [701],
+        }
+    )
+    searcher = StubOwnerSearcher(
+        responses=[
+            _make_response(),
+            _make_response(),
+        ],
+        query_encoder=encoder,
+    )
+
+    result = searcher.search(
+        "纳塔剧情分析",
+        sort_by="relevance",
+        limit=3,
+        compact=True,
+    )
+
+    assert result["query_route"] == "domain"
+    assert result["domain_status"] == "query_tokens_encoded"
+    assert result["hits"] == []
 
 
 @pytest.mark.parametrize(

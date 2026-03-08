@@ -14,6 +14,8 @@ token ids via the profile-token placeholder fields.
 
 import re
 
+from pathlib import Path
+
 from sedb import ElasticOperator
 from tclogger import logger
 
@@ -39,6 +41,11 @@ from elastics.owners.constants import (
 from elastics.owners.hits import OwnerHitsParser
 from elastics.owners.scorer import compute_owner_rank_score, detect_owner_query_type
 
+try:
+    from elastics.owners.coretok import OwnerQueryCoreTokEncoder
+except Exception:
+    OwnerQueryCoreTokEncoder = None
+
 
 class OwnerSearcher:
     """Owner search service for the independent owners index."""
@@ -47,6 +54,7 @@ class OwnerSearcher:
         self,
         index_name: str = ELASTIC_OWNERS_INDEX,
         elastic_env_name: str = None,
+        coretok_bundle_path: str | Path | None = None,
     ):
         self.index_name = index_name
         if elastic_env_name:
@@ -57,6 +65,19 @@ class OwnerSearcher:
         self.hit_parser = OwnerHitsParser()
         self._latin_token_re = re.compile(r"[a-z0-9][a-z0-9_\-\.]{1,}")
         self._cjk_span_re = re.compile(r"[\u4e00-\u9fff]+")
+        self.query_encoder = self._init_query_encoder(coretok_bundle_path)
+
+    def _init_query_encoder(self, coretok_bundle_path: str | Path | None):
+        if not coretok_bundle_path:
+            return None
+        if OwnerQueryCoreTokEncoder is None:
+            logger.warn("× OwnerSearcher coretok encoder unavailable")
+            return None
+        try:
+            return OwnerQueryCoreTokEncoder(coretok_bundle_path)
+        except Exception as exc:
+            logger.warn(f"× OwnerSearcher coretok bundle load failed: {exc}")
+            return None
 
     def _submit(self, body: dict, context: str = "search") -> dict:
         try:
@@ -139,6 +160,36 @@ class OwnerSearcher:
             self._normalize_token_ids(tag_token_ids)
             or self._normalize_token_ids(text_token_ids)
         )
+
+    def _resolve_query_tokens(
+        self,
+        query: str,
+        tag_token_ids: list[int] | None = None,
+        text_token_ids: list[int] | None = None,
+    ) -> tuple[list[int], list[int], str]:
+        normalized_tag_ids = self._normalize_token_ids(tag_token_ids)
+        normalized_text_ids = self._normalize_token_ids(text_token_ids)
+        if normalized_tag_ids or normalized_text_ids:
+            return normalized_tag_ids, normalized_text_ids, "query_tokens_used"
+
+        if not self.query_encoder:
+            return [], [], "query_tokens_missing"
+
+        try:
+            encoded = self.query_encoder.encode_query(query)
+        except Exception as exc:
+            logger.warn(f"× OwnerSearcher query encode failed: {exc}")
+            return [], [], "query_tokens_missing"
+
+        normalized_tag_ids = self._normalize_token_ids(
+            encoded.get("core_tag_token_ids")
+        )
+        normalized_text_ids = self._normalize_token_ids(
+            encoded.get("core_text_token_ids")
+        )
+        if normalized_tag_ids or normalized_text_ids:
+            return normalized_tag_ids, normalized_text_ids, "query_tokens_encoded"
+        return [], [], "query_tokens_missing"
 
     def _build_profile_token_query(
         self,
@@ -370,16 +421,22 @@ class OwnerSearcher:
             parsed["domain_status"] = "name_route"
             return parsed
 
+        resolved_tag_ids, resolved_text_ids, domain_status = self._resolve_query_tokens(
+            query,
+            tag_token_ids=tag_token_ids,
+            text_token_ids=text_token_ids,
+        )
         if not self._has_query_tokens(
-            tag_token_ids=tag_token_ids, text_token_ids=text_token_ids
+            tag_token_ids=resolved_tag_ids,
+            text_token_ids=resolved_text_ids,
         ):
             return self._empty_result(
-                query_route=query_route, domain_status="query_tokens_missing"
+                query_route=query_route, domain_status=domain_status
             )
 
         domain_query = self._build_profile_token_query(
-            tag_token_ids=tag_token_ids,
-            text_token_ids=text_token_ids,
+            tag_token_ids=resolved_tag_ids,
+            text_token_ids=resolved_text_ids,
         )
         domain_result = self._search_query(
             domain_query,
@@ -398,7 +455,7 @@ class OwnerSearcher:
                 limit=limit,
             )
         domain_result["query_route"] = query_route
-        domain_result["domain_status"] = "query_tokens_used"
+        domain_result["domain_status"] = domain_status
         if sort_by == "relevance":
             domain_result.setdefault("query_type", "domain")
         return domain_result
@@ -451,17 +508,23 @@ class OwnerSearcher:
             parsed["domain_status"] = "name_route"
             return parsed
 
+        resolved_tag_ids, resolved_text_ids, domain_status = self._resolve_query_tokens(
+            query,
+            tag_token_ids=tag_token_ids,
+            text_token_ids=text_token_ids,
+        )
         if not self._has_query_tokens(
-            tag_token_ids=tag_token_ids, text_token_ids=text_token_ids
+            tag_token_ids=resolved_tag_ids,
+            text_token_ids=resolved_text_ids,
         ):
             return self._empty_result(
-                query_route=query_route, domain_status="query_tokens_missing"
+                query_route=query_route, domain_status=domain_status
             )
 
         parsed = self._search_query(
             self._build_profile_token_query(
-                tag_token_ids=tag_token_ids,
-                text_token_ids=text_token_ids,
+                tag_token_ids=resolved_tag_ids,
+                text_token_ids=resolved_text_ids,
             ),
             compact=compact,
             limit=limit,
@@ -472,7 +535,7 @@ class OwnerSearcher:
         )
         parsed["query_route"] = query_route
         parsed["query_type"] = "domain"
-        parsed["domain_status"] = "query_tokens_used"
+        parsed["domain_status"] = domain_status
         return parsed
 
     def search_by_relation(

@@ -72,6 +72,7 @@ def _create_handler(args):
         owner_searcher = OwnerSearcher(
             index_name=ELASTIC_OWNERS_INDEX,
             elastic_env_name=elastic_env_name,
+            coretok_bundle_path=args.owner_coretok_bundle_path,
         )
         video_explorer.owner_searcher = owner_searcher
         logger.mesg(f"  Owner searcher: {ELASTIC_OWNERS_INDEX}")
@@ -216,6 +217,12 @@ def main():
         action="store_true",
         default=False,
         help="Enable verbose logging",
+    )
+    parser.add_argument(
+        "--owner-coretok-bundle-path",
+        type=str,
+        default=None,
+        help="Path to serialized owner coretok bundle for query-time token encoding.",
     )
     parser.add_argument(
         "--temperature",

@@ -93,6 +93,7 @@ class SearchApp:
         # Owner searcher (optional — enabled if owners index config is present)
         self.owner_searcher = None
         owners_index = self.app_envs.get("elastic_owners_index", "")
+        owner_coretok_bundle_path = self.app_envs.get("owner_coretok_bundle_path", "")
         if owners_index:
             try:
                 from elastics.owners.searcher import OwnerSearcher
@@ -100,6 +101,7 @@ class SearchApp:
                 self.owner_searcher = OwnerSearcher(
                     index_name=owners_index,
                     elastic_env_name=self.elastic_env_name,
+                    coretok_bundle_path=owner_coretok_bundle_path or None,
                 )
                 self.video_explorer.owner_searcher = self.owner_searcher
                 logger.okay(f"  Owner searcher: {owners_index}")
@@ -598,6 +600,12 @@ class SearchAppArgParser(argparse.ArgumentParser):
             "Enables /chat/completions endpoint when set.",
         )
         self.add_argument(
+            "-ocb",
+            "--owner-coretok-bundle-path",
+            type=str,
+            help="Path to serialized owner coretok bundle for query-time token encoding.",
+        )
+        self.add_argument(
             "-k",
             "--kill",
             action="store_true",
@@ -625,6 +633,10 @@ class SearchAppArgParser(argparse.ArgumentParser):
             new_app_envs["elastic_env_name"] = self.args.elastic_env_name
         if self.args.elastic_owners_index:
             new_app_envs["elastic_owners_index"] = self.args.elastic_owners_index
+        if self.args.owner_coretok_bundle_path:
+            new_app_envs["owner_coretok_bundle_path"] = (
+                self.args.owner_coretok_bundle_path
+            )
         if self.args.llm_config:
             new_app_envs["llm_config"] = self.args.llm_config
 

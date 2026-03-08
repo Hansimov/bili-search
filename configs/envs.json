@@ -14,6 +14,7 @@
             "prod": "bili_videos_pro1",
             "dev": "bili_videos_dev6"
         },
+        "owner_coretok_bundle_path": "",
         "llm_config": "gpt",
         "version": "0.1.0"
     },
