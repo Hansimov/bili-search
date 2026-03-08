@@ -20,8 +20,8 @@ class DummyOwnerSearcher:
                 "influence_score": 0.92,
                 "quality_score": 0.79,
                 "activity_score": 0.68,
-                "top_tags": "科技 数码 影视",
-                "latest_pic": "https://img.example/1.jpg",
+                "profile_domain_ready": True,
+                "core_tokenizer_version": "coretok-dev",
             }
         }
 
@@ -60,7 +60,8 @@ def test_group_hits_by_owner_enriches_owner_profile_and_face():
     assert author["sum_count"] == 2
     assert author["total_videos"] == 598
     assert author["influence_score"] == 0.92
-    assert author["latest_pic"] == "https://img.example/1.jpg"
+    assert author["profile_domain_ready"] is True
+    assert author["core_tokenizer_version"] == "coretok-dev"
     assert author["face"] == "face-1.jpg"
 
 

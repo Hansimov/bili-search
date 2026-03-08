@@ -221,7 +221,12 @@ class ToolExecutor:
                                 "total_videos": h.get("total_videos", 0),
                                 "total_view": h.get("total_view", 0),
                                 "influence_score": h.get("influence_score", 0),
-                                "top_tags": h.get("top_tags", ""),
+                                "profile_domain_ready": h.get(
+                                    "profile_domain_ready", False
+                                ),
+                                "core_tokenizer_version": h.get(
+                                    "core_tokenizer_version", ""
+                                ),
                                 "score": h.get("_score", 0),
                             }
                             for h in hits
@@ -274,6 +279,8 @@ class ToolExecutor:
             return {
                 "query": query,
                 "sort_by": sort_by,
+                "query_route": result.get("query_route", "domain"),
+                "domain_status": result.get("domain_status", "unknown"),
                 "total_hits": result.get("total", 0),
                 "owners": [
                     {
@@ -284,8 +291,8 @@ class ToolExecutor:
                         "influence_score": h.get("influence_score", 0),
                         "quality_score": h.get("quality_score", 0),
                         "activity_score": h.get("activity_score", 0),
-                        "top_tags": h.get("top_tags", ""),
-                        "latest_pic": h.get("latest_pic", ""),
+                        "profile_domain_ready": h.get("profile_domain_ready", False),
+                        "core_tokenizer_version": h.get("core_tokenizer_version", ""),
                         "score": h.get("_score", 0),
                     }
                     for h in hits

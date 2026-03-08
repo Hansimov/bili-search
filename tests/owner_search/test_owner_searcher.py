@@ -34,7 +34,8 @@ def _make_hit(mid: int, name: str, score: float, **extra) -> dict:
         "influence_score": extra.pop("influence_score", 0.0),
         "quality_score": extra.pop("quality_score", 0.0),
         "activity_score": extra.pop("activity_score", 0.0),
-        "top_tags": extra.pop("top_tags", ""),
+        "profile_domain_ready": extra.pop("profile_domain_ready", False),
+        "core_tokenizer_version": extra.pop("core_tokenizer_version", "coretok-dev"),
     }
     source.update(extra)
     return {"_source": source, "_score": score}
@@ -50,9 +51,10 @@ def _make_response(*hits: dict) -> dict:
     }
 
 
-def test_search_relevance_fuses_name_and_domain_hits():
+def test_search_relevance_name_route_only_uses_name_query():
     searcher = StubOwnerSearcher(
         responses=[
+            _make_response(_make_hit(1, "影视飓风", 1.0)),
             _make_response(
                 _make_hit(
                     1,
@@ -63,7 +65,6 @@ def test_search_relevance_fuses_name_and_domain_hits():
                     influence_score=0.92,
                     quality_score=0.78,
                     activity_score=0.66,
-                    top_tags="科技 数码 影视",
                 ),
                 _make_hit(
                     2,
@@ -74,31 +75,6 @@ def test_search_relevance_fuses_name_and_domain_hits():
                     influence_score=0.71,
                     quality_score=0.61,
                     activity_score=0.58,
-                    top_tags="科技 Vlog",
-                ),
-            ),
-            _make_response(
-                _make_hit(
-                    1,
-                    "影视飓风",
-                    6.0,
-                    total_videos=500,
-                    total_view=2500000000,
-                    influence_score=0.92,
-                    quality_score=0.78,
-                    activity_score=0.66,
-                    top_tags="科技 数码 影视",
-                ),
-                _make_hit(
-                    3,
-                    "科技老张",
-                    8.0,
-                    total_videos=210,
-                    total_view=410000000,
-                    influence_score=0.69,
-                    quality_score=0.73,
-                    activity_score=0.71,
-                    top_tags="影视 器材 评测",
                 ),
             ),
         ]
@@ -107,44 +83,32 @@ def test_search_relevance_fuses_name_and_domain_hits():
     result = searcher.search("影视飓风", sort_by="relevance", limit=5, compact=True)
 
     assert result["query_type"] == "name"
-    assert [hit["mid"] for hit in result["hits"]] == [1, 2, 3]
+    assert [hit["mid"] for hit in result["hits"]] == [1, 2]
     assert result["hits"][0]["_score"] > result["hits"][1]["_score"]
     assert result["hits"][0]["name"] == "影视飓风"
-    assert len({hit["mid"] for hit in result["hits"]}) == 3
     assert len(searcher.calls) == 2
-    assert searcher.calls[0]["context"] == "search.name"
-    assert searcher.calls[1]["context"] == "search.domain"
+    assert searcher.calls[0]["context"] == "route.exact_name"
+    assert searcher.calls[1]["context"] == "search.name"
+    assert result["domain_status"] == "name_route"
 
 
-def test_search_non_relevance_uses_combined_query_and_es_sort():
+def test_search_non_relevance_domain_query_requires_profile_tokens():
     searcher = StubOwnerSearcher(
         responses=[
             _make_response(),
-            _make_response(
-                _make_hit(
-                    10,
-                    "黑神话研究所",
-                    4.0,
-                    total_videos=88,
-                    total_view=90000000,
-                    influence_score=0.63,
-                )
-            ),
         ]
     )
 
     result = searcher.search("黑神话悟空", sort_by="influence", limit=3, compact=True)
 
-    assert result["hits"][0]["mid"] == 10
     assert result["query_route"] == "domain"
-    assert len(searcher.calls) == 2
+    assert result["hits"] == []
+    assert result["domain_status"] == "query_tokens_missing"
+    assert len(searcher.calls) == 1
     assert searcher.calls[0]["context"] == "route.exact_name"
-    body = searcher.calls[1]["body"]
-    assert body["sort"][0] == {"influence_score": {"order": "desc"}}
-    assert body["query"]["bool"]["should"]
 
 
-def test_search_non_relevance_head_domain_uses_strict_domain_gate():
+def test_search_by_domain_uses_profile_token_placeholders_when_provided():
     searcher = StubOwnerSearcher(
         responses=[
             _make_response(),
@@ -152,54 +116,59 @@ def test_search_non_relevance_head_domain_uses_strict_domain_gate():
         ]
     )
 
-    searcher.search("黑神话悟空", sort_by="influence", limit=3, compact=True)
+    result = searcher.search_by_domain(
+        "黑神话悟空",
+        sort_by="influence",
+        limit=3,
+        compact=True,
+        tag_token_ids=[101, 202, 202],
+        text_token_ids=[301, 302],
+    )
 
-    domain_query = searcher.calls[1]["body"]["query"]["bool"]["should"][1]
-    assert domain_query["bool"]["must"]
-    strict_query = domain_query["bool"]["must"][0]["bool"]
-    assert strict_query["minimum_should_match"] == 1
+    assert result["query_route"] == "domain"
+    assert result["domain_status"] == "query_tokens_used"
+    assert len(searcher.calls) == 2
+    assert searcher.calls[0]["context"] == "route.exact_name"
+    assert searcher.calls[1]["context"] == "search_by_domain.tokens"
+    body = searcher.calls[1]["body"]
+    assert body["sort"][0] == {"influence_score": {"order": "desc"}}
+    should = body["query"]["bool"]["should"]
     assert any(
-        clause.get("match", {}).get("semantic_terms.words", {}).get("operator") == "and"
-        or clause.get("match", {}).get("topic_phrases.words", {}).get("operator")
-        == "and"
-        or clause.get("match", {}).get("domain_text.words", {}).get("operator") == "and"
-        or clause.get("match", {}).get("top_tags.words", {}).get("operator") == "and"
-        for clause in strict_query["should"]
+        clause.get("constant_score", {})
+        .get("filter", {})
+        .get("terms", {})
+        .get("core_tag_token_ids")
+        == [101, 202]
+        for clause in should
+    )
+    assert any(
+        clause.get("constant_score", {})
+        .get("filter", {})
+        .get("terms", {})
+        .get("core_text_token_ids")
+        == [301, 302]
+        for clause in should
     )
 
 
-def test_search_by_domain_long_phrase_requires_strict_phrase_match_before_sort():
+def test_search_by_domain_without_tokens_returns_empty_placeholder_result():
     searcher = StubOwnerSearcher(
         responses=[
-            _make_response(
-                _make_hit(
-                    10,
-                    "幸运的盆子",
-                    3.5,
-                    total_videos=88,
-                    total_view=90000000,
-                    influence_score=0.63,
-                )
-            )
+            _make_response(),
         ]
     )
 
-    searcher.search_by_domain(
+    result = searcher.search_by_domain(
         "当你半年不上线的账号打一把王者排位的时候",
         sort_by="influence",
         limit=3,
         compact=True,
     )
 
-    assert len(searcher.calls) == 1
-    body = searcher.calls[0]["body"]
-    assert "sort" not in body
-    assert body["size"] >= 24
-    domain_query = body["query"]
-    assert domain_query["bool"]["must"]
-    strict_query = domain_query["bool"]["must"][0]["bool"]
-    assert strict_query["minimum_should_match"] == 1
-    assert any("match_phrase" in clause for clause in strict_query["should"])
+    assert searcher.calls == []
+    assert result["query_route"] == "phrase"
+    assert result["domain_status"] == "query_tokens_missing"
+    assert result["hits"] == []
 
 
 def test_search_by_domain_name_like_query_routes_to_strict_name_query():
@@ -229,109 +198,41 @@ def test_search_by_domain_name_like_query_routes_to_strict_name_query():
     assert any(
         "match" in clause and "name.words" in clause["match"] for clause in should
     )
+    assert result["domain_status"] == "name_route"
 
 
-def test_search_phrase_route_uses_sparse_semantic_rerank():
-    searcher = StubOwnerSearcher(
-        responses=[
-            _make_response(
-                _make_hit(
-                    1,
-                    "高质量但不够相关",
-                    6.2,
-                    quality_score=0.91,
-                    topic_phrases="影视分析",
-                    semantic_terms="影视 希区柯克 电影 分析",
-                ),
-                _make_hit(
-                    2,
-                    "镜头语言研究室",
-                    4.0,
-                    quality_score=0.63,
-                    topic_phrases="希区柯克镜头语言",
-                    semantic_terms="希区柯克 镜头 语言 希区柯克镜头 镜头语言",
-                ),
-            )
-        ]
-    )
-
-    result = searcher.search(
-        "希区柯克镜头语言", sort_by="quality", limit=2, compact=True
-    )
-
-    assert len(searcher.calls) == 1
-    assert searcher.calls[0]["context"] == "search.phrase_routed"
-    assert searcher.calls[0]["body"]["size"] >= 16
-    assert "sort" not in searcher.calls[0]["body"]
-    assert result["query_route"] == "phrase"
-    assert result["hits"][0]["mid"] == 2
-
-
-def test_search_phrase_route_falls_back_to_relaxed_semantic_query_on_zero_hits():
-    searcher = StubOwnerSearcher(
-        responses=[
-            _make_response(),
-            _make_response(
-                _make_hit(
-                    7,
-                    "纳塔剧情工坊",
-                    3.0,
-                    quality_score=0.62,
-                    semantic_terms="原神 纳塔 剧情 解析 纳塔剧情 剧情解析",
-                )
-            ),
-        ]
-    )
-
-    result = searcher.search(
-        "原神纳塔剧情解析", sort_by="quality", limit=3, compact=True
-    )
-
-    assert len(searcher.calls) == 2
-    assert searcher.calls[0]["context"] == "search.phrase_routed"
-    assert searcher.calls[1]["context"] == "search.phrase_routed.fallback"
-    assert result["query_route"] == "phrase"
-    assert result["hits"][0]["mid"] == 7
-
-
-def test_search_domain_route_can_use_controlled_semantic_rerank():
+def test_search_relevance_domain_route_uses_profile_tokens_when_provided():
     searcher = StubOwnerSearcher(
         responses=[
             _make_response(),
             _make_response(
                 _make_hit(
                     1,
-                    "高影响力泛作者",
-                    6.5,
-                    quality_score=0.55,
-                    influence_score=0.95,
-                    semantic_terms="游戏 热门 综合",
-                ),
-                _make_hit(
-                    2,
                     "纳塔剧情研究员",
-                    4.0,
+                    5.0,
+                    influence_score=0.95,
                     quality_score=0.82,
-                    influence_score=0.41,
-                    semantic_terms="原神 纳塔 剧情 解析 纳塔剧情 剧情解析",
+                    activity_score=0.41,
+                    profile_domain_ready=True,
                 ),
             ),
         ]
     )
 
-    result = searcher.search_by_domain(
+    result = searcher.search(
         "纳塔剧情分析",
-        sort_by="quality",
+        sort_by="relevance",
         limit=3,
         compact=True,
+        text_token_ids=[701, 702, 703],
     )
 
     assert len(searcher.calls) == 2
     assert searcher.calls[0]["context"] == "route.exact_name"
-    assert searcher.calls[1]["context"] == "search_by_domain.domain_semantic"
-    assert "sort" not in searcher.calls[1]["body"]
+    assert searcher.calls[1]["context"] == "search.domain_tokens"
     assert result["query_route"] == "domain"
-    assert result["hits"][0]["mid"] == 2
+    assert result["domain_status"] == "query_tokens_used"
+    assert result["hits"][0]["mid"] == 1
 
 
 @pytest.mark.parametrize(

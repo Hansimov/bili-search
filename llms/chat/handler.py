@@ -105,6 +105,9 @@ _MISSING_RESULTS_HINT_RE = re.compile(
 _VIDEO_SEARCH_INTENT_RE = re.compile(
     r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放"
 )
+_EXPLICIT_VIDEO_REQUEST_RE = re.compile(
+    r"^(推荐几条|找几条|帮我找|给我找|想看|推荐|找|有没有)"
+)
 _SEARCH_PLEDGE_HINT_RE = re.compile(
     r"我来搜索|我先帮你搜|我来帮你搜|我先帮你把|我来帮你找|我先帮你找"
 )
@@ -319,9 +322,23 @@ class ChatHandler:
     @staticmethod
     def _get_latest_user_text(messages: list[dict]) -> str:
         for message in reversed(messages or []):
-            if message.get("role") == "user":
-                return (message.get("content") or "").strip()
+            if message.get("role") != "user":
+                continue
+            content = (message.get("content") or "").strip()
+            if content.startswith("[搜索结果]"):
+                continue
+            return content
         return ""
+
+    @staticmethod
+    def _has_tool_results_context(messages: list[dict]) -> bool:
+        for message in messages or []:
+            if message.get("role") != "user":
+                continue
+            content = (message.get("content") or "").strip()
+            if content.startswith("[搜索结果]"):
+                return True
+        return False
 
     @classmethod
     def _should_block_owner_search(
@@ -386,6 +403,8 @@ class ChatHandler:
     ) -> list[dict]:
         if commands:
             return commands
+        if self._has_tool_results_context(messages):
+            return commands
         if not self._should_block_owner_search(messages, [{"type": "search_owners"}]):
             return commands
         if not _MISSING_RESULTS_HINT_RE.search(content or ""):
@@ -419,6 +438,8 @@ class ChatHandler:
             return False
         if not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
             return False
+        if _EXPLICIT_VIDEO_REQUEST_RE.search(latest_user_text):
+            return True
         return bool(_SEARCH_PLEDGE_HINT_RE.search(content or "")) or bool(
             _MISSING_RESULTS_HINT_RE.search(content or "")
         )
@@ -446,6 +467,8 @@ class ChatHandler:
         content: str = "",
     ) -> list[dict]:
         if commands:
+            return commands
+        if self._has_tool_results_context(messages):
             return commands
         if not self._should_fallback_video_search(messages, content):
             return commands
@@ -568,14 +591,14 @@ class ChatHandler:
             commands = self._fallback_tool_commands(
                 self._filter_tool_commands(
                     self._parse_tool_commands(content),
-                    messages=messages,
+                    messages=full_messages,
                 ),
-                messages=messages,
+                messages=full_messages,
                 content=content,
             )
             commands = self._fallback_video_search_commands(
                 commands,
-                messages=messages,
+                messages=full_messages,
                 content=content,
             )
 
@@ -827,14 +850,14 @@ class ChatHandler:
             commands = self._fallback_tool_commands(
                 self._filter_tool_commands(
                     self._parse_tool_commands(content),
-                    messages=messages,
+                    messages=full_messages,
                 ),
-                messages=messages,
+                messages=full_messages,
                 content=content,
             )
             commands = self._fallback_video_search_commands(
                 commands,
-                messages=messages,
+                messages=full_messages,
                 content=content,
             )
 

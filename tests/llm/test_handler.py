@@ -258,6 +258,8 @@ def test_search_owners_tool_call():
     mock_search = MagicMock()
     mock_search.owner_searcher = MagicMock()
     mock_search.owner_searcher.search.return_value = {
+        "query_route": "domain",
+        "domain_status": "query_tokens_used",
         "total": 1,
         "hits": [
             {
@@ -268,8 +270,8 @@ def test_search_owners_tool_call():
                 "influence_score": 0.73,
                 "quality_score": 0.68,
                 "activity_score": 0.64,
-                "top_tags": "黑神话悟空, 游戏, 攻略",
-                "latest_pic": "https://img.example/101.jpg",
+                "profile_domain_ready": True,
+                "core_tokenizer_version": "coretok-dev",
                 "_score": 0.91,
             }
         ],
@@ -1290,6 +1292,36 @@ def test_stream_no_cancellation_completes_normally():
     logger.success("[PASS] stream no cancellation completes normally")
 
 
+def test_explicit_video_request_injects_fallback_search_when_model_skips_tools():
+    """Explicit video search requests should not bypass search_videos."""
+    logger.note("=" * 60)
+    logger.note("[TEST] explicit video request fallback search")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_content_response("以下是我为你筛到的黑神话悟空剧情解析视频。"),
+        make_content_response("找到了几条黑神话悟空剧情解析视频。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "找几条黑神话悟空剧情解析视频"}]
+    )
+
+    assert (
+        result["choices"][0]["message"]["content"]
+        == "找到了几条黑神话悟空剧情解析视频。"
+    )
+    mock_search.explore.assert_called_once_with(query="黑神话悟空剧情解析 q=vwr")
+    assert mock_llm.chat.call_count == 2
+
+    logger.success("[PASS] explicit video request fallback search")
+
+
 def test_chat_interruptible_cancels_mid_stream():
     """Test that _chat_interruptible stops consuming chunks when cancelled mid-stream."""
     logger.note("=" * 60)
@@ -1385,6 +1417,10 @@ if __name__ == "__main__":
         (
             "stream_no_cancellation_completes_normally",
             test_stream_no_cancellation_completes_normally,
+        ),
+        (
+            "explicit_video_request_injects_fallback_search_when_model_skips_tools",
+            test_explicit_video_request_injects_fallback_search_when_model_skips_tools,
         ),
         (
             "chat_interruptible_cancels_mid_stream",

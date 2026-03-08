@@ -78,6 +78,8 @@ MOCK_SUGGEST_RESULT = {
 
 MOCK_OWNER_RESULT = {
     "query": "黑神话悟空",
+    "query_route": "domain",
+    "domain_status": "query_tokens_used",
     "total": 2,
     "hits": [
         {
@@ -88,8 +90,8 @@ MOCK_OWNER_RESULT = {
             "influence_score": 0.73,
             "quality_score": 0.68,
             "activity_score": 0.64,
-            "top_tags": "黑神话悟空, 游戏, 攻略",
-            "latest_pic": "https://img.example/101.jpg",
+            "profile_domain_ready": True,
+            "core_tokenizer_version": "coretok-dev",
             "_score": 0.91,
         },
         {
@@ -100,8 +102,8 @@ MOCK_OWNER_RESULT = {
             "influence_score": 0.88,
             "quality_score": 0.62,
             "activity_score": 0.71,
-            "top_tags": "游戏解说, 黑神话悟空, 原神",
-            "latest_pic": "https://img.example/202.jpg",
+            "profile_domain_ready": True,
+            "core_tokenizer_version": "coretok-dev",
             "_score": 0.79,
         },
     ],
@@ -242,7 +244,8 @@ def test_execute_check_author_with_owner_searcher():
                 "total_videos": 598,
                 "total_view": 2530000000,
                 "influence_score": 0.92,
-                "top_tags": "科技 数码 影视",
+                "profile_domain_ready": True,
+                "core_tokenizer_version": "coretok-dev",
                 "_score": 0.98,
             }
         ],

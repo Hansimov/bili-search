@@ -48,6 +48,8 @@ cd /home/asimov/repos/bili-search
 python -m debugs.owners_search.run_owner_regression -i bili_owners_dev_poc3_100k4_v2lean_sem1 -ev elastic_dev
 ```
 
+注意先确认索引存在。之前一些实验索引已经被清理，直接复用旧文档里的索引名会得到 `index_not_found_exception`。在 `elastic_dev` 上建议先用当前实际可用的 owner 索引做 `count` 或单 query 探测，再跑 panel regression。
+
 默认还会把这次回归写入：
 
 ```bash
@@ -347,16 +349,18 @@ python -m models.owners.domain --model compare -m 5000 --max-scanned-videos 2000
 
 ```bash
 cd /home/asimov/repos/bili-search-algo
-python -m models.owners.domain --model tune_naive_bayes_weighted -m 300 --max-scanned-videos 200000 -s "2026-02-01 00:00:00" -e "2026-03-07 00:00:00" --min-videos 5 --sample-per-owner 10
+python -m models.owners.domain --model tune_naive_bayes_weighted -m 5000 --max-scanned-videos 400000 -s "2025-12-15 00:00:00" -e "2026-03-07 16:00:00" --min-videos 5 --sample-per-owner 10
 ```
 
-当前一次真实 tuning 结果：best accuracy 提升到 `0.7143`，最佳配置为：
+当前一次真实 tuning 结果：`5,000` 个 owner 样本、约 `186,792` 条视频、`996` 个测试 owner 上，best accuracy 为 `0.6697`，最佳配置为：
 
-1. `alpha=1.5`
+1. `alpha=1.0`
 2. `owner_name=3.0`
 3. `top_tags=3.0`
 4. `sample_titles=1.0`
 5. `desc_samples=0.5`
+
+这组参数现在已经回灌为 `naive_bayes_weighted` 的默认值，并在同一份 sample file 的 `--eval-only --model compare` 上复验为：`centroid=0.5763`，`naive_bayes=0.6064`，`naive_bayes_weighted=0.6697`，`linear=0.5361`。
 
 `owner_domain_metrics.json` 里现在还会额外输出 `error_summary`，方便直接看每个真值 label 最常错到哪里，以及对应的 owner 误判样例。
 

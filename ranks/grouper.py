@@ -208,11 +208,9 @@ class AuthorGrouper:
             "influence_score",
             "quality_score",
             "activity_score",
-            "top_tags",
-            "latest_pic",
             "latest_pubdate",
-            "primary_tid",
-            "primary_ptid",
+            "profile_domain_ready",
+            "core_tokenizer_version",
         ]
         for field in fields:
             value = owner_doc.get(field)

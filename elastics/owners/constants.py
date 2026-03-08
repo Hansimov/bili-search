@@ -47,15 +47,13 @@ SOURCE_FIELDS = [
     "publish_freq",
     "days_since_last",
     "activity_score",
-    # domain
-    "top_tags",
-    "topic_phrases",
-    "domain_text",
-    "semantic_terms",
-    "primary_tid",
-    "primary_ptid",
-    # profile substitute
-    "latest_pic",
+    # profile-token placeholders
+    "profile_domain_ready",
+    "core_tokenizer_version",
+    "core_tag_token_ids",
+    "core_tag_token_weights",
+    "core_text_token_ids",
+    "core_text_token_weights",
     # relations
     "mentioned_mids",
     "mentioned_names",
@@ -73,12 +71,9 @@ SOURCE_FIELDS_COMPACT = [
     "influence_score",
     "quality_score",
     "activity_score",
-    "top_tags",
-    "topic_phrases",
-    "latest_pic",
     "latest_pubdate",
-    "primary_tid",
-    "primary_ptid",
+    "profile_domain_ready",
+    "core_tokenizer_version",
 ]
 
 # =============================================================================
@@ -89,35 +84,16 @@ SOURCE_FIELDS_COMPACT = [
 NAME_MATCH_BOOSTS = {
     "name.keyword": 50.0,  # Exact match — highest priority
     "name.words": 10.0,  # Token BM25 match
-    "top_tags.words": 3.0,  # Domain tags — auxiliary
-    "topic_phrases.words": 2.5,
-    "domain_text.words": 1.5,
     "mentioned_names.words": 1.5,  # Related user names — auxiliary
 }
 
-# Domain search fields with boosts
-DOMAIN_MATCH_BOOSTS = {
-    "top_tags.words": 4.5,  # Tags are the primary domain signal
-    "topic_phrases.words": 4.0,
-    "domain_text.words": 3.0,
-    "semantic_terms.words": 2.5,
-    "name.words": 1.5,  # Name might contain domain keywords
-    "mentioned_names.words": 1.0,  # Related users in similar domain
+# Future domain retrieval is token-based. These token-id fields are placeholders
+# until CoreTagTokenizer / CoreTexTokenizer are trained and wired online.
+PROFILE_TOKEN_MATCH_BOOSTS = {
+    "core_tag_token_ids": 4.0,
+    "core_text_token_ids": 5.0,
 }
-
-DOMAIN_STRICT_MATCH_BOOSTS = {
-    "topic_phrases.words": 7.0,
-    "domain_text.words": 6.0,
-    "semantic_terms.words": 5.0,
-    "top_tags.words": 4.5,
-}
-
-DOMAIN_PHRASE_MATCH_BOOSTS = {
-    "topic_phrases.words": 14.0,
-    "domain_text.words": 12.0,
-    "semantic_terms.words": 10.0,
-}
-
+PROFILE_TOKEN_SCORE_DENOM = sum(PROFILE_TOKEN_MATCH_BOOSTS.values())
 DOMAIN_PHRASE_QUERY_MIN_CHARS = 8
 
 # =============================================================================

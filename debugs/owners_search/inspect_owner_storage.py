@@ -8,13 +8,15 @@ from sedb import ElasticOperator, MongoOperator
 from configs.envs import ELASTIC_PRO_ENVS, MONGO_ENVS, SECRETS
 
 
-def sample_mongo_docs(collection: str, sample_size: int) -> list[dict]:
+def sample_mongo_docs(
+    collection: str, sample_size: int, db_name: str = None
+) -> list[dict]:
     mongo = MongoOperator(
         configs=MONGO_ENVS,
         connect_cls=sample_mongo_docs,
         verbose_args=False,
     )
-    db = mongo.client[MONGO_ENVS.get("dbname", "bili")]
+    db = mongo.client[db_name or MONGO_ENVS.get("dbname", "bili")]
     return list(db[collection].find({}).sort("_id", 1).limit(sample_size))
 
 
@@ -67,24 +69,49 @@ def summarize_docs(docs: list[dict]) -> dict:
     }
 
 
+def summarize_semantic_fields(docs: list[dict]) -> list[dict]:
+    summary = []
+    for doc in docs[:5]:
+        summary.append(
+            {
+                "mid": doc.get("mid"),
+                "name": doc.get("name"),
+                "top_tags": doc.get("top_tags"),
+                "topic_phrases": doc.get("topic_phrases"),
+                "semantic_terms": doc.get("semantic_terms"),
+                "domain_text": doc.get("domain_text"),
+                "doc_bytes": len(BSON.encode(doc)),
+            }
+        )
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--mongo-collection", required=True)
+    parser.add_argument("-db", "--mongo-db", default=None)
     parser.add_argument("-i", "--index", required=True)
     parser.add_argument("-ev", "--elastic-env", default="elastic_dev")
     parser.add_argument("-n", "--sample-size", type=int, default=200)
     args = parser.parse_args()
 
-    mongo_docs = sample_mongo_docs(args.mongo_collection, sample_size=args.sample_size)
+    mongo_docs = sample_mongo_docs(
+        args.mongo_collection,
+        sample_size=args.sample_size,
+        db_name=args.mongo_db,
+    )
     es_docs = sample_es_docs(
         args.index, elastic_env=args.elastic_env, sample_size=args.sample_size
     )
     payload = {
+        "mongo_db": args.mongo_db or MONGO_ENVS.get("dbname", "bili"),
         "mongo_collection": args.mongo_collection,
         "elastic_index": args.index,
         "sample_size": args.sample_size,
         "mongo": summarize_docs(mongo_docs),
         "elastic": summarize_docs(es_docs),
+        "mongo_semantic_samples": summarize_semantic_fields(mongo_docs),
+        "elastic_semantic_samples": summarize_semantic_fields(es_docs),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
