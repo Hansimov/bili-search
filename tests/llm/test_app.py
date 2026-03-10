@@ -245,61 +245,10 @@ def test_no_chat_without_llm_config():
     logger.success("[PASS] no chat without llm_config")
 
 
-def test_owner_searcher_injected_into_search_app():
-    """Test SearchApp initializes owner_searcher and injects it into explorer/chat."""
+def test_search_app_arg_parser_allows_llm_config_override():
+    """Test SearchAppArgParser accepts llm_config override."""
     logger.note("=" * 60)
-    logger.note("[TEST] owner searcher injection")
-
-    with patch("apps.search_app.init_embed_client_with_keepalive"), patch(
-        "apps.search_app.VideoSearcherV2"
-    ) as mock_searcher_cls, patch(
-        "apps.search_app.VideoExplorer"
-    ) as mock_explorer_cls, patch(
-        "llms.llm_client.create_llm_client"
-    ) as mock_create_llm, patch(
-        "elastics.owners.searcher.OwnerSearcher"
-    ) as mock_owner_cls:
-        mock_searcher = MagicMock()
-        mock_explorer = MagicMock()
-        mock_owner = MagicMock()
-        mock_searcher_cls.return_value = mock_searcher
-        mock_explorer_cls.return_value = mock_explorer
-        mock_owner_cls.return_value = mock_owner
-
-        mock_llm = MagicMock()
-        mock_llm.model = "test-model"
-        mock_create_llm.return_value = mock_llm
-
-        from apps.search_app import SearchApp
-
-        app_envs = {
-            "app_name": "Test Search App",
-            "version": "0.0.1",
-            "mode": "test",
-            "elastic_index": "test_index",
-            "elastic_owners_index": "test_owner_index",
-            "elastic_env_name": "elastic_dev",
-            "llm_config": LLM_CONFIG,
-        }
-        search_app = SearchApp(app_envs)
-
-        assert search_app.owner_searcher is mock_owner
-        assert mock_explorer.owner_searcher is mock_owner
-        assert (
-            search_app.chat_handler.tool_executor.search_client.owner_searcher
-            is mock_owner
-        )
-        mock_owner_cls.assert_called_once_with(
-            index_name="test_owner_index", elastic_env_name="elastic_dev"
-        )
-
-    logger.success("[PASS] owner searcher injection")
-
-
-def test_search_app_arg_parser_allows_owner_index_override():
-    """Test SearchAppArgParser accepts elastic_owners_index override."""
-    logger.note("=" * 60)
-    logger.note("[TEST] search app arg parser owner override")
+    logger.note("[TEST] search app arg parser llm override")
 
     with patch.object(
         sys,
@@ -312,8 +261,8 @@ def test_search_app_arg_parser_allows_owner_index_override():
             "bili_videos_dev6",
             "-ev",
             "elastic_dev",
-            "-eoi",
-            "bili_owners_dev1",
+            "-lc",
+            "deepseek",
             "-p",
             "21011",
         ],
@@ -334,10 +283,10 @@ def test_search_app_arg_parser_allows_owner_index_override():
 
     assert new_envs["elastic_index"] == "bili_videos_dev6"
     assert new_envs["elastic_env_name"] == "elastic_dev"
-    assert new_envs["elastic_owners_index"] == "bili_owners_dev1"
+    assert new_envs["llm_config"] == "deepseek"
     assert new_envs["port"] == 21011
 
-    logger.success("[PASS] search app arg parser owner override")
+    logger.success("[PASS] search app arg parser llm override")
 
 
 if __name__ == "__main__":
@@ -349,10 +298,9 @@ if __name__ == "__main__":
         ("streaming_response", test_streaming_response),
         ("cors_headers", test_cors_headers),
         ("no_chat_without_llm_config", test_no_chat_without_llm_config),
-        ("owner_searcher_injection", test_owner_searcher_injected_into_search_app),
         (
-            "search_app_arg_parser_owner_override",
-            test_search_app_arg_parser_allows_owner_index_override,
+            "search_app_arg_parser_llm_override",
+            test_search_app_arg_parser_allows_llm_config_override,
         ),
     ]
 

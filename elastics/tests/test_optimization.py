@@ -86,7 +86,6 @@ def analyze_results(query: str, result: dict, top_n: int = 20) -> dict:
         headline_score = hit.get("headline_score", 0)
         slot_dim = hit.get("_slot_dimension", "")
         title_matched = hit.get("_title_matched", False)
-        owner_matched = hit.get("_owner_matched", False)
         stat = hit.get("stat", {})
         views = stat.get("view", 0) if isinstance(stat, dict) else 0
         duration = hit.get("duration", 0)
@@ -100,14 +99,13 @@ def analyze_results(query: str, result: dict, top_n: int = 20) -> dict:
         # Format
         slot_str = f"[{slot_dim}]" if slot_dim else ""
         tm_str = " ★TM" if title_matched else ""
-        om_str = " ★OM" if owner_matched else ""
         views_str = f"{views:,}" if views else "0"
 
         logger.mesg(
             f"  {i+1:>3}. {slot_str:<12} rel={relevance_score:.3f} "
             f"q={quality_score:.3f} rec={recency_score:.3f} "
             f"pop={popularity_score:.3f} "
-            f"views={views_str:>12}{tm_str}{om_str}"
+            f"views={views_str:>12}{tm_str}"
         )
         logger.file(f"       [{bvid}] {title[:60]}")
         if owner_name:

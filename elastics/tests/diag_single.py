@@ -31,8 +31,7 @@ if step:
         r = h.get("relevance_score", 0)
         q = h.get("quality_score", 0)
         s = h.get("_slot_dimension", "")
-        om = " OM" if h.get("_owner_matched") else ""
         tm = " TM" if h.get("_title_matched") else ""
         v = (h.get("stat", {}) or {}).get("view", 0)
-        print(f"{i+1:>2}. [{s:<10}] r={r:.3f} q={q:.3f} v={v:>10,}{om}{tm}  UP:{on}")
+        print(f"{i+1:>2}. [{s:<10}] r={r:.3f} q={q:.3f} v={v:>10,}{tm}  UP:{on}")
         print(f"    {t}")

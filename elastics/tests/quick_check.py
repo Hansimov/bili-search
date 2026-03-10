@@ -1,4 +1,4 @@
-"""Quick check for owner intent behavior on key queries."""
+"""Quick check for search ranking behavior on key queries."""
 
 from tclogger import logger
 
@@ -37,14 +37,10 @@ def quick_check():
         print(f"[{query}] Top 15")
         print(f"{'='*70}")
 
-        om_count = 0
         for i, h in enumerate(hits[:15]):
             title = (h.get("title") or "")[:55]
             owner = h.get("owner", {})
             oname = owner.get("name", "") if isinstance(owner, dict) else ""
-            om = " OM" if h.get("_owner_matched") else ""
-            if h.get("_owner_matched"):
-                om_count += 1
             r = h.get("relevance_score", 0)
             q = h.get("quality_score", 0)
             slot = h.get("_slot_dimension", "")
@@ -55,11 +51,9 @@ def quick_check():
             )
             print(
                 f"  {i+1:>2}. [{slot:<10}] r={r:.3f} q={q:.3f} "
-                f"v={views:>10,}{om}  UP:{oname}"
+                f"v={views:>10,}  UP:{oname}"
             )
             print(f"      {title}")
-
-        print(f"  Owner-matched in top-15: {om_count}")
 
 
 if __name__ == "__main__":

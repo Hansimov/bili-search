@@ -9,7 +9,8 @@ from tclogger import ts_to_str, get_now_ts, dt_to_zh_str
 # Minimized to reduce token consumption — only include what the LLM needs
 # to generate a useful response. desc/coin/danmaku are omitted
 # because the LLM only lists title, author, view count, and pubdate.
-# pic and duration are included for frontend display in tool call results.
+# pic and duration are still extracted here so downstream formatting can
+# derive presentation fields from them when needed.
 LLM_HIT_FIELDS = [
     "title",
     "tags",
@@ -82,6 +83,23 @@ def add_pub_to_now_str(hit: dict) -> dict:
     return hit
 
 
+def add_duration_str(hit: dict) -> dict:
+    """Add human-readable duration_str and drop raw duration later if needed."""
+    duration = hit.get("duration")
+    if duration is None:
+        return hit
+
+    total_seconds = int(duration)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours:
+        hit["duration_str"] = f"{hours}:{minutes:02d}:{seconds:02d}"
+    else:
+        hit["duration_str"] = f"{minutes}:{seconds:02d}"
+    return hit
+
+
 # Maximum number of tags to keep per hit (to limit token consumption)
 MAX_TAGS_PER_HIT = 5
 
@@ -96,8 +114,11 @@ def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
     add_link(result)
     add_pubdate_str(result)
     add_pub_to_now_str(result)
+    add_duration_str(result)
     # Remove raw timestamp — pubdate_str and pub_to_now_str are sufficient
     result.pop("pubdate", None)
+    # Keep a presentation-friendly duration string instead of raw seconds.
+    result.pop("duration", None)
     # Truncate tags to save tokens
     if "tags" in result and isinstance(result["tags"], str):
         tag_list = [t.strip() for t in result["tags"].split(",")]

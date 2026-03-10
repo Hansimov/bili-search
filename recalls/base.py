@@ -116,12 +116,7 @@ class RecallPool:
                     lane_tags[bvid].add(lane_name)
 
                     # Propagate metadata flags from lane hits
-                    for flag in (
-                        "_title_matched",
-                        "_owner_matched",
-                        "_owner_lane",
-                        "_matched_owner_name",
-                    ):
+                    for flag in ("_title_matched",):
                         if hit.get(flag) and not merged_hits[idx].get(flag):
                             merged_hits[idx][flag] = hit[flag]
 

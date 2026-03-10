@@ -119,7 +119,6 @@ class StepBuilder:
 
 class VideoExplorer(VideoSearcherV2):
     def __init__(self, *args, **kwargs):
-        self.owner_searcher = kwargs.pop("owner_searcher", None)
         super().__init__(*args, **kwargs)
         self.recall_manager = RecallManager()
 
@@ -168,11 +167,6 @@ class VideoExplorer(VideoSearcherV2):
             limit=limit,
         )
 
-        if self.owner_searcher is not None and authors_list:
-            mids = [author.get("mid") for author in authors_list if author.get("mid")]
-            owner_docs = self.owner_searcher.get_owners(mids)
-            grouper.add_owner_docs_to_list(authors_list, owner_docs)
-
         # Add user faces from MongoDB
         mids = [author.get("mid") for author in authors_list]
         user_docs = self.get_user_docs(mids)
@@ -213,9 +207,6 @@ class VideoExplorer(VideoSearcherV2):
                 "sort_score",
                 # Recall metadata fields — critical for downstream ranking
                 "_title_matched",  # Title-match bonus in diversified ranker
-                "_owner_matched",  # Owner-match bonus in diversified ranker
-                "_matched_owner_name",  # For debugging/analysis
-                "_owner_lane",  # From owner_name recall lane
                 "_recall_lanes",  # Lane membership for multi-lane analysis
             ]
 

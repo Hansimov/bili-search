@@ -212,7 +212,7 @@ result = explorer.unified_explore(
 
 ### 3.2 词语探索 (explore_v2)
 
-适用于 `q=w` 和 `q=wr` 模式。使用 6 车道并行召回 + 3 轮渐进补充 + UP主意图感知排序。
+适用于 `q=w` 和 `q=wr` 模式。使用 5 车道并行召回 + 2 轮渐进补充 + 三阶段多样化排序。
 
 ```python
 result = explorer.explore_v2(
@@ -405,7 +405,7 @@ for step in result["data"]:
 | `score` | float | ES BM25 原始分数 |
 | `rank_score` | float | 排序综合分数 |
 | `stat_score` | float | 预计算文档质量分（来自 ES 索引，由 DocScorer 生成，∈ [0,1)） |
-| `relevance_score` | float | 归一化相关性分数（含 TM/OM 加成、深度惩罚等） |
+| `relevance_score` | float | 归一化相关性分数（含 TM 加成、深度惩罚等） |
 | `quality_score` | float | 质量维度分数 |
 | `recency_score` | float | 时效维度分数 |
 | `popularity_score` | float | 热度维度分数（对数归一化） |
@@ -414,8 +414,6 @@ for step in result["data"]:
 | `cosine_similarity` | float | 余弦相似度（如有） |
 | `hybrid_score` | float | 混合融合分数（如有） |
 | `_title_matched` | bool | 标题/标签是否匹配查询关键词 |
-| `_owner_matched` | bool | UP主名是否匹配查询 |
-| `_matched_owner_name` | str | 匹配的 UP主 名称（如有） |
 | `highlights` | dict | 高亮信息 |
 | `region_info` | dict | 分区详细信息 |
 
@@ -515,20 +513,11 @@ python -m pytest recalls/tests/ -v
 
 ### 多样化排序 (diversified) 为默认排序策略
 
-所有 V2 explore 方法默认使用 `diversified` 排序策略（三阶段排序 + UP主意图感知），而不是旧版的 `stats` 或 `tiered` 排序。
-
-### UP主意图自适应
-
-系统会自动检测查询中的 UP主 意图并动态调整排序行为：
-- **强 UP主 意图**（如 `红警08`）：owner_intent_strength ≈ 1.0，UP主 视频获得显著提升
-- **弱 UP主 意图**（如 `米娜`）：intent ≈ 0.3，UP主 匹配适度影响
-- **纯话题查询**（如 `chatgpt`）：intent ≈ 0.1，UP主 匹配几乎不影响排序
-
-这一行为由 RecallPoolOptimizer 分析召回池自动决定，无需用户干预。
+所有 V2 explore 方法默认使用 `diversified` 排序策略（三阶段排序），而不是旧版的 `stats` 或 `tiered` 排序。
 
 ### 实体查询的语义漏召
 
-搜索"影视飓风"（一个 UP 主的名字）时，嵌入模型会将其理解为"影视 + 飓风"，返回与飓风/气象相关的视频。6 车道词语召回中的 `owner_name` 和 `title_match` 车道以及补充词语召回机制通过关键词搜索来弥补这一不足。
+搜索"影视飓风"（一个 UP 主的名字）时，嵌入模型可能会将其理解为"影视 + 飓风"，返回与飓风/气象相关的视频。词语探索中的 `title_match` 车道以及补充词语召回机制通过关键词搜索来弥补这一不足。
 
 ### 窄过滤器自动切换
 

@@ -27,7 +27,6 @@ class SearchService:
 
     Provides the same explore/suggest interface as the old SearchServiceClient,
     but calls the search components directly instead of over HTTP.
-    Optionally wraps an OwnerSearcher for check_author and search_owners.
 
     Usage:
         service = SearchService(video_searcher, video_explorer)
@@ -35,12 +34,9 @@ class SearchService:
         suggest = service.suggest("影视飓风")
     """
 
-    def __init__(
-        self, video_searcher, video_explorer, owner_searcher=None, verbose: bool = False
-    ):
+    def __init__(self, video_searcher, video_explorer, verbose: bool = False):
         self.video_searcher = video_searcher
         self.video_explorer = video_explorer
-        self.owner_searcher = owner_searcher
         self.verbose = verbose
 
     def explore(self, query: str, qmod=None, verbose: bool = False) -> dict:
@@ -83,20 +79,6 @@ class ToolExecutor:
         self.max_results = max_results
         self.verbose = verbose
 
-    def _get_owner_searcher(self):
-        """Return an explicitly attached owner_searcher if one exists."""
-        client_dict = getattr(self.search_client, "__dict__", {})
-        if isinstance(client_dict, dict) and "owner_searcher" in client_dict:
-            return client_dict.get("owner_searcher")
-
-        owner_searcher = getattr(self.search_client, "owner_searcher", None)
-        if (
-            owner_searcher is not None
-            and owner_searcher.__class__.__module__.startswith("unittest.mock")
-        ):
-            return None
-        return owner_searcher
-
     def execute(self, tool_call: ToolCall) -> dict:
         """Execute a single tool call and return a tool result message.
 
@@ -116,8 +98,6 @@ class ToolExecutor:
             result = self._search_videos(args)
         elif name == "check_author":
             result = self._check_author(args)
-        elif name == "search_owners":
-            result = self._search_owners(args)
         elif name == "read_spec":
             result = self._read_spec(args)
         else:
@@ -189,54 +169,10 @@ class ToolExecutor:
         }
 
     def _check_author(self, args: dict) -> dict:
-        """Execute the check_author tool.
-
-        If an owner_searcher is available, queries the owners index directly
-        for faster, more accurate results. Otherwise falls back to the
-        legacy suggest-based analysis.
-        """
+        """Execute the check_author tool."""
         name = args.get("name", "")
         if not name:
             return {"error": "Missing name parameter"}
-
-        # Try owners index first (faster + richer data)
-        owner_searcher = self._get_owner_searcher()
-        if owner_searcher is not None:
-            try:
-                owner_result = owner_searcher.search_by_name(
-                    name, limit=5, compact=True
-                )
-                if not isinstance(owner_result, dict):
-                    raise TypeError("owner_searcher.search_by_name() must return dict")
-                hits = owner_result.get("hits", [])
-                if isinstance(hits, list) and hits:
-                    return {
-                        "query": name,
-                        "found": True,
-                        "total_hits": owner_result.get("total", 0),
-                        "owners": [
-                            {
-                                "mid": h.get("mid"),
-                                "name": h.get("name"),
-                                "total_videos": h.get("total_videos", 0),
-                                "total_view": h.get("total_view", 0),
-                                "influence_score": h.get("influence_score", 0),
-                                "profile_domain_ready": h.get(
-                                    "profile_domain_ready", False
-                                ),
-                                "core_tokenizer_version": h.get(
-                                    "core_tokenizer_version", ""
-                                ),
-                                "score": h.get("_score", 0),
-                            }
-                            for h in hits
-                        ],
-                    }
-            except Exception as e:
-                logger.warn(f"× check_author owners index error: {e}")
-                # Fall through to legacy suggest
-
-        # Legacy: suggest-based author detection
         suggest_result = self.search_client.suggest(query=name)
 
         if "error" in suggest_result:
@@ -249,57 +185,6 @@ class ToolExecutor:
             }
 
         return analyze_suggest_for_authors(suggest_result, query=name)
-
-    def _search_owners(self, args: dict) -> dict:
-        """Execute the search_owners tool.
-
-        Searches the owners ES index for UP主 matching the query.
-        Returns a list of owners with stats and domain tags.
-        """
-        query = args.get("query", "")
-        if not query:
-            return {"error": "Missing query parameter", "owners": []}
-
-        owner_searcher = self._get_owner_searcher()
-        if owner_searcher is None:
-            return {"error": "Owner search not available", "owners": []}
-
-        sort_by = args.get("sort_by", "relevance")
-        limit = min(args.get("limit", 10), 20)
-
-        try:
-            result = owner_searcher.search(
-                query=query, sort_by=sort_by, limit=limit, compact=True
-            )
-            if not isinstance(result, dict):
-                raise TypeError("owner_searcher.search() must return dict")
-            hits = result.get("hits", [])
-            if not isinstance(hits, list):
-                raise TypeError("owner_searcher.search().hits must be a list")
-            return {
-                "query": query,
-                "sort_by": sort_by,
-                "query_route": result.get("query_route", "domain"),
-                "domain_status": result.get("domain_status", "unknown"),
-                "total_hits": result.get("total", 0),
-                "owners": [
-                    {
-                        "mid": h.get("mid"),
-                        "name": h.get("name"),
-                        "total_videos": h.get("total_videos", 0),
-                        "total_view": h.get("total_view", 0),
-                        "influence_score": h.get("influence_score", 0),
-                        "quality_score": h.get("quality_score", 0),
-                        "activity_score": h.get("activity_score", 0),
-                        "profile_domain_ready": h.get("profile_domain_ready", False),
-                        "core_tokenizer_version": h.get("core_tokenizer_version", ""),
-                        "score": h.get("_score", 0),
-                    }
-                    for h in hits
-                ],
-            }
-        except Exception as e:
-            return {"error": str(e), "owners": []}
 
     def _read_spec(self, args: dict) -> dict:
         """Return a whitelisted spec document by name.

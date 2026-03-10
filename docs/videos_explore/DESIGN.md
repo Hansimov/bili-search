@@ -109,7 +109,7 @@ converters/
 ranks/
 ├── constants.py          # 排序相关所有常量
 ├── ranker.py             # VideoHitsRanker — 排序引擎
-├── diversified.py        # DiversifiedRanker — 多样化排序 + UP主意图感知
+├── diversified.py        # DiversifiedRanker — 多样化排序
 ├── reranker.py           # EmbeddingReranker — 精排
 ├── grouper.py            # AuthorGrouper — UP主分组
 ├── scorers.py            # 评分器：Stats/Pubdate/Relate
@@ -137,11 +137,9 @@ VideoExplorer (继承 VideoSearcherV2)
     └── _filter_only_explore() # 无关键词回退 (纯过滤 + stats/recency 排序)
 
 RecallManager (多轮召回策略编排)
-    ├── MultiLaneWordRecall   # 6 车道并行词语召回
+  ├── MultiLaneWordRecall   # 5 车道并行词语召回
     ├── VectorRecall          # 向量召回 + 词语补充
     ├── RecallPoolOptimizer   # 召回池特征分析 → PoolHints
-    ├── _detect_owner_intent()    # UP主意图检测
-    ├── _owner_focused_recall()   # UP主定向召回 (Round 3)
     └── pool.filter_noise()       # 合并后噪声过滤 (3 信号)
 
 NoiseFilter (噪声过滤)
@@ -149,7 +147,7 @@ NoiseFilter (噪声过滤)
     ├── filter_knn_by_score_ratio()     # KNN 向量噪声过滤
     └── apply_content_quality_penalty() # 短文本/低互动惩罚
 
-DiversifiedRanker (三阶段排序 + UP主意图感知)
+DiversifiedRanker (三阶段排序)
     ├── _score_all_dimensions()   # 5 维评分 (接收 pool_hints)
     ├── _select_headline_top_n()  # Phase 1: 头部质量选择 (top-3)
     ├── _allocate_slots()         # Phase 2: 相关性门控槽位分配 (位置 4-10)
@@ -157,7 +155,6 @@ DiversifiedRanker (三阶段排序 + UP主意图感知)
 
 RecallPoolOptimizer (召回池优化器 — NEW)
     ├── analyze()                 # 主入口 → PoolHints
-    ├── _analyze_owners()         # UP主集中度/意图分析
     ├── _extract_title_keywords() # 标题关键词提取
     └── _analyze_tags()           # 标签频率分析
 ```
@@ -165,7 +162,7 @@ RecallPoolOptimizer (召回池优化器 — NEW)
 **数据流**：
 ```
 RecallManager
-  ├── Round 1/2/3 → RecallPool (hits + lane_tags + _owner_matched flags)
+  ├── Round 1/2 → RecallPool (hits + lane_tags + metadata)
   ├── RecallPoolOptimizer.analyze() → PoolHints
   └── pool.pool_hints = PoolHints
          │
@@ -175,8 +172,8 @@ VideoExplorer._fetch_and_rank()
   └── pool_hints → DiversifiedRanker._score_all_dimensions()
          │
          ▼
-使用 PoolHints.owner_analysis.intent_strength 代替重新计算
-  → 更准确的 UP主 意图评估 → 更好的排序
+使用 PoolHints 中的统计摘要
+  → 更稳定的三阶段排序与调试分析
 ```
 
 ### 2.3 依赖组件
@@ -190,7 +187,7 @@ VideoExplorer._fetch_and_rank()
 | 召回管理器 | `RecallManager` | 多轮多车道召回策略编排 + 噪声过滤 + 优化 |
 | 召回池优化器 | `RecallPoolOptimizer` | 分析召回池特征 → 生成 PoolHints |
 | 排序引擎 | `VideoHitsRanker` | 多策略排序（diversified/stats/relevance/tiered/rrf） |
-| 多样化排序器 | `DiversifiedRanker` | 三阶段排序 + UP主意图感知（默认） |
+| 多样化排序器 | `DiversifiedRanker` | 三阶段排序（默认） |
 | 精排器 | `EmbeddingReranker` | 基于 float 向量余弦相似度的精排 |
 | 分组器 | `AuthorGrouper` | 按 UP 主聚合结果 |
 
@@ -258,9 +255,8 @@ VideoExplorer._fetch_and_rank()
 │  │              └────┬─────┘ └────┬─────┘                        ││
 │  └───────────────────┴────────────┴──────────────────────────────┘│
 │                         │                                         │
-│  Round 1: 合并 + 去重 (by bvid), 标记 _title_matched/_owner_matched│
+│  Round 1: 合并 + 去重 (by bvid), 标记 _title_matched              │
 │  Round 2: (如不足) 扩大搜索范围补充召回                            │
-│  Round 3: (如检测到UP主意图) UP主定向召回 → 合成分数注入           │
 │                         │                                         │
 │  RecallPoolOptimizer.analyze() → 生成 PoolHints                   │
 │  约 500-1200 候选文档, 每条文档带 lane_tags                       │
@@ -275,7 +271,7 @@ VideoExplorer._fetch_and_rank()
 │     Phase 1: 头部质量选择 (top-3 by headline_score)          │
 │     Phase 2: 相关性门控槽位分配 (位置 4-10)                  │
 │     Phase 3: 融合评分 (剩余文档)                              │
-│  ③ UP主意图感知: owner_intent_strength 影响排序逻辑          │
+│  ③ 三阶段排序: relevance / quality / recency / popularity │
 └────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -343,9 +339,8 @@ VideoExplorer._fetch_and_rank()
 │                 ▼                                          │
 │   RecallPool.merge → 合并去重                               │
 │   Round 2: 补充召回 (如不足)                                │
-│   Round 3: UP主定向召回 (如有意图)                          │
 │   RecallPoolOptimizer → PoolHints                          │
-│   保留 lane_tags, _owner_matched, _title_matched           │
+│   保留 lane_tags, _title_matched                           │
 └────────────────────────────────────────────────────────────┘
                          │
                     (可选: rerank)
@@ -417,41 +412,33 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 
 **解决方案**：`recalls/` 模块实现 6 车道并行召回策略。
 
-#### 6 车道词语召回 (MultiLaneWordRecall)
+#### 5 车道词语召回 (MultiLaneWordRecall)
 
-同一个查询，6 个车道并行执行不同排序/字段组合的 ES 查询：
+同一个查询，5 个车道并行执行不同排序/字段组合的 ES 查询：
 
 | 车道 | 排序依据 | 取回量 | 搜索字段 | 目标 |
 |------|----------|--------|----------|------|
 | `relevance` | BM25 `_score` | 600 | 全字段 (title, tags, owner.name, desc) | 相关性最高的文档 |
 | `title_match` | BM25 `_score` | 400 | title.words (5.0) + tags.words (3.0) | 标题/标签精准匹配 |
-| `owner_name` | BM25 `_score` | 200 | owner.name.words (8.0) + title.words (3.0) + tags.words (2.0) | UP主名称匹配 |
 | `popularity` | `stat.view` desc | 300 | 全字段 (match filter) | 热度最高的文档 |
 | `recency` | `pubdate` desc | 250 | 全字段 (match filter) | 时间最近的文档 |
 | `quality` | `stat_score` desc | 300 | 全字段 (match filter) | 质量最高的文档 |
 
-> **6 车道设计说明**：
+> **5 车道设计说明**：
 > - `title_match` 搜索 `title.words` (boost=5.0) 和 `tags.words` (boost=3.0)，确保标题或标签匹配查询的文档一定被召回。标签包含实体名称、电影标题、主题关键词等强信号。
-> - `owner_name` 专门针对 UP主名称匹配，使用 `owner.name.words` (boost=8.0) 高权重，确保创作者相关文档被召回。这是 UP主意图检测的基础。
 > - `popularity` — 按原始曝光量排序 — 与 `quality`（stat_score = 综合满意度）定位不同。
 
 **召回后标记：**
 - `_tag_title_matches()` — 为标题**或标签**包含查询关键词的文档标记 `_title_matched=True`
-- `_tag_owner_matches()` — 使用三重策略为 UP主名匹配的文档标记 `_owner_matched=True` 和 `_matched_owner_name`
-
-**UP主名匹配三重策略：**
-1. **Token-set 匹配**：查询所有 token 出现在 UP主名 token 中（如 `红警08` → `红警HBK08`）
-2. **CJK 子串匹配**：纯中文查询出现在 UP主名中（如 `米娜` → `大聪明罗米娜`）
-3. **通用子串匹配**：所有查询 token 出现在 UP主名中
 
 **合并逻辑** (`RecallPool.merge`)：
 - 按 `bvid` 去重，同一文档可能出现在多个车道
-- 每条文档记录 `lane_tags`（如 `{"relevance", "owner_name", "popularity"}`）
-- 传播元数据标记：`_title_matched`、`_owner_matched`、`_owner_lane`、`_matched_owner_name`
+- 每条文档记录 `lane_tags`（如 `{"relevance", "title_match", "popularity"}`）
+- 传播元数据标记：`_title_matched`
 - 保留各车道最高分数
 - 合并后的候选池约 500-1200 条
 
-**性能**：6 个并行 ES 查询 vs 1 个扫描 10000 条的查询。每个车道的 `size` 远小于 10000，且并行执行，总延迟约等于单个最慢车道的延迟。
+**性能**：5 个并行 ES 查询 vs 1 个扫描 10000 条的查询。每个车道的 `size` 远小于 10000，且并行执行，总延迟约等于单个最慢车道的延迟。
 
 #### 向量召回 (VectorRecall)
 
@@ -470,32 +457,14 @@ LSH 2048-bit 向量与 float 1024 维向量的排序结果几乎一致（经 `di
 
 合并后自动调用 `pool.filter_noise()` 移除噪声文档（见 [4.6 召回噪声过滤](#46-召回噪声过滤-noise-filtering)）。
 
-### 4.4 多轮召回与 UP 主意图检测
+### 4.4 多轮召回
 
-RecallManager 实现三轮渐进式召回，逐步完善候选集：
+RecallManager 实现两轮渐进式召回，逐步完善候选集：
 
 | 轮次 | 名称 | 触发条件 | 说明 |
 |------|------|----------|------|
-| Round 1 | 标准召回 | 始终执行 | 6 车道词语/向量/混合召回 + 噪声过滤 |
+| Round 1 | 标准召回 | 始终执行 | 5 车道词语/向量/混合召回 + 噪声过滤 |
 | Round 2 | 补充召回 | `len(pool) < target_count` | 更大搜索范围填充缺口 (relevance_broad 1500+, popularity_broad 1000+, quality_broad 1000+) |
-| Round 3 | UP主定向召回 | 检测到 UP主 意图 | 从检测到的 UP主 补充内容 (top-50 per owner) |
-
-#### UP主 意图检测 (`_detect_owner_intent`)
-
-分析 Round 1 结果中的 `owner.name` 字段，使用与 `_tag_owner_matches` 相同的三重策略判断查询是否包含 UP主 意图：
-
-1. **Token-set 匹配**：查询所有 token 出现在 UP主 名称 token 中（如 `红警08` → `红警HBK08`）
-2. **CJK 子串匹配**：纯中文查询出现在 UP主 名称中（如 `米娜` → `大聪明罗米娜`）
-3. **通用子串匹配**：所有查询 token 出现在 UP主 名称中
-
-**UP主 集中度分析**（区分"UP主查询"和"话题查询"）：
-- **查询-名称长度比**：`len(query) / len(owner_name)` < 0.40 且匹配 UP主 ≥ 2 → 抑制（如 `米娜` / `大聪明罗米娜` = 0.33）
-- **分散度检查**：匹配 UP主 ≥ 6 且无主导 UP主 → 抑制
-- **主导性检查**：最多 doc 的 UP主 < 5 个 doc 且匹配 UP主 > 2 → 抑制
-
-UP主 定向召回使用 `owner.name.keyword` 精确匹配从 ES 过滤查询该 UP主 的 top-50 文档（按 `stat_score` 降序），确保被检测到的创作者有足够的候选文档参与排序。
-
-**合成分数注入**：UP主定向召回使用 ES filter 查询，不产生 BM25 `_score`。为使这些文档能在排序中与其他文档竞争，系统从当前池的 BM25 分数分布中取 **p25 分位数** 作为合成分数注入这些文档。
 
 ### 4.5 召回池优化器 (RecallPoolOptimizer)
 
@@ -508,51 +477,20 @@ RecallPoolOptimizer 在所有召回轮次完成后，对完整召回池进行特
 ```python
 @dataclass
 class PoolHints:
-    owner_analysis: OwnerAnalysis      # UP主集中度、意图强度
-    query_type: str                    # "owner" / "topic" / "mixed"
     content_types: ContentTypeDistribution  # 标签频率分布
     title_keywords: list[tuple[str, int]]  # 高频标题关键词
     score_dist: ScoreDistribution      # BM25 分数分布 (max, min, p25, p75, std...)
     view_dist: ScoreDistribution       # 播放量分布
-    suggested_owner_bonus: float       # 建议的 UP主 加成 (0.05-0.35)
     suggested_title_bonus: float       # 建议的标题加成 (default 0.20)
     noise_gate_ratio: float            # 建议的噪声门限 (基于 CV)
     summary: str                       # 人类可读摘要
 ```
 
-#### OwnerAnalysis
-
-```python
-@dataclass
-class OwnerAnalysis:
-    total_owners: int              # 池中不同 UP主 总数
-    total_owner_matched: int       # 匹配查询的 UP主 文档数
-    dominant_owner: str            # 最多文档的匹配 UP主
-    dominant_owner_count: int      # 该 UP主 的文档数
-    concentration: float           # 集中度 = dominant_count / total_matched
-    diversity: float               # 多样性 = num_unique_matched / 6.0 (cap 1.0)
-    intent_strength: float         # 意图强度 [0, 1] — 核心输出
-    matched_owners: list[tuple[str, int]]  # 所有匹配 UP主 及其文档数
-```
-
-**意图强度计算**：
-```
-intent_strength = concentration × (1 - diversity × 0.7)
-```
-- 集中度高 (少数 UP主 占多数文档) + 多样性低 (匹配 UP主 少) → 强 UP主 意图
-- ≤2 匹配 UP主 且主导 UP主 ≥3 文档 → 额外 +0.3
-- ≥5 匹配 UP主 且集中度 <0.3 → ×0.2 (话题查询特征)
-
-**查询类型分类**：
-- `intent_strength ≥ 0.6` → `"owner"`（UP主查询，如 `红警08`）
-- `0.3 ≤ intent_strength < 0.6` → `"mixed"`（混合查询）
-- `intent_strength < 0.3` → `"topic"`（话题查询，如 `蝴蝶刀`、`chatgpt`）
-
 #### 数据流
 
 ```
 RecallManager.recall()
-    ↓ (Round 1/2/3 完成)
+  ↓ (Round 1/2 完成)
 RecallPoolOptimizer.analyze(pool.hits, query, pool.lane_tags)
     ↓
 pool.pool_hints = PoolHints(...)
@@ -560,13 +498,8 @@ pool.pool_hints = PoolHints(...)
 VideoExplorer._fetch_and_rank(pool_hints=pool.pool_hints)
     ↓
 VideoHitsRanker.rank(pool_hints=pool_hints)
-    ↓
+  ↓
 DiversifiedRanker._score_all_dimensions(pool_hints=pool_hints)
-    ↓
-if pool_hints.owner_analysis available:
-    owner_intent_strength = pool_hints.owner_analysis.intent_strength
-else:
-    owner_intent_strength = _analyze_owner_intent_strength(hits, ...)
 ```
 
 ### 4.6 召回噪声过滤 (Noise Filtering)
@@ -686,9 +619,7 @@ rrf_score = Σ weight[i] / (k + rank[i])
 
 ```
 ES BM25 _score → 归一化 (÷max_score) → 内容深度惩罚 → 标题关键词覆盖检查
-→ TM 加成 (+0.20) → OM 加成 (+0.30, 按 intent_strength 缩放)
-→ 相关性底线 (OWNER_RELEVANCE_FLOOR × intent_strength)
-→ cap at 1.0
+→ TM 加成 (+0.20) → cap at 1.0
 ```
 
 **内容深度惩罚**（抑制超短标题 BM25 膨胀）：
@@ -706,13 +637,9 @@ relevance_score *= depth_factor
 - `小红书推荐系统` in `小红书推荐用户冷启动实践` → 匹配 `小红书推荐` (5/6=83%) ✓
 - `小红书推荐系统` in `台湾省小红书反向广告` → 匹配 `小红书` (3/6=50%) ✗
 
-未通过此检查的**非 UP主意图文档**受到 `RANK_NO_TITLE_KEYWORD_PENALTY=0.50` 的 relevance 惩罚。
-
-> **关键改进**：UP主意图文档（`_owner_matched=True` 且 `owner_intent_strength ≥ 0.6`）**豁免**此惩罚。这解决了 `红警08` 查询中 UP主 `红警HBK08` 的视频标题不含 "红警08" 但仍为高度相关内容的问题。
+未通过此检查的文档会受到 `RANK_NO_TITLE_KEYWORD_PENALTY=0.50` 的 relevance 惩罚。
 
 **标题匹配信号 (Title-Match Bonus)**：带 `_title_matched=True` 的文档获得 `TITLE_MATCH_BONUS=0.20` 加分。
-
-**UP主匹配信号 (Owner-Match Bonus)**：带 `_owner_matched=True` 的文档获得 `OWNER_MATCH_BONUS=0.30` 加成，**按 `owner_intent_strength` 缩放**。详见 [4.10 UP主意图感知排序](#410-up-主意图感知排序)。
 
 #### 伪相关反馈 — 标签亲和度 (Tag Affinity)
 
@@ -730,8 +657,7 @@ Phase 1 — 头部质量选择 (Top-3)
   │ 前置处理：                               │
   │   - 内容深度惩罚 (短标题 BM25 修正)     │
   │   - 标题关键词覆盖检查 (CJK 连续匹配)  │
-  │   - TM/OM 加成 (OM 按 intent 缩放)     │
-  │   - 相关性底线 (OM 文档保底 relevance)  │
+  │   - TM 加成                            │
   │                                          │
   │ 从 relevance ≥ HEADLINE_MIN_RELEVANCE   │
   │ 且时长 ≥ RANK_HEADLINE_MIN_DURATION 的  │
@@ -779,42 +705,13 @@ Phase 3 — 融合评分 (位置 11+)
 
 | 特性 | stats (旧默认) | 新三阶段 diversified |
 |------|---------------|---------------------|
-| Top 3 质量 | 低 (仅看分数) | **高 (复合质量分 + TM/OM + 底线)** |
+| Top 3 质量 | 低 (仅看分数) | **高 (复合质量分 + TM)** |
 | Top 10 多样性 | 低 (都是均衡型) | **高 (相关性门控各维度代表)** |
 | 不相关热门文档 | 可能进入 top-10 | **被相关性门控阻止** |
 | 标题匹配文档 | 无特殊处理 | **+0.20 relevance 加成** |
-| UP主匹配文档 | 无特殊处理 | **+0.30 (按 intent 缩放 + 底线保障)** |
 | 短标题 BM25 膨胀 | 无处理 | **内容深度惩罚** |
 | CJK 复合查询 | 无处理 | **最长连续子串匹配检查** |
 | 主题一致性 | 无处理 | **标签亲和度 (Phase 3)** |
-| UP主意图适应 | 无处理 | **动态 intent_strength 全流程影响** |
-
-### 4.10 UP 主意图感知排序
-
-**核心问题**：不同查询的 UP主 匹配语义差异极大：
-- `红警08` → 用户想找 UP主 `红警HBK08`，应大幅提升其内容排名
-- `米娜` → 用户想找 "米娜" 相关话题，`大聪明罗米娜` 不应被过度提升
-- `chatgpt` → 纯话题查询，UP主匹配几乎没有意义
-
-**解决方案**：使用 `owner_intent_strength` ∈ [0, 1] 动态调控排序中所有 UP主 相关的信号强度。
-
-#### owner_intent_strength 的来源
-
-优先使用 `pool_hints.owner_analysis.intent_strength`（由 RecallPoolOptimizer 从完整召回池计算，使用 `_owner_matched` 标记），如果不可用则在排序阶段通过 `_analyze_owner_intent_strength()` 重新计算。
-
-**关键设计决策**：排序阶段不再重新匹配 UP主 名称（旧方法使用 CJK 子串匹配会将 `红警` 匹配到 `红警V神`、`红警魔鬼蓝天` 等无关 UP主），而是直接复用召回阶段精确标记的 `_owner_matched` 标记。这使得 `红警08` 的 intent_strength 从 0.16 正确提升到 1.0。
-
-#### intent_strength 影响的排序行为
-
-| 行为 | 条件 | 效果 |
-|------|------|------|
-| OM 加成 | `_owner_matched` | `+OWNER_MATCH_BONUS(0.30) × intent_strength` |
-| 相关性底线 | `_owner_matched` 且 `intent ≥ 0.6` | `rel_norm = max(rel_norm, OWNER_RELEVANCE_FLOOR(0.75) × intent_strength)` |
-| 标题关键词惩罚豁免 | `_owner_matched` 且 `intent ≥ 0.6` | 不受 `RANK_NO_TITLE_KEYWORD_PENALTY` 影响 |
-| OM 加成条件 | 强意图 (`intent ≥ 0.6`) | 无需标题包含查询关键词 |
-| OM 加成条件 | 弱意图 (`intent < 0.6`) | 需标题包含查询关键词才给加成 |
-
-**实际效果示例**：
 
 | 查询 | intent_strength | OM docs in top-20 | 说明 |
 |------|----------------|-------------------|------|
@@ -968,15 +865,13 @@ Phase 3 — 融合评分 (位置 11+)
     "cosine_similarity": 0.8523,     # float 余弦相似度 (如有)
     "hybrid_score": 0.0156,          # 混合融合分数 (如有)
     # 排序阶段附加的多维分数 (diversified 模式):
-    "relevance_score": 0.85,         # 归一化相关性 (含 TM/OM 加成)
+    "relevance_score": 0.85,         # 归一化相关性 (含 TM 加成)
     "quality_score": 0.72,           # 质量分
     "recency_score": 0.35,           # 时效分
     "popularity_score": 0.68,        # 热度分 (对数归一化)
     "headline_score": 0.71,          # 复合头部分数
     # 召回阶段标记:
     "_title_matched": true,          # 标题/标签匹配查询
-    "_owner_matched": true,          # UP主名匹配查询
-    "_matched_owner_name": "红警HBK08",  # 匹配的 UP主 名
     "highlights": {...},
     "region_info": {...},
 }
@@ -998,7 +893,7 @@ Phase 3 — 融合评分 (位置 11+)
 | 文档获取 | 100-200ms | 按 bvid 批量获取 |
 | **总计** | **1.5-3.0s** | 典型 `q=v` 端到端延迟 |
 
-### 词语搜索 (6 车道) 延迟分解
+### 词语搜索 (5 车道) 延迟分解
 
 | 阶段 | 典型耗时 | 说明 |
 |------|----------|------|
@@ -1012,7 +907,7 @@ Phase 3 — 融合评分 (位置 11+)
 
 ### 优化策略
 
-1. **并行化**：6 车道词语召回并行执行；词语召回与 KNN 搜索并行
+1. **并行化**：5 车道词语召回并行执行；词语召回与 KNN 搜索并行
 2. **两阶段搜索**：先用最小字段搜索获取 bvid，再批量获取完整文档
 3. **窄过滤器检测**：自动切换到 filter-first 策略避免 KNN 低效遍历
 4. **精排候选池控制**：`RERANK_MAX_HITS=2000` 控制精排候选数量
@@ -1032,7 +927,6 @@ Phase 3 — 融合评分 (位置 11+)
 |------|------|------|---------------|
 | `relevance` | 600 | `_score` | 全字段默认权重 |
 | `title_match` | 400 | `_score` | title.words=5.0, tags.words=3.0 |
-| `owner_name` | 200 | `_score` | owner.name.words=8.0, title.words=3.0, tags.words=2.0 |
 | `popularity` | 300 | `stat.view desc` | 全字段 match filter |
 | `recency` | 250 | `pubdate desc` | 全字段 match filter |
 | `quality` | 300 | `stat_score desc` | 全字段 match filter |
@@ -1056,8 +950,6 @@ Phase 3 — 融合评分 (位置 11+)
 | 常量 | 值 | 说明 |
 |------|-----|------|
 | `TITLE_MATCH_BONUS` | 0.20 | 标题匹配 relevance 加成 |
-| `OWNER_MATCH_BONUS` | 0.30 | UP主匹配 relevance 加成 (按 intent 缩放) |
-| `OWNER_RELEVANCE_FLOOR` | 0.75 | UP主意图文档的 relevance 底线 (× intent) |
 | `RANK_NO_TITLE_KEYWORD_PENALTY` | 0.50 | 标题无关键词时 relevance 乘数 |
 | `RANK_CONTENT_DEPTH_MIN_FACTOR` | 0.30 | 深度因子下限 |
 | `RANK_CONTENT_DEPTH_NORM_LENGTH` | 20 | 标准化长度 |

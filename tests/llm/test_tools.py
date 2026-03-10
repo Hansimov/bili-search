@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from tclogger import logger
 
 from llms.llm_client import ToolCall
-from llms.tools.defs import TOOL_DEFINITIONS, TOOL_DEFINITIONS_WITH_OWNERS
+from llms.tools.defs import TOOL_DEFINITIONS
 from llms.tools.executor import ToolExecutor
 
 
@@ -76,40 +76,6 @@ MOCK_SUGGEST_RESULT = {
     ],
 }
 
-MOCK_OWNER_RESULT = {
-    "query": "黑神话悟空",
-    "query_route": "domain",
-    "domain_status": "query_tokens_used",
-    "total": 2,
-    "hits": [
-        {
-            "mid": 101,
-            "name": "黑猴的名义",
-            "total_videos": 246,
-            "total_view": 82000000,
-            "influence_score": 0.73,
-            "quality_score": 0.68,
-            "activity_score": 0.64,
-            "profile_domain_ready": True,
-            "core_tokenizer_version": "coretok-dev",
-            "_score": 0.91,
-        },
-        {
-            "mid": 202,
-            "name": "GameHubs",
-            "total_videos": 1200,
-            "total_view": 1850000000,
-            "influence_score": 0.88,
-            "quality_score": 0.62,
-            "activity_score": 0.71,
-            "profile_domain_ready": True,
-            "core_tokenizer_version": "coretok-dev",
-            "_score": 0.79,
-        },
-    ],
-}
-
-
 # ============================================================
 # Tests
 # ============================================================
@@ -147,19 +113,6 @@ def test_tool_definitions_format():
     assert search_params["properties"]["queries"]["type"] == "array"
 
     logger.success("[PASS] tool definitions format")
-
-
-def test_tool_definitions_with_owners():
-    """Test that extended tool definitions include search_owners."""
-    logger.note("=" * 60)
-    logger.note("[TEST] tool definitions with owners")
-
-    names = [t["function"]["name"] for t in TOOL_DEFINITIONS_WITH_OWNERS]
-    assert "search_videos" in names
-    assert "check_author" in names
-    assert "search_owners" in names
-
-    logger.success("[PASS] tool definitions with owners")
 
 
 def test_execute_search_videos():
@@ -226,79 +179,6 @@ def test_execute_check_author():
 
     logger.success(f"  Author ratio: {author['ratio']}")
     logger.success("[PASS] execute check_author")
-
-
-def test_execute_check_author_with_owner_searcher():
-    """Test check_author prefers the owners index when available."""
-    logger.note("=" * 60)
-    logger.note("[TEST] execute check_author with owner searcher")
-
-    mock_client = MagicMock()
-    mock_client.owner_searcher = MagicMock()
-    mock_client.owner_searcher.search_by_name.return_value = {
-        "total": 1,
-        "hits": [
-            {
-                "mid": 946974,
-                "name": "影视飓风",
-                "total_videos": 598,
-                "total_view": 2530000000,
-                "influence_score": 0.92,
-                "profile_domain_ready": True,
-                "core_tokenizer_version": "coretok-dev",
-                "_score": 0.98,
-            }
-        ],
-    }
-
-    executor = ToolExecutor(search_client=mock_client)
-
-    tc = ToolCall(
-        id="call_test_2b",
-        name="check_author",
-        arguments=json.dumps({"name": "影视飓风"}),
-    )
-    result_msg = executor.execute(tc)
-
-    result_data = json.loads(result_msg["content"])
-    assert result_data["found"] is True
-    assert result_data["owners"][0]["mid"] == 946974
-    mock_client.owner_searcher.search_by_name.assert_called_once_with(
-        "影视飓风", limit=5, compact=True
-    )
-    mock_client.suggest.assert_not_called()
-
-    logger.success("[PASS] execute check_author with owner searcher")
-
-
-def test_execute_search_owners():
-    """Test search_owners tool execution."""
-    logger.note("=" * 60)
-    logger.note("[TEST] execute search_owners")
-
-    mock_client = MagicMock()
-    mock_client.owner_searcher = MagicMock()
-    mock_client.owner_searcher.search.return_value = MOCK_OWNER_RESULT
-
-    executor = ToolExecutor(search_client=mock_client)
-
-    tc = ToolCall(
-        id="call_owner_1",
-        name="search_owners",
-        arguments=json.dumps({"query": "黑神话悟空", "sort_by": "influence"}),
-    )
-    result_msg = executor.execute(tc)
-
-    result_data = json.loads(result_msg["content"])
-    assert result_data["query"] == "黑神话悟空"
-    assert result_data["sort_by"] == "influence"
-    assert len(result_data["owners"]) == 2
-    assert result_data["owners"][0]["mid"] == 101
-    mock_client.owner_searcher.search.assert_called_once_with(
-        query="黑神话悟空", sort_by="influence", limit=10, compact=True
-    )
-
-    logger.success("[PASS] execute search_owners")
 
 
 def test_execute_unknown_tool():
@@ -517,14 +397,8 @@ def test_legacy_query_string():
 if __name__ == "__main__":
     tests = [
         ("tool_definitions_format", test_tool_definitions_format),
-        ("tool_definitions_with_owners", test_tool_definitions_with_owners),
         ("execute_search_videos", test_execute_search_videos),
         ("execute_check_author", test_execute_check_author),
-        (
-            "execute_check_author_with_owner_searcher",
-            test_execute_check_author_with_owner_searcher,
-        ),
-        ("execute_search_owners", test_execute_search_owners),
         ("execute_read_spec", test_execute_read_spec),
         ("execute_unknown_tool", test_execute_unknown_tool),
         ("execute_empty_query", test_execute_empty_query),

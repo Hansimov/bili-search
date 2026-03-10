@@ -68,8 +68,6 @@ from ranks.constants import (
     RANK_LOW_ENGAGEMENT_THRESHOLD,
     RANK_LOW_ENGAGEMENT_PENALTY,
     TITLE_MATCH_BONUS,
-    OWNER_MATCH_BONUS,
-    OWNER_RELEVANCE_FLOOR,
     RANK_NO_TITLE_KEYWORD_PENALTY,
     SLOT_RELEVANCE_DECAY_THRESHOLD,
     SLOT_RELEVANCE_DECAY_POWER,
@@ -224,9 +222,9 @@ class DiversifiedRanker:
         """Score each hit on all four dimensions + headline quality.
 
         Computes and stores dimension scores in each hit dict:
-        - relevance_score: Normalized BM25/hybrid/rerank score [0, 1],
-          with title-match and owner-match bonuses applied, and content
-          depth penalty for ultra-short titles
+                - relevance_score: Normalized BM25/hybrid/rerank score [0, 1],
+                    with title-match bonus applied, and content depth penalty for
+                    ultra-short titles
         - quality_score: Stat quality from DocScorer [0, 1), with content
           penalties for short titles, short duration, low engagement
         - recency_score: Normalized time factor [0, 1]
@@ -242,11 +240,6 @@ class DiversifiedRanker:
         Title-match bonus:
         Docs tagged with _title_matched=True get TITLE_MATCH_BONUS added
         to their normalized relevance score (capped at 1.0).
-
-        Owner-match bonus:
-        Docs tagged with _owner_matched=True get OWNER_MATCH_BONUS added
-        to their normalized relevance score (capped at 1.0). This ensures
-        docs from creators matching the query are strongly preferred.
 
         Content quality penalties:
         - Short titles (< RANK_SHORT_TITLE_THRESHOLD chars): reduce quality
@@ -293,17 +286,6 @@ class DiversifiedRanker:
             else []
         )
 
-        # Analyze owner intent across all hits: compute owner concentration
-        # to dynamically adjust owner_match_bonus.
-        # Prefer pre-computed value from pool_hints (uses _owner_matched flags
-        # from the recall phase which are more accurate than re-analyzing).
-        if pool_hints and hasattr(pool_hints, "owner_analysis"):
-            owner_intent_strength = pool_hints.owner_analysis.intent_strength
-        else:
-            owner_intent_strength = self._analyze_owner_intent_strength(
-                hits, query_lower, query_cjk, q_terms
-            )
-
         for i, hit in enumerate(hits):
             try:
                 self._score_single_hit(
@@ -317,7 +299,6 @@ class DiversifiedRanker:
                     query_lower,
                     query_cjk,
                     q_terms,
-                    owner_intent_strength,
                 )
             except Exception:
                 # Robustness: if scoring fails for one hit, assign default
@@ -327,99 +308,6 @@ class DiversifiedRanker:
                 hit.setdefault("recency_score", 0.0)
                 hit.setdefault("popularity_score", 0.0)
                 hit.setdefault("headline_score", 0.0)
-
-    @staticmethod
-    def _analyze_owner_intent_strength(
-        hits: list[dict],
-        query_lower: str,
-        query_cjk: str,
-        q_terms: list[str],
-    ) -> float:
-        """Analyze hits to determine how strongly the query targets an owner.
-
-        Returns a value in [0, 1]:
-        - ~1.0 = strong owner intent (e.g., '红警08' → '红警HBK08')
-        - ~0.0 = topic query where owner matches are incidental (e.g., '米娜')
-
-        Uses two complementary signals:
-        1. **Recall-based**: The `_owner_matched` flag from the recall phase,
-           which uses precise token-set matching. This is the primary signal.
-        2. **Concentration analysis**: Among the recall-flagged hits, check
-           whether they're concentrated on 1-2 owners (strong intent) or
-           dispersed across many (topic query).
-
-        This allows dynamic adjustment of OWNER_MATCH_BONUS.
-        """
-        if not query_lower or not hits:
-            return 0.5  # neutral default
-
-        # Primary signal: use _owner_matched flags from recall phase.
-        # These flags were set by _tag_owner_matches() in word.py (precise
-        # token-set + CJK matching) and by _owner_focused_recall in manager.py.
-        owner_match_counts: dict[str, int] = {}
-        total_with_owner_match = 0
-        title_match_count = 0
-
-        for hit in hits:
-            # Count title matches for context
-            title = (hit.get("title") or "").lower()
-            title_has_kw = False
-            if title and q_terms:
-                if len(query_cjk) >= 4:
-                    for start in range(len(query_cjk)):
-                        for end in range(start + 2, len(query_cjk) + 1):
-                            if query_cjk[start:end] in title:
-                                if end - start >= len(query_cjk) * 0.5:
-                                    title_has_kw = True
-                                    break
-                        if title_has_kw:
-                            break
-                else:
-                    title_has_kw = any(t in title for t in q_terms)
-            if title_has_kw:
-                title_match_count += 1
-
-            # Use recall-phase _owner_matched flag (already precise)
-            if hit.get("_owner_matched"):
-                owner = hit.get("owner")
-                owner_name = ""
-                if isinstance(owner, dict):
-                    owner_name = (owner.get("name") or "").lower()
-                elif hit.get("_matched_owner_name"):
-                    owner_name = hit["_matched_owner_name"].lower()
-                if owner_name:
-                    owner_match_counts[owner_name] = (
-                        owner_match_counts.get(owner_name, 0) + 1
-                    )
-                total_with_owner_match += 1
-
-        if total_with_owner_match == 0:
-            return 0.0  # no owner matches → no owner intent
-
-        num_matching_owners = len(owner_match_counts)
-        total_hits = len(hits)
-
-        # Factor 1: Owner concentration (one dominant owner = strong intent)
-        top_owner_count = max(owner_match_counts.values()) if owner_match_counts else 0
-        concentration = top_owner_count / max(total_with_owner_match, 1)
-
-        # Factor 2: Owner diversity (many owners = topic, not owner)
-        # Inverse: more owners → weaker intent
-        diversity_penalty = min(num_matching_owners / 6.0, 1.0)
-
-        # Factor 3: Ratio of owner-matched docs to total
-        owner_ratio = total_with_owner_match / max(total_hits, 1)
-
-        # Combine: strong when concentrated on few owners, weak when dispersed
-        strength = concentration * (1.0 - diversity_penalty * 0.7)
-        # Boost when owner ratio is moderate (not too many, not too few)
-        if num_matching_owners <= 2 and top_owner_count >= 3:
-            strength = min(strength + 0.3, 1.0)
-        # Penalize when too many diverse owners match
-        if num_matching_owners >= 5 and concentration < 0.3:
-            strength *= 0.2
-
-        return max(0.0, min(strength, 1.0))
 
     def _score_single_hit(
         self,
@@ -433,7 +321,6 @@ class DiversifiedRanker:
         query_lower: str,
         query_cjk: str,
         q_terms: list[str],
-        owner_intent_strength: float,
     ) -> None:
         """Score a single hit on all dimensions. Extracted for robustness."""
         # Relevance: use best available score, normalized to [0, 1]
@@ -472,36 +359,14 @@ class DiversifiedRanker:
             rel_norm *= depth_factor
 
         # Title-keyword overlap penalty: if NO query keywords appear in the
-        # title, the BM25 score comes from owner.name/desc/tags — the doc's
+        # title, the BM25 score comes from desc/tags/other fields — the doc's
         # actual content is likely NOT about the query.
-        # Exception: for strong owner intent, owner-recalled docs are exempt
-        # because the user wants content from this creator regardless of title.
-        is_owner_intent_doc = hit.get("_owner_matched") and owner_intent_strength >= 0.6
         if title_lower and query_lower and not title_has_query_keywords:
-            if not is_owner_intent_doc:
-                rel_norm *= RANK_NO_TITLE_KEYWORD_PENALTY
+            rel_norm *= RANK_NO_TITLE_KEYWORD_PENALTY
 
         # Apply title-match bonus: docs with query in title get a boost
         if hit.get("_title_matched"):
             rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
-
-        # Apply owner-match bonus: dynamically scaled by owner intent strength.
-        # Strong owner intent (concentrated on few owners): full bonus
-        # Weak owner intent (dispersed across many owners): reduced/zero bonus
-        # For weak intent, require title keywords to prevent boosting
-        # irrelevant uploads. For strong intent, apply unconditionally.
-        if hit.get("_owner_matched"):
-            if is_owner_intent_doc or title_has_query_keywords:
-                effective_owner_bonus = OWNER_MATCH_BONUS * owner_intent_strength
-                rel_norm = min(rel_norm + effective_owner_bonus, 1.0)
-
-            # For strong owner intent, set a relevance floor so that the
-            # creator's docs can compete with pure BM25 matches. Without
-            # this, owner docs with low BM25 scores (e.g., "红警..." titles
-            # when query is "红警08") get rel_norm ~0.24 and are buried.
-            if is_owner_intent_doc:
-                owner_floor = OWNER_RELEVANCE_FLOOR * owner_intent_strength
-                rel_norm = max(rel_norm, owner_floor)
 
         hit["relevance_score"] = round(rel_norm, 4)
 
@@ -551,9 +416,6 @@ class DiversifiedRanker:
             + w["recency"] * hit["recency_score"]
             + w["popularity"] * hit["popularity_score"]
         )
-        # Owner match bonus in headline: scaled by intent strength
-        if hit.get("_owner_matched") and title_has_query_keywords:
-            headline += 0.10 * owner_intent_strength
         hit["headline_score"] = round(headline, 4)
 
     def _select_headline_top_n(

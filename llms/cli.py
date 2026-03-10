@@ -63,22 +63,6 @@ def _create_handler(args):
     video_searcher = VideoSearcherV2(elastic_index, elastic_env_name=elastic_env_name)
     video_explorer = VideoExplorer(elastic_index, elastic_env_name=elastic_env_name)
 
-    # Optional owner searcher
-    owner_searcher = None
-    try:
-        from elastics.owners.searcher import OwnerSearcher
-        from elastics.owners.constants import ELASTIC_OWNERS_INDEX
-
-        owner_searcher = OwnerSearcher(
-            index_name=ELASTIC_OWNERS_INDEX,
-            elastic_env_name=elastic_env_name,
-            coretok_bundle_path=args.owner_coretok_bundle_path,
-        )
-        video_explorer.owner_searcher = owner_searcher
-        logger.mesg(f"  Owner searcher: {ELASTIC_OWNERS_INDEX}")
-    except Exception as e:
-        logger.hint(f"  Owner searcher unavailable: {e}")
-
     llm_client = create_llm_client(
         model_config=args.llm_config,
         verbose=args.verbose,
@@ -86,7 +70,6 @@ def _create_handler(args):
     search_service = SearchService(
         video_searcher=video_searcher,
         video_explorer=video_explorer,
-        owner_searcher=owner_searcher,
         verbose=args.verbose,
     )
     handler = ChatHandler(
@@ -217,12 +200,6 @@ def main():
         action="store_true",
         default=False,
         help="Enable verbose logging",
-    )
-    parser.add_argument(
-        "--owner-coretok-bundle-path",
-        type=str,
-        default=None,
-        help="Path to serialized owner coretok bundle for query-time token encoding.",
     )
     parser.add_argument(
         "--temperature",

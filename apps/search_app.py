@@ -70,8 +70,6 @@ class SearchApp:
             swagger_ui_parameters={"defaultModelsExpandDepth": -1},
         )
         self.app_envs = app_envs
-        # Registry of active chat streams: stream_id → threading.Event
-        # Used by /chat/abort to cancel in-flight requests
         self._active_streams: dict[str, threading.Event] = {}
         self.init_searchers()
         self.init_embed_client()
@@ -90,23 +88,34 @@ class SearchApp:
         self.video_explorer = VideoExplorer(
             self.elastic_videos_index, elastic_env_name=self.elastic_env_name
         )
-        # Owner searcher (optional — enabled if owners index config is present)
-        self.owner_searcher = None
-        owners_index = self.app_envs.get("elastic_owners_index", "")
-        owner_coretok_bundle_path = self.app_envs.get("owner_coretok_bundle_path", "")
-        if owners_index:
-            try:
-                from elastics.owners.searcher import OwnerSearcher
 
-                self.owner_searcher = OwnerSearcher(
-                    index_name=owners_index,
-                    elastic_env_name=self.elastic_env_name,
-                    coretok_bundle_path=owner_coretok_bundle_path or None,
-                )
-                self.video_explorer.owner_searcher = self.owner_searcher
-                logger.okay(f"  Owner searcher: {owners_index}")
-            except Exception as e:
-                logger.warn(f"  × Owner searcher init failed: {e}")
+    def init_chat_handler(self):
+        """Initialize the LLM chat handler for /chat/completions."""
+        llm_config = self.app_envs.get("llm_config", "")
+        if not llm_config:
+            self.chat_handler = None
+            logger.hint("> Chat handler disabled (no llm_config)")
+            return
+
+        from llms.chat.handler import ChatHandler
+        from llms.llm_client import create_llm_client
+        from llms.tools.executor import SearchService
+
+        self.llm_client = create_llm_client(
+            model_config=llm_config,
+            verbose=True,
+        )
+        search_service = SearchService(
+            video_searcher=self.video_searcher,
+            video_explorer=self.video_explorer,
+            verbose=True,
+        )
+        self.chat_handler = ChatHandler(
+            llm_client=self.llm_client,
+            search_client=search_service,
+            verbose=True,
+        )
+        logger.okay(f"  Chat: LLM={llm_config} ({self.llm_client.model})")
 
     def init_embed_client(self):
         """Initialize embed client with keepalive for long-running service.
@@ -117,39 +126,6 @@ class SearchApp:
         """
         logger.hint("> Initializing embed client with keepalive...")
         init_embed_client_with_keepalive()
-
-    def init_chat_handler(self):
-        """Initialize the LLM chat handler for /chat/completions.
-
-        Uses the video_searcher and video_explorer directly (no HTTP),
-        wrapping them in a SearchService for the tool executor.
-        """
-        llm_config = self.app_envs.get("llm_config", "")
-        if not llm_config:
-            self.chat_handler = None
-            logger.hint("> Chat handler disabled (no llm_config)")
-            return
-
-        from llms.llm_client import create_llm_client
-        from llms.tools.executor import SearchService
-        from llms.chat.handler import ChatHandler
-
-        self.llm_client = create_llm_client(
-            model_config=llm_config,
-            verbose=True,
-        )
-        search_service = SearchService(
-            video_searcher=self.video_searcher,
-            video_explorer=self.video_explorer,
-            owner_searcher=self.owner_searcher,
-            verbose=True,
-        )
-        self.chat_handler = ChatHandler(
-            llm_client=self.llm_client,
-            search_client=search_service,
-            verbose=True,
-        )
-        logger.okay(f"  Chat: LLM={llm_config} ({self.llm_client.model})")
 
     def allow_cors(self):
         self.app.add_middleware(
@@ -357,7 +333,6 @@ class SearchApp:
             summary="Hybrid search combining word and vector retrieval",
         )(self.hybrid_search)
 
-        # Chat endpoints (only if chat handler is initialized)
         if self.chat_handler is not None:
             self.app.post(
                 "/chat/completions",
@@ -377,23 +352,15 @@ class SearchApp:
                 description="Cancel an in-flight streaming chat request by stream_id.",
             )(self.abort_stream)
 
-            self.app.get(
-                "/health",
-                summary="Health check",
-            )(self.health)
+        self.app.get(
+            "/health",
+            summary="Health check",
+        )(self.health)
 
     async def chat_completions(
         self, request: ChatCompletionRequest, http_request: Request
     ):
-        """OpenAI-compatible chat completion endpoint.
-
-        Processes the conversation, internally executing search tools as needed,
-        and returns the final response.
-
-        When thinking=True:
-        - Increases max tool-calling iterations (default 10 vs 5)
-        - Enables deeper analysis prompting
-        """
+        """OpenAI-compatible chat completion endpoint."""
         messages = [msg.model_dump() for msg in request.messages]
 
         if request.stream:
@@ -407,31 +374,25 @@ class SearchApp:
                 ),
                 media_type="text/event-stream",
             )
-        else:
-            result = await asyncio.to_thread(
-                self.chat_handler.handle,
-                messages=messages,
-                temperature=request.temperature,
-                thinking=request.thinking or False,
-                max_iterations=request.max_iterations,
-            )
-            return result
+
+        return await asyncio.to_thread(
+            self.chat_handler.handle,
+            messages=messages,
+            temperature=request.temperature,
+            thinking=request.thinking or False,
+            max_iterations=request.max_iterations,
+        )
 
     async def abort_stream(self, stream_id: str = Body(..., embed=True)):
-        """Abort an active chat stream by stream_id.
-
-        Called by the frontend when the user presses the stop button.
-        This is more reliable than relying on TCP disconnect detection
-        through proxies.
-        """
+        """Abort an active chat stream by stream_id."""
         event = self._active_streams.get(stream_id)
         if event:
             event.set()
             logger.warn(f"> Stream {stream_id} aborted via /chat/abort")
             return {"status": "aborted", "stream_id": stream_id}
-        else:
-            logger.warn(f"> Stream {stream_id} not found for abort")
-            return {"status": "not_found", "stream_id": stream_id}
+
+        logger.warn(f"> Stream {stream_id} not found for abort")
+        return {"status": "not_found", "stream_id": stream_id}
 
     async def _stream_response(
         self,
@@ -441,36 +402,21 @@ class SearchApp:
         max_iterations: int = None,
         http_request: Request = None,
     ):
-        """Generate SSE events for streaming response.
-
-        Uses asyncio.Queue to forward chunks from the synchronous
-        chat handler generator to the async SSE response in real-time.
-
-        Cancellation is supported via three mechanisms:
-        1. Background monitor task: checks http_request.is_disconnected()
-           every 0.5s, independently of generator iteration.
-        2. Explicit /chat/abort endpoint: sets cancelled via _active_streams.
-        3. Generator cleanup: try/finally ensures cancelled is set when
-           the generator is closed (e.g. EventSourceResponse calls aclose).
-        """
+        """Generate SSE events for streaming response."""
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
         cancelled = threading.Event()
 
-        # Register this stream for explicit abort
         stream_id = uuid.uuid4().hex[:12]
         self._active_streams[stream_id] = cancelled
         logger.note(f"> Stream started: {stream_id}")
 
-        # Background task: monitor client disconnection independently
-        # This runs on the event loop even if the generator is suspended at yield.
         async def _monitor_disconnect():
             while not cancelled.is_set():
                 try:
                     if http_request and await http_request.is_disconnected():
                         logger.warn(
-                            f"> Stream {stream_id}: "
-                            "client disconnect detected by monitor"
+                            f"> Stream {stream_id}: client disconnect detected by monitor"
                         )
                         cancelled.set()
                         return
@@ -491,26 +437,22 @@ class SearchApp:
                 ):
                     if cancelled.is_set():
                         logger.warn(
-                            f"> Stream {stream_id}: " "producer stopping (cancelled)"
+                            f"> Stream {stream_id}: producer stopping (cancelled)"
                         )
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
-            except Exception as e:
-                loop.call_soon_threadsafe(queue.put_nowait, ("__error__", str(e)))
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("__error__", str(exc)))
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
         fut = loop.run_in_executor(None, _produce)
 
         try:
-            # Send stream_id as first SSE event so frontend can use it for /chat/abort
             yield {"data": json.dumps({"stream_id": stream_id}, ensure_ascii=False)}
-
             while True:
                 if cancelled.is_set():
-                    logger.warn(
-                        f"> Stream {stream_id}: " "consumer stopping (cancelled)"
-                    )
+                    logger.warn(f"> Stream {stream_id}: consumer stopping (cancelled)")
                     break
 
                 try:
@@ -520,32 +462,31 @@ class SearchApp:
 
                 if chunk is None:
                     break
+
                 if isinstance(chunk, tuple) and chunk[0] == "__error__":
+                    yield {"event": "error", "data": chunk[1]}
                     break
+
                 yield {"data": chunk}
         finally:
-            # Ensure cancellation on any exit path, including GeneratorExit
-            # when EventSourceResponse stops iterating (client disconnect).
-            if not cancelled.is_set():
-                logger.warn(
-                    f"> Stream {stream_id}: "
-                    "cancelled via generator cleanup (finally)"
-                )
             cancelled.set()
-            monitor_task.cancel()
-            # Unregister from active streams
             self._active_streams.pop(stream_id, None)
-            logger.note(f"> Stream ended: {stream_id}")
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except Exception:
+                pass
+            await fut
 
     async def health(self):
         """Health check endpoint."""
-        status = {
+        result = {
             "status": "ok",
             "search_service": "integrated",
         }
         if self.chat_handler is not None:
-            status["llm_model"] = self.llm_client.model
-        return status
+            result["llm_model"] = self.llm_client.model
+        return result
 
 
 class SearchAppArgParser(argparse.ArgumentParser):
@@ -586,24 +527,13 @@ class SearchAppArgParser(argparse.ArgumentParser):
             help=f"Elastic env name in secrets.json",
         )
         self.add_argument(
-            "-eoi",
-            "--elastic-owners-index",
-            type=str,
-            help="Elastic owners index name",
-        )
-        self.add_argument(
             "-lc",
             "--llm-config",
             type=str,
-            default="",
-            help="LLM config name from secrets.json (e.g. deepseek, gpt, volcengine). "
-            "Enables /chat/completions endpoint when set.",
-        )
-        self.add_argument(
-            "-ocb",
-            "--owner-coretok-bundle-path",
-            type=str,
-            help="Path to serialized owner coretok bundle for query-time token encoding.",
+            help=(
+                "LLM config name in configs.envs.LLMS_ENVS. "
+                "Enables /chat/completions endpoint when set."
+            ),
         )
         self.add_argument(
             "-k",
@@ -631,12 +561,6 @@ class SearchAppArgParser(argparse.ArgumentParser):
             new_app_envs["elastic_index"] = self.args.elastic_index
         if self.args.elastic_env_name:
             new_app_envs["elastic_env_name"] = self.args.elastic_env_name
-        if self.args.elastic_owners_index:
-            new_app_envs["elastic_owners_index"] = self.args.elastic_owners_index
-        if self.args.owner_coretok_bundle_path:
-            new_app_envs["owner_coretok_bundle_path"] = (
-                self.args.owner_coretok_bundle_path
-            )
         if self.args.llm_config:
             new_app_envs["llm_config"] = self.args.llm_config
 
@@ -681,7 +605,3 @@ if __name__ == "__main__":
     # Development mode:
     # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev
     # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -p 21001
-
-    # With LLM config for chat:
-    # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
-    # python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc gpt

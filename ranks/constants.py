@@ -132,33 +132,11 @@ RANK_LOW_ENGAGEMENT_PENALTY = 0.7  # multiply quality_score by this
 # before normalization, acting as a multiplicative boost.
 TITLE_MATCH_BONUS = 0.20  # Added to normalized relevance when title matches query
 
-# Owner match bonus: when query partially matches an owner/UP主 name,
-# docs from that owner get a relevance bonus. This helps entity queries
-# like '红警08' (owner '红警HBK08') surface the creator's content.
-# ONLY applied when the doc's title also contains query keywords
-# (prevents boosting irrelevant uploads from matching owners).
-OWNER_MATCH_BONUS = 0.30  # Added to normalized relevance for owner-matched docs
-
-# For strong owner intent queries, set a minimum relevance floor for
-# owner-matched docs. This ensures the creator's videos compete with
-# pure BM25 matches even when their titles don't contain the exact query.
-# Scaled by owner_intent_strength: floor = OWNER_RELEVANCE_FLOOR * strength.
-OWNER_RELEVANCE_FLOOR = 0.75
-
 # Title-keyword overlap: when no query keyword appears in the title,
-# the BM25 score comes entirely from non-title fields (owner.name, desc, tags).
+# the BM25 score comes entirely from non-title fields (desc, tags, etc.).
 # This suggests the doc's actual content is NOT about the query,
-# so we penalize relevance. Example: query "吴恩达大模型", owner "吴恩达大模型课程"
-# but title "《喜羊羊与灰太狼》" — BM25 is boosted by owner.name match, not content.
+# so we penalize relevance.
 RANK_NO_TITLE_KEYWORD_PENALTY = 0.50  # multiply relevance when 0 query tokens in title
-
-# Owner concentration thresholds: used to distinguish "owner queries"
-# (where the user wants a specific creator) from "topic queries" (where
-# the query happens to match many owner names).
-# An owner is "dominant" when their doc count exceeds these thresholds.
-OWNER_DOMINANT_MIN_DOCS = 5  # Minimum docs from one owner to consider dominant
-OWNER_DOMINANT_RATIO = 0.15  # Docs from owner must be >= 15% of matched-owner pool
-OWNER_DISPERSE_MAX_OWNERS = 6  # If >= this many owners match, it's a topic query
 
 # =============================================================================
 # Relevance Decay for Slot Candidates

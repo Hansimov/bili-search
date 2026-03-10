@@ -213,7 +213,6 @@ def test_multi_tool_calls():
     ]
 
     mock_search = MagicMock()
-    mock_search.owner_searcher = None
     mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
@@ -239,109 +238,6 @@ def test_multi_tool_calls():
     assert result["usage"]["total_tokens"] == 25
 
     logger.success("[PASS] multi tool calls")
-
-
-def test_search_owners_tool_call():
-    """Test handler with search_owners command → content response."""
-    logger.note("=" * 60)
-    logger.note("[TEST] search_owners tool call")
-
-    mock_llm = MagicMock(spec=LLMClient)
-    mock_llm.chat.side_effect = [
-        make_tool_cmd_response(
-            "我来找做黑神话的UP主。",
-            '<search_owners query="黑神话悟空" sort_by="influence"/>',
-        ),
-        make_content_response("找到了几位做黑神话内容的UP主。"),
-    ]
-
-    mock_search = MagicMock()
-    mock_search.owner_searcher = MagicMock()
-    mock_search.owner_searcher.search.return_value = {
-        "query_route": "domain",
-        "domain_status": "query_tokens_used",
-        "total": 1,
-        "hits": [
-            {
-                "mid": 101,
-                "name": "黑猴的名义",
-                "total_videos": 246,
-                "total_view": 82000000,
-                "influence_score": 0.73,
-                "quality_score": 0.68,
-                "activity_score": 0.64,
-                "profile_domain_ready": True,
-                "core_tokenizer_version": "coretok-dev",
-                "_score": 0.91,
-            }
-        ],
-    }
-
-    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
-    result = handler.handle(
-        messages=[{"role": "user", "content": "推荐做黑神话的UP主"}]
-    )
-
-    assert "黑神话" in result["choices"][0]["message"]["content"]
-    mock_search.owner_searcher.search.assert_called_once_with(
-        query="黑神话悟空", sort_by="influence", limit=10, compact=True
-    )
-
-    second_call_messages = mock_llm.chat.call_args_list[1].kwargs.get("messages")
-    results_message = next(
-        m
-        for m in second_call_messages
-        if m.get("role") == "user" and "[搜索结果]" in m.get("content", "")
-    )
-    assert (
-        'search_owners(query="黑神话悟空", sort_by="influence"):'
-        in results_message["content"]
-    )
-
-    logger.success("[PASS] search_owners tool call")
-
-
-def test_filter_tool_commands_blocks_owner_search_for_author_timeline():
-    """Explicit author timeline requests should not execute search_owners."""
-    logger.note("=" * 60)
-    logger.note("[TEST] filter owner search for author timeline")
-
-    mock_llm = MagicMock(spec=LLMClient)
-    mock_search = MagicMock()
-    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
-
-    commands = [
-        {"type": "search_videos", "args": {"queries": ["影视飓风 :date<=15d"]}},
-        {"type": "search_owners", "args": {"query": "影视飓风"}},
-    ]
-    filtered = handler._filter_tool_commands(
-        commands,
-        messages=[{"role": "user", "content": "影视飓风最近有什么新视频"}],
-    )
-
-    assert [command["type"] for command in filtered] == ["search_videos"]
-
-    logger.success("[PASS] filter owner search for author timeline")
-
-
-def test_filter_tool_commands_keeps_owner_search_for_creator_discovery():
-    """Creator discovery requests should still allow search_owners."""
-    logger.note("=" * 60)
-    logger.note("[TEST] keep owner search for creator discovery")
-
-    mock_llm = MagicMock(spec=LLMClient)
-    mock_search = MagicMock()
-    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
-
-    commands = [{"type": "search_owners", "args": {"query": "黑神话悟空"}}]
-    filtered = handler._filter_tool_commands(
-        commands,
-        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}],
-    )
-
-    assert [command["type"] for command in filtered] == ["search_owners"]
-
-    logger.success("[PASS] keep owner search for creator discovery")
 
 
 def test_fallback_tool_commands_for_single_author_timeline():
@@ -948,7 +844,6 @@ def test_parallel_tool_calls():
     mock_search = MagicMock()
     mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
-    mock_search.owner_searcher = None
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
 

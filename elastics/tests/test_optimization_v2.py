@@ -63,7 +63,6 @@ def analyze_results(query: str, result: dict, top_n: int = 20) -> dict:
     query_lower = query.lower()
 
     title_match_count = 0
-    owner_match_count = 0
     short_title_count = 0
 
     for i, hit in enumerate(hits[:top_n]):
@@ -79,20 +78,17 @@ def analyze_results(query: str, result: dict, top_n: int = 20) -> dict:
         rec = hit.get("recency_score", 0)
         pop = hit.get("popularity_score", 0)
         tm = " TM" if hit.get("_title_matched") else ""
-        om = " OM" if hit.get("_owner_matched") else ""
         slot = hit.get("_slot_dimension", "")
 
         if query_lower in title.lower():
             title_match_count += 1
         if len(title) < 25:
             short_title_count += 1
-        if hit.get("_owner_matched"):
-            owner_match_count += 1
 
         print(
             f"  {i+1:>3}. [{slot:<10}] r={rel:.3f} q={qual:.3f} "
             f"rec={rec:.3f} pop={pop:.3f} "
-            f"v={views:>10,} d={dur:>5}s{tm}{om}"
+            f"v={views:>10,} d={dur:>5}s{tm}"
         )
         print(f"       title: {title[:65]}")
         print(f"       UP: {owner_name} | tags: {tags[:50]}")
@@ -102,9 +98,6 @@ def analyze_results(query: str, result: dict, top_n: int = 20) -> dict:
     print(f"    Returned docs: {return_hits}")
     print(
         f"    Title match in top-{top_n}: {title_match_count}/{min(top_n, len(hits))}"
-    )
-    print(
-        f"    Owner match in top-{top_n}: {owner_match_count}/{min(top_n, len(hits))}"
     )
     print(
         f"    Short titles in top-{top_n}: {short_title_count}/{min(top_n, len(hits))}"

@@ -83,47 +83,7 @@ READ_SPEC_TOOL = {
     },
 }
 
-SEARCH_OWNERS_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "search_owners",
-        "description": (
-            "搜索B站UP主/用户。可以按名称、领域、影响力等维度搜索。"
-            "返回UP主列表，含作品数、播放量、领域标签等信息。"
-            "用于查找特定UP主或发现某个领域的创作者。"
-            "示例: 按名称搜索 '影视飓风'，按领域搜索 '黑神话悟空'。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索UP主的查询词（名称、领域关键词等）",
-                },
-                "sort_by": {
-                    "type": "string",
-                    "enum": [
-                        "relevance",
-                        "influence",
-                        "quality",
-                        "activity",
-                        "total_view",
-                    ],
-                    "description": (
-                        "排序方式：relevance(相关性) influence(影响力) "
-                        "quality(创作质量) activity(活跃度) total_view(总播放量)"
-                    ),
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
-
 # Default tool definitions for the chat handler.
 # read_spec is available but not in the default list since DSL syntax
 # is already inline in the system prompt.
 TOOL_DEFINITIONS = [SEARCH_VIDEOS_TOOL, CHECK_AUTHOR_TOOL]
-
-# Extended tool list including owner search
-TOOL_DEFINITIONS_WITH_OWNERS = [SEARCH_VIDEOS_TOOL, CHECK_AUTHOR_TOOL, SEARCH_OWNERS_TOOL]
