@@ -18,6 +18,7 @@ from typing import Optional, List, Union
 
 from configs.envs import SEARCH_APP_ENVS
 from converters.embed.embed_client import init_embed_client_with_keepalive
+from elastics.relations import RelationsClient, RELATED_ENDPOINTS
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS
 from elastics.videos.constants import SUGGEST_MATCH_FIELDS
@@ -98,6 +99,10 @@ class SearchApp:
         self.video_explorer = VideoExplorer(
             self.elastic_videos_index, elastic_env_name=self.elastic_env_name
         )
+        self.relations_client = RelationsClient(
+            self.elastic_videos_index,
+            elastic_env_name=self.elastic_env_name,
+        )
 
     def init_chat_handler(self):
         """Initialize the LLM chat handler for /chat/completions."""
@@ -118,6 +123,7 @@ class SearchApp:
         search_service = SearchService(
             video_searcher=self.video_searcher,
             video_explorer=self.video_explorer,
+            relations_client=self.relations_client,
             verbose=True,
         )
         self.chat_handler = ChatHandler(
@@ -299,6 +305,96 @@ class SearchApp:
         )
         return results
 
+    def related_tokens_by_tokens(
+        self,
+        text: str = Body(...),
+        fields: Optional[list[str]] = Body(None),
+        mode: str = Body("auto"),
+        size: int = Body(8),
+        scan_limit: int = Body(128),
+        use_pinyin: bool = Body(True),
+    ):
+        return self.relations_client.related_tokens_by_tokens(
+            text=text,
+            fields=fields,
+            mode=mode,
+            size=size,
+            scan_limit=scan_limit,
+            use_pinyin=use_pinyin,
+        )
+
+    def related_owners_by_tokens(
+        self,
+        text: str = Body(...),
+        fields: Optional[list[str]] = Body(None),
+        size: int = Body(8),
+        scan_limit: int = Body(128),
+        use_pinyin: bool = Body(True),
+    ):
+        return self.relations_client.related_owners_by_tokens(
+            text=text,
+            fields=fields,
+            size=size,
+            scan_limit=scan_limit,
+            use_pinyin=use_pinyin,
+        )
+
+    def related_videos_by_videos(
+        self,
+        bvid: Optional[str] = Body(None),
+        bvids: Optional[list[str]] = Body(None),
+        size: int = Body(10),
+        scan_limit: int = Body(128),
+    ):
+        return self.relations_client.related_videos_by_videos(
+            bvid=bvid,
+            bvids=bvids,
+            size=size,
+            scan_limit=scan_limit,
+        )
+
+    def related_owners_by_videos(
+        self,
+        bvid: Optional[str] = Body(None),
+        bvids: Optional[list[str]] = Body(None),
+        size: int = Body(10),
+        scan_limit: int = Body(128),
+    ):
+        return self.relations_client.related_owners_by_videos(
+            bvid=bvid,
+            bvids=bvids,
+            size=size,
+            scan_limit=scan_limit,
+        )
+
+    def related_videos_by_owners(
+        self,
+        mid: Optional[int] = Body(None),
+        mids: Optional[list[int]] = Body(None),
+        size: int = Body(10),
+        scan_limit: int = Body(128),
+    ):
+        return self.relations_client.related_videos_by_owners(
+            mid=mid,
+            mids=mids,
+            size=size,
+            scan_limit=scan_limit,
+        )
+
+    def related_owners_by_owners(
+        self,
+        mid: Optional[int] = Body(None),
+        mids: Optional[list[int]] = Body(None),
+        size: int = Body(10),
+        scan_limit: int = Body(128),
+    ):
+        return self.relations_client.related_owners_by_owners(
+            mid=mid,
+            mids=mids,
+            size=size,
+            scan_limit=scan_limit,
+        )
+
     def setup_routes(self):
         self.app.post(
             "/suggest",
@@ -339,6 +435,36 @@ class SearchApp:
             "/hybrid_search",
             summary="Hybrid search combining word and vector retrieval",
         )(self.hybrid_search)
+
+        self.app.post(
+            "/related_tokens_by_tokens",
+            summary="Find related tokens by tokens",
+        )(self.related_tokens_by_tokens)
+
+        self.app.post(
+            "/related_owners_by_tokens",
+            summary="Find related owners by topic tokens",
+        )(self.related_owners_by_tokens)
+
+        self.app.post(
+            "/related_videos_by_videos",
+            summary="Find related videos by seed videos",
+        )(self.related_videos_by_videos)
+
+        self.app.post(
+            "/related_owners_by_videos",
+            summary="Find related owners by seed videos",
+        )(self.related_owners_by_videos)
+
+        self.app.post(
+            "/related_videos_by_owners",
+            summary="Find related videos by seed owners",
+        )(self.related_videos_by_owners)
+
+        self.app.post(
+            "/related_owners_by_owners",
+            summary="Find related owners by seed owners",
+        )(self.related_owners_by_owners)
 
         if self.chat_handler is not None:
             self.app.post(
@@ -511,7 +637,9 @@ class SearchApp:
             "default_query_mode": "wv",
             "rerank_query_mode": "vwr",
             "supports_multi_query": True,
-            "supports_author_check": True,
+            "supports_author_check": False,
+            "supports_google_search": False,
+            "relation_endpoints": list(RELATED_ENDPOINTS),
             "available_endpoints": [
                 "/health",
                 "/capabilities",
@@ -523,6 +651,7 @@ class SearchApp:
                 "/doc",
                 "/knn_search",
                 "/hybrid_search",
+                *[f"/{endpoint}" for endpoint in RELATED_ENDPOINTS],
             ],
             "docs": ["search_syntax"],
             "chat_enabled": self.chat_handler is not None,

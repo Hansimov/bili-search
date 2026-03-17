@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import requests
+import pytest
 
 
 BASE_URL = os.environ.get("BILI_SEARCH_RUNTIME_URL", "").strip()
@@ -51,6 +52,100 @@ def test_runtime_suggest():
 
     assert data["total_hits"] >= 1
     assert len(data["hits"]) == 1
+
+
+def _get_runtime_seed_hit() -> dict:
+    response = requests.post(
+        f"{BASE_URL}/suggest",
+        json={"query": "黑神话", "limit": 1},
+        timeout=15,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("hits"):
+        pytest.skip("No runtime seed hit available for relation tests")
+    return data["hits"][0]
+
+
+def test_runtime_relation_endpoints():
+    _skip_if_disabled()
+
+    capabilities = requests.get(f"{BASE_URL}/capabilities", timeout=5)
+    capabilities.raise_for_status()
+    capabilities_data = capabilities.json()
+
+    assert "related_owners_by_tokens" in capabilities_data.get("relation_endpoints", [])
+
+    token_response = requests.post(
+        f"{BASE_URL}/related_tokens_by_tokens",
+        json={"text": "黑神话", "size": 3},
+        timeout=20,
+    )
+    token_response.raise_for_status()
+    token_data = token_response.json()
+    assert "options" in token_data
+    assert isinstance(token_data["options"], list)
+
+    owner_response = requests.post(
+        f"{BASE_URL}/related_owners_by_tokens",
+        json={"text": "黑神话悟空", "size": 3},
+        timeout=20,
+    )
+    owner_response.raise_for_status()
+    owner_data = owner_response.json()
+    assert "owners" in owner_data
+    assert isinstance(owner_data["owners"], list)
+
+
+def test_runtime_graph_relation_endpoints():
+    _skip_if_disabled()
+
+    seed_hit = _get_runtime_seed_hit()
+    bvid = seed_hit.get("bvid")
+    owner = seed_hit.get("owner") or {}
+    mid = owner.get("mid")
+    if not bvid or mid is None:
+        pytest.skip("Seed hit is missing bvid or owner mid for graph relation tests")
+
+    related_videos = requests.post(
+        f"{BASE_URL}/related_videos_by_videos",
+        json={"bvids": [bvid], "size": 3},
+        timeout=25,
+    )
+    related_videos.raise_for_status()
+    related_videos_data = related_videos.json()
+    assert "videos" in related_videos_data
+    assert isinstance(related_videos_data["videos"], list)
+
+    related_owners = requests.post(
+        f"{BASE_URL}/related_owners_by_videos",
+        json={"bvids": [bvid], "size": 3},
+        timeout=25,
+    )
+    related_owners.raise_for_status()
+    related_owners_data = related_owners.json()
+    assert "owners" in related_owners_data
+    assert isinstance(related_owners_data["owners"], list)
+
+    owner_videos = requests.post(
+        f"{BASE_URL}/related_videos_by_owners",
+        json={"mids": [mid], "size": 3},
+        timeout=25,
+    )
+    owner_videos.raise_for_status()
+    owner_videos_data = owner_videos.json()
+    assert "videos" in owner_videos_data
+    assert isinstance(owner_videos_data["videos"], list)
+
+    owner_owners = requests.post(
+        f"{BASE_URL}/related_owners_by_owners",
+        json={"mids": [mid], "size": 3},
+        timeout=25,
+    )
+    owner_owners.raise_for_status()
+    owner_owners_data = owner_owners.json()
+    assert "owners" in owner_owners_data
+    assert isinstance(owner_owners_data["owners"], list)
 
 
 def test_runtime_chat_completion():

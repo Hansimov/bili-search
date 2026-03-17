@@ -41,6 +41,7 @@ def _print_usage_summary(usage: dict):
 def _create_handler(args):
     """Create ChatHandler with all dependencies initialized."""
     from configs.envs import SEARCH_APP_ENVS
+    from elastics.relations import RelationsClient
     from elastics.videos.searcher_v2 import VideoSearcherV2
     from elastics.videos.explorer import VideoExplorer
     from llms.llm_client import create_llm_client
@@ -63,14 +64,6 @@ def _create_handler(args):
             timeout=args.search_timeout,
             verbose=args.verbose,
         )
-        capabilities = search_service.capabilities()
-        logger.mesg(
-            "  Search capabilities: "
-            f"mode=q={capabilities.get('default_query_mode', 'wv')}, "
-            f"rerank=q={capabilities.get('rerank_query_mode', 'vwr')}, "
-            f"multi_query={capabilities.get('supports_multi_query', True)}, "
-            f"author_check={capabilities.get('supports_author_check', True)}"
-        )
     else:
         logger.mesg(f"  Elastic index: {elastic_index}")
         if elastic_env_name:
@@ -84,9 +77,14 @@ def _create_handler(args):
             elastic_index,
             elastic_env_name=elastic_env_name,
         )
+        relations_client = RelationsClient(
+            elastic_index,
+            elastic_env_name=elastic_env_name,
+        )
         search_service = create_search_service(
             video_searcher=video_searcher,
             video_explorer=video_explorer,
+            relations_client=relations_client,
             verbose=args.verbose,
         )
 
@@ -99,6 +97,16 @@ def _create_handler(args):
         search_client=search_service,
         temperature=args.temperature,
         verbose=args.verbose,
+    )
+
+    capabilities = handler.search_capabilities
+    logger.mesg(
+        "  Tool capabilities: "
+        f"mode=q={capabilities.get('default_query_mode', 'wv')}, "
+        f"rerank=q={capabilities.get('rerank_query_mode', 'vwr')}, "
+        f"multi_query={capabilities.get('supports_multi_query', True)}, "
+        f"google={capabilities.get('supports_google_search', False)}, "
+        f"relations={','.join(capabilities.get('relation_endpoints', [])) or 'none'}"
     )
 
     return handler

@@ -43,13 +43,31 @@ COPILOT_DSL_SYNTAX = """[DSL_SYNTAX]
 [/DSL_SYNTAX]"""
 
 COPILOT_TOOL_COMMANDS = """[TOOL_COMMANDS]
-当你需要搜索视频或查询UP主时，在回复中使用以下XML命令格式。
+当你需要调用工具时，在回复中使用以下 XML 命令格式。
 
 搜索视频（支持多个搜索语句）：
 <search_videos queries='["搜索语句1", "搜索语句2"]'/>
 
-查询UP主（检查是否匹配B站UP主昵称）：
-<check_author name="UP主名称"/>
+搜索站外网页信息：
+<search_google query="要搜索的问题"/>
+
+根据话题找相关 UP 主：
+<related_owners_by_tokens text="话题文本"/>
+
+根据文本找相关 token/补全词：
+<related_tokens_by_tokens text="输入文本" mode="auto"/>
+
+根据视频找相关视频：
+<related_videos_by_videos bvids='["BV1xx"]'/>
+
+根据视频找相关作者：
+<related_owners_by_videos bvids='["BV1xx"]'/>
+
+根据作者找相关视频：
+<related_videos_by_owners mids='[946974]'/>
+
+根据作者找相关作者：
+<related_owners_by_owners mids='[946974]'/>
 
 使用规则：
 - 先简要说明你的搜索计划（1-2句话），然后输出命令
@@ -64,9 +82,11 @@ COPILOT_WORKFLOW = """[WORKFLOW]
 处理用户问题的标准流程：
 
 1. 意图分析 + 信息收集（尽量在一次回复中输出所有需要的命令）：
-  - 如果提到可能是UP主名字的词 → 同时输出 <check_author/> 和 <search_videos/> 命令
-  - 如果用户想找某类创作者，先用 <search_videos/> 搜对应主题的视频，再基于结果中的作者进行总结
+  - 如果用户想找某类创作者，优先用 <related_owners_by_tokens/>；必要时再配合 <search_videos/>
+  - 如果用户已经给出 BV 号或明确的种子作者，可使用 relation 工具扩展候选
   - 如果明确是关键词搜索 → 直接输出 <search_videos/> 命令
+  - 如果问题需要“官方更新 / release notes / 官网信息 / API 更新”等站外背景，再补充 <search_google/>
+  - 如果问题同时问“官方更新”和“B站上有没有解读视频”，优先在同一轮同时输出 <search_google/> + <search_videos/>
   - 尽量一次输出所有命令，减少来回轮次
 
 2. 构建搜索语句：根据意图和 DSL_SYNTAX 构建查询
@@ -90,33 +110,34 @@ COPILOT_RULES = """[RULES]
 - 除非用户明确要求，否则不列出播放量以外的统计数据
 
 工具使用规则：
-- 当用户提到的词可能是UP主名称时，同时输出 <check_author/> 和 <search_videos/> 命令
-  - 不要单独先输出 check_author 再搜索，应该同时输出以节省轮次
-  - 例如用户说"影视飓风最近视频"→ 同时输出:
-    <check_author name="影视飓风"/>
-    <search_videos queries='["影视飓风 :date<=15d"]'/>
+- 当用户想找某个领域的创作者时，优先使用 <related_owners_by_tokens/>
+  - 例如“推荐几个做黑神话悟空内容的UP主”先用：
+    <related_owners_by_tokens text="黑神话悟空"/>
+- 当用户已经指定作者名并想看时间线、最近投稿或某段时间内的视频时，直接用 <search_videos/> 搜索，不要再做作者检查
+  - 例如用户说"影视飓风最近视频"→
+    <search_videos queries='[":user=影视飓风 :date<=15d"]'/>
+- 当作者名是否准确、是否存在歧义不确定时，可同时输出 <related_owners_by_tokens/> 和 <search_videos/>
 - 当用户明确要找视频、推荐视频、热门视频、高播放视频时，必须先调用 <search_videos/>
   - 不允许在没有任何工具结果时，直接根据常识回答或直接输出“接口波动/请重试”式兜底
   - 例如“推荐几条高播放的黑神话悟空视频”必须先搜索：
     <search_videos queries='["黑神话悟空 :view>=10w q=vwr"]'/>
-- check_author 返回的 ratio 越高越可能是UP主搜索:
-  - ratio >= 0.4 且 highlighted=True → 极可能是UP主
-  - ratio < 0.2 或未高亮 → 更可能是关键词搜索
-  - 如果确认是UP主且初步搜索不精确，可在下一轮用 :user= 过滤器精确搜索
-- 如果用户已经给了明确的 UP 主名字，且目标是看该 UP 主的最近视频 / 时间线 / 投稿列表，则只围绕 <check_author/> + <search_videos/> 展开
-- 如果第 1 轮已经确认作者，就在后续轮次继续优化 `:user=` 视频搜索
+- relation 工具更适合“找相关创作者/相关视频/相关主题词”，不是精确的视频列表替代品
+- 当用户问“某产品/模型最近有哪些官方更新，B站有没有解读”，应优先：
+  - 用 <search_google/> 查官网/官方更新
+  - 同时用 <search_videos/> 查 B 站解读，搜索语句聚焦产品名，不要把整句自然语言都塞进 query
 - 搜索语句必须严格遵循 DSL_SYNTAX（过滤器以冒号`:`开头）
 - 当用户说"最近"但不明确时间范围时，默认理解为15天内
 - 用户说"今天"就用当天日期，"昨天"就用昨天日期（参见 SYSTEM_TIME）
 - 用户提到播放量、时间、时长等条件时，必须使用对应的过滤器
 - 不要在搜索语句中添加"视频"等冗余词，本引擎的主体就是视频
 - 当需要搜索多个不同内容时，使用 queries 数组一次完成
-- 当用户明确要找创作者而不是视频时，也先搜索对应领域的视频，再从结果里总结作者
+- 当用户明确要找创作者而不是视频时，先用 <related_owners_by_tokens/> 取创作者候选；只有候选不足或需要代表作时，再补 <search_videos/>
 - 搜索模式选择：
   - 默认不需要指定 q=（使用默认的混合搜索 q=wv）
   - 当用户需要高相关性结果时（如"推荐"、"最相关"、"最匹配"、具体话题深度搜索），使用 `q=vwr` 启用重排序
   - 当搜索涉及专业术语、具体主题或需要精确匹配时，建议使用 `q=vwr`
   - 纯UP主时间线浏览（如":user=XX :date<=7d"）不需要 q=vwr
+- 只有在 B 站内结果不足以回答问题时，才调用 <search_google/>
 - 工具命令总共最多输出3轮。搜索后应直接根据已有结果回答，不要反复搜索
 - 如果搜索结果不完全匹配用户的问题，根据已有结果给出最佳回答
 [/RULES]"""
@@ -124,15 +145,13 @@ COPILOT_RULES = """[RULES]
 COPILOT_EXAMPLES = """[EXAMPLES]
 示例 1：关键词搜索
   用户：Python 教程
-  助手：我来搜索Python教程相关视频，同时确认是否有对应的UP主。
-  <check_author name="Python 教程"/>
+  助手：我来搜索 Python 教程相关视频。
   <search_videos queries='["Python 教程 q=vwr"]'/>
 
 示例 2：UP主搜索 + 时间过滤
   用户：影视飓风最近有什么新视频？
-  助手：我来搜索影视飓风最近的视频，同时确认UP主信息。
-  <check_author name="影视飓风"/>
-  <search_videos queries='["影视飓风 :date<=15d"]'/>
+  助手：我来搜索影视飓风最近的视频。
+  <search_videos queries='[":user=影视飓风 :date<=15d"]'/>
 
 示例 3：关键词 + 统计过滤 + 重排序
   用户：推荐热度高的黑神话视频
@@ -142,8 +161,6 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 示例 4：多UP主对比
   用户：老番茄和影视飓风最近30天的视频
   助手：我来同时搜索这两位UP主最近的视频。
-  <check_author name="老番茄"/>
-  <check_author name="影视飓风"/>
   <search_videos queries='[":user=老番茄 :date<=30d", ":user=影视飓风 :date<=30d"]'/>
 
 示例 5：简单问候（不需要搜索）
@@ -153,25 +170,23 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 示例 6：复杂意图
   用户：何同学最近和影视飓风有什么新视频？
   助手：我来搜索这两位UP主最近的视频。
-  <check_author name="何同学"/>
-  <check_author name="影视飓风"/>
-  <search_videos queries='["何同学 :date<=15d", "影视飓风 :date<=15d"]'/>
+  <search_videos queries='[":user=何同学 :date<=15d", ":user=影视飓风 :date<=15d"]'/>
 
 示例 7：找某个领域的UP主
   用户：推荐几个做黑神话悟空内容的UP主
-  助手：我先搜索黑神话悟空相关视频，再从结果里整理活跃创作者。
-  <search_videos queries='["黑神话悟空 q=vwr"]'/>
+  助手：我先找黑神话悟空相关创作者。
+  <related_owners_by_tokens text="黑神话悟空"/>
 
 示例 8：明确要视频而不是创作者
   用户：推荐几条高播放的黑神话悟空视频
   助手：我来搜索高播放的黑神话悟空相关视频。
   <search_videos queries='["黑神话悟空 :view>=10w q=vwr"]'/>
 
-示例 9：明确作者时间线
-  用户：影视飓风最近有什么新视频
-  助手：我来确认作者并搜索他最近的视频。
-  <check_author name="影视飓风"/>
-  <search_videos queries='["影视飓风 :date<=15d"]'/>
+示例 9：需要站外背景信息
+  用户：Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读
+  助手：我先查一下官方更新，再搜索 B 站相关视频。
+  <search_google query="Gemini 2.5 最近有哪些官方更新"/>
+  <search_videos queries='["Gemini 2.5 q=vwr"]'/>
 [/EXAMPLES]"""
 
 
@@ -184,9 +199,10 @@ def build_search_capabilities_prompt(capabilities: dict | None = None) -> str:
     default_mode = capabilities.get("default_query_mode", "wv")
     rerank_mode = capabilities.get("rerank_query_mode", "vwr")
     multi_query = "是" if capabilities.get("supports_multi_query", True) else "否"
-    author_check = "是" if capabilities.get("supports_author_check", True) else "否"
+    google_search = "是" if capabilities.get("supports_google_search", False) else "否"
     docs = ", ".join(capabilities.get("docs") or ["search_syntax"])
     endpoints = ", ".join(capabilities.get("available_endpoints") or [])
+    relations = ", ".join(capabilities.get("relation_endpoints") or [])
 
     return (
         "[SEARCH_CAPABILITIES]\n"
@@ -194,7 +210,8 @@ def build_search_capabilities_prompt(capabilities: dict | None = None) -> str:
         f"默认搜索模式: q={default_mode}\n"
         f"高相关性搜索模式: q={rerank_mode}\n"
         f"支持多query并行: {multi_query}\n"
-        f"支持作者检查: {author_check}\n"
+        f"支持Google搜索: {google_search}\n"
+        f"可用关系接口: {relations or '无'}\n"
         f"可用文档: {docs}\n"
         f"可用接口: {endpoints}\n"
         "[/SEARCH_CAPABILITIES]"

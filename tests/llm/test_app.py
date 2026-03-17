@@ -28,13 +28,17 @@ def create_test_app():
     ) as mock_searcher_cls, patch(
         "apps.search_app.VideoExplorer"
     ) as mock_explorer_cls, patch(
+        "apps.search_app.RelationsClient"
+    ) as mock_relations_cls, patch(
         "llms.llm_client.create_llm_client"
     ) as mock_create_llm:
 
         mock_searcher = MagicMock()
         mock_explorer = MagicMock()
+        mock_relations = MagicMock()
         mock_searcher_cls.return_value = mock_searcher
         mock_explorer_cls.return_value = mock_explorer
+        mock_relations_cls.return_value = mock_relations
 
         mock_llm = MagicMock()
         mock_llm.model = "test-model"
@@ -89,8 +93,10 @@ def test_capabilities_endpoint():
     data = resp.json()
     assert data["service_name"] == "Test Search App"
     assert data["supports_multi_query"] is True
-    assert data["supports_author_check"] is True
+    assert data["supports_author_check"] is False
+    assert "related_owners_by_tokens" in data["relation_endpoints"]
     assert "/explore" in data["available_endpoints"]
+    assert "/related_owners_by_tokens" in data["available_endpoints"]
 
     logger.success("[PASS] /capabilities endpoint")
 
@@ -289,7 +295,7 @@ def test_no_chat_without_llm_config():
 
     with patch("apps.search_app.init_embed_client_with_keepalive"), patch(
         "apps.search_app.VideoSearcherV2"
-    ), patch("apps.search_app.VideoExplorer"):
+    ), patch("apps.search_app.VideoExplorer"), patch("apps.search_app.RelationsClient"):
         from apps.search_app import SearchApp
 
         app_envs = {

@@ -243,7 +243,7 @@ def test_chat_with_tools_mock(mock_post):
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = make_tool_call_response(
-        "check_author", {"name": "影视飓风"}
+        "search_google", {"query": "Gemini 2.5 official updates"}
     )
     mock_response.raise_for_status = MagicMock()
     mock_post.return_value = mock_response
@@ -262,8 +262,10 @@ def test_chat_with_tools_mock(mock_post):
     )
 
     assert result.has_tool_calls
-    assert result.tool_calls[0].name == "check_author"
-    assert result.tool_calls[0].parse_arguments() == {"name": "影视飓风"}
+    assert result.tool_calls[0].name == "search_google"
+    assert result.tool_calls[0].parse_arguments() == {
+        "query": "Gemini 2.5 official updates"
+    }
 
     # Verify tools were sent in payload
     call_kwargs = mock_post.call_args

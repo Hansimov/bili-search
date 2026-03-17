@@ -51,27 +51,20 @@ MOCK_EXPLORE_RESULT = {
     ],
 }
 
-MOCK_SUGGEST_RESULT = {
-    "query": "影视飓风",
-    "total_hits": 25,
-    "hits": [
+MOCK_RELATED_OWNERS_RESULT = {
+    "text": "影视飓风",
+    "owners": [
         {
-            "bvid": "BV1x",
-            "title": "影视飓风最新评测",
-            "owner": {"mid": 946974, "name": "影视飓风"},
-            "highlights": {"merged": ["<em>影视飓风</em>最新评测"]},
+            "mid": 946974,
+            "name": "影视飓风",
+            "doc_freq": 18,
+            "score": 71.3,
         },
         {
-            "bvid": "BV1y",
-            "title": "影视飓风年度总结",
-            "owner": {"mid": 946974, "name": "影视飓风"},
-            "highlights": {"merged": ["<em>影视飓风</em>年度总结"]},
-        },
-        {
-            "bvid": "BV1z",
-            "title": "飓风推荐",
-            "owner": {"mid": 1780480185, "name": "飓多多StormCrew"},
-            "highlights": {"merged": ["<em>飓</em>风推荐"]},
+            "mid": 1780480185,
+            "name": "飓多多StormCrew",
+            "doc_freq": 3,
+            "score": 12.5,
         },
     ],
 }
@@ -86,7 +79,7 @@ def test_tool_definitions_format():
     logger.note("=" * 60)
     logger.note("[TEST] tool definitions format")
 
-    assert len(TOOL_DEFINITIONS) == 2
+    assert len(TOOL_DEFINITIONS) == 1
 
     for tool_def in TOOL_DEFINITIONS:
         assert tool_def["type"] == "function"
@@ -102,7 +95,6 @@ def test_tool_definitions_format():
     # Check specific tools exist
     names = [t["function"]["name"] for t in TOOL_DEFINITIONS]
     assert "search_videos" in names
-    assert "check_author" in names
 
     # Verify search_videos uses queries array
     search_tool = [
@@ -149,20 +141,20 @@ def test_execute_search_videos():
     logger.success("[PASS] execute search_videos")
 
 
-def test_execute_check_author():
-    """Test check_author tool execution."""
+def test_execute_related_owners_by_tokens():
+    """Test related_owners_by_tokens tool execution."""
     logger.note("=" * 60)
-    logger.note("[TEST] execute check_author")
+    logger.note("[TEST] execute related_owners_by_tokens")
 
     mock_client = MagicMock()
-    mock_client.suggest.return_value = MOCK_SUGGEST_RESULT
+    mock_client.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
 
     executor = ToolExecutor(search_client=mock_client)
 
     tc = ToolCall(
         id="call_test_2",
-        name="check_author",
-        arguments=json.dumps({"name": "影视飓风"}),
+        name="related_owners_by_tokens",
+        arguments=json.dumps({"text": "影视飓风"}),
     )
     result_msg = executor.execute(tc)
 
@@ -170,15 +162,14 @@ def test_execute_check_author():
     assert result_msg["tool_call_id"] == "call_test_2"
 
     result_data = json.loads(result_msg["content"])
-    assert result_data["query"] == "影视飓风"
-    assert "影视飓风" in result_data["related_authors"]
-    author = result_data["related_authors"]["影视飓风"]
-    assert author["uid"] == 946974
-    assert author["ratio"] > 0.5
-    assert author.get("highlighted") is True
+    assert result_data["text"] == "影视飓风"
+    assert result_data["total_owners"] == 2
+    owner = result_data["owners"][0]
+    assert owner["mid"] == 946974
+    assert owner["name"] == "影视飓风"
+    assert owner["link"].endswith("946974")
 
-    logger.success(f"  Author ratio: {author['ratio']}")
-    logger.success("[PASS] execute check_author")
+    logger.success("[PASS] execute related_owners_by_tokens")
 
 
 def test_execute_unknown_tool():
@@ -200,6 +191,28 @@ def test_execute_unknown_tool():
     assert "error" in result_data
 
     logger.success("[PASS] execute unknown tool")
+
+
+def test_tool_executor_merges_google_capability():
+    """Google Hub capability should be exposed even if search service omits it."""
+    logger.note("=" * 60)
+    logger.note("[TEST] tool executor merges google capability")
+
+    mock_client = MagicMock()
+    mock_client.capabilities.return_value = {
+        "service_name": "search-app",
+        "supports_multi_query": True,
+        "relation_endpoints": ["related_owners_by_tokens"],
+    }
+    mock_google = MagicMock()
+
+    executor = ToolExecutor(search_client=mock_client, google_client=mock_google)
+    capabilities = executor.get_search_capabilities()
+
+    assert capabilities["supports_google_search"] is True
+    assert capabilities["relation_endpoints"] == ["related_owners_by_tokens"]
+
+    logger.success("[PASS] tool executor merges google capability")
 
 
 def test_execute_empty_query():
@@ -398,7 +411,11 @@ if __name__ == "__main__":
     tests = [
         ("tool_definitions_format", test_tool_definitions_format),
         ("execute_search_videos", test_execute_search_videos),
-        ("execute_check_author", test_execute_check_author),
+        ("execute_related_owners_by_tokens", test_execute_related_owners_by_tokens),
+        (
+            "tool_executor_merges_google_capability",
+            test_tool_executor_merges_google_capability,
+        ),
         ("execute_read_spec", test_execute_read_spec),
         ("execute_unknown_tool", test_execute_unknown_tool),
         ("execute_empty_query", test_execute_empty_query),

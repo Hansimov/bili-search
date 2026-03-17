@@ -1,10 +1,7 @@
-"""Tool executor for dispatching and executing tool calls.
-
-Handles the execution of search_videos and check_author tools,
-using a search service that provides explore() and suggest() methods.
-"""
+"""Tool executor for dispatching and executing tool calls."""
 
 import json
+import os
 import requests
 
 from tclogger import logger
@@ -13,9 +10,12 @@ from llms.llm_client import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
 from llms.tools.utils import (
-    format_hits_for_llm,
     extract_explore_hits,
-    analyze_suggest_for_authors,
+    format_google_results,
+    format_hits_for_llm,
+    format_related_owners,
+    format_related_token_options,
+    format_related_videos,
 )
 
 # Whitelist-based spec registry — only these documents can be read
@@ -36,9 +36,16 @@ class SearchService:
         suggest = service.suggest("影视飓风")
     """
 
-    def __init__(self, video_searcher, video_explorer, verbose: bool = False):
+    def __init__(
+        self,
+        video_searcher,
+        video_explorer,
+        relations_client=None,
+        verbose: bool = False,
+    ):
         self.video_searcher = video_searcher
         self.video_explorer = video_explorer
+        self.relations_client = relations_client
         self.verbose = verbose
         self._capabilities = self._build_capabilities()
 
@@ -47,8 +54,21 @@ class SearchService:
             **DEFAULT_SEARCH_CAPABILITIES,
             "service_type": "local",
             "service_name": "integrated_search",
-            "supports_author_check": True,
+            "supports_author_check": False,
             "supports_multi_query": True,
+            "supports_google_search": False,
+            "relation_endpoints": (
+                [
+                    "related_tokens_by_tokens",
+                    "related_owners_by_tokens",
+                    "related_videos_by_videos",
+                    "related_owners_by_videos",
+                    "related_videos_by_owners",
+                    "related_owners_by_owners",
+                ]
+                if self.relations_client is not None
+                else []
+            ),
             "available_endpoints": [
                 "/explore",
                 "/suggest",
@@ -58,6 +78,12 @@ class SearchService:
                 "/doc",
                 "/knn_search",
                 "/hybrid_search",
+                "/related_tokens_by_tokens",
+                "/related_owners_by_tokens",
+                "/related_videos_by_videos",
+                "/related_owners_by_videos",
+                "/related_videos_by_owners",
+                "/related_owners_by_owners",
             ],
             "docs": list(SPEC_REGISTRY.keys()),
         }
@@ -88,6 +114,47 @@ class SearchService:
         except Exception as e:
             logger.warn(f"× Search suggest error: {e}")
             return {"error": str(e), "hits": [], "total_hits": 0}
+
+    def _relation_method(self, name: str):
+        if self.relations_client is None:
+            return None
+        return getattr(self.relations_client, name, None)
+
+    def related_tokens_by_tokens(self, **kwargs) -> dict:
+        method = self._relation_method("related_tokens_by_tokens")
+        if method is None:
+            return {"error": "Relations service unavailable", "options": []}
+        return method(**kwargs)
+
+    def related_owners_by_tokens(self, **kwargs) -> dict:
+        method = self._relation_method("related_owners_by_tokens")
+        if method is None:
+            return {"error": "Relations service unavailable", "owners": []}
+        return method(**kwargs)
+
+    def related_videos_by_videos(self, **kwargs) -> dict:
+        method = self._relation_method("related_videos_by_videos")
+        if method is None:
+            return {"error": "Relations service unavailable", "videos": []}
+        return method(**kwargs)
+
+    def related_owners_by_videos(self, **kwargs) -> dict:
+        method = self._relation_method("related_owners_by_videos")
+        if method is None:
+            return {"error": "Relations service unavailable", "owners": []}
+        return method(**kwargs)
+
+    def related_videos_by_owners(self, **kwargs) -> dict:
+        method = self._relation_method("related_videos_by_owners")
+        if method is None:
+            return {"error": "Relations service unavailable", "videos": []}
+        return method(**kwargs)
+
+    def related_owners_by_owners(self, **kwargs) -> dict:
+        method = self._relation_method("related_owners_by_owners")
+        if method is None:
+            return {"error": "Relations service unavailable", "owners": []}
+        return method(**kwargs)
 
 
 class SearchServiceClient:
@@ -131,7 +198,7 @@ class SearchServiceClient:
             "service_type": "remote",
             "service_name": self.base_url,
             "base_url": self.base_url,
-            "available_endpoints": ["/explore", "/suggest", "/health"],
+            "available_endpoints": ["/explore", "/suggest", "/health", "/capabilities"],
             "docs": list(SPEC_REGISTRY.keys()),
         }
         try:
@@ -170,11 +237,87 @@ class SearchServiceClient:
         }
         return self._post("/suggest", payload)
 
+    def related_tokens_by_tokens(self, **kwargs) -> dict:
+        return self._post("/related_tokens_by_tokens", kwargs)
+
+    def related_owners_by_tokens(self, **kwargs) -> dict:
+        return self._post("/related_owners_by_tokens", kwargs)
+
+    def related_videos_by_videos(self, **kwargs) -> dict:
+        return self._post("/related_videos_by_videos", kwargs)
+
+    def related_owners_by_videos(self, **kwargs) -> dict:
+        return self._post("/related_owners_by_videos", kwargs)
+
+    def related_videos_by_owners(self, **kwargs) -> dict:
+        return self._post("/related_videos_by_owners", kwargs)
+
+    def related_owners_by_owners(self, **kwargs) -> dict:
+        return self._post("/related_owners_by_owners", kwargs)
+
+
+class GoogleSearchClient:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 45.0,
+        verbose: bool = False,
+    ):
+        self.base_url = str(base_url).rstrip("/")
+        self.timeout = timeout
+        self.verbose = verbose
+
+    def health(self) -> dict:
+        try:
+            response = requests.get(f"{self.base_url}/health", timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            return {"error": str(exc)}
+
+    def search(self, query: str, num: int = 5, lang: str | None = None) -> dict:
+        params = {"q": query, "num": num}
+        if lang:
+            params["lang"] = lang
+        try:
+            response = requests.get(
+                f"{self.base_url}/search",
+                params=params,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            logger.warn(f"× Google hub request error: {exc}")
+            return {"success": False, "error": str(exc), "results": []}
+
+
+def create_google_search_client(
+    *,
+    base_url: str | None = None,
+    timeout: float | None = None,
+    verbose: bool = False,
+):
+    resolved_base_url = (
+        base_url or os.getenv("BILI_GOOGLE_HUB_BASE_URL", "http://127.0.0.1:18100")
+    ).strip()
+    resolved_timeout = float(
+        timeout if timeout is not None else os.getenv("BILI_GOOGLE_HUB_TIMEOUT", "45")
+    )
+    if not resolved_base_url:
+        return None
+    return GoogleSearchClient(
+        base_url=resolved_base_url,
+        timeout=resolved_timeout,
+        verbose=verbose,
+    )
+
 
 def create_search_service(
     *,
     video_searcher=None,
     video_explorer=None,
+    relations_client=None,
     base_url: str | None = None,
     timeout: float = 30.0,
     verbose: bool = False,
@@ -184,6 +327,7 @@ def create_search_service(
     return SearchService(
         video_searcher=video_searcher,
         video_explorer=video_explorer,
+        relations_client=relations_client,
         verbose=verbose,
     )
 
@@ -203,14 +347,24 @@ class ToolExecutor:
         self,
         search_client,
         max_results: int = 15,
+        google_client=None,
         verbose: bool = False,
     ):
         self.search_client = search_client
+        self.google_client = google_client or create_google_search_client(
+            verbose=verbose
+        )
         self.max_results = max_results
         self.verbose = verbose
         self._handlers = {
             "search_videos": self._search_videos,
-            "check_author": self._check_author,
+            "search_google": self._search_google,
+            "related_tokens_by_tokens": self._related_tokens_by_tokens,
+            "related_owners_by_tokens": self._related_owners_by_tokens,
+            "related_videos_by_videos": self._related_videos_by_videos,
+            "related_owners_by_videos": self._related_owners_by_videos,
+            "related_videos_by_owners": self._related_videos_by_owners,
+            "related_owners_by_owners": self._related_owners_by_owners,
             "read_spec": self._read_spec,
         }
 
@@ -222,8 +376,14 @@ class ToolExecutor:
             except TypeError:
                 capabilities = capability_getter()
             if isinstance(capabilities, dict):
-                return capabilities
-        return dict(DEFAULT_SEARCH_CAPABILITIES)
+                merged_capabilities = dict(capabilities)
+                if self.google_client is not None:
+                    merged_capabilities["supports_google_search"] = True
+                return merged_capabilities
+        capabilities = dict(DEFAULT_SEARCH_CAPABILITIES)
+        if self.google_client is not None:
+            capabilities["supports_google_search"] = True
+        return capabilities
 
     def get_tool_definitions(self, include_read_spec: bool = False) -> list[dict]:
         tool_def_getter = getattr(self.search_client, "tool_definitions", None)
@@ -325,23 +485,132 @@ class ToolExecutor:
             "hits": formatted_hits,
         }
 
-    def _check_author(self, args: dict) -> dict:
-        """Execute the check_author tool."""
-        name = args.get("name", "")
-        if not name:
-            return {"error": "Missing name parameter"}
-        suggest_result = self.search_client.suggest(query=name)
-
-        if "error" in suggest_result:
+    def _search_google(self, args: dict) -> dict:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return {"error": "Missing query parameter", "results": []}
+        if self.google_client is None:
+            return {"error": "Google search unavailable", "results": []}
+        num = int(args.get("num", 5) or 5)
+        lang = args.get("lang")
+        result = self.google_client.search(query=query, num=num, lang=lang)
+        if result.get("error"):
             return {
-                "query": name,
-                "error": suggest_result["error"],
-                "total_hits": 0,
-                "highlighted_keywords": {},
-                "related_authors": {},
+                "query": query,
+                "error": result["error"],
+                "result_count": 0,
+                "results": [],
             }
+        return {
+            "query": query,
+            "backend": result.get("backend", ""),
+            "result_count": int(
+                result.get("result_count", len(result.get("results", []))) or 0
+            ),
+            "results": format_google_results(result.get("results", []), max_hits=5),
+        }
 
-        return analyze_suggest_for_authors(suggest_result, query=name)
+    def _related_tokens_by_tokens(self, args: dict) -> dict:
+        text = str(args.get("text", "")).strip()
+        if not text:
+            return {"error": "Missing text parameter", "options": []}
+        result = self.search_client.related_tokens_by_tokens(
+            text=text,
+            mode=args.get("mode", "auto"),
+            size=int(args.get("size", 8) or 8),
+        )
+        if result.get("error"):
+            return {"text": text, "error": result["error"], "options": []}
+        options = result.get("options", [])
+        return {
+            "text": text,
+            "mode": result.get("mode", args.get("mode", "auto")),
+            "total_options": len(options),
+            "options": format_related_token_options(options, max_hits=self.max_results),
+        }
+
+    def _related_owners_by_tokens(self, args: dict) -> dict:
+        text = str(args.get("text", "")).strip()
+        if not text:
+            return {"error": "Missing text parameter", "owners": []}
+        result = self.search_client.related_owners_by_tokens(
+            text=text,
+            size=int(args.get("size", 8) or 8),
+        )
+        if result.get("error"):
+            return {"text": text, "error": result["error"], "owners": []}
+        owners = result.get("owners", [])
+        return {
+            "text": text,
+            "total_owners": len(owners),
+            "owners": format_related_owners(owners, max_hits=self.max_results),
+        }
+
+    def _related_videos_by_videos(self, args: dict) -> dict:
+        bvids = args.get("bvids") or []
+        if not bvids:
+            return {"error": "Missing bvids parameter", "videos": []}
+        result = self.search_client.related_videos_by_videos(
+            bvids=bvids,
+            size=int(args.get("size", 10) or 10),
+        )
+        return self._format_relation_video_result(result, "bvids", bvids)
+
+    def _related_owners_by_videos(self, args: dict) -> dict:
+        bvids = args.get("bvids") or []
+        if not bvids:
+            return {"error": "Missing bvids parameter", "owners": []}
+        result = self.search_client.related_owners_by_videos(
+            bvids=bvids,
+            size=int(args.get("size", 10) or 10),
+        )
+        return self._format_relation_owner_result(result, "bvids", bvids)
+
+    def _related_videos_by_owners(self, args: dict) -> dict:
+        mids = args.get("mids") or []
+        if not mids:
+            return {"error": "Missing mids parameter", "videos": []}
+        result = self.search_client.related_videos_by_owners(
+            mids=mids,
+            size=int(args.get("size", 10) or 10),
+        )
+        return self._format_relation_video_result(result, "mids", mids)
+
+    def _related_owners_by_owners(self, args: dict) -> dict:
+        mids = args.get("mids") or []
+        if not mids:
+            return {"error": "Missing mids parameter", "owners": []}
+        result = self.search_client.related_owners_by_owners(
+            mids=mids,
+            size=int(args.get("size", 10) or 10),
+        )
+        return self._format_relation_owner_result(result, "mids", mids)
+
+    def _format_relation_video_result(
+        self, result: dict, seed_key: str, seed_values: list
+    ) -> dict:
+        if result.get("error"):
+            return {seed_key: seed_values, "error": result["error"], "videos": []}
+        videos = result.get("videos", [])
+        return {
+            "relation": result.get("relation", ""),
+            seed_key: seed_values,
+            "total_videos": len(videos),
+            "videos": format_related_videos(videos, max_hits=self.max_results),
+        }
+
+    def _format_relation_owner_result(
+        self, result: dict, seed_key: str, seed_values: list
+    ) -> dict:
+        if result.get("error"):
+            return {seed_key: seed_values, "error": result["error"], "owners": []}
+        owners = result.get("owners", [])
+        return {
+            "relation": result.get("relation", ""),
+            seed_key: seed_values,
+            "total_owners": len(owners),
+            "owners": format_related_owners(owners, max_hits=self.max_results),
+        }
 
     def _read_spec(self, args: dict) -> dict:
         """Return a whitelisted spec document by name.

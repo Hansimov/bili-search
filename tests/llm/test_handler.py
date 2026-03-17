@@ -102,21 +102,20 @@ MOCK_EXPLORE_RESULT = {
     ],
 }
 
-MOCK_SUGGEST_RESULT = {
-    "query": "影视飓风",
-    "total_hits": 25,
-    "hits": [
+MOCK_RELATED_OWNERS_RESULT = {
+    "text": "影视飓风",
+    "owners": [
         {
-            "bvid": "BV1x",
-            "title": "影视飓风测评",
-            "owner": {"mid": 946974, "name": "影视飓风"},
-            "highlights": {"merged": ["<em>影视飓风</em>测评"]},
+            "mid": 946974,
+            "name": "影视飓风",
+            "doc_freq": 18,
+            "score": 71.3,
         },
         {
-            "bvid": "BV1y",
-            "title": "影视飓风年度",
-            "owner": {"mid": 946974, "name": "影视飓风"},
-            "highlights": {"merged": ["<em>影视飓风</em>年度"]},
+            "mid": 1780480185,
+            "name": "飓多多StormCrew",
+            "doc_freq": 3,
+            "score": 12.5,
         },
     ],
 }
@@ -167,8 +166,9 @@ def test_system_prompt_includes_search_capabilities():
                 "default_query_mode": "wv",
                 "rerank_query_mode": "vwr",
                 "supports_multi_query": True,
-                "supports_author_check": True,
-                "available_endpoints": ["/explore", "/suggest"],
+                "supports_google_search": True,
+                "relation_endpoints": ["related_owners_by_tokens"],
+                "available_endpoints": ["/explore", "/related_owners_by_tokens"],
                 "docs": ["search_syntax"],
             }
 
@@ -228,7 +228,7 @@ def test_single_tool_call():
 
 
 def test_multi_tool_calls():
-    """Test handler with check_author + search_videos in single response → content."""
+    """Test handler with related_owners_by_tokens + search_videos in single response → content."""
     logger.note("=" * 60)
     logger.note("[TEST] multi tool calls")
 
@@ -236,8 +236,8 @@ def test_multi_tool_calls():
     mock_llm.chat.side_effect = [
         # 1. Both commands in one response
         make_tool_cmd_response(
-            "我来搜索影视飓风的视频，同时确认UP主信息。",
-            '<check_author name="影视飓风"/>\n'
+            "我来搜索影视飓风的视频，同时找相关创作者。",
+            '<related_owners_by_tokens text="影视飓风"/>\n'
             "<search_videos queries='[\":user=影视飓风 :date<=7d\"]'/>",
         ),
         # 2. Final content
@@ -245,7 +245,7 @@ def test_multi_tool_calls():
     ]
 
     mock_search = MagicMock()
-    mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -261,7 +261,7 @@ def test_multi_tool_calls():
     assert mock_llm.chat.call_count == 2
 
     # Both tools were called
-    mock_search.suggest.assert_called_once()
+    mock_search.related_owners_by_tokens.assert_called_once()
     mock_search.explore.assert_called_once()
 
     # Final usage uses last prompt_tokens + accumulated completion_tokens.
@@ -288,11 +288,108 @@ def test_fallback_tool_commands_for_single_author_timeline():
     )
 
     assert fallback == [
-        {"type": "check_author", "args": {"name": "影视飓风"}},
-        {"type": "search_videos", "args": {"queries": ["影视飓风 :date<=15d"]}},
+        {"type": "related_owners_by_tokens", "args": {"text": "影视飓风"}},
+        {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
     ]
 
     logger.success("[PASS] fallback tool commands for author timeline")
+
+
+def test_fallback_creator_discovery_commands():
+    """Creator discovery requests should fall back to relation search."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback creator discovery commands")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_creator_discovery_commands(
+        [],
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}],
+        content="我来先找一下相关创作者。",
+    )
+
+    assert fallback == [
+        {"type": "related_owners_by_tokens", "args": {"text": "黑神话悟空"}},
+    ]
+
+    logger.success("[PASS] fallback creator discovery commands")
+
+
+def test_fallback_creator_discovery_commands_for_direct_request():
+    """Direct creator recommendation requests should fall back even without pledge text."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback creator discovery direct request")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_creator_discovery_commands(
+        [],
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}],
+        content="我推荐下面这些UP主。",
+    )
+
+    assert fallback == [
+        {"type": "related_owners_by_tokens", "args": {"text": "黑神话悟空"}},
+    ]
+
+    logger.success("[PASS] fallback creator discovery direct request")
+
+
+def test_fallback_external_search_commands():
+    """Official-update requests should fall back to Google + Bilibili search."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback external search commands")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_external_search_commands(
+        [],
+        messages=[
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            }
+        ],
+        content="我先查一下官方更新，再看看 B 站有没有解读。",
+    )
+
+    assert fallback == [
+        {"type": "search_google", "args": {"query": "Gemini 2.5 最近有哪些官方更新"}},
+        {"type": "search_videos", "args": {"queries": ["Gemini 2.5 q=vwr"]}},
+    ]
+
+    logger.success("[PASS] fallback external search commands")
+
+
+def test_author_timeline_fallback_skips_official_update_queries():
+    """Official-update queries should not be mistaken for creator timeline requests."""
+    logger.note("=" * 60)
+    logger.note("[TEST] author timeline fallback skips official update queries")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_tool_commands(
+        [],
+        messages=[
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            }
+        ],
+        content="我先查一下官方更新。",
+    )
+
+    assert fallback == []
+
+    logger.success("[PASS] author timeline fallback skips official update queries")
 
 
 def test_fallback_video_search_commands_for_explicit_video_request():
@@ -757,7 +854,8 @@ def test_tool_events_tracking():
         # Iteration 1: multiple commands in one response
         make_tool_cmd_response(
             "我来搜索何同学的视频。",
-            '<check_author name="何同学"/>\n' "<search_videos queries='[\"何同学\"]'/>",
+            '<related_owners_by_tokens text="何同学"/>\n'
+            "<search_videos queries='[\":user=何同学 :date<=15d\"]'/>",
         ),
         # Iteration 2: refined search
         make_tool_cmd_response(
@@ -769,7 +867,7 @@ def test_tool_events_tracking():
     ]
 
     mock_search = MagicMock()
-    mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -781,9 +879,9 @@ def test_tool_events_tracking():
     tool_events = result["tool_events"]
     assert len(tool_events) == 2
 
-    # First iteration: check_author + search_videos
+    # First iteration: related_owners_by_tokens + search_videos
     assert tool_events[0]["iteration"] == 1
-    assert "check_author" in tool_events[0]["tools"]
+    assert "related_owners_by_tokens" in tool_events[0]["tools"]
     assert "search_videos" in tool_events[0]["tools"]
 
     # Second iteration
@@ -862,11 +960,11 @@ def test_parallel_tool_calls():
 
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [
-        # 1. Multiple check_author + search in one response
+        # 1. Multiple owner relation + search in one response
         make_tool_cmd_response(
             "我来搜索这两位UP主的视频。",
-            '<check_author name="何同学"/>\n'
-            '<check_author name="影视飓风"/>\n'
+            '<related_owners_by_tokens text="何同学"/>\n'
+            '<related_owners_by_tokens text="影视飓风"/>\n'
             '<search_videos queries=\'[":user=何同学 :date<=15d", ":user=影视飓风 :date<=15d"]\'/>',
         ),
         # 2. Final content
@@ -874,7 +972,7 @@ def test_parallel_tool_calls():
     ]
 
     mock_search = MagicMock()
-    mock_search.suggest.return_value = MOCK_SUGGEST_RESULT
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -889,8 +987,8 @@ def test_parallel_tool_calls():
     # LLM called 2 times (commands + content)
     assert mock_llm.chat.call_count == 2
 
-    # Both check_author calls should have been made
-    assert mock_search.suggest.call_count == 2
+    # Both related_owners_by_tokens calls should have been made
+    assert mock_search.related_owners_by_tokens.call_count == 2
 
     # Search was called (from the multi-query)
     assert mock_search.explore.call_count >= 1

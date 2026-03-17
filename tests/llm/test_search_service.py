@@ -34,7 +34,8 @@ def test_search_service_client_capabilities(mock_get):
         "default_query_mode": "wv",
         "rerank_query_mode": "vwr",
         "supports_multi_query": True,
-        "supports_author_check": True,
+        "supports_author_check": False,
+        "relation_endpoints": ["related_owners_by_tokens"],
     }
     mock_response.raise_for_status = MagicMock()
     mock_get.return_value = mock_response
@@ -46,4 +47,5 @@ def test_search_service_client_capabilities(mock_get):
 
     assert capabilities["service_name"] == "Bili Search App"
     assert capabilities["default_query_mode"] == "wv"
+    assert capabilities["relation_endpoints"] == ["related_owners_by_tokens"]
     assert mock_get.call_args.args[0] == "http://127.0.0.1:21031/capabilities"

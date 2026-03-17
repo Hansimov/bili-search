@@ -10,7 +10,9 @@ DEFAULT_SEARCH_CAPABILITIES = {
     "default_query_mode": "wv",
     "rerank_query_mode": "vwr",
     "supports_multi_query": True,
-    "supports_author_check": True,
+    "supports_author_check": False,
+    "supports_google_search": False,
+    "relation_endpoints": [],
     "docs": ["search_syntax"],
 }
 
@@ -62,30 +64,46 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
     }
 
 
-def build_check_author_tool(capabilities: dict | None = None) -> dict:
+def build_search_google_tool(capabilities: dict | None = None) -> dict:
     caps = _merge_capabilities(capabilities)
     description = (
-        "检查用户输入是否匹配B站视频作者（UP主）的昵称。"
-        "返回匹配的关键词高亮信息和相关作者列表（含UID和占比）。"
-        "用于在搜索时判断用户意图：是关键词搜索还是特定UP主搜索。"
-        "建议与 search_videos 在同一轮并行调用，避免单独占用一轮。"
+        "搜索站外网页信息，用于补充B站内搜索无法直接回答的背景知识、新闻、产品信息或跨站事实。"
+        "优先在需要外部事实核对时使用，而不是替代 B 站视频搜索。"
     )
-    if not caps.get("supports_author_check", True):
-        description += " 当前服务不支持作者检查时，应降级为普通视频搜索。"
     return {
         "type": "function",
         "function": {
-            "name": "check_author",
+            "name": "search_google",
             "description": description,
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "query": {
                         "type": "string",
-                        "description": "要检查的名称或关键词文本",
+                        "description": "要搜索的网页查询语句",
                     },
                 },
-                "required": ["name"],
+                "required": ["query"],
+            },
+        },
+    }
+
+
+def build_relation_tool(
+    name: str,
+    description: str,
+    properties: dict,
+    required: list[str],
+) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
             },
         },
     }
@@ -126,8 +144,103 @@ def build_tool_definitions(
 ) -> list[dict]:
     tools = [
         build_search_videos_tool(capabilities),
-        build_check_author_tool(capabilities),
     ]
+    if _merge_capabilities(capabilities).get("supports_google_search", False):
+        tools.append(build_search_google_tool(capabilities))
+    relation_endpoints = set(
+        _merge_capabilities(capabilities).get("relation_endpoints") or []
+    )
+    if "related_tokens_by_tokens" in relation_endpoints:
+        tools.append(
+            build_relation_tool(
+                "related_tokens_by_tokens",
+                "基于给定文本寻找相关联的 token 补全、主题词或纠错候选。适合补全关键词、发现相关话题词。",
+                {
+                    "text": {"type": "string", "description": "输入文本"},
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "prefix",
+                            "associate",
+                            "next_token",
+                            "correction",
+                        ],
+                        "description": "关系模式，默认 auto",
+                    },
+                    "size": {
+                        "type": "integer",
+                        "description": "返回候选数量",
+                        "default": 8,
+                    },
+                },
+                ["text"],
+            )
+        )
+    if "related_owners_by_tokens" in relation_endpoints:
+        tools.append(
+            build_relation_tool(
+                "related_owners_by_tokens",
+                "根据话题文本寻找相关 UP 主。适合找某个领域、事件或作品下活跃的创作者。",
+                {
+                    "text": {"type": "string", "description": "输入话题文本"},
+                    "size": {
+                        "type": "integer",
+                        "description": "返回作者数量",
+                        "default": 8,
+                    },
+                },
+                ["text"],
+            )
+        )
+    for endpoint, description, key_name, key_desc in [
+        (
+            "related_videos_by_videos",
+            "根据种子视频找相似或相关视频。",
+            "bvids",
+            "种子视频 BV 号数组",
+        ),
+        (
+            "related_owners_by_videos",
+            "根据种子视频找相关作者。",
+            "bvids",
+            "种子视频 BV 号数组",
+        ),
+        (
+            "related_videos_by_owners",
+            "根据种子作者找相关视频。",
+            "mids",
+            "种子作者 mid 数组",
+        ),
+        (
+            "related_owners_by_owners",
+            "根据种子作者找相关作者。",
+            "mids",
+            "种子作者 mid 数组",
+        ),
+    ]:
+        if endpoint in relation_endpoints:
+            tools.append(
+                build_relation_tool(
+                    endpoint,
+                    description,
+                    {
+                        key_name: {
+                            "type": "array",
+                            "items": {
+                                "type": "string" if key_name == "bvids" else "integer"
+                            },
+                            "description": key_desc,
+                        },
+                        "size": {
+                            "type": "integer",
+                            "description": "返回候选数量",
+                            "default": 10,
+                        },
+                    },
+                    [key_name],
+                )
+            )
     if include_read_spec:
         tools.append(build_read_spec_tool(capabilities))
     return tools
@@ -135,5 +248,4 @@ def build_tool_definitions(
 
 TOOL_DEFINITIONS = build_tool_definitions()
 SEARCH_VIDEOS_TOOL = deepcopy(TOOL_DEFINITIONS[0])
-CHECK_AUTHOR_TOOL = deepcopy(TOOL_DEFINITIONS[1])
 READ_SPEC_TOOL = build_read_spec_tool()

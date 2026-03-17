@@ -182,6 +182,72 @@ def extract_explore_authors(explore_result: dict) -> list[dict]:
     return []
 
 
+def format_related_token_options(options: list[dict], max_hits: int = 10) -> list[dict]:
+    return [
+        {
+            "text": option.get("text", ""),
+            "score": option.get("score", 0),
+            "doc_freq": option.get("doc_freq", 0),
+            "type": option.get("type", ""),
+        }
+        for option in options[:max_hits]
+    ]
+
+
+def format_related_owners(owners: list[dict], max_hits: int = 10) -> list[dict]:
+    formatted = []
+    for owner in owners[:max_hits]:
+        mid = owner.get("mid")
+        formatted.append(
+            {
+                "mid": mid,
+                "name": owner.get("name", ""),
+                "score": owner.get("score", 0),
+                "doc_freq": owner.get("doc_freq", 0),
+                "link": f"https://space.bilibili.com/{mid}" if mid else "",
+            }
+        )
+    return formatted
+
+
+def format_related_videos(videos: list[dict], max_hits: int = 10) -> list[dict]:
+    formatted = []
+    for video in videos[:max_hits]:
+        bvid = video.get("bvid", "")
+        owner_mid = video.get("owner_mid")
+        formatted.append(
+            {
+                "bvid": bvid,
+                "title": video.get("title", ""),
+                "score": video.get("score", 0),
+                "doc_freq": video.get("doc_freq", 0),
+                "link": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+                "owner": {
+                    "mid": owner_mid,
+                    "name": video.get("owner_name", ""),
+                    "link": (
+                        f"https://space.bilibili.com/{owner_mid}" if owner_mid else ""
+                    ),
+                },
+            }
+        )
+    return formatted
+
+
+def format_google_results(results: list[dict], max_hits: int = 5) -> list[dict]:
+    formatted = []
+    for result in results[:max_hits]:
+        formatted.append(
+            {
+                "title": result.get("title", ""),
+                "link": result.get("link", result.get("url", "")),
+                "snippet": result.get("snippet", result.get("body", "")),
+                "display_link": result.get("display_link", result.get("source", "")),
+            }
+        )
+    return formatted
+
+
 def analyze_suggest_for_authors(
     suggest_result: dict,
     query: str,

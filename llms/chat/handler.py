@@ -10,10 +10,10 @@ The flow:
   4. Stream final answer to client
 
 Token optimization strategy:
-  - Each iteration re-sends the full conversation, so fewer iterations = fewer tokens
-  - Compact DSL syntax is inline in the system prompt
-  - Tool results use compact JSON (no indent)
-  - If max iterations exhausted, inject a nudge message to force content generation
+    - Each iteration re-sends the full conversation, so fewer iterations = fewer tokens
+    - Compact DSL syntax is inline in the system prompt
+    - Tool results use compact JSON (no indent)
+    - If max iterations exhausted, inject a nudge message to force content generation
 """
 
 import json
@@ -30,7 +30,7 @@ from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt
 
 # Maximum tool-calling iterations to prevent infinite loops.
-# 5 allows multi-hop searches: parallel check_author+search → refine → follow-up → content.
+# 5 allows multi-hop searches: search → relation expansion → refine → content.
 MAX_TOOL_ITERATIONS = 5
 
 # Maximum iterations for thinking mode — allows deeper exploration
@@ -42,16 +42,26 @@ _DSML_BLOCK_PATTERN = re.compile(
     r"<｜DSML｜function_calls>.*?</｜DSML｜function_calls>", re.DOTALL
 )
 
-# Regex patterns for parsing inline tool commands from LLM responses
-_SEARCH_CMD_RE = re.compile(
-    r"""<search_videos\s+queries='(\[.*?\])'\s*/>""",
+_SUPPORTED_TOOL_NAMES: tuple[str, ...] = (
+    "search_videos",
+    "search_google",
+    "related_tokens_by_tokens",
+    "related_owners_by_tokens",
+    "related_videos_by_videos",
+    "related_owners_by_videos",
+    "related_videos_by_owners",
+    "related_owners_by_owners",
+)
+_SUPPORTED_TOOL_NAME_PATTERN = "|".join(_SUPPORTED_TOOL_NAMES)
+_TOOL_ATTRS_PATTERN = r"(?:[^\"'/>]|\"[^\"]*\"|'[^']*')*"
+_GENERIC_TOOL_CMD_RE = re.compile(
+    rf"""<(?P<name>{_SUPPORTED_TOOL_NAME_PATTERN})\s*(?P<attrs>{_TOOL_ATTRS_PATTERN})/>""",
     re.DOTALL,
 )
-_CHECK_AUTHOR_CMD_RE = re.compile(
-    r"""<check_author\s+name="([^"]+)"\s*/>""",
-)
+_TOOL_ATTR_RE = re.compile(r"""(\w+)=(['\"])(.*?)\2""", re.DOTALL)
 _TOOL_CMD_PATTERN = re.compile(
-    r"""<(?:search_videos|check_author)\s[^>]*/>""",
+    rf"""<(?:{_SUPPORTED_TOOL_NAME_PATTERN})\s{_TOOL_ATTRS_PATTERN}/>""",
+    re.DOTALL,
 )
 
 # Patterns to strip echoed tool results that the LLM may copy from the
@@ -59,13 +69,13 @@ _TOOL_CMD_PATTERN = re.compile(
 # _format_results_message: "search_videos(queries=[...]):\n{...json...}"
 _RESULTS_HEADER_RE = re.compile(r"\[搜索结果\][ \t]*\n?")
 _RESULTS_ECHO_RE = re.compile(
-    r"(?:search_videos|check_author)\([^\n)]+\):[ \t]*\n?\{[^\n]*\}",
+    rf"(?:{_SUPPORTED_TOOL_NAME_PATTERN})\([^\n)]*\):[ \t]*\n?\{{[^\n]*\}}",
 )
 
 # Nudge message injected before forcing content generation
 _FORCE_CONTENT_NUDGE = (
     "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
-    "不要再输出任何搜索命令（如 <search_videos/> 或 <check_author/>）。"
+    "不要再输出任何工具命令（如 <search_videos/> 或 <related_owners_by_tokens/>）。"
     "如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
 
@@ -80,10 +90,7 @@ _THINKING_PROMPT = (
 # Inline tool command prefixes used for look-ahead detection during content streaming.
 # When these appear in content, it means the LLM is issuing a tool call rather than
 # producing a final answer, so we must stop streaming content to the client.
-_TOOL_PREFIXES: tuple[str, ...] = (
-    "<search_videos",
-    "<check_author",
-)
+_TOOL_PREFIXES: tuple[str, ...] = tuple(f"<{name}" for name in _SUPPORTED_TOOL_NAMES)
 _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 
 _AUTHOR_TIMELINE_HINT_RE = re.compile(
@@ -91,6 +98,18 @@ _AUTHOR_TIMELINE_HINT_RE = re.compile(
 )
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
     r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
+)
+_CREATOR_DISCOVERY_HINT_RE = re.compile(
+    r"UP主|创作者|作者|博主|谁发的|谁做的|谁在做|推荐几个做|有哪些做|做.+内容的"
+)
+_CREATOR_DISCOVERY_REQUEST_RE = re.compile(
+    r"^(推荐几个|推荐一些|有哪些|有没有|帮我找|找几个|找一些|谁在做|谁做的)"
+)
+_OFFICIAL_INFO_HINT_RE = re.compile(
+    r"官方更新|更新日志|更新了什么|官方公告|官网|release notes|changelog|发布说明|API 更新|模型更新"
+)
+_BILIBILI_DECODE_HINT_RE = re.compile(
+    r"B站.*解读|B站.*视频|有没有.*解读|有没有.*视频|相关解读|相关视频"
 )
 _MISSING_RESULTS_HINT_RE = re.compile(
     r"没收到|未收到|没有收到|搜索结果|工具链路|接口|重试|系统返回"
@@ -102,7 +121,10 @@ _EXPLICIT_VIDEO_REQUEST_RE = re.compile(
     r"^(推荐几条|找几条|帮我找|给我找|想看|推荐|找|有没有)"
 )
 _SEARCH_PLEDGE_HINT_RE = re.compile(
-    r"我来搜索|我先帮你搜|我来帮你搜|我先帮你把|我来帮你找|我先帮你找"
+    r"我来搜索|我先帮你搜|我来帮你搜|我先帮你把|我来帮你找|我先帮你找|我来先找|我先找一下|先找一下"
+)
+_EXTERNAL_SEARCH_PLEDGE_HINT_RE = re.compile(
+    r"我先查|我来查|先查一下|先看一下|联网|Google|官网|官方"
 )
 
 
@@ -135,7 +157,7 @@ def _sanitize_content(content: str) -> str:
 
     Handles:
     - DeepSeek DSML function-calling tags
-    - Inline XML tool commands (<search_videos/>, <check_author/>)
+    - Inline XML tool commands (<search_videos/>, <related_owners_by_tokens/>, ...)
     - Echoed tool results in _format_results_message format
     """
     # Remove full DSML blocks first
@@ -281,28 +303,45 @@ class ChatHandler:
                         total[key][sub_key] = total[key].get(sub_key, 0) + sub_value
 
     @staticmethod
+    def _parse_tool_argument(raw_value: str):
+        value = (raw_value or "").strip()
+        if not value:
+            return ""
+        lowered = value.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        try:
+            if value[0] in ['[', '{', '"']:
+                return json.loads(value)
+        except Exception:
+            pass
+        if re.fullmatch(r"-?\d+", value):
+            return int(value)
+        if re.fullmatch(r"-?\d+\.\d+", value):
+            return float(value)
+        return value
+
+    @staticmethod
     def _parse_tool_commands(content: str) -> list[dict]:
         """Parse inline tool commands from LLM response text.
 
-        Scans for <search_videos .../> and <check_author .../> XML tags.
+        Scans for supported XML tool tags.
 
         Returns:
             List of command dicts with 'type' and 'args' keys.
         """
         commands = []
-        for match in _SEARCH_CMD_RE.finditer(content):
-            queries_str = match.group(1)
-            try:
-                queries = json.loads(queries_str)
-                if isinstance(queries, list):
-                    commands.append(
-                        {"type": "search_videos", "args": {"queries": queries}}
-                    )
-            except json.JSONDecodeError:
-                pass
-        for match in _CHECK_AUTHOR_CMD_RE.finditer(content):
-            name = match.group(1)
-            commands.append({"type": "check_author", "args": {"name": name}})
+        for match in _GENERIC_TOOL_CMD_RE.finditer(content):
+            name = match.group("name")
+            attrs = match.group("attrs") or ""
+            args = {}
+            for attr_match in _TOOL_ATTR_RE.finditer(attrs):
+                key = attr_match.group(1)
+                value = attr_match.group(3)
+                args[key] = ChatHandler._parse_tool_argument(value)
+            commands.append({"type": name, "args": args})
         return commands
 
     @staticmethod
@@ -356,9 +395,13 @@ class ChatHandler:
         if self._has_tool_results_context(messages):
             return commands
         latest_user_text = self._get_latest_user_text(messages)
-        if not latest_user_text or not _AUTHOR_TIMELINE_HINT_RE.search(
+        if not latest_user_text:
+            return commands
+        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text) or _BILIBILI_DECODE_HINT_RE.search(
             latest_user_text
         ):
+            return commands
+        if not _AUTHOR_TIMELINE_HINT_RE.search(latest_user_text):
             return commands
         if not _MISSING_RESULTS_HINT_RE.search(content or ""):
             return commands
@@ -368,10 +411,10 @@ class ChatHandler:
             return commands
 
         fallback = [
-            {"type": "check_author", "args": {"name": author_name}},
+            {"type": "related_owners_by_tokens", "args": {"text": author_name}},
             {
                 "type": "search_videos",
-                "args": {"queries": [f"{author_name} :date<=15d"]},
+                "args": {"queries": [f":user={author_name} :date<=15d"]},
             },
         ]
         if self.verbose:
@@ -379,6 +422,117 @@ class ChatHandler:
                 "> Injecting fallback tool commands for explicit author timeline request"
             )
         return fallback
+
+    @classmethod
+    def _extract_creator_discovery_topic(cls, messages: list[dict]) -> str | None:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return None
+        topic = latest_user_text
+        topic = re.sub(r"^(推荐几个|推荐一些|有哪些|有没有|谁发的|谁做的|帮我找|找一下|找找)", "", topic)
+        topic = re.sub(r"B站上.*$", "", topic)
+        topic = re.sub(r"(做|讲|聊)", "", topic, count=1)
+        topic = re.sub(r"(内容)?的?(UP主|创作者|作者|博主).*$", "", topic)
+        topic = re.sub(r"是谁发的.*$", "", topic)
+        topic = topic.strip(" ，。！？?：:")
+        return topic or None
+
+    def _fallback_creator_discovery_commands(
+        self,
+        commands: list[dict],
+        messages: list[dict],
+        content: str = "",
+    ) -> list[dict]:
+        if commands:
+            return commands
+        if self._has_tool_results_context(messages):
+            return commands
+        latest_user_text = self._get_latest_user_text(messages)
+        if not latest_user_text or not _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text):
+            return commands
+        if _VIDEO_SEARCH_INTENT_RE.search(latest_user_text) and not _CREATOR_DISCOVERY_HINT_RE.search(
+            latest_user_text
+        ):
+            return commands
+        is_explicit_creator_request = bool(
+            _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
+        )
+        if not (
+            _MISSING_RESULTS_HINT_RE.search(content or "")
+            or _SEARCH_PLEDGE_HINT_RE.search(content or "")
+            or is_explicit_creator_request
+        ):
+            return commands
+        topic = self._extract_creator_discovery_topic(messages)
+        if not topic:
+            return commands
+        fallback = [{"type": "related_owners_by_tokens", "args": {"text": topic}}]
+        if self.verbose:
+            logger.warn(
+                "> Injecting fallback relation command for creator-discovery request"
+            )
+        return fallback
+
+    @classmethod
+    def _extract_external_search_query(cls, messages: list[dict]) -> str | None:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return None
+        query = re.sub(r"B站上有没有.*$", "", latest_user_text)
+        query = re.sub(r"有没有.*解读.*$", "", query)
+        query = query.strip(" ，。！？?：:")
+        return query or latest_user_text.strip(" ，。！？?：:") or None
+
+    @classmethod
+    def _extract_bilibili_topic_query(cls, messages: list[dict]) -> str | None:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return None
+        query = re.sub(r"最近有哪些官方更新.*$", "", latest_user_text)
+        query = re.sub(r"官方更新|更新日志|官方公告|官网|release notes|changelog", "", query)
+        query = re.sub(r"B站上有没有.*$", "", query)
+        query = query.strip(" ，。！？?：:")
+        if not query:
+            return None
+        if "q=" not in query:
+            query = f"{query} q=vwr"
+        return query
+
+    def _fallback_external_search_commands(
+        self,
+        commands: list[dict],
+        messages: list[dict],
+        content: str = "",
+    ) -> list[dict]:
+        if commands:
+            return commands
+        if self._has_tool_results_context(messages):
+            return commands
+        latest_user_text = self._get_latest_user_text(messages)
+        if not latest_user_text:
+            return commands
+        if not (
+            _OFFICIAL_INFO_HINT_RE.search(latest_user_text)
+            or _BILIBILI_DECODE_HINT_RE.search(latest_user_text)
+        ):
+            return commands
+        if not (
+            _MISSING_RESULTS_HINT_RE.search(content or "")
+            or _EXTERNAL_SEARCH_PLEDGE_HINT_RE.search(content or "")
+        ):
+            return commands
+        google_query = self._extract_external_search_query(messages)
+        bilibili_query = self._extract_bilibili_topic_query(messages)
+        fallback = []
+        if google_query:
+            fallback.append({"type": "search_google", "args": {"query": google_query}})
+        if bilibili_query and _BILIBILI_DECODE_HINT_RE.search(latest_user_text):
+            fallback.append({"type": "search_videos", "args": {"queries": [bilibili_query]}})
+        if self.verbose and fallback:
+            logger.warn(
+                "> Injecting fallback external-search commands for official-update request"
+            )
+        return fallback or commands
 
     @classmethod
     def _should_fallback_video_search(cls, messages: list[dict], content: str) -> bool:
@@ -449,17 +603,22 @@ class ChatHandler:
         for cmd in commands:
             cmd_type = cmd["type"]
             args = cmd["args"]
-            if cmd_type == "search_videos":
-                result = self.tool_executor._search_videos(args)
-            elif cmd_type == "check_author":
-                result = self.tool_executor._check_author(args)
-            else:
+            handler = self.tool_executor._handlers.get(cmd_type)
+            if handler is None:
                 continue
+            result = handler(args)
             results.append({"type": cmd_type, "args": args, "result": result})
             if self.verbose:
                 result_str = json.dumps(result, ensure_ascii=False)
                 logger.mesg(f"  {cmd_type} → {len(result_str)} chars")
         return results
+
+    @staticmethod
+    def _format_tool_args(args: dict) -> str:
+        return ", ".join(
+            f"{key}={json.dumps(value, ensure_ascii=False)}"
+            for key, value in args.items()
+        )
 
     @staticmethod
     def _format_results_message(results: list[dict]) -> str:
@@ -469,15 +628,8 @@ class ChatHandler:
             cmd_type = r["type"]
             args = r["args"]
             result = r["result"]
-            if cmd_type == "search_videos":
-                queries = args.get("queries", [])
-                parts.append(
-                    f"\nsearch_videos(queries="
-                    f"{json.dumps(queries, ensure_ascii=False)}):"
-                )
-            elif cmd_type == "check_author":
-                name = args.get("name", "")
-                parts.append(f'\ncheck_author(name="{name}"):')
+            formatted_args = ChatHandler._format_tool_args(args)
+            parts.append(f"\n{cmd_type}({formatted_args}):")
             parts.append(json.dumps(result, ensure_ascii=False))
         return "\n".join(parts)
 
@@ -533,6 +685,16 @@ class ChatHandler:
             content = response.content or ""
             commands = self._fallback_tool_commands(
                 self._parse_tool_commands(content),
+                messages=full_messages,
+                content=content,
+            )
+            commands = self._fallback_creator_discovery_commands(
+                commands,
+                messages=full_messages,
+                content=content,
+            )
+            commands = self._fallback_external_search_commands(
+                commands,
                 messages=full_messages,
                 content=content,
             )
@@ -789,6 +951,16 @@ class ChatHandler:
             content = accumulated_content
             commands = self._fallback_tool_commands(
                 self._parse_tool_commands(content),
+                messages=full_messages,
+                content=content,
+            )
+            commands = self._fallback_creator_discovery_commands(
+                commands,
+                messages=full_messages,
+                content=content,
+            )
+            commands = self._fallback_external_search_commands(
+                commands,
                 messages=full_messages,
                 content=content,
             )

@@ -26,6 +26,8 @@ curl -sS http://127.0.0.1:21031/capabilities | jq
 ```bash
 curl -sS -X POST http://127.0.0.1:21031/suggest -H 'Content-Type: application/json' -d '{"query":"黑神话","limit":1}' | jq
 curl -sS -X POST http://127.0.0.1:21031/explore -H 'Content-Type: application/json' -d '{"query":"黑神话 q=vwr"}' | jq '.query,.status'
+curl -sS -X POST http://127.0.0.1:21031/related_owners_by_tokens -H 'Content-Type: application/json' -d '{"text":"黑神话悟空","size":5}' | jq '.owners[:3]'
+curl -sS -X POST http://127.0.0.1:21031/related_videos_by_owners -H 'Content-Type: application/json' -d '{"mids":[946974],"size":3}' | jq '.videos[:3]'
 ```
 
 ## LLM Checks
@@ -40,6 +42,12 @@ Remote llms CLI through search_app:
 
 ```bash
 PYTHONPATH=. python -m llms.cli --llm-config gpt --search-base-url http://127.0.0.1:21031 -q "推荐几条高播放的黑神话悟空视频"
+```
+
+Google Hub is used only inside `llms` tool execution. By default it targets `http://127.0.0.1:18100` and can be overridden with `BILI_GOOGLE_HUB_BASE_URL`:
+
+```bash
+BILI_GOOGLE_HUB_BASE_URL=http://127.0.0.1:18100 BILI_GOOGLE_HUB_TIMEOUT=45 PYTHONPATH=. python -m llms.cli --llm-config gpt --search-base-url http://127.0.0.1:21031 -q "Gemini 2.5 最近有哪些官方更新，B站上有没有解读视频？"
 ```
 
 ## Runtime Pytest
