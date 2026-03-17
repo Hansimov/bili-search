@@ -8,7 +8,7 @@ import urllib.request
 import uvicorn
 
 from pathlib import Path
-from tclogger import logger, logstr
+from tclogger import decolored, logger, logstr
 
 from apps.search_app import (
     SEARCH_APP_ENV_KEYS,
@@ -25,25 +25,17 @@ from webu.clis.helpers import root_epilog
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = WORKSPACE_ROOT / "logs" / "search_app"
-PID_FILE = DATA_DIR / "server.pid"
-LOG_FILE = DATA_DIR / "server.log"
-
-SERVICE_SPEC = LocalServiceSpec(
-    name="bili_search_app",
-    uvicorn_target="apps.search_app:create_app_from_env",
-    pid_file=PID_FILE,
-    log_file=LOG_FILE,
-)
-MANAGED_SERVICE = ManagedServiceSpec(
-    name="bili_search_app",
-    service=SERVICE_SPEC,
-    default_host="0.0.0.0",
-)
-SERVICE_MANAGER = LocalServiceManager(MANAGED_SERVICE)
 
 
 def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_name(value) -> str:
+    text = str(value or "default")
+    chars = [ch.lower() if ch.isalnum() else "-" for ch in text]
+    safe = "".join(chars).strip("-")
+    return safe or "default"
 
 
 def _resolve_runtime_envs(args) -> dict:
@@ -58,6 +50,43 @@ def _resolve_runtime_envs(args) -> dict:
         mode=getattr(args, "mode", None),
         overrides=overrides,
     )
+
+
+def _service_files_for_envs(app_envs: dict) -> tuple[Path, Path]:
+    parts = [
+        _safe_name(app_envs.get("mode")),
+        f"p{int(app_envs['port'])}",
+        f"ei-{_safe_name(app_envs.get('elastic_index'))}",
+        f"ev-{_safe_name(app_envs.get('elastic_env_name'))}",
+        f"lc-{_safe_name(app_envs.get('llm_config'))}",
+    ]
+    stem = "server." + ".".join(parts)
+    return DATA_DIR / f"{stem}.pid", DATA_DIR / f"{stem}.log"
+
+
+def _build_service_manager(app_envs: dict) -> LocalServiceManager:
+    pid_file, log_file = _service_files_for_envs(app_envs)
+    service_spec = LocalServiceSpec(
+        name="bili_search_app",
+        uvicorn_target="apps.search_app_service:create_app_from_env",
+        pid_file=pid_file,
+        log_file=log_file,
+    )
+    managed_service = ManagedServiceSpec(
+        name="bili_search_app",
+        service=service_spec,
+        default_host="0.0.0.0",
+    )
+    return LocalServiceManager(managed_service)
+
+
+def _sanitize_log_file(log_file: Path):
+    if not log_file.exists():
+        return
+    raw = log_file.read_text(encoding="utf-8", errors="replace")
+    cleaned = decolored(raw)
+    if cleaned != raw:
+        log_file.write_text(cleaned, encoding="utf-8")
 
 
 def _runtime_env_vars(app_envs: dict) -> dict[str, str]:
@@ -112,29 +141,32 @@ def _add_runtime_args(parser: argparse.ArgumentParser):
 
 
 def cmd_start(args):
-    current = SERVICE_MANAGER.status()
+    app_envs = _resolve_runtime_envs(args)
+    service_manager = _build_service_manager(app_envs)
+    current = service_manager.status()
     if current["status"] == "running":
         logger.warn(f"  × Search app already running (PID: {current['pid']})")
         return
 
-    app_envs = _resolve_runtime_envs(args)
     _ensure_data_dir()
     logger.note(
         f"> Starting search app on {app_envs['host']}:{app_envs['port']} "
         f"[{app_envs['mode']}] ..."
     )
-    result = SERVICE_MANAGER.start(
+    result = service_manager.start(
         host=app_envs["host"],
         port=app_envs["port"],
         extra_env=_runtime_env_vars(app_envs),
     )
     pid = result["pid"]
     logger.okay(f"  ✓ Search app started (PID: {pid})")
-    logger.mesg(f"  Log: {logstr.file(LOG_FILE)}")
+    logger.mesg(f"  Log: {logstr.file(service_manager.log_file)}")
 
 
 def cmd_stop(args):
-    result = SERVICE_MANAGER.stop()
+    app_envs = _resolve_runtime_envs(args)
+    service_manager = _build_service_manager(app_envs)
+    result = service_manager.stop()
     pid = result["pid"]
     if result["status"] == "not_running":
         logger.warn("  × No PID file found — search app not running?")
@@ -149,14 +181,13 @@ def cmd_stop(args):
 
 def cmd_restart(args):
     app_envs = _resolve_runtime_envs(args)
-    result = SERVICE_MANAGER.restart(
+    service_manager = _build_service_manager(app_envs)
+    stop_result = service_manager.stop()
+    start_result = service_manager.start(
         host=app_envs["host"],
         port=app_envs["port"],
         extra_env=_runtime_env_vars(app_envs),
-        delay_seconds=1.0,
     )
-    stop_result = result["stop"]
-    start_result = result["start"]
     if stop_result["status"] in ("stopped", "stale_pid") and stop_result["pid"]:
         logger.note(f"> Stopping search app (PID: {stop_result['pid']}) ...")
         logger.okay("  ✓ Search app stopped")
@@ -165,16 +196,19 @@ def cmd_restart(args):
         f"[{app_envs['mode']}] ..."
     )
     logger.okay(f"  ✓ Search app started (PID: {start_result['pid']})")
-    logger.mesg(f"  Log: {logstr.file(LOG_FILE)}")
+    logger.mesg(f"  Log: {logstr.file(service_manager.log_file)}")
 
 
 def cmd_status(args):
     app_envs = _resolve_runtime_envs(args)
-    result = SERVICE_MANAGER.status()
+    service_manager = _build_service_manager(app_envs)
+    _sanitize_log_file(service_manager.log_file)
+    result = service_manager.status()
     pid = result["pid"]
     if result["status"] == "not_running":
         logger.mesg("  Search app: NOT RUNNING (no PID file)")
         logger.mesg(f"  Expected URL: {_health_url(app_envs)}")
+        logger.mesg(f"  Expected Log: {logstr.file(service_manager.log_file)}")
         return
     if result["status"] == "dead":
         logger.warn(f"  Search app: DEAD (PID: {pid} not found)")
@@ -183,7 +217,7 @@ def cmd_status(args):
 
     logger.okay(f"  Search app: RUNNING (PID: {pid})")
     logger.mesg(f"  URL: {_health_url(app_envs)}")
-    logger.mesg(f"  Log: {logstr.file(LOG_FILE)}")
+    logger.mesg(f"  Log: {logstr.file(service_manager.log_file)}")
     try:
         health = _fetch_health(app_envs, timeout=args.timeout)
         logger.mesg(f"  Health: {json.dumps(health, ensure_ascii=False)}")
@@ -192,13 +226,16 @@ def cmd_status(args):
 
 
 def cmd_logs(args):
-    if not LOG_FILE.exists():
+    app_envs = _resolve_runtime_envs(args)
+    service_manager = _build_service_manager(app_envs)
+    if not service_manager.log_file.exists():
         logger.warn("  × No log file found")
         return
+    _sanitize_log_file(service_manager.log_file)
     if args.follow:
-        SERVICE_MANAGER.tail_logs()
+        service_manager.tail_logs()
         return
-    print(SERVICE_MANAGER.read_logs(lines=args.lines), end="")
+    print(decolored(service_manager.read_logs(lines=args.lines)), end="")
 
 
 def cmd_check(args):
@@ -244,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.set_defaults(func=cmd_start)
 
     stop_parser = subparsers.add_parser("stop", help="Stop background search app")
+    _add_runtime_args(stop_parser)
     stop_parser.set_defaults(func=cmd_stop)
 
     restart_parser = subparsers.add_parser(
@@ -262,6 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.set_defaults(func=cmd_status)
 
     logs_parser = subparsers.add_parser("logs", help="Show search app logs")
+    _add_runtime_args(logs_parser)
     logs_parser.add_argument(
         "-n", "--lines", type=int, default=50, help="Number of lines to show"
     )

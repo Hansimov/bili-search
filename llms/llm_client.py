@@ -7,6 +7,7 @@ while reusing webu's request construction, timeout, and thinking-mode logic.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import requests
@@ -323,6 +324,7 @@ class LLMClient(WebuLLMClient):
 
 def create_llm_client(
     model_config: str = None,
+    timeout: float | None = None,
     verbose: bool = False,
 ) -> LLMClient:
     if model_config is None:
@@ -339,12 +341,20 @@ def create_llm_client(
         )
 
     envs = LLMS_ENVS[model_config]
+    resolved_timeout = timeout
+    if resolved_timeout is None:
+        env_timeout = os.getenv("BILI_LLM_TIMEOUT", "").strip()
+        if env_timeout:
+            resolved_timeout = float(env_timeout)
+    if resolved_timeout is None:
+        resolved_timeout = envs.get("timeout", 120)
+
     return LLMClient(
         endpoint=envs["endpoint"],
         api_key=envs.get("api_key", ""),
         model=envs["model"],
         api_format=envs.get("api_format", "openai"),
-        timeout=envs.get("timeout", 120),
+        timeout=resolved_timeout,
         stream=envs.get("stream"),
         max_tokens=envs.get("max_tokens"),
         init_messages=envs.get("init_messages") or [],

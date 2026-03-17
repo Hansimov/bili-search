@@ -1,200 +1,320 @@
-"""Live integration tests for LLM chat — requires real LLM + Elasticsearch.
+"""Live integration tests for LLM chat — requires real LLM + search backends.
 
-Tests complex, verifiable scenarios that push the LLM's reasoning boundaries.
-Each test validates content quality, tool usage efficiency, and token budget.
+Focuses on realistic user Q&A and multi-turn dialogue scenarios.
+Each case validates:
+  - output quality and basic formatting
+  - actual tool-routing behavior via tool_events
+  - token budget / runtime sanity
+  - manual review checkpoints printed to stdout
 
 Usage:
     python -m tests.llm.test_live_chat
     python -m tests.llm.test_live_chat --verbose
-    python -m tests.llm.test_live_chat --test 1     # run specific test
-    python -m tests.llm.test_live_chat --elastic-index bili_videos_dev6 --elastic-env-name elastic_dev
+    python -m tests.llm.test_live_chat --test 3
+    python -m tests.llm.test_live_chat --search-base-url http://127.0.0.1:21031
 """
 
 import argparse
-import json
 import re
-import time
 import sys
+import time
 
 from tclogger import logger
 
 
-# ============================================================
-# Test cases — complex, verifiable
-# ============================================================
-
 TEST_CASES = [
     {
         "id": 1,
-        "name": "multi_up_comparison",
-        "description": "多UP主对比 — 需要并行搜索不同UP主并综合对比分析",
-        "query": "对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？",
+        "name": "creator_discovery_direct",
+        "description": "显式找创作者，要求稳定先走 relation 工具，不允许直接编造占位推荐。",
+        "messages": [
+            {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
+        ],
         "checks": {
-            # Content should mention both UP主
-            "content_contains": ["老番茄", "影视飓风"],
-            # Should have bilibili links
-            "content_pattern": r"bilibili\.com/video/BV",
-            # Should use multi-query or :user= filter
-            "max_tokens": 20000,
+            "expected_tools_any": ["related_owners_by_tokens"],
+            "content_pattern": r"space\.bilibili\.com/\d+",
+            "content_not_contains": ["space.bilibili.com/uid", "UP主A", "UP主B"],
+            "max_tokens": 12000,
         },
+        "manual_review_focus": ["作者链接是否为真实 mid", "是否避免占位式推荐"],
     },
     {
         "id": 2,
-        "name": "cross_topic_reasoning",
-        "description": "跨领域推理 — 需要搜索不同关键词并综合分析结果",
-        "query": "B站上关于AI的视频和关于芯片的视频，哪个领域最近一周更火？用播放量数据说明",
+        "name": "creator_discovery_followup_dialogue",
+        "description": "多轮对话中的省略跟进，要求继承上文主题并继续按创作者发现处理。",
+        "messages": [
+            {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
+            {"role": "assistant", "content": "可以，我先给你找一批。"},
+            {"role": "user", "content": "更偏剧情解析和世界观考据的呢？"},
+        ],
         "checks": {
-            "content_contains": ["AI", "芯片"],
-            # Should have numeric data (播放量)
-            "content_pattern": r"\d+[.\d]*[万亿]",
-            "max_tokens": 20000,
+            "expected_tools_any": ["related_owners_by_tokens"],
+            "content_pattern": r"space\.bilibili\.com/\d+",
+            "content_not_contains": ["space.bilibili.com/uid", "UP主A", "UP主B"],
+            "max_tokens": 14000,
         },
+        "manual_review_focus": [
+            "是否理解 follow-up 指向黑神话悟空",
+            "是否按剧情解析/考据方向收窄",
+        ],
     },
     {
         "id": 3,
-        "name": "complex_filter_chain",
-        "description": "复杂过滤链 — 精确过滤条件+排除词+UP主检测的综合能力",
-        "query": "何同学最近3个月播放量超过100万的视频有哪些？不要包含广告和恰饭内容",
+        "name": "official_updates_plus_bili",
+        "description": "官方更新 + B站解读，要求同轮触发 Google 和站内视频搜索。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+        ],
         "checks": {
-            # Should detect "何同学" as UP主
-            "content_contains": ["何同学"],
+            "expected_tools_all": ["search_google", "search_videos"],
+            "content_contains": ["Gemini 2.5"],
             "content_pattern": r"bilibili\.com/video/BV",
-            "max_tokens": 20000,
+            "max_tokens": 15000,
         },
+        "manual_review_focus": [
+            "官方信息是否明显来自官网/官方 changelog",
+            "B站部分是否给出具体视频而非空泛描述",
+        ],
     },
     {
         "id": 4,
-        "name": "multi_hop_topic_drill",
-        "description": "多跳搜索 — 先搜索大方向，再根据结果深入搜索具体UP主或话题",
-        "query": "最近一个月B站上最火的AI相关视频是谁发的？帮我找一下这个UP主的其他热门视频",
+        "name": "official_updates_followup_dialogue",
+        "description": "多轮 follow-up 下的官方更新查询，要求继承前文产品主题并收窄到开发者 API 侧。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "更偏开发者 API 侧，有没有 B 站解读？"},
+        ],
         "checks": {
-            # Should mention AI-related content
-            "content_contains": ["AI"],
-            # Should have bilibili links (from both search rounds)
+            "expected_tools_all": ["search_google", "search_videos"],
+            "content_contains": ["Gemini 2.5", "API"],
             "content_pattern": r"bilibili\.com/video/BV",
-            # Might need more tokens due to multi-hop
-            "max_tokens": 30000,
+            "max_tokens": 17000,
         },
+        "manual_review_focus": [
+            "Google 查询是否继承 Gemini 2.5 主题",
+            "回答是否明显偏开发者/API 更新",
+        ],
     },
     {
         "id": 5,
-        "name": "temporal_reasoning_comparison",
-        "description": "时间推理 — 需要理解相对时间概念并对比不同时间段的数据",
-        "query": "对比一下「机器学习」这个话题在最近一周和最近一个月的视频数量和播放量，最近这个话题是变热了还是变冷了？",
+        "name": "explicit_video_request",
+        "description": "显式找视频，要求稳定先走 search_videos。",
+        "messages": [
+            {"role": "user", "content": "找几条黑神话悟空剧情解析视频，优先高播放"},
+        ],
         "checks": {
-            "content_contains": ["机器学习"],
-            # Should have numeric comparison data
-            "content_pattern": r"\d+",
-            "max_tokens": 25000,
+            "expected_tools_any": ["search_videos"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "content_contains": ["黑神话悟空"],
+            "max_tokens": 12000,
         },
+        "manual_review_focus": ["是否给出真实视频链接", "是否明显偏剧情解析而非泛推荐"],
     },
     {
         "id": 6,
-        "name": "rerank_relevance_search",
-        "description": "重排序搜索 — 测试q=vwr语法的使用，验证LLM能在需要高相关性时使用重排序",
-        "query": "有没有讲解 transformer 注意力机制原理的高质量教程？要通俗易懂的",
+        "name": "author_timeline_recent_posts",
+        "description": "UP主时间线查询，要求用站内搜索，不应误走 Google。",
+        "messages": [
+            {"role": "user", "content": "影视飓风最近有什么新视频？"},
+        ],
         "checks": {
-            "content_contains": ["transformer"],
+            "expected_tools_any": ["search_videos"],
+            "forbidden_tools": ["search_google"],
+            "content_contains": ["影视飓风"],
             "content_pattern": r"bilibili\.com/video/BV",
-            "max_tokens": 20000,
+            "max_tokens": 12000,
         },
+        "manual_review_focus": ["是否按照最近时间线回答", "是否避免站外检索"],
+    },
+    {
+        "id": 7,
+        "name": "seed_owner_similarity",
+        "description": "以已有作者为种子找相近创作者，观察 relation 工具是否被合理使用。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "和影视飓风风格接近的UP主有哪些？各给我一句推荐理由。",
+            },
+        ],
+        "checks": {
+            "expected_tools_any": [
+                "related_owners_by_tokens",
+                "related_owners_by_owners",
+            ],
+            "content_pattern": r"space\.bilibili\.com/\d+",
+            "content_contains": ["影视飓风"],
+            "max_tokens": 15000,
+        },
+        "manual_review_focus": ["推荐理由是否与频道风格相关", "是否出现明显无关作者"],
+    },
+    {
+        "id": 8,
+        "name": "multi_up_comparison",
+        "description": "多 UP 对比，要求并行或分步搜索后给出比较结论。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？",
+            },
+        ],
+        "checks": {
+            "expected_tools_any": ["search_videos"],
+            "content_contains": ["老番茄", "影视飓风"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "max_tokens": 18000,
+        },
+        "manual_review_focus": [
+            "是否真的比较了两边近一个月产量",
+            "结论是否和列出的视频一致",
+        ],
+    },
+    {
+        "id": 9,
+        "name": "multi_hop_topic_drill",
+        "description": "先找热门主题，再追到作者的其他热门视频，检验多跳链路。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "最近一个月B站上最火的AI相关视频是谁发的？帮我找一下这个UP主的其他热门视频。",
+            },
+        ],
+        "checks": {
+            "expected_tools_any": ["search_videos"],
+            "content_contains": ["AI"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "max_tokens": 22000,
+        },
+        "manual_review_focus": [
+            "是否先找到了热门 AI 视频再追作者",
+            "第二跳推荐是否来自同一作者",
+        ],
     },
 ]
 
 
-# ============================================================
-# Test runner
-# ============================================================
+def _flatten_tool_names(tool_events: list[dict] | None) -> list[str]:
+    names = []
+    for event in tool_events or []:
+        names.extend(event.get("tools") or [])
+    return names
+
+
+def _format_messages(messages: list[dict]) -> str:
+    return " | ".join(
+        f"{message.get('role')}={message.get('content', '').strip()}"
+        for message in messages
+    )
 
 
 def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
-    """Run a single test case and return validation results."""
+    """Run a single live chat scenario and validate output + tool routing."""
     tc_id = test_case["id"]
     name = test_case["name"]
-    query = test_case["query"]
+    messages = test_case["messages"]
     checks = test_case["checks"]
 
-    logger.note(f"\n{'=' * 60}")
+    logger.note(f"\n{'=' * 72}")
     logger.note(f"[TEST {tc_id}] {name}")
     logger.mesg(f"  {test_case['description']}")
-    logger.mesg(f"  Query: {query}")
+    logger.mesg(f"  Messages: {_format_messages(messages)}")
+    if test_case.get("manual_review_focus"):
+        logger.mesg(f"  Manual review: {'；'.join(test_case['manual_review_focus'])}")
 
-    messages = [{"role": "user", "content": query}]
     start_time = time.perf_counter()
 
     try:
-        result = handler.handle(messages=messages)
-    except Exception as e:
-        logger.warn(f"  × Handler error: {e}")
-        return {"name": name, "status": "ERROR", "error": str(e)}
+        result = handler.handle(
+            messages=messages,
+            thinking=test_case.get("thinking", False),
+            max_iterations=test_case.get("max_iterations"),
+        )
+    except Exception as exc:
+        logger.warn(f"  × Handler error: {exc}")
+        return {"name": name, "status": "ERROR", "error": str(exc)}
 
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
     content = result["choices"][0]["message"]["content"]
     usage = result.get("usage", {})
     perf_stats = result.get("perf_stats", {})
+    tool_events = result.get("tool_events", [])
+    used_tools = _flatten_tool_names(tool_events)
     total_tokens = usage.get("total_tokens", 0)
-    prompt = usage.get("prompt_tokens", 0)
+    prompt_tokens = usage.get("prompt_tokens", 0)
 
-    # Cache stats: support both DeepSeek flat and GPT nested formats
     cache_hit = usage.get("prompt_cache_hit_tokens", 0)
     prompt_details = usage.get("prompt_tokens_details", {})
     if isinstance(prompt_details, dict) and not cache_hit:
         cache_hit = prompt_details.get("cached_tokens", 0)
     cache_miss = usage.get("prompt_cache_miss_tokens", 0)
     if isinstance(prompt_details, dict) and not cache_miss:
-        cache_miss = max(0, prompt - cache_hit) if cache_hit else 0
+        cache_miss = max(0, prompt_tokens - cache_hit) if cache_hit else 0
 
-    tokens_per_second = perf_stats.get("tokens_per_second", 0)
-    total_elapsed = perf_stats.get("total_elapsed", f"{elapsed_ms}ms")
-
-    logger.mesg(f"  Time: {total_elapsed} ({elapsed_ms}ms)")
     logger.mesg(
-        f"  Tokens: {total_tokens} (prompt={prompt}, "
-        f"cache_hit={cache_hit}, cache_miss={cache_miss})"
+        f"  Time: {perf_stats.get('total_elapsed', f'{elapsed_ms}ms')} ({elapsed_ms}ms)"
     )
-    logger.mesg(f"  Speed: {tokens_per_second} tokens/s")
+    logger.mesg(
+        f"  Tokens: {total_tokens} (prompt={prompt_tokens}, cache_hit={cache_hit}, cache_miss={cache_miss})"
+    )
+    logger.mesg(f"  Tool events: {used_tools or ['<none>']}")
 
-    # --- Validations ---
     failures = []
 
-    # Check content_contains
     for keyword in checks.get("content_contains", []):
         if keyword not in content:
             failures.append(f"content missing '{keyword}'")
 
-    # Check content_pattern
+    for forbidden in checks.get("content_not_contains", []):
+        if forbidden in content:
+            failures.append(f"content unexpectedly contains '{forbidden}'")
+
     pattern = checks.get("content_pattern")
     if pattern and not re.search(pattern, content):
         failures.append(f"content does not match pattern '{pattern}'")
 
-    # Check token budget
+    for tool_name in checks.get("expected_tools_all", []):
+        if tool_name not in used_tools:
+            failures.append(f"missing expected tool '{tool_name}'")
+
+    expected_any = checks.get("expected_tools_any", [])
+    if expected_any and not any(tool_name in used_tools for tool_name in expected_any):
+        failures.append(f"missing any expected tool in {expected_any}")
+
+    for tool_name in checks.get("forbidden_tools", []):
+        if tool_name in used_tools:
+            failures.append(f"unexpected tool '{tool_name}' was used")
+
     max_tokens = checks.get("max_tokens", 30000)
     if total_tokens > max_tokens:
         failures.append(f"token budget exceeded: {total_tokens} > {max_tokens}")
 
-    # Check not empty
-    if len(content) < 50:
+    min_content_length = checks.get("min_content_length", 50)
+    if len(content) < min_content_length:
         failures.append(f"content too short: {len(content)} chars")
 
-    # Check no DSML leakage
     if "DSML" in content or "function_calls" in content:
         failures.append("DSML markup leaked into content")
 
-    # Report
+    preview_limit = 900 if verbose else 320
+    logger.mesg(f"  Preview ({min(len(content), preview_limit)} chars):")
+    print(content[:preview_limit])
+    if len(content) > preview_limit:
+        print(f"  ... ({len(content) - preview_limit} chars truncated)")
+
     if failures:
         status = "FAIL"
-        logger.warn(f"  Failures:")
-        for f in failures:
-            logger.warn(f"    × {f}")
+        logger.warn("  Failures:")
+        for failure in failures:
+            logger.warn(f"    × {failure}")
     else:
         status = "PASS"
-        logger.success(f"  All checks passed")
-
-    if verbose:
-        logger.mesg(f"\n  --- Content ({len(content)} chars) ---")
-        print(content[:600])
-        if len(content) > 600:
-            print(f"  ... ({len(content) - 600} chars truncated)")
+        logger.success("  All checks passed")
 
     return {
         "name": name,
@@ -202,8 +322,9 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
         "failures": failures,
         "elapsed_ms": elapsed_ms,
         "total_tokens": total_tokens,
-        "tokens_per_second": tokens_per_second,
+        "tokens_per_second": perf_stats.get("tokens_per_second", 0),
         "content_length": len(content),
+        "used_tools": used_tools,
     }
 
 
@@ -212,16 +333,16 @@ def main():
     from configs.envs import LLM_CONFIG
 
     parser.add_argument(
-        "--llm-config",
-        type=str,
-        default=LLM_CONFIG,
-        help="LLM config name",
+        "--llm-config", type=str, default=LLM_CONFIG, help="LLM config name"
     )
     parser.add_argument(
-        "--elastic-index",
-        type=str,
-        default=None,
-        help="Elastic videos index name",
+        "--llm-timeout",
+        type=float,
+        default=60.0,
+        help="Per-request LLM timeout in seconds for live regression runs",
+    )
+    parser.add_argument(
+        "--elastic-index", type=str, default=None, help="Elastic videos index name"
     )
     parser.add_argument(
         "--elastic-env-name",
@@ -230,26 +351,29 @@ def main():
         help="Elastic env name in secrets.json",
     )
     parser.add_argument(
+        "--search-base-url",
+        type=str,
+        default=None,
+        help="Use a running search_app service instead of local direct search components",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
-        help="Show full response content",
+        help="Show longer response previews",
     )
     parser.add_argument(
         "--test",
         type=int,
         default=None,
-        help="Run specific test by ID (1, 2, or 3)",
+        help="Run a specific test ID",
     )
     args = parser.parse_args()
 
-    # Lazy imports
     from configs.envs import SEARCH_APP_ENVS
-    from elastics.videos.searcher_v2 import VideoSearcherV2
-    from elastics.videos.explorer import VideoExplorer
-    from llms.llm_client import create_llm_client
-    from llms.tools.executor import SearchService
     from llms.chat.handler import ChatHandler
+    from llms.llm_client import create_llm_client
+    from llms.tools.executor import create_search_service
 
     elastic_index = args.elastic_index
     elastic_env_name = args.elastic_env_name
@@ -258,47 +382,70 @@ def main():
         elastic_index = idx.get("prod", idx) if isinstance(idx, dict) else idx
 
     logger.note("> Initializing live test environment...")
-    logger.mesg(f"  LLM: {args.llm_config}, Index: {elastic_index}")
+    logger.mesg(
+        f"  LLM: {args.llm_config}, timeout={args.llm_timeout}s, search_base_url={args.search_base_url or '<local>'}, index={elastic_index}"
+    )
 
-    video_searcher = VideoSearcherV2(elastic_index, elastic_env_name=elastic_env_name)
-    video_explorer = VideoExplorer(elastic_index, elastic_env_name=elastic_env_name)
+    if args.search_base_url:
+        search_client = create_search_service(
+            base_url=args.search_base_url,
+            verbose=args.verbose,
+        )
+    else:
+        from elastics.relations import RelationsClient
+        from elastics.videos.explorer import VideoExplorer
+        from elastics.videos.searcher_v2 import VideoSearcherV2
+
+        video_searcher = VideoSearcherV2(
+            elastic_index,
+            elastic_env_name=elastic_env_name,
+        )
+        video_explorer = VideoExplorer(
+            elastic_index,
+            elastic_env_name=elastic_env_name,
+        )
+        relations_client = RelationsClient(
+            elastic_index,
+            elastic_env_name=elastic_env_name,
+        )
+        search_client = create_search_service(
+            video_searcher=video_searcher,
+            video_explorer=video_explorer,
+            relations_client=relations_client,
+            verbose=args.verbose,
+        )
 
     handler = ChatHandler(
-        llm_client=create_llm_client(args.llm_config, verbose=args.verbose),
-        search_client=SearchService(
-            video_searcher, video_explorer, verbose=args.verbose
+        llm_client=create_llm_client(
+            args.llm_config,
+            timeout=args.llm_timeout,
+            verbose=args.verbose,
         ),
+        search_client=search_client,
         verbose=args.verbose,
     )
 
-    # Select tests
     cases = TEST_CASES
-    if args.test:
-        cases = [tc for tc in TEST_CASES if tc["id"] == args.test]
+    if args.test is not None:
+        cases = [case for case in TEST_CASES if case["id"] == args.test]
         if not cases:
             logger.warn(f"× Unknown test ID: {args.test}")
             sys.exit(1)
 
-    # Run tests
-    results = []
-    for tc in cases:
-        result = run_test_case(handler, tc, verbose=args.verbose)
-        results.append(result)
+    results = [run_test_case(handler, case, verbose=args.verbose) for case in cases]
 
-    # Summary
-    logger.note(f"\n{'=' * 60}")
+    logger.note(f"\n{'=' * 72}")
     logger.note("[SUMMARY]")
-    logger.note("=" * 60)
-    passed = sum(1 for r in results if r["status"] == "PASS")
+    logger.note("=" * 72)
+    passed = sum(1 for result in results if result["status"] == "PASS")
     total = len(results)
-    for r in results:
-        status_fn = logger.success if r["status"] == "PASS" else logger.warn
+    for result in results:
+        status_fn = logger.success if result["status"] == "PASS" else logger.warn
         status_fn(
-            f"  {r['name']}: {r['status']} "
-            f"({r.get('elapsed_ms', 0)}ms, "
-            f"{r.get('total_tokens', 0)} tokens, "
-            f"{r.get('tokens_per_second', 0)} tok/s, "
-            f"{r.get('content_length', 0)} chars)"
+            f"  {result['name']}: {result['status']} "
+            f"({result.get('elapsed_ms', 0)}ms, {result.get('total_tokens', 0)} tokens, "
+            f"{result.get('tokens_per_second', 0)} tok/s, {result.get('content_length', 0)} chars, "
+            f"tools={result.get('used_tools', [])})"
         )
     logger.note(f"\n  {passed}/{total} tests passed")
 
@@ -307,7 +454,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    # python -m tests.llm.test_live_chat
-    # python -m tests.llm.test_live_chat --verbose
-    # python -m tests.llm.test_live_chat --test 1

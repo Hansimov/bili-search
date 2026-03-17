@@ -15,6 +15,56 @@ BASE_URL = os.environ.get("BILI_SEARCH_RUNTIME_URL", "").strip()
 RUN_LLM = os.environ.get("BILI_SEARCH_RUNTIME_LLM", "0").strip() == "1"
 
 
+LIVE_CHAT_CASES = [
+    {
+        "name": "creator_discovery_direct",
+        "messages": [
+            {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
+        ],
+        "expected_tools": ["related_owners_by_tokens"],
+        "content_contains": ["https://space.bilibili.com/"],
+        "content_not_contains": ["space.bilibili.com/uid", "UP主A"],
+    },
+    {
+        "name": "creator_discovery_followup_dialogue",
+        "messages": [
+            {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
+            {"role": "assistant", "content": "可以，我先给你找一批。"},
+            {"role": "user", "content": "更偏剧情解析和世界观考据的呢？"},
+        ],
+        "expected_tools": ["related_owners_by_tokens"],
+        "content_contains": ["https://space.bilibili.com/"],
+        "content_not_contains": ["space.bilibili.com/uid", "UP主A"],
+    },
+    {
+        "name": "official_updates_plus_bili",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+        ],
+        "expected_tools": ["search_google", "search_videos"],
+        "content_contains": ["Gemini 2.5", "https://www.bilibili.com/video/"],
+        "content_not_contains": [],
+    },
+    {
+        "name": "official_updates_followup_dialogue",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "更偏开发者 API 侧，有没有 B 站解读？"},
+        ],
+        "expected_tools": ["search_google", "search_videos"],
+        "content_contains": ["Gemini 2.5", "API"],
+        "content_not_contains": [],
+    },
+]
+
+
 def _skip_if_disabled():
     if not BASE_URL:
         import pytest
@@ -169,3 +219,35 @@ def test_runtime_chat_completion():
     data = response.json()
 
     assert data["choices"][0]["message"]["content"]
+
+
+@pytest.mark.parametrize(
+    "case", LIVE_CHAT_CASES, ids=[case["name"] for case in LIVE_CHAT_CASES]
+)
+def test_runtime_chat_completion_scenarios(case):
+    _skip_if_disabled()
+    if not RUN_LLM:
+        pytest.skip("BILI_SEARCH_RUNTIME_LLM is not enabled")
+
+    response = requests.post(
+        f"{BASE_URL}/chat/completions",
+        json={
+            "messages": case["messages"],
+            "stream": False,
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    content = data["choices"][0]["message"]["content"]
+    tool_events = data.get("tool_events", [])
+    used_tools = [tool for event in tool_events for tool in event.get("tools", [])]
+
+    assert len(content) >= 50
+    for expected_tool in case["expected_tools"]:
+        assert expected_tool in used_tools
+    for keyword in case["content_contains"]:
+        assert keyword in content
+    for keyword in case["content_not_contains"]:
+        assert keyword not in content

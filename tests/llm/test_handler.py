@@ -339,6 +339,35 @@ def test_fallback_creator_discovery_commands_for_direct_request():
     logger.success("[PASS] fallback creator discovery direct request")
 
 
+def test_fallback_creator_discovery_commands_for_followup_dialogue():
+    """Creator-discovery follow-up turns should inherit the earlier topic."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback creator discovery follow-up dialogue")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_creator_discovery_commands(
+        [],
+        messages=[
+            {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
+            {"role": "assistant", "content": "可以，我先给你找一批。"},
+            {"role": "user", "content": "更偏剧情解析和世界观考据的呢？"},
+        ],
+        content="我给你筛一批更合适的创作者。",
+    )
+
+    assert fallback == [
+        {
+            "type": "related_owners_by_tokens",
+            "args": {"text": "黑神话悟空 剧情解析和世界观考据"},
+        },
+    ]
+
+    logger.success("[PASS] fallback creator discovery follow-up dialogue")
+
+
 def test_fallback_external_search_commands():
     """Official-update requests should fall back to Google + Bilibili search."""
     logger.note("=" * 60)
@@ -365,6 +394,102 @@ def test_fallback_external_search_commands():
     ]
 
     logger.success("[PASS] fallback external search commands")
+
+
+def test_fallback_external_search_commands_for_followup_dialogue():
+    """Official-update follow-up turns should inherit the earlier product topic."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback external search follow-up dialogue")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_external_search_commands(
+        [],
+        messages=[
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "更偏开发者 API 侧，有没有 B 站解读？"},
+        ],
+        content="我先查一下开发者侧的官方更新，再看看 B 站解读。",
+    )
+
+    assert fallback == [
+        {
+            "type": "search_google",
+            "args": {"query": "Gemini 2.5 开发者 API 最近有哪些官方更新"},
+        },
+        {
+            "type": "search_videos",
+            "args": {"queries": ["Gemini 2.5 q=vwr", "Gemini 2.5 开发者 API q=vwr"]},
+        },
+    ]
+
+    logger.success("[PASS] fallback external search follow-up dialogue")
+
+
+def test_preflight_tool_commands_for_direct_external_request():
+    """Direct official-update requests should preflight deterministic external tools."""
+    logger.note("=" * 60)
+    logger.note("[TEST] preflight direct external request")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    commands = handler._preflight_tool_commands(
+        [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            }
+        ]
+    )
+
+    assert commands == [
+        {"type": "search_google", "args": {"query": "Gemini 2.5 最近有哪些官方更新"}},
+        {"type": "search_videos", "args": {"queries": ["Gemini 2.5 q=vwr"]}},
+    ]
+
+    logger.success("[PASS] preflight direct external request")
+
+
+def test_preflight_tool_commands_for_followup_external_request():
+    """Official-update follow-up dialogue should also preflight deterministic external tools."""
+    logger.note("=" * 60)
+    logger.note("[TEST] preflight follow-up external request")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    commands = handler._preflight_tool_commands(
+        [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "更偏开发者 API 侧，有没有 B 站解读？"},
+        ]
+    )
+
+    assert commands == [
+        {
+            "type": "search_google",
+            "args": {"query": "Gemini 2.5 开发者 API 最近有哪些官方更新"},
+        },
+        {
+            "type": "search_videos",
+            "args": {"queries": ["Gemini 2.5 q=vwr", "Gemini 2.5 开发者 API q=vwr"]},
+        },
+    ]
+
+    logger.success("[PASS] preflight follow-up external request")
 
 
 def test_author_timeline_fallback_skips_official_update_queries():
@@ -415,6 +540,33 @@ def test_fallback_video_search_commands_for_explicit_video_request():
     ]
 
     logger.success("[PASS] fallback video search commands")
+
+
+def test_fallback_similar_creator_commands():
+    """Similar-creator requests should fall back to relation search."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback similar creator commands")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_similar_creator_commands(
+        [],
+        messages=[
+            {
+                "role": "user",
+                "content": "和影视飓风风格接近的UP主有哪些？各给我一句推荐理由。",
+            }
+        ],
+        content="我先给你推荐几位风格接近的创作者。",
+    )
+
+    assert fallback == [
+        {"type": "related_owners_by_tokens", "args": {"text": "影视飓风"}},
+    ]
+
+    logger.success("[PASS] fallback similar creator commands")
 
 
 def test_cache_token_accumulation():

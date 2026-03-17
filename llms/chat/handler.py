@@ -105,11 +105,20 @@ _CREATOR_DISCOVERY_HINT_RE = re.compile(
 _CREATOR_DISCOVERY_REQUEST_RE = re.compile(
     r"^(推荐几个|推荐一些|有哪些|有没有|帮我找|找几个|找一些|谁在做|谁做的)"
 )
+_CREATOR_DISCOVERY_FOLLOWUP_RE = re.compile(
+    r"更偏|偏.+(呢|吗)|这类|这种|类似的|再来几个|还有吗|主要看"
+)
+_SIMILAR_CREATOR_HINT_RE = re.compile(
+    r"风格接近|类似的UP主|像.+的UP主|同类型.*UP主|同风格|接近的创作者"
+)
 _OFFICIAL_INFO_HINT_RE = re.compile(
     r"官方更新|更新日志|更新了什么|官方公告|官网|release notes|changelog|发布说明|API 更新|模型更新"
 )
 _BILIBILI_DECODE_HINT_RE = re.compile(
     r"B站.*解读|B站.*视频|有没有.*解读|有没有.*视频|相关解读|相关视频"
+)
+_EXTERNAL_SEARCH_FOLLOWUP_RE = re.compile(
+    r"更偏开发者|更偏产品|API 侧|应用侧|官网|官方|B站.*解读|有没有.*解读|有没有.*视频"
 )
 _MISSING_RESULTS_HINT_RE = re.compile(
     r"没收到|未收到|没有收到|搜索结果|工具链路|接口|重试|系统返回"
@@ -200,7 +209,7 @@ class ChatHandler:
         llm_client: LLMClient,
         search_client,
         max_iterations: int = MAX_TOOL_ITERATIONS,
-        max_tool_results: int = 8,
+        max_tool_results: int = 6,
         temperature: float = None,
         verbose: bool = False,
     ):
@@ -346,14 +355,24 @@ class ChatHandler:
 
     @staticmethod
     def _get_latest_user_text(messages: list[dict]) -> str:
+        recent_user_texts = ChatHandler._get_recent_user_texts(messages, limit=1)
+        return recent_user_texts[0] if recent_user_texts else ""
+
+    @staticmethod
+    def _get_recent_user_texts(messages: list[dict], limit: int | None = None) -> list[str]:
+        texts = []
         for message in reversed(messages or []):
             if message.get("role") != "user":
                 continue
             content = (message.get("content") or "").strip()
             if content.startswith("[搜索结果]"):
                 continue
-            return content
-        return ""
+            if not content:
+                continue
+            texts.append(content)
+            if limit is not None and len(texts) >= limit:
+                break
+        return texts
 
     @staticmethod
     def _has_tool_results_context(messages: list[dict]) -> bool:
@@ -383,6 +402,78 @@ class ChatHandler:
         if len(name) > 24:
             return None
         return name
+
+    @staticmethod
+    def _clean_followup_refinement(text: str) -> str | None:
+        refinement = (text or "").strip()
+        if not refinement:
+            return None
+        refinement = re.sub(r"^(那|那就|那再|再|更偏|偏向|偏|更想看|想看|主要看)", "", refinement)
+        refinement = re.sub(r"(有没有|有无).*$", "", refinement)
+        refinement = refinement.strip(" ，。！？?：:")
+        refinement = re.sub(r"(这类|这种|类似的|的呢|呢|吗|么|的话|还有吗)$", "", refinement)
+        refinement = re.sub(r"\bB站\b", "", refinement)
+        refinement = refinement.strip(" ，。！？?：:")
+        refinement = re.sub(r"\s+", " ", refinement)
+        if refinement.endswith("侧"):
+            refinement = refinement[:-1].strip()
+        if len(refinement) < 2:
+            return None
+        return refinement
+
+    @classmethod
+    def _extract_creator_topic_from_text(cls, text: str) -> str | None:
+        topic = (text or "").strip()
+        if not topic:
+            return None
+        topic = re.sub(
+            r"^(推荐几个|推荐一些|有哪些|有没有|谁发的|谁做的|帮我找|找一下|找找|找几个|找一些)",
+            "",
+            topic,
+        )
+        topic = re.sub(r"B站上.*$", "", topic)
+        topic = re.sub(r"(做|讲|聊)", "", topic, count=1)
+        topic = re.sub(r"(内容)?的?(UP主|创作者|作者|博主).*$", "", topic)
+        topic = re.sub(r"是谁发的.*$", "", topic)
+        topic = topic.strip(" ，。！？?：:")
+        return topic or None
+
+    @classmethod
+    def _extract_similar_creator_seed(cls, messages: list[dict]) -> str | None:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return None
+
+        patterns = [
+            r"(?:和|跟)(?P<name>.+?)(?:风格接近|类似|同类型|同风格)",
+            r"像(?P<name>.+?)这样的(?:UP主|创作者|作者|博主)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, latest_user_text)
+            if not match:
+                continue
+            name = match.group("name").strip(" ，。！？?：:")
+            if name:
+                return name
+        return None
+
+    @classmethod
+    def _extract_external_subject_from_text(cls, text: str) -> str | None:
+        subject = (text or "").strip()
+        if not subject:
+            return None
+        subject = re.sub(r"B站上有没有.*$", "", subject)
+        subject = re.sub(r"有没有.*解读.*$", "", subject)
+        subject = re.sub(r"最近有哪些官方更新.*$", "", subject)
+        subject = re.sub(r"官方更新|更新日志|更新了什么|官方公告|官网", "", subject)
+        subject = re.sub(r"release notes|changelog|发布说明|模型更新", "", subject, flags=re.I)
+        subject = subject.strip(" ，。！？?：:")
+        return subject or None
+
+    @classmethod
+    def _has_recent_user_intent(cls, messages: list[dict], pattern: re.Pattern, limit: int = 4) -> bool:
+        recent_user_texts = cls._get_recent_user_texts(messages, limit=limit)
+        return any(pattern.search(text) for text in recent_user_texts)
 
     def _fallback_tool_commands(
         self,
@@ -425,17 +516,31 @@ class ChatHandler:
 
     @classmethod
     def _extract_creator_discovery_topic(cls, messages: list[dict]) -> str | None:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
+        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
+        if not recent_user_texts:
             return None
-        topic = latest_user_text
-        topic = re.sub(r"^(推荐几个|推荐一些|有哪些|有没有|谁发的|谁做的|帮我找|找一下|找找)", "", topic)
-        topic = re.sub(r"B站上.*$", "", topic)
-        topic = re.sub(r"(做|讲|聊)", "", topic, count=1)
-        topic = re.sub(r"(内容)?的?(UP主|创作者|作者|博主).*$", "", topic)
-        topic = re.sub(r"是谁发的.*$", "", topic)
-        topic = topic.strip(" ，。！？?：:")
-        return topic or None
+
+        latest_user_text = recent_user_texts[0]
+        current_topic = cls._extract_creator_topic_from_text(latest_user_text)
+        if current_topic and current_topic != latest_user_text and (
+            _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
+            or _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
+        ):
+            return current_topic
+
+        refinement = None
+        if _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text):
+            refinement = cls._clean_followup_refinement(latest_user_text)
+
+        for previous_text in recent_user_texts[1:]:
+            previous_topic = cls._extract_creator_topic_from_text(previous_text)
+            if not previous_topic:
+                continue
+            if refinement and refinement not in previous_topic:
+                return f"{previous_topic} {refinement}".strip()
+            return previous_topic
+
+        return current_topic or refinement
 
     def _fallback_creator_discovery_commands(
         self,
@@ -447,11 +552,24 @@ class ChatHandler:
             return commands
         if self._has_tool_results_context(messages):
             return commands
-        latest_user_text = self._get_latest_user_text(messages)
-        if not latest_user_text or not _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text):
+        recent_user_texts = self._get_recent_user_texts(messages, limit=4)
+        if not recent_user_texts:
             return commands
-        if _VIDEO_SEARCH_INTENT_RE.search(latest_user_text) and not _CREATOR_DISCOVERY_HINT_RE.search(
-            latest_user_text
+        latest_user_text = recent_user_texts[0]
+        has_creator_context = bool(_CREATOR_DISCOVERY_HINT_RE.search(latest_user_text))
+        if not has_creator_context and _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text):
+            has_creator_context = any(
+                _CREATOR_DISCOVERY_HINT_RE.search(text) for text in recent_user_texts[1:]
+            )
+        has_followup_context = bool(_CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)) and any(
+            _CREATOR_DISCOVERY_HINT_RE.search(text) for text in recent_user_texts[1:]
+        )
+        if not has_creator_context and not has_followup_context:
+            return commands
+        if (
+            _VIDEO_SEARCH_INTENT_RE.search(latest_user_text)
+            and not _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
+            and not has_followup_context
         ):
             return commands
         is_explicit_creator_request = bool(
@@ -461,6 +579,7 @@ class ChatHandler:
             _MISSING_RESULTS_HINT_RE.search(content or "")
             or _SEARCH_PLEDGE_HINT_RE.search(content or "")
             or is_explicit_creator_request
+            or has_followup_context
         ):
             return commands
         topic = self._extract_creator_discovery_topic(messages)
@@ -475,28 +594,66 @@ class ChatHandler:
 
     @classmethod
     def _extract_external_search_query(cls, messages: list[dict]) -> str | None:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
+        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
+        if not recent_user_texts:
             return None
-        query = re.sub(r"B站上有没有.*$", "", latest_user_text)
-        query = re.sub(r"有没有.*解读.*$", "", query)
-        query = query.strip(" ，。！？?：:")
-        return query or latest_user_text.strip(" ，。！？?：:") or None
+        latest_user_text = recent_user_texts[0]
+        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text):
+            query = re.sub(r"B站上有没有.*$", "", latest_user_text)
+            query = re.sub(r"有没有.*解读.*$", "", query)
+            query = query.strip(" ，。！？?：:")
+            return query or latest_user_text.strip(" ，。！？?：:") or None
+
+        latest_focus = cls._clean_followup_refinement(latest_user_text)
+        for previous_text in recent_user_texts[1:]:
+            previous_subject = cls._extract_external_subject_from_text(previous_text)
+            if not previous_subject:
+                continue
+            if latest_focus and latest_focus not in previous_subject:
+                return f"{previous_subject} {latest_focus} 最近有哪些官方更新".strip()
+            return f"{previous_subject} 最近有哪些官方更新"
+
+        latest_subject = cls._extract_external_subject_from_text(latest_user_text)
+        if latest_subject:
+            if latest_focus and latest_focus not in latest_subject:
+                return f"{latest_subject} {latest_focus} 最近有哪些官方更新".strip()
+            return f"{latest_subject} 最近有哪些官方更新"
+        return None
 
     @classmethod
-    def _extract_bilibili_topic_query(cls, messages: list[dict]) -> str | None:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
-            return None
-        query = re.sub(r"最近有哪些官方更新.*$", "", latest_user_text)
-        query = re.sub(r"官方更新|更新日志|官方公告|官网|release notes|changelog", "", query)
-        query = re.sub(r"B站上有没有.*$", "", query)
-        query = query.strip(" ，。！？?：:")
-        if not query:
-            return None
-        if "q=" not in query:
-            query = f"{query} q=vwr"
-        return query
+    def _extract_bilibili_topic_queries(cls, messages: list[dict]) -> list[str]:
+        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
+        if not recent_user_texts:
+            return []
+        latest_user_text = recent_user_texts[0]
+        base_query = None
+        refinement = None
+
+        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text):
+            base_query = cls._extract_external_subject_from_text(latest_user_text)
+        else:
+            refinement = cls._clean_followup_refinement(latest_user_text)
+            for previous_text in recent_user_texts[1:]:
+                previous_subject = cls._extract_external_subject_from_text(previous_text)
+                if previous_subject:
+                    base_query = previous_subject
+                    break
+            if not base_query:
+                base_query = cls._extract_external_subject_from_text(latest_user_text)
+        if not base_query:
+            return []
+
+        query_candidates = []
+        for raw_query in [
+            base_query,
+            f"{base_query} {refinement}".strip() if refinement else None,
+        ]:
+            if not raw_query:
+                continue
+            query = raw_query if "q=" in raw_query else f"{raw_query} q=vwr"
+            if query not in query_candidates:
+                query_candidates.append(query)
+        return query_candidates
 
     def _fallback_external_search_commands(
         self,
@@ -508,13 +665,21 @@ class ChatHandler:
             return commands
         if self._has_tool_results_context(messages):
             return commands
-        latest_user_text = self._get_latest_user_text(messages)
-        if not latest_user_text:
+        recent_user_texts = self._get_recent_user_texts(messages, limit=4)
+        if not recent_user_texts:
             return commands
-        if not (
+        latest_user_text = recent_user_texts[0]
+        has_external_context = bool(
             _OFFICIAL_INFO_HINT_RE.search(latest_user_text)
             or _BILIBILI_DECODE_HINT_RE.search(latest_user_text)
-        ):
+        )
+        if not has_external_context and _EXTERNAL_SEARCH_FOLLOWUP_RE.search(latest_user_text):
+            has_external_context = any(
+                _OFFICIAL_INFO_HINT_RE.search(text)
+                or _BILIBILI_DECODE_HINT_RE.search(text)
+                for text in recent_user_texts[1:]
+            )
+        if not has_external_context:
             return commands
         if not (
             _MISSING_RESULTS_HINT_RE.search(content or "")
@@ -522,17 +687,50 @@ class ChatHandler:
         ):
             return commands
         google_query = self._extract_external_search_query(messages)
-        bilibili_query = self._extract_bilibili_topic_query(messages)
+        bilibili_queries = self._extract_bilibili_topic_queries(messages)
         fallback = []
         if google_query:
             fallback.append({"type": "search_google", "args": {"query": google_query}})
-        if bilibili_query and _BILIBILI_DECODE_HINT_RE.search(latest_user_text):
-            fallback.append({"type": "search_videos", "args": {"queries": [bilibili_query]}})
+        wants_bilibili_decode = bool(_BILIBILI_DECODE_HINT_RE.search(latest_user_text)) or any(
+            _BILIBILI_DECODE_HINT_RE.search(text) for text in recent_user_texts[1:]
+        )
+        if bilibili_queries and wants_bilibili_decode:
+            fallback.append({"type": "search_videos", "args": {"queries": bilibili_queries}})
         if self.verbose and fallback:
             logger.warn(
                 "> Injecting fallback external-search commands for official-update request"
             )
         return fallback or commands
+
+    def _fallback_similar_creator_commands(
+        self,
+        commands: list[dict],
+        messages: list[dict],
+        content: str = "",
+    ) -> list[dict]:
+        if commands:
+            return commands
+        if self._has_tool_results_context(messages):
+            return commands
+        latest_user_text = self._get_latest_user_text(messages)
+        if not latest_user_text or not _SIMILAR_CREATOR_HINT_RE.search(latest_user_text):
+            return commands
+        seed_name = self._extract_similar_creator_seed(messages)
+        if not seed_name:
+            return commands
+        if not (
+            _MISSING_RESULTS_HINT_RE.search(content or "")
+            or _SEARCH_PLEDGE_HINT_RE.search(content or "")
+            or _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
+            or "推荐理由" in latest_user_text
+        ):
+            return commands
+        fallback = [{"type": "related_owners_by_tokens", "args": {"text": seed_name}}]
+        if self.verbose:
+            logger.warn(
+                "> Injecting fallback relation command for similar-creator request"
+            )
+        return fallback
 
     @classmethod
     def _should_fallback_video_search(cls, messages: list[dict], content: str) -> bool:
@@ -633,6 +831,28 @@ class ChatHandler:
             parts.append(json.dumps(result, ensure_ascii=False))
         return "\n".join(parts)
 
+    def _preflight_tool_commands(self, messages: list[dict]) -> list[dict]:
+        if self._has_tool_results_context(messages):
+            return []
+        recent_user_texts = self._get_recent_user_texts(messages, limit=4)
+        if not recent_user_texts:
+            return []
+        latest_user_text = recent_user_texts[0]
+        has_external_followup = bool(_EXTERNAL_SEARCH_FOLLOWUP_RE.search(latest_user_text)) and any(
+            _OFFICIAL_INFO_HINT_RE.search(text)
+            or _BILIBILI_DECODE_HINT_RE.search(text)
+            for text in recent_user_texts[1:]
+        )
+        has_direct_external_request = bool(
+            _OFFICIAL_INFO_HINT_RE.search(latest_user_text)
+            or _BILIBILI_DECODE_HINT_RE.search(latest_user_text)
+        )
+        if not has_external_followup and not has_direct_external_request:
+            return []
+        return self._fallback_external_search_commands(
+            [], messages=messages, content="我先查一下官方更新，再看看 B 站解读。"
+        )
+
     def handle(
         self,
         messages: list[dict],
@@ -671,6 +891,25 @@ class ChatHandler:
         tool_events = []
         final_content = None
 
+        preflight_commands = self._preflight_tool_commands(full_messages)
+        if preflight_commands:
+            tool_names = [cmd["type"] for cmd in preflight_commands]
+            tool_events.append(
+                {"iteration": 0, "tools": tool_names, "preflight": True}
+            )
+            results = self._execute_tool_commands(preflight_commands)
+            full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
+            full_messages.append(
+                {
+                    "role": "user",
+                    "content": self._format_results_message(results),
+                }
+            )
+            if self.verbose:
+                logger.warn(
+                    f"> Preflight tool execution: {', '.join(tool_names)}"
+                )
+
         for iteration in range(resolved_iterations):
             if self.verbose:
                 logger.hint(f"> Iteration {iteration + 1}/{resolved_iterations}")
@@ -694,6 +933,11 @@ class ChatHandler:
                 content=content,
             )
             commands = self._fallback_external_search_commands(
+                commands,
+                messages=full_messages,
+                content=content,
+            )
+            commands = self._fallback_similar_creator_commands(
                 commands,
                 messages=full_messages,
                 content=content,
@@ -960,6 +1204,11 @@ class ChatHandler:
                 content=content,
             )
             commands = self._fallback_external_search_commands(
+                commands,
+                messages=full_messages,
+                content=content,
+            )
+            commands = self._fallback_similar_creator_commands(
                 commands,
                 messages=full_messages,
                 content=content,

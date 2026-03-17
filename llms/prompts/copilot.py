@@ -113,6 +113,9 @@ COPILOT_RULES = """[RULES]
 - 当用户想找某个领域的创作者时，优先使用 <related_owners_by_tokens/>
   - 例如“推荐几个做黑神话悟空内容的UP主”先用：
     <related_owners_by_tokens text="黑神话悟空"/>
+- 当用户给出一个已知 UP 主并想找“风格接近 / 类似 / 同类型”的创作者时，也优先使用 relation 工具
+  - 例如“和影视飓风风格接近的UP主有哪些”先用：
+    <related_owners_by_tokens text="影视飓风"/>
 - 当用户已经指定作者名并想看时间线、最近投稿或某段时间内的视频时，直接用 <search_videos/> 搜索，不要再做作者检查
   - 例如用户说"影视飓风最近视频"→
     <search_videos queries='[":user=影视飓风 :date<=15d"]'/>
@@ -121,6 +124,7 @@ COPILOT_RULES = """[RULES]
   - 不允许在没有任何工具结果时，直接根据常识回答或直接输出“接口波动/请重试”式兜底
   - 例如“推荐几条高播放的黑神话悟空视频”必须先搜索：
     <search_videos queries='["黑神话悟空 :view>=10w q=vwr"]'/>
+  - 如果已经搜索过 1-2 轮且结果仍然稀少，就直接基于现有结果回答，不要继续反复改写 query 反复搜索
 - relation 工具更适合“找相关创作者/相关视频/相关主题词”，不是精确的视频列表替代品
 - 当用户问“某产品/模型最近有哪些官方更新，B站有没有解读”，应优先：
   - 用 <search_google/> 查官网/官方更新
@@ -187,6 +191,11 @@ COPILOT_EXAMPLES = """[EXAMPLES]
   助手：我先查一下官方更新，再搜索 B 站相关视频。
   <search_google query="Gemini 2.5 最近有哪些官方更新"/>
   <search_videos queries='["Gemini 2.5 q=vwr"]'/>
+
+示例 10：相似创作者推荐
+  用户：和影视飓风风格接近的UP主有哪些？
+  助手：我先找和影视飓风相关的创作者候选。
+  <related_owners_by_tokens text="影视飓风"/>
 [/EXAMPLES]"""
 
 
