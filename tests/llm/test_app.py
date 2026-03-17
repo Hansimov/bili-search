@@ -7,6 +7,7 @@ Run:
 """
 
 import json
+import os
 import sys
 from unittest.mock import MagicMock, patch
 from tclogger import logger
@@ -73,6 +74,25 @@ def test_health_endpoint():
     assert data["search_service"] == "integrated"
 
     logger.success("[PASS] /health endpoint")
+
+
+def test_capabilities_endpoint():
+    """Test /capabilities endpoint."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /capabilities endpoint")
+
+    search_app, _, _, _ = create_test_app()
+    client = TestClient(search_app.app)
+    resp = client.get("/capabilities")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service_name"] == "Test Search App"
+    assert data["supports_multi_query"] is True
+    assert data["supports_author_check"] is True
+    assert "/explore" in data["available_endpoints"]
+
+    logger.success("[PASS] /capabilities endpoint")
 
 
 def test_chat_completions_endpoint():
@@ -186,6 +206,54 @@ def test_streaming_response():
     logger.success("[PASS] streaming response")
 
 
+def test_search_and_suggest_endpoints_match_searcher_v2_signature():
+    """Test that search_app no longer forwards removed kwargs to VideoSearcherV2."""
+    logger.note("=" * 60)
+    logger.note("[TEST] search/suggest endpoint compatibility")
+
+    search_app, _, mock_searcher, _ = create_test_app()
+
+    def search_side_effect(
+        query,
+        match_fields=None,
+        source_fields=None,
+        match_type=None,
+        suggest_info=None,
+        use_script_score=None,
+        rank_method=None,
+        detail_level=-1,
+        limit=None,
+        verbose=False,
+    ):
+        return {"query": query, "hits": [], "total_hits": 0}
+
+    def suggest_side_effect(
+        query,
+        match_fields=None,
+        source_fields=None,
+        match_type=None,
+        use_script_score=None,
+        use_pinyin=True,
+        detail_level=-1,
+        limit=None,
+        verbose=False,
+    ):
+        return {"query": query, "hits": [], "total_hits": 0}
+
+    mock_searcher.search.side_effect = search_side_effect
+    mock_searcher.suggest.side_effect = suggest_side_effect
+
+    client = TestClient(search_app.app)
+
+    search_resp = client.post("/search", json={"query": "黑神话"})
+    suggest_resp = client.post("/suggest", json={"query": "黑神话"})
+
+    assert search_resp.status_code == 200
+    assert suggest_resp.status_code == 200
+
+    logger.success("[PASS] search/suggest endpoint compatibility")
+
+
 def test_cors_headers():
     """Test CORS headers are set."""
     logger.note("=" * 60)
@@ -289,18 +357,61 @@ def test_search_app_arg_parser_allows_llm_config_override():
     logger.success("[PASS] search app arg parser llm override")
 
 
+def test_search_app_env_helpers_support_service_mode():
+    """Test environment-based app factory helpers used by search_app_cli."""
+    logger.note("=" * 60)
+    logger.note("[TEST] search app env helpers")
+
+    with patch.dict(
+        os.environ,
+        {
+            "BILI_SEARCH_APP_MODE": "dev",
+            "BILI_SEARCH_APP_PORT": "21015",
+            "BILI_SEARCH_APP_ELASTIC_INDEX": "bili_videos_dev6",
+            "BILI_SEARCH_APP_ELASTIC_ENV_NAME": "elastic_dev",
+            "BILI_SEARCH_APP_LLM_CONFIG": "deepseek",
+        },
+        clear=False,
+    ):
+        from apps.search_app import (
+            get_search_app_env_overrides_from_env,
+            resolve_search_app_envs,
+        )
+
+        overrides = get_search_app_env_overrides_from_env()
+        mode = overrides.pop("mode")
+        envs = resolve_search_app_envs(mode=mode, overrides=overrides)
+
+    assert envs["mode"] == "dev"
+    assert envs["port"] == 21015
+    assert envs["elastic_index"] == "bili_videos_dev6"
+    assert envs["elastic_env_name"] == "elastic_dev"
+    assert envs["llm_config"] == "deepseek"
+
+    logger.success("[PASS] search app env helpers")
+
+
 if __name__ == "__main__":
     tests = [
         ("health_endpoint", test_health_endpoint),
+        ("capabilities_endpoint", test_capabilities_endpoint),
         ("chat_completions_endpoint", test_chat_completions_endpoint),
         ("chat_completions_v1_path", test_chat_completions_v1_path),
         ("request_validation", test_chat_request_validation),
         ("streaming_response", test_streaming_response),
+        (
+            "search_and_suggest_signature_compat",
+            test_search_and_suggest_endpoints_match_searcher_v2_signature,
+        ),
         ("cors_headers", test_cors_headers),
         ("no_chat_without_llm_config", test_no_chat_without_llm_config),
         (
             "search_app_arg_parser_llm_override",
             test_search_app_arg_parser_allows_llm_config_override,
+        ),
+        (
+            "search_app_env_helpers",
+            test_search_app_env_helpers_support_service_mode,
         ),
     ]
 

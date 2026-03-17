@@ -1,26 +1,32 @@
-"""LLM API client with function calling support.
+"""LLM API client compatibility layer built on top of webu.llms.client.
 
-Communicates with OpenAI-compatible APIs (DeepSeek, Volcengine, etc.).
-Supports native function calling for tool-use workflows.
+Keeps the structured ToolCall / ChatResponse interface used by bili-search
+while reusing webu's request construction, timeout, and thinking-mode logic.
 """
 
+from __future__ import annotations
+
 import json
-import requests
 import time
 
+import requests
+
 from tclogger import logger
-from typing import Generator, Optional
+from typing import Generator
+from webu.llms.client import LLMClient as WebuLLMClient
 
 
 class ToolCall:
     """Parsed tool call from LLM response."""
 
-    def __init__(self, id: str, name: str, arguments: str):
+    def __init__(self, id: str, name: str, arguments: str | dict):
         self.id = id
         self.name = name
         self.arguments = arguments
 
     def parse_arguments(self) -> dict:
+        if isinstance(self.arguments, dict):
+            return self.arguments
         try:
             return json.loads(self.arguments)
         except json.JSONDecodeError:
@@ -28,12 +34,15 @@ class ToolCall:
             return {}
 
     def to_dict(self) -> dict:
+        arguments = self.arguments
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments, ensure_ascii=False)
         return {
             "id": self.id,
             "type": "function",
             "function": {
                 "name": self.name,
-                "arguments": self.arguments,
+                "arguments": arguments,
             },
         }
 
@@ -45,9 +54,9 @@ class ChatResponse:
         self,
         content: str = None,
         reasoning_content: str = None,
-        tool_calls: list[ToolCall] = None,
+        tool_calls: list[ToolCall] | None = None,
         finish_reason: str = None,
-        usage: dict = None,
+        usage: dict | None = None,
     ):
         self.content = content
         self.reasoning_content = reasoning_content
@@ -57,81 +66,61 @@ class ChatResponse:
 
     @property
     def has_tool_calls(self) -> bool:
-        return len(self.tool_calls) > 0
+        return bool(self.tool_calls)
 
     def to_message_dict(self) -> dict:
-        """Convert to a message dict for appending to conversation history."""
         msg = {"role": "assistant"}
         if self.tool_calls:
-            # Tool call message: content can be None per OpenAI spec
             msg["content"] = self.content
-            msg["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
+            msg["tool_calls"] = [tool_call.to_dict() for tool_call in self.tool_calls]
         elif self.content is not None:
             msg["content"] = self.content
         return msg
 
 
-class LLMClient:
-    """LLM API client with function calling support.
-
-    Compatible with OpenAI API format (DeepSeek, Volcengine, etc.).
-
-    Usage:
-        client = LLMClient(
-            endpoint="https://api.deepseek.com/chat/completions",
-            api_key="sk-...",
-            model="deepseek-chat",
-        )
-        response = client.chat(messages=[...], tools=[...])
-        if response.has_tool_calls:
-            for tc in response.tool_calls:
-                args = tc.parse_arguments()
-                # execute tool...
-        else:
-            print(response.content)
-    """
+class LLMClient(WebuLLMClient):
+    """Structured chat client with optional OpenAI-style function calling."""
 
     def __init__(
         self,
         endpoint: str,
         api_key: str,
         model: str,
+        api_format: str = "openai",
         timeout: float = 120,
         verbose: bool = False,
+        stream: bool | None = None,
+        max_tokens: int | None = None,
+        init_messages: list | None = None,
+        enable_thinking: bool | None = None,
     ):
-        self.endpoint = endpoint
-        self.api_key = api_key
-        self.model = model
-        self.timeout = timeout
-        self.verbose = verbose
+        super().__init__(
+            endpoint=endpoint,
+            api_key=api_key,
+            api_format=api_format,
+            model=model,
+            stream=stream,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            init_messages=init_messages or [],
+            enable_thinking=enable_thinking,
+            verbose_user=False,
+            verbose_assistant=False,
+            verbose_content=False,
+            verbose_think=False,
+            verbose_usage=False,
+            verbose_finish=False,
+            verbose=verbose,
+        )
 
-    def _build_headers(self) -> dict:
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
-
-    def _build_payload(
-        self,
-        messages: list[dict],
-        tools: list[dict] = None,
-        stream: bool = False,
-        temperature: float = None,
-        max_tokens: int = None,
-    ) -> dict:
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": stream,
+    @staticmethod
+    def _extra_body(tools: list[dict] | None = None) -> dict | None:
+        if not tools:
+            return None
+        return {
+            "tools": tools,
+            "tool_choice": "auto",
         }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        return payload
 
     def chat(
         self,
@@ -139,62 +128,49 @@ class LLMClient:
         tools: list[dict] = None,
         temperature: float = None,
         max_tokens: int = None,
+        model: str = None,
+        enable_thinking: bool = None,
     ) -> ChatResponse:
-        """Send non-streaming chat completion request.
-
-        Args:
-            messages: Conversation messages.
-            tools: Tool definitions (OpenAI function calling format).
-            temperature: Sampling temperature.
-            max_tokens: Maximum response tokens.
-
-        Returns:
-            ChatResponse with content or tool_calls.
-        """
-        payload = self._build_payload(
-            messages=messages,
-            tools=tools,
-            stream=False,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        headers = self._build_headers()
-
         if self.verbose:
             logger.note(
-                f"> LLM chat: model={self.model}, msgs={len(messages)}"
+                f"> LLM chat: model={model or self.model}, msgs={len(messages)}"
                 + (f", tools={len(tools)}" if tools else "")
             )
 
         start = time.perf_counter()
         try:
-            resp = requests.post(
-                self.endpoint,
-                json=payload,
-                headers=headers,
-                timeout=self.timeout,
+            response = self.create_response(
+                messages=messages,
+                model=model,
+                enable_thinking=enable_thinking,
+                temperature=temperature,
+                stream=False,
+                max_tokens=max_tokens,
+                extra_body=self._extra_body(tools),
             )
-            resp.raise_for_status()
-            data = resp.json()
+            response.raise_for_status()
+            data = response.json()
         except requests.exceptions.Timeout:
             logger.warn(f"× LLM request timed out after {self.timeout}s")
             return ChatResponse(
-                content="[Error: Request timed out]", finish_reason="error"
+                content="[Error: Request timed out]",
+                finish_reason="error",
             )
-        except requests.exceptions.RequestException as e:
-            logger.warn(f"× LLM request error: {e}")
-            return ChatResponse(content=f"[Error: {e}]", finish_reason="error")
+        except requests.exceptions.RequestException as exc:
+            logger.warn(f"× LLM request error: {exc}")
+            return ChatResponse(content=f"[Error: {exc}]", finish_reason="error")
 
         elapsed = round((time.perf_counter() - start) * 1000, 1)
         result = self._parse_response(data)
 
         if self.verbose:
             if result.has_tool_calls:
-                names = [tc.name for tc in result.tool_calls]
+                names = [tool_call.name for tool_call in result.tool_calls]
                 logger.success(f"  LLM → tool_calls: {names} ({elapsed}ms)")
             else:
-                content_len = len(result.content or "")
-                logger.success(f"  LLM → content: {content_len} chars ({elapsed}ms)")
+                logger.success(
+                    f"  LLM → content: {len(result.content or '')} chars ({elapsed}ms)"
+                )
             if result.usage:
                 logger.mesg(f"  usage: {result.usage}")
 
@@ -206,37 +182,31 @@ class LLMClient:
         tools: list[dict] = None,
         temperature: float = None,
         max_tokens: int = None,
+        model: str = None,
+        enable_thinking: bool = None,
     ) -> Generator[dict, None, None]:
-        """Send streaming chat completion request.
-
-        Yields raw SSE data dicts as they arrive.
-        """
-        payload = self._build_payload(
-            messages=messages,
-            tools=tools,
-            stream=True,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        headers = self._build_headers()
-
         if self.verbose:
-            logger.note(f"> LLM stream: model={self.model}, msgs={len(messages)}")
+            logger.note(
+                f"> LLM stream: model={model or self.model}, msgs={len(messages)}"
+                + (f", tools={len(tools)}" if tools else "")
+            )
 
         try:
-            resp = requests.post(
-                self.endpoint,
-                json=payload,
-                headers=headers,
-                timeout=self.timeout,
+            response = self.create_response(
+                messages=messages,
+                model=model,
+                enable_thinking=enable_thinking,
+                temperature=temperature,
                 stream=True,
+                max_tokens=max_tokens,
+                extra_body=self._extra_body(tools),
             )
-            resp.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logger.warn(f"× LLM stream error: {e}")
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            logger.warn(f"× LLM stream error: {exc}")
             return
 
-        for line in resp.iter_lines():
+        for line in response.iter_lines():
             if not line:
                 continue
             line_str = line.decode("utf-8")
@@ -246,8 +216,7 @@ class LLMClient:
             if data_str == "[DONE]":
                 break
             try:
-                chunk = json.loads(data_str)
-                yield chunk
+                yield json.loads(data_str)
             except json.JSONDecodeError:
                 continue
 
@@ -257,65 +226,70 @@ class LLMClient:
         tools: list[dict] = None,
         temperature: float = None,
         max_tokens: int = None,
+        model: str = None,
+        enable_thinking: bool = None,
     ) -> ChatResponse:
-        """Stream from LLM and accumulate into a ChatResponse.
-
-        Used internally when we need to consume a potentially-streamed response
-        and accumulate tool_calls or content.
-        """
         accumulated_content = ""
+        accumulated_reasoning = ""
         accumulated_tool_calls = {}
         finish_reason = None
+        usage = {}
 
         for chunk in self.chat_stream(
             messages=messages,
             tools=tools,
             temperature=temperature,
             max_tokens=max_tokens,
+            model=model,
+            enable_thinking=enable_thinking,
         ):
             choices = chunk.get("choices", [])
             if not choices:
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
                 continue
+
             delta = choices[0].get("delta", {})
             finish_reason = choices[0].get("finish_reason") or finish_reason
 
-            if "content" in delta and delta["content"]:
+            if delta.get("content"):
                 accumulated_content += delta["content"]
-
-            if "tool_calls" in delta:
-                for tc in delta["tool_calls"]:
-                    idx = tc.get("index", 0)
-                    if idx not in accumulated_tool_calls:
-                        accumulated_tool_calls[idx] = {
-                            "id": "",
-                            "name": "",
-                            "arguments": "",
-                        }
-                    entry = accumulated_tool_calls[idx]
-                    if tc.get("id"):
-                        entry["id"] = tc["id"]
-                    func = tc.get("function", {})
+            if delta.get("reasoning_content"):
+                accumulated_reasoning += delta["reasoning_content"]
+            if delta.get("tool_calls"):
+                for tool_call in delta["tool_calls"]:
+                    index = tool_call.get("index", 0)
+                    current = accumulated_tool_calls.setdefault(
+                        index,
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    if tool_call.get("id"):
+                        current["id"] = tool_call["id"]
+                    func = tool_call.get("function", {})
                     if func.get("name"):
-                        entry["name"] = func["name"]
+                        current["name"] = func["name"]
                     if func.get("arguments"):
-                        entry["arguments"] += func["arguments"]
+                        current["arguments"] += func["arguments"]
+            if chunk.get("usage"):
+                usage = chunk["usage"]
 
-        tool_calls = []
-        for idx in sorted(accumulated_tool_calls.keys()):
-            tc = accumulated_tool_calls[idx]
-            tool_calls.append(
-                ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
+        tool_calls = [
+            ToolCall(
+                id=entry["id"],
+                name=entry["name"],
+                arguments=entry["arguments"],
             )
-
+            for _, entry in sorted(accumulated_tool_calls.items())
+        ]
         return ChatResponse(
             content=accumulated_content or None,
+            reasoning_content=accumulated_reasoning or None,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            usage=usage,
         )
 
     def _parse_response(self, data: dict) -> ChatResponse:
-        """Parse a non-streaming API response."""
-        # Handle API errors
         if "error" in data:
             error_msg = data["error"].get("message", str(data["error"]))
             logger.warn(f"× LLM API error: {error_msg}")
@@ -327,28 +301,22 @@ class LLMClient:
 
         choice = choices[0]
         message = choice.get("message", {})
-        finish_reason = choice.get("finish_reason", "")
         usage = data.get("usage", {})
-
-        content = message.get("content")
-        reasoning_content = message.get("reasoning_content")
         tool_calls = []
-
-        if message.get("tool_calls"):
-            for tc in message["tool_calls"]:
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.get("id", ""),
-                        name=tc.get("function", {}).get("name", ""),
-                        arguments=tc.get("function", {}).get("arguments", ""),
-                    )
+        for tool_call in message.get("tool_calls") or []:
+            tool_calls.append(
+                ToolCall(
+                    id=tool_call.get("id", ""),
+                    name=tool_call.get("function", {}).get("name", ""),
+                    arguments=tool_call.get("function", {}).get("arguments", ""),
                 )
+            )
 
         return ChatResponse(
-            content=content,
-            reasoning_content=reasoning_content,
+            content=message.get("content"),
+            reasoning_content=message.get("reasoning_content"),
             tool_calls=tool_calls,
-            finish_reason=finish_reason,
+            finish_reason=choice.get("finish_reason", ""),
             usage=usage,
         )
 
@@ -357,23 +325,11 @@ def create_llm_client(
     model_config: str = None,
     verbose: bool = False,
 ) -> LLMClient:
-    """Create an LLMClient from config name in secrets.json.
-
-    Reuses the LLMS_ENVS config lookup from configs/envs.py.
-    This is the main factory function for creating LLM clients.
-
-    Args:
-        model_config: Key in LLMS_ENVS (e.g. "deepseek", "gpt", "volcengine").
-            Defaults to LLM_CONFIG from configs/envs.py if not specified.
-        verbose: Enable verbose logging.
-
-    Returns:
-        Configured LLMClient instance.
-    """
     if model_config is None:
         from configs.envs import LLM_CONFIG
 
         model_config = LLM_CONFIG
+
     from configs.envs import LLMS_ENVS
 
     if model_config not in LLMS_ENVS:
@@ -387,5 +343,11 @@ def create_llm_client(
         endpoint=envs["endpoint"],
         api_key=envs.get("api_key", ""),
         model=envs["model"],
+        api_format=envs.get("api_format", "openai"),
+        timeout=envs.get("timeout", 120),
+        stream=envs.get("stream"),
+        max_tokens=envs.get("max_tokens"),
+        init_messages=envs.get("init_messages") or [],
+        enable_thinking=envs.get("enable_thinking"),
         verbose=verbose,
     )

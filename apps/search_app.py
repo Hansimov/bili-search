@@ -33,6 +33,16 @@ from ranks.constants import RANK_METHOD_TYPE, RANK_METHOD
 
 logger = TCLogger()
 
+SEARCH_APP_ENV_PREFIX = "BILI_SEARCH_APP_"
+SEARCH_APP_ENV_KEYS = {
+    "mode": f"{SEARCH_APP_ENV_PREFIX}MODE",
+    "host": f"{SEARCH_APP_ENV_PREFIX}HOST",
+    "port": f"{SEARCH_APP_ENV_PREFIX}PORT",
+    "elastic_index": f"{SEARCH_APP_ENV_PREFIX}ELASTIC_INDEX",
+    "elastic_env_name": f"{SEARCH_APP_ENV_PREFIX}ELASTIC_ENV_NAME",
+    "llm_config": f"{SEARCH_APP_ENV_PREFIX}LLM_CONFIG",
+}
+
 
 class ChatMessage(BaseModel):
     """A single chat message."""
@@ -159,7 +169,6 @@ class SearchApp:
             use_script_score=use_script_score,
             rank_method=rank_method,
             detail_level=detail_level,
-            max_detail_level=max_detail_level,
             limit=limit,
             verbose=verbose,
         )
@@ -211,10 +220,8 @@ class SearchApp:
             source_fields=source_fields,
             match_type=match_type,
             use_script_score=use_script_score,
-            rank_method=rank_method,
             use_pinyin=use_pinyin,
             detail_level=detail_level,
-            max_detail_level=max_detail_level,
             limit=limit,
             verbose=verbose,
         )
@@ -357,6 +364,11 @@ class SearchApp:
             summary="Health check",
         )(self.health)
 
+        self.app.get(
+            "/capabilities",
+            summary="Runtime service capabilities",
+        )(self.capabilities)
+
     async def chat_completions(
         self, request: ChatCompletionRequest, http_request: Request
     ):
@@ -488,10 +500,124 @@ class SearchApp:
             result["llm_model"] = self.llm_client.model
         return result
 
+    async def capabilities(self):
+        """Return runtime service capabilities for external clients."""
+        result = {
+            "service_name": self.title,
+            "service_type": "remote",
+            "version": self.version,
+            "mode": self.mode,
+            "elastic_index": self.elastic_videos_index,
+            "default_query_mode": "wv",
+            "rerank_query_mode": "vwr",
+            "supports_multi_query": True,
+            "supports_author_check": True,
+            "available_endpoints": [
+                "/health",
+                "/capabilities",
+                "/suggest",
+                "/search",
+                "/explore",
+                "/random",
+                "/latest",
+                "/doc",
+                "/knn_search",
+                "/hybrid_search",
+            ],
+            "docs": ["search_syntax"],
+            "chat_enabled": self.chat_handler is not None,
+        }
+        if self.chat_handler is not None:
+            result["llm_model"] = self.llm_client.model
+        return result
+
+
+def resolve_search_app_envs(
+    app_envs: dict | None = None,
+    *,
+    mode: str | None = None,
+    overrides: dict | None = None,
+) -> dict:
+    resolved_envs = deepcopy(app_envs or SEARCH_APP_ENVS)
+    selected_mode = str(mode or resolved_envs.get("mode") or "prod")
+    resolved_envs["mode"] = selected_mode
+
+    for key, value in (app_envs or SEARCH_APP_ENVS).items():
+        if isinstance(value, dict) and selected_mode in value:
+            resolved_envs[key] = value[selected_mode]
+
+    for key, value in (overrides or {}).items():
+        if value is not None:
+            resolved_envs[key] = value
+
+    return resolved_envs
+
+
+def _get_env_override(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def get_search_app_env_overrides_from_env() -> dict:
+    overrides = {
+        "mode": _get_env_override(SEARCH_APP_ENV_KEYS["mode"]),
+        "host": _get_env_override(SEARCH_APP_ENV_KEYS["host"]),
+        "elastic_index": _get_env_override(SEARCH_APP_ENV_KEYS["elastic_index"]),
+        "elastic_env_name": _get_env_override(SEARCH_APP_ENV_KEYS["elastic_env_name"]),
+        "llm_config": _get_env_override(SEARCH_APP_ENV_KEYS["llm_config"]),
+    }
+
+    port_value = _get_env_override(SEARCH_APP_ENV_KEYS["port"])
+    if port_value is not None:
+        overrides["port"] = int(port_value)
+
+    return {key: value for key, value in overrides.items() if value is not None}
+
+
+def apply_search_app_envs_to_environment(app_envs: dict):
+    for key, env_name in SEARCH_APP_ENV_KEYS.items():
+        value = app_envs.get(key)
+        if value is None:
+            os.environ.pop(env_name, None)
+        else:
+            os.environ[env_name] = str(value)
+
+
+def create_app(app_envs: dict | None = None) -> FastAPI:
+    return SearchApp(app_envs or resolve_search_app_envs()).app
+
+
+def create_app_from_env() -> FastAPI:
+    overrides = get_search_app_env_overrides_from_env()
+    mode = overrides.pop("mode", None)
+    return create_app(resolve_search_app_envs(mode=mode, overrides=overrides))
+
+
+def kill_processes_on_port(port: int):
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["lsof", "-t", f"-i:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+        )
+        pids = [int(pid) for pid in result.stdout.split() if pid.strip().isdigit()]
+        for pid in pids:
+            if pid != os.getpid():
+                logger.warn(f"> Port {port} in use by PID {pid} — killing it")
+                os.kill(pid, signal.SIGKILL)
+    except Exception as exc:
+        logger.warn(f"> Could not auto-kill port {port}: {exc}")
+
 
 class SearchAppArgParser(argparse.ArgumentParser):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, argv: list[str] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.argv = list(sys.argv[1:] if argv is None else argv)
         self.add_arguments()
 
     def add_arguments(self, arg_dict: list = []):
@@ -543,26 +669,21 @@ class SearchAppArgParser(argparse.ArgumentParser):
             help="Kill any existing process that is listening on the target port before starting.",
         )
 
-        self.args, self.unknown_args = self.parse_known_args(sys.argv[1:])
+        self.args, self.unknown_args = self.parse_known_args(self.argv)
 
     def update_app_envs(self, app_envs: dict):
-        new_app_envs = deepcopy(app_envs)
-        mode = self.args.mode
-        new_app_envs["mode"] = mode
-        for key, val in app_envs.items():
-            if isinstance(val, dict) and mode in val.keys():
-                new_app_envs[key] = val[mode]
-
-        if self.args.host:
-            new_app_envs["host"] = self.args.host
-        if self.args.port:
-            new_app_envs["port"] = self.args.port
-        if self.args.elastic_index:
-            new_app_envs["elastic_index"] = self.args.elastic_index
-        if self.args.elastic_env_name:
-            new_app_envs["elastic_env_name"] = self.args.elastic_env_name
-        if self.args.llm_config:
-            new_app_envs["llm_config"] = self.args.llm_config
+        overrides = {
+            "host": self.args.host,
+            "port": self.args.port,
+            "elastic_index": self.args.elastic_index,
+            "elastic_env_name": self.args.elastic_env_name,
+            "llm_config": self.args.llm_config,
+        }
+        new_app_envs = resolve_search_app_envs(
+            app_envs,
+            mode=self.args.mode,
+            overrides=overrides,
+        )
 
         self.new_app_envs = new_app_envs
 
@@ -572,31 +693,24 @@ class SearchAppArgParser(argparse.ArgumentParser):
         return new_app_envs
 
 
-if __name__ == "__main__":
-    app_envs = SEARCH_APP_ENVS
-    arg_parser = SearchAppArgParser()
-    new_app_envs = arg_parser.update_app_envs(app_envs)
+def main(argv: list[str] | None = None):
+    arg_parser = SearchAppArgParser(argv=argv)
+    new_app_envs = arg_parser.update_app_envs(SEARCH_APP_ENVS)
 
     if arg_parser.args.kill:
-        _port = new_app_envs["port"]
-        try:
-            import subprocess
+        kill_processes_on_port(new_app_envs["port"])
 
-            result = subprocess.run(
-                ["lsof", "-t", f"-i:{_port}", "-sTCP:LISTEN"],
-                capture_output=True,
-                text=True,
-            )
-            pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
-            for pid in pids:
-                if pid != os.getpid():
-                    logger.warn(f"> Port {_port} in use by PID {pid} — killing it")
-                    os.kill(pid, signal.SIGKILL)
-        except Exception as _e:
-            logger.warn(f"> Could not auto-kill port {_port}: {_e}")
+    apply_search_app_envs_to_environment(new_app_envs)
+    uvicorn.run(
+        "apps.search_app:create_app_from_env",
+        host=new_app_envs["host"],
+        port=new_app_envs["port"],
+        factory=True,
+    )
 
-    app = SearchApp(new_app_envs).app
-    uvicorn.run("__main__:app", host=new_app_envs["host"], port=new_app_envs["port"])
+
+if __name__ == "__main__":
+    main()
 
     # Production mode by default:
     # python -m apps.search_app

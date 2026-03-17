@@ -175,12 +175,39 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 [/EXAMPLES]"""
 
 
-def build_system_prompt() -> str:
+def build_search_capabilities_prompt(capabilities: dict | None = None) -> str:
+    if not capabilities:
+        return ""
+
+    service_type = capabilities.get("service_type", "unknown")
+    service_name = capabilities.get("service_name", "search_service")
+    default_mode = capabilities.get("default_query_mode", "wv")
+    rerank_mode = capabilities.get("rerank_query_mode", "vwr")
+    multi_query = "是" if capabilities.get("supports_multi_query", True) else "否"
+    author_check = "是" if capabilities.get("supports_author_check", True) else "否"
+    docs = ", ".join(capabilities.get("docs") or ["search_syntax"])
+    endpoints = ", ".join(capabilities.get("available_endpoints") or [])
+
+    return (
+        "[SEARCH_CAPABILITIES]\n"
+        f"当前搜索服务: {service_name} ({service_type})\n"
+        f"默认搜索模式: q={default_mode}\n"
+        f"高相关性搜索模式: q={rerank_mode}\n"
+        f"支持多query并行: {multi_query}\n"
+        f"支持作者检查: {author_check}\n"
+        f"可用文档: {docs}\n"
+        f"可用接口: {endpoints}\n"
+        "[/SEARCH_CAPABILITIES]"
+    )
+
+
+def build_system_prompt(capabilities: dict | None = None) -> str:
     """Build the complete system prompt for the copilot.
 
     Structure optimized for DeepSeek prefix caching:
     all static content first, dynamic date prompt last.
     """
+    capabilities_prompt = build_search_capabilities_prompt(capabilities)
     parts = [
         COPILOT_ROLE,
         COPILOT_TOOL_COMMANDS,
@@ -188,6 +215,7 @@ def build_system_prompt() -> str:
         COPILOT_WORKFLOW,
         COPILOT_RULES,
         COPILOT_EXAMPLES,
+        capabilities_prompt,
         get_date_prompt(),
     ]
-    return "\n\n".join(parts)
+    return "\n\n".join([part for part in parts if part])

@@ -196,7 +196,7 @@ def test_chat_response_to_message():
     logger.success("[PASS] ChatResponse.to_message_dict")
 
 
-@patch("llms.llm_client.requests.post")
+@patch("webu.llms.client.requests.post")
 def test_chat_with_mock(mock_post):
     """Test full chat() call with mocked HTTP."""
     logger.note("=" * 60)
@@ -234,7 +234,7 @@ def test_chat_with_mock(mock_post):
     logger.success("[PASS] chat() with mock")
 
 
-@patch("llms.llm_client.requests.post")
+@patch("webu.llms.client.requests.post")
 def test_chat_with_tools_mock(mock_post):
     """Test chat() with tool definitions."""
     logger.note("=" * 60)
@@ -274,7 +274,7 @@ def test_chat_with_tools_mock(mock_post):
     logger.success("[PASS] chat() with tools mock")
 
 
-@patch("llms.llm_client.requests.post")
+@patch("webu.llms.client.requests.post")
 def test_chat_timeout(mock_post):
     """Test chat() handles timeout gracefully."""
     logger.note("=" * 60)

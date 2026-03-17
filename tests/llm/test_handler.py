@@ -152,6 +152,38 @@ def test_direct_content_response():
     logger.success("[PASS] direct content response")
 
 
+def test_system_prompt_includes_search_capabilities():
+    """Test ChatHandler injects runtime search capabilities into system prompt."""
+    logger.note("=" * 60)
+    logger.note("[TEST] system prompt capabilities")
+
+    mock_llm = MagicMock(spec=LLMClient)
+
+    class SearchClientWithCapabilities:
+        def capabilities(self, refresh: bool = False) -> dict:
+            return {
+                "service_name": "runtime-search",
+                "service_type": "remote",
+                "default_query_mode": "wv",
+                "rerank_query_mode": "vwr",
+                "supports_multi_query": True,
+                "supports_author_check": True,
+                "available_endpoints": ["/explore", "/suggest"],
+                "docs": ["search_syntax"],
+            }
+
+    handler = ChatHandler(
+        llm_client=mock_llm,
+        search_client=SearchClientWithCapabilities(),
+    )
+    messages = handler._build_messages([{"role": "user", "content": "test"}])
+
+    assert "[SEARCH_CAPABILITIES]" in messages[0]["content"]
+    assert "runtime-search" in messages[0]["content"]
+
+    logger.success("[PASS] system prompt capabilities")
+
+
 def test_single_tool_call():
     """Test handler with one tool command → content response."""
     logger.note("=" * 60)

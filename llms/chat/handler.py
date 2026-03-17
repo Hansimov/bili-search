@@ -191,6 +191,7 @@ class ChatHandler:
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.verbose = verbose
+        self.search_capabilities = self.tool_executor.get_search_capabilities()
 
     def _chat_interruptible(
         self,
@@ -1032,7 +1033,7 @@ class ChatHandler:
         When thinking=True, prepends an additional thinking prompt
         to encourage deeper analysis.
         """
-        system_content = build_system_prompt()
+        system_content = build_system_prompt(capabilities=self.search_capabilities)
         if thinking:
             system_content = _THINKING_PROMPT + system_content
 

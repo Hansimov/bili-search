@@ -44,7 +44,7 @@ def _create_handler(args):
     from elastics.videos.searcher_v2 import VideoSearcherV2
     from elastics.videos.explorer import VideoExplorer
     from llms.llm_client import create_llm_client
-    from llms.tools.executor import SearchService
+    from llms.tools.executor import create_search_service
     from llms.chat.handler import ChatHandler
 
     # Resolve elastic index
@@ -56,20 +56,42 @@ def _create_handler(args):
 
     logger.note("> Initializing Bili Search Copilot CLI...")
     logger.mesg(f"  LLM config: {args.llm_config}")
-    logger.mesg(f"  Elastic index: {elastic_index}")
-    if elastic_env_name:
-        logger.mesg(f"  Elastic env: {elastic_env_name}")
+    if args.search_base_url:
+        logger.mesg(f"  Search service: {args.search_base_url}")
+        search_service = create_search_service(
+            base_url=args.search_base_url,
+            timeout=args.search_timeout,
+            verbose=args.verbose,
+        )
+        capabilities = search_service.capabilities()
+        logger.mesg(
+            "  Search capabilities: "
+            f"mode=q={capabilities.get('default_query_mode', 'wv')}, "
+            f"rerank=q={capabilities.get('rerank_query_mode', 'vwr')}, "
+            f"multi_query={capabilities.get('supports_multi_query', True)}, "
+            f"author_check={capabilities.get('supports_author_check', True)}"
+        )
+    else:
+        logger.mesg(f"  Elastic index: {elastic_index}")
+        if elastic_env_name:
+            logger.mesg(f"  Elastic env: {elastic_env_name}")
 
-    video_searcher = VideoSearcherV2(elastic_index, elastic_env_name=elastic_env_name)
-    video_explorer = VideoExplorer(elastic_index, elastic_env_name=elastic_env_name)
+        video_searcher = VideoSearcherV2(
+            elastic_index,
+            elastic_env_name=elastic_env_name,
+        )
+        video_explorer = VideoExplorer(
+            elastic_index,
+            elastic_env_name=elastic_env_name,
+        )
+        search_service = create_search_service(
+            video_searcher=video_searcher,
+            video_explorer=video_explorer,
+            verbose=args.verbose,
+        )
 
     llm_client = create_llm_client(
         model_config=args.llm_config,
-        verbose=args.verbose,
-    )
-    search_service = SearchService(
-        video_searcher=video_searcher,
-        video_explorer=video_explorer,
         verbose=args.verbose,
     )
     handler = ChatHandler(
@@ -206,6 +228,18 @@ def main():
         type=float,
         default=None,
         help="LLM sampling temperature",
+    )
+    parser.add_argument(
+        "--search-base-url",
+        type=str,
+        default=None,
+        help="Use a remote search_app service instead of in-process searchers",
+    )
+    parser.add_argument(
+        "--search-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout for remote search service requests",
     )
     parser.add_argument(
         "-q",
