@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from sedb import MongoOperator, ElasticOperator
+from sedb.elastic import ElasticOperator
+from sedb.mongo import MongoOperator
 from tclogger import logger, dict_to_str, get_now, tcdatetime
 from typing import Union, Literal
 

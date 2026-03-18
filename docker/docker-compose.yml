@@ -1,0 +1,35 @@
+services:
+  bili-search:
+    network_mode: host
+    build:
+      context: ${BSDK_BUILD_CONTEXT:-..}
+      dockerfile: ${BSDK_DOCKERFILE:-docker/Dockerfile}
+      additional_contexts:
+        sedb_src: ${BSDK_SEDB_CONTEXT:-.}
+        tclogger_src: ${BSDK_TCLOGGER_CONTEXT:-.}
+        webu_src: ${BSDK_WEBU_CONTEXT:-.}
+      args:
+        BILI_SEARCH_BASE_IMAGE: ${BSDK_BASE_IMAGE:-bili-search-base:ubuntu24.04-py3}
+    image: ${BSDK_IMAGE:-bili-search:dev}
+    container_name: ${BSDK_CONTAINER_NAME:-bili-search-dev}
+    working_dir: /app
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      BILI_SEARCH_APP_MODE: ${BILI_SEARCH_APP_MODE:-dev}
+      BILI_SEARCH_APP_HOST: ${BILI_SEARCH_APP_HOST:-0.0.0.0}
+      BILI_SEARCH_APP_PORT: ${BILI_SEARCH_APP_PORT:-21031}
+      BILI_SEARCH_APP_ELASTIC_INDEX: ${BILI_SEARCH_APP_ELASTIC_INDEX:-bili_videos_dev6}
+      BILI_SEARCH_APP_ELASTIC_ENV_NAME: ${BILI_SEARCH_APP_ELASTIC_ENV_NAME:-elastic_dev}
+      BILI_SEARCH_APP_LLM_CONFIG: ${BILI_SEARCH_APP_LLM_CONFIG:-gpt}
+      BILI_GOOGLE_HUB_BASE_URL: ${BILI_GOOGLE_HUB_BASE_URL:-http://host.docker.internal:18100}
+      BILI_GOOGLE_HUB_TIMEOUT: ${BILI_GOOGLE_HUB_TIMEOUT:-45}
+      BILI_LLM_TIMEOUT: ${BILI_LLM_TIMEOUT:-60}
+    volumes:
+      - ${BSDK_CONFIGS_DIR:-./configs}:/app/configs:ro
+      - ${BSDK_LOGS_DIR:-./logs}:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["bssv", "start", "--foreground"]
+    restart: unless-stopped

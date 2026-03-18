@@ -23,15 +23,13 @@ from configs.envs import LLM_CONFIG
 
 def create_test_app():
     """Create a SearchApp with mocked search and chat internals for testing."""
-    with patch("apps.search_app.init_embed_client_with_keepalive") as mock_embed, patch(
-        "apps.search_app.VideoSearcherV2"
-    ) as mock_searcher_cls, patch(
-        "apps.search_app.VideoExplorer"
-    ) as mock_explorer_cls, patch(
-        "apps.search_app.RelationsClient"
-    ) as mock_relations_cls, patch(
-        "llms.llm_client.create_llm_client"
-    ) as mock_create_llm:
+    with (
+        patch("service.app.init_embed_client_with_keepalive") as mock_embed,
+        patch("service.app.VideoSearcherV2") as mock_searcher_cls,
+        patch("service.app.VideoExplorer") as mock_explorer_cls,
+        patch("service.app.RelationsClient") as mock_relations_cls,
+        patch("llms.llm_client.create_llm_client") as mock_create_llm,
+    ):
 
         mock_searcher = MagicMock()
         mock_explorer = MagicMock()
@@ -44,7 +42,7 @@ def create_test_app():
         mock_llm.model = "test-model"
         mock_create_llm.return_value = mock_llm
 
-        from apps.search_app import SearchApp
+        from service.app import SearchApp
 
         app_envs = {
             "app_name": "Test Search App",
@@ -293,10 +291,13 @@ def test_no_chat_without_llm_config():
     logger.note("=" * 60)
     logger.note("[TEST] no chat without llm_config")
 
-    with patch("apps.search_app.init_embed_client_with_keepalive"), patch(
-        "apps.search_app.VideoSearcherV2"
-    ), patch("apps.search_app.VideoExplorer"), patch("apps.search_app.RelationsClient"):
-        from apps.search_app import SearchApp
+    with (
+        patch("service.app.init_embed_client_with_keepalive"),
+        patch("service.app.VideoSearcherV2"),
+        patch("service.app.VideoExplorer"),
+        patch("service.app.RelationsClient"),
+    ):
+        from service.app import SearchApp
 
         app_envs = {
             "app_name": "Test Search App",
@@ -319,10 +320,10 @@ def test_no_chat_without_llm_config():
     logger.success("[PASS] no chat without llm_config")
 
 
-def test_search_app_arg_parser_allows_llm_config_override():
-    """Test SearchAppArgParser accepts llm_config override."""
+def test_shared_runtime_arg_resolution_allows_llm_config_override():
+    """Test shared runtime arg resolution accepts llm_config override."""
     logger.note("=" * 60)
-    logger.note("[TEST] search app arg parser llm override")
+    logger.note("[TEST] shared runtime arg resolution llm override")
 
     with patch.object(
         sys,
@@ -341,9 +342,9 @@ def test_search_app_arg_parser_allows_llm_config_override():
             "21011",
         ],
     ):
-        from apps.search_app import SearchAppArgParser
+        from service.arg_parser import ArgParser
 
-        parser = SearchAppArgParser()
+        parser = ArgParser()
         app_envs = {
             "app_name": "Test Search App",
             "version": "0.0.1",
@@ -360,7 +361,7 @@ def test_search_app_arg_parser_allows_llm_config_override():
     assert new_envs["llm_config"] == "deepseek"
     assert new_envs["port"] == 21011
 
-    logger.success("[PASS] search app arg parser llm override")
+    logger.success("[PASS] shared runtime arg resolution llm override")
 
 
 def test_search_app_env_helpers_support_service_mode():
@@ -379,7 +380,7 @@ def test_search_app_env_helpers_support_service_mode():
         },
         clear=False,
     ):
-        from apps.search_app import (
+        from service.app import (
             get_search_app_env_overrides_from_env,
             resolve_search_app_envs,
         )
@@ -412,8 +413,8 @@ if __name__ == "__main__":
         ("cors_headers", test_cors_headers),
         ("no_chat_without_llm_config", test_no_chat_without_llm_config),
         (
-            "search_app_arg_parser_llm_override",
-            test_search_app_arg_parser_allows_llm_config_override,
+            "shared_runtime_arg_resolution_llm_override",
+            test_shared_runtime_arg_resolution_allows_llm_config_override,
         ),
         (
             "search_app_env_helpers",

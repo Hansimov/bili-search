@@ -15,4 +15,4 @@ Backend of Bili Search Engine (https://blbl.top) developped by Hansimov.
 - Google Hub base URL defaults to `http://127.0.0.1:18100` and can be overridden with `BILI_GOOGLE_HUB_BASE_URL`.
 - Google Hub timeout defaults to `45s` and can be overridden with `BILI_GOOGLE_HUB_TIMEOUT`.
 
-See [docs/run/search_app_service.md](/home/asimov/repos/bili-search/docs/run/search_app_service.md) for service operations and [docs/run/relation_search.md](/home/asimov/repos/bili-search/docs/run/relation_search.md) for relation-search notes.
+See [docs/run/bssv.md](/home/asimov/repos/bili-search/docs/run/bssv.md) for local service operations, [docs/run/bsdk.md](/home/asimov/repos/bili-search/docs/run/bsdk.md) for dockerized deployment flow, and [docs/run/relation_search.md](/home/asimov/repos/bili-search/docs/run/relation_search.md) for relation-search notes.

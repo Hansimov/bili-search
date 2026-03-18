@@ -267,7 +267,7 @@ def test_atom_parsing():
             failed += 1
 
     logger.note(f"Atom parsing: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_bool_parsing():
@@ -307,7 +307,7 @@ def test_bool_parsing():
             failed += 1
 
     logger.note(f"Bool parsing: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_elastic_conversion():
@@ -381,7 +381,7 @@ def test_elastic_conversion():
             failed += 1
 
     logger.note(f"Elastic conversion: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_user_exclusion():
@@ -444,7 +444,7 @@ def test_user_exclusion():
             failed += 1
 
     logger.note(f"User exclusion: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_knn_filter_extraction():
@@ -525,7 +525,7 @@ def test_knn_filter_extraction():
         failed += 1
 
     logger.note(f"KNN filter: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_filter_merger():
@@ -667,7 +667,7 @@ def test_filter_merger():
         failed += 1
 
     logger.note(f"Filter merger: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_unit():
@@ -814,7 +814,7 @@ def test_constraint_unit():
         failed += 1
 
     logger.note(f"Constraint unit: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_simple():
@@ -917,7 +917,7 @@ def test_constraint_simple():
             failed += 1
 
     logger.note(f"Simple constraints: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_mixed():
@@ -1005,7 +1005,7 @@ def test_constraint_mixed():
             failed += 1
 
     logger.note(f"Mixed constraints: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_boolean():
@@ -1069,7 +1069,7 @@ def test_constraint_boolean():
             failed += 1
 
     logger.note(f"Boolean constraints: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_fields():
@@ -1145,7 +1145,7 @@ def test_constraint_fields():
         failed += 1
 
     logger.note(f"Constraint fields: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_qmod():
@@ -1184,7 +1184,7 @@ def test_qmod():
             failed += 1
 
     logger.note(f"Qmod: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_tree_converter():
@@ -1297,7 +1297,7 @@ def test_constraint_tree_converter():
         failed += 1
 
     logger.note(f"ConstraintTreeConverter: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_regression():
@@ -1634,7 +1634,7 @@ def test_constraint_regression():
         failed += 1
 
     logger.note(f"Constraint regression: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_edge_cases():
@@ -1679,7 +1679,7 @@ def test_edge_cases():
         passed += 1
 
     logger.note(f"Edge cases: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_only_routing():
@@ -1773,7 +1773,7 @@ def test_constraint_only_routing():
             failed += 1
 
     logger.note(f"Constraint-only routing: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_plus_keyword_routing():
@@ -1908,7 +1908,7 @@ def test_constraint_plus_keyword_routing():
             failed += 1
 
     logger.note(f"Constraint + keyword routing: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_constraint_filter_in_filter_only():
@@ -1986,7 +1986,7 @@ def test_constraint_filter_in_filter_only():
             failed += 1
 
     logger.note(f"Constraint filter in filter-only: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 # ============================================================================

@@ -1,9 +1,17 @@
+.git
+.github
+.chats
+.pytest_cache
 .vscode
 __pycache__
 *.egg-info
 .env
 docker/.env
-secrets.json
+.lm
+experiments
+logs
+*.log
+*.pyc
 *.crt
 *.pem
 configs/*
@@ -11,8 +19,3 @@ configs/*
 !configs/envs.json
 !configs/envs.py
 !configs/secrets.json.example
-logs/
-*.log
-*.chats
-*.lm
-experiments

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sedb import ElasticOperator
+from sedb.elastic import ElasticOperator
 from tclogger import logger
 
 from configs.envs import ELASTIC_PRO_ENVS, SECRETS

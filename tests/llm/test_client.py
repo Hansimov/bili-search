@@ -48,7 +48,6 @@ def test_non_stream_chat():
     assert response, "Response should not be empty"
     assert isinstance(response, str), "Response should be a string"
     logger.success(f"\n[PASS] Non-streaming chat returned: {len(response)} chars")
-    return response
 
 
 def test_stream_chat():
@@ -65,7 +64,6 @@ def test_stream_chat():
     assert response, "Response should not be empty"
     assert isinstance(response, str), "Response should be a string"
     logger.success(f"\n[PASS] Streaming chat returned: {len(response)} chars")
-    return response
 
 
 def test_multi_turn_chat():
@@ -82,7 +80,6 @@ def test_multi_turn_chat():
     assert response, "Response should not be empty"
     assert isinstance(response, str), "Response should be a string"
     logger.success(f"\n[PASS] Multi-turn chat returned: {len(response)} chars")
-    return response
 
 
 def test_client_by_config():
@@ -109,7 +106,6 @@ def test_client_by_config():
     assert response, "Response should not be empty"
     assert isinstance(response, str), "Response should be a string"
     logger.success(f"\n[PASS] LLMClientByConfig chat returned: {len(response)} chars")
-    return response
 
 
 def test_temperature_param():
@@ -130,7 +126,6 @@ def test_temperature_param():
     assert response, "Response should not be empty"
     assert isinstance(response, str), "Response should be a string"
     logger.success(f"\n[PASS] Temperature chat returned: {len(response)} chars")
-    return response
 
 
 THINKING_MESSAGES = [
@@ -159,7 +154,6 @@ def test_thinking_stream():
     assert "<think>" in response, "Response should contain <think> tag"
     assert "</think>" in response, "Response should contain </think> tag"
     logger.success(f"\n[PASS] Thinking stream returned: {len(response)} chars")
-    return response
 
 
 def test_thinking_non_stream():
@@ -183,7 +177,6 @@ def test_thinking_non_stream():
     assert "<think>" in response, "Response should contain <think> tag"
     assert "</think>" in response, "Response should contain </think> tag"
     logger.success(f"\n[PASS] Thinking non-stream returned: {len(response)} chars")
-    return response
 
 
 def test_thinking_via_param():
@@ -207,7 +200,6 @@ def test_thinking_via_param():
     assert "<think>" in response, "Response should contain <think> tag"
     assert "</think>" in response, "Response should contain </think> tag"
     logger.success(f"\n[PASS] Thinking via param returned: {len(response)} chars")
-    return response
 
 
 if __name__ == "__main__":

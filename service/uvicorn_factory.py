@@ -34,7 +34,7 @@ class _DecoloredStream:
 sys.stdout = _DecoloredStream(sys.stdout)
 sys.stderr = _DecoloredStream(sys.stderr)
 
-from apps.search_app import create_app_from_env as _create_app_from_env
+from service.app import create_app_from_env as _create_app_from_env
 
 
 def create_app_from_env():

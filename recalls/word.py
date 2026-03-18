@@ -139,8 +139,6 @@ class MultiLaneWordRecall:
             NoiseFilter.apply_content_quality_penalty(hits)
             hits = NoiseFilter.filter_by_score_ratio(
                 hits,
-                lane_name=lane_name,
-                lane_tags=None,
             )
 
             return RecallResult(

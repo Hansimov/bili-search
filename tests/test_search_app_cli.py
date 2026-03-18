@@ -1,4 +1,4 @@
-"""Tests for apps.search_app_cli service management helpers."""
+"""Tests for cli.bssv service management helpers."""
 
 from argparse import Namespace
 from pathlib import Path
@@ -27,12 +27,15 @@ def test_start_passes_runtime_env_to_service():
     manager.start.return_value = {"status": "started", "pid": 4321}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
     with patch(
-        "apps.search_app_cli._build_service_manager",
+        "cli.bssv._build_service_manager",
         return_value=manager,
     ):
-        from apps.search_app_cli import cmd_start
+        from cli.bssv import cmd_start
 
         args = make_runtime_args()
+        args.foreground = False
+        args.reload = False
+        args.kill = False
         cmd_start(args)
 
     kwargs = manager.start.call_args.kwargs
@@ -49,11 +52,14 @@ def test_status_cleans_stale_pid():
     manager = MagicMock()
     manager.status.return_value = {"status": "dead", "pid": 7788}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
-    with patch(
-        "apps.search_app_cli._build_service_manager",
-        return_value=manager,
-    ), patch("apps.search_app_cli._sanitize_log_file") as mock_sanitize:
-        from apps.search_app_cli import cmd_status
+    with (
+        patch(
+            "cli.bssv._build_service_manager",
+            return_value=manager,
+        ),
+        patch("cli.bssv._sanitize_log_file") as mock_sanitize,
+    ):
+        from cli.bssv import cmd_status
 
         args = make_runtime_args(port=21001, elastic_index=None, elastic_env_name=None)
         cmd_status(args)
@@ -67,10 +73,10 @@ def test_status_uses_runtime_specific_service_manager():
     manager.log_file = Path("/tmp/server.dev.p21001.log")
 
     with patch(
-        "apps.search_app_cli._build_service_manager",
+        "cli.bssv._build_service_manager",
         return_value=manager,
     ):
-        from apps.search_app_cli import cmd_status
+        from cli.bssv import cmd_status
 
         args = make_runtime_args(port=21001, elastic_index=None, elastic_env_name=None)
         cmd_status(args)
@@ -84,13 +90,15 @@ def test_logs_reads_from_service_manager_and_decolors_output():
     manager.log_file.exists.return_value = True
     manager.read_logs.return_value = "\x1b[95mline1\x1b[0m\nline2\n"
 
-    with patch(
-        "apps.search_app_cli._build_service_manager",
-        return_value=manager,
-    ), patch("apps.search_app_cli._sanitize_log_file") as mock_sanitize, patch(
-        "builtins.print"
-    ) as mock_print:
-        from apps.search_app_cli import cmd_logs
+    with (
+        patch(
+            "cli.bssv._build_service_manager",
+            return_value=manager,
+        ),
+        patch("cli.bssv._sanitize_log_file") as mock_sanitize,
+        patch("builtins.print") as mock_print,
+    ):
+        from cli.bssv import cmd_logs
 
         args = make_runtime_args()
         cmd_logs(args)
@@ -107,12 +115,75 @@ def test_restart_uses_runtime_specific_service_manager():
     manager.log_file = Path("/tmp/server.dev.p21099.log")
 
     with patch(
-        "apps.search_app_cli._build_service_manager",
+        "cli.bssv._build_service_manager",
         return_value=manager,
     ):
-        from apps.search_app_cli import cmd_restart
+        from cli.bssv import cmd_restart
 
         cmd_restart(make_runtime_args())
 
     manager.stop.assert_called_once_with()
     manager.start.assert_called_once()
+
+
+def test_list_managed_service_instances_reads_pid_files(tmp_path):
+    pid_file = (
+        tmp_path / "server.dev.p21031.ei-bili-videos-dev6.ev-elastic-dev.lc-gpt.pid"
+    )
+    pid_file.write_text("4321\n", encoding="utf-8")
+
+    with (
+        patch("service.runtime.DATA_DIR", tmp_path),
+        patch("service.runtime.process_is_running", return_value=True),
+        patch(
+            "service.runtime.process_started_at",
+            return_value="2026-03-18 09:02:03",
+        ),
+    ):
+        from service.runtime import list_managed_service_instances
+
+        instances = list_managed_service_instances(filters={"mode": "dev"})
+
+    assert len(instances) == 1
+    assert instances[0]["port"] == 21031
+    assert instances[0]["pid"] == 4321
+    assert instances[0]["started_at"] == "2026-03-18 09:02:03"
+
+
+def test_bssv_ps_prints_service_table():
+    with (
+        patch(
+            "cli.bssv.list_managed_service_instances",
+            return_value=[
+                {
+                    "port": 21031,
+                    "status": "running",
+                    "started_at": "2026-03-18 09:02:03",
+                    "mode": "dev",
+                    "llm_config": "gpt",
+                    "pid": 4321,
+                }
+            ],
+        ) as mock_list,
+        patch("builtins.print") as mock_print,
+    ):
+        from cli.bssv import cmd_ps
+
+        args = make_runtime_args(port=21031, llm_config="gpt")
+        args.all = False
+        cmd_ps(args)
+
+    mock_list.assert_called_once_with(
+        filters={
+            "mode": "dev",
+            "port": 21031,
+            "elastic_index": "bili_videos_dev6",
+            "elastic_env_name": "elastic_dev",
+            "llm_config": "gpt",
+        },
+        include_all=False,
+    )
+    printed = mock_print.call_args.args[0]
+    assert "PORT" in printed
+    assert "4321" in printed
+    assert "2026-03-18 09:02:03" in printed

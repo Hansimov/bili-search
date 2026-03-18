@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bili-search"
+version = "0.1.0"
+description = "Backend service and CLIs for Bili Search"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "blux>=0.4",
+    "btok",
+    "elasticsearch>=8.14,<10",
+    "fastapi>=0.115,<1",
+    "lark>=1.2.2,<2",
+    "pydantic>=2.9.2,<3",
+    "pypinyin>=0.51,<1",
+    "requests>=2.32.3,<3",
+    "sedb[common]>=1.3.1",
+    "sse-starlette>=2.1,<3",
+    "tclogger>=1.11.3",
+    "tfmx>=1.0",
+    "termcolor>=2.4,<3",
+    "tqdm>=4.66.4,<5",
+    "tzdata>=2024.1",
+    "uvicorn>=0.31,<1",
+    "websockets>=11,<12",
+    "webu>=1.3",
+    "zhconv>=1.4.3,<2",
+]
+
+[project.scripts]
+bssv = "cli.bssv:main"
+bsdk = "cli.bsdk:main"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:pkg_resources is deprecated as an API\\..*:DeprecationWarning:zhconv\\.zhconv",
+    "ignore:Deprecated call to `pkg_resources\\.declare_namespace\\('pyannote'\\)`.*:DeprecationWarning:pkg_resources",
+    "ignore:Deprecated call to `pkg_resources\\.declare_namespace\\('zope'\\)`.*:DeprecationWarning:pkg_resources",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "cli*",
+    "configs*",
+    "converters*",
+    "docker*",
+    "dsl*",
+    "elastics*",
+    "llms*",
+    "ranks*",
+    "recalls*",
+    "service*",
+]
+exclude = [
+    "tests*",
+    "docs*",
+    "logs*",
+    "debugs*",
+]

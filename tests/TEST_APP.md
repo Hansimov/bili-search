@@ -1,6 +1,6 @@
-# TEST_APP — 实时调试 search_app 流程记录
+# TEST_APP — 实时调试 search service 流程记录
 
-本文档记录了在后台启动 `search_app`、实时调用 API 进行调试、以及调试完成后清理进程的完整流程。
+本文档记录了通过 `bssv` 在前台或后台启动 search service、实时调用 API 进行调试、以及调试完成后清理进程的完整流程。
 
 ---
 
@@ -8,11 +8,10 @@
 
 ```bash
 # 开发模式（带 LLM 配置）
-python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev > /tmp/backend.log 2>&1 &
-echo "PID=$!"
+bssv start -m dev -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
-> `search_app` 启动时会自动检测并 kill 占用目标端口的旧进程（`lsof -t -i:<port> -sTCP:LISTEN`），无需手动清理。
+> 如果需要在当前 shell 前台调试，请改用 `bssv start --foreground ...`。
 
 **等待服务就绪：**
 
@@ -46,10 +45,10 @@ lsof -i:21001
 
 ```bash
 # 查看后台进程的输出
-tail -f /tmp/backend.log
+bssv logs -f -m dev -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 
 # 查看最后 50 行
-tail -50 /tmp/backend.log
+bssv logs -n 50 -m dev -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 ---
@@ -138,14 +137,8 @@ curl -s -X POST http://localhost:21001/chat/abort \
 ## 7. 调试完成后清理
 
 ```bash
-# 方式 1：通过进程名 kill
-pkill -f "apps.search_app"
-
-# 方式 2：通过端口 kill
-lsof -t -i:21001 -sTCP:LISTEN | xargs -r kill -9
-
-# 方式 3：如果记录了 PID
-kill -9 $BACKEND_PID
+# 推荐：通过 bssv 停止后台实例
+bssv stop -m dev -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 
 # 验证已清理
 lsof -i:21001
@@ -156,22 +149,20 @@ lsof -i:21001
 ## 8. 常用启动命令速查
 
 ```bash
-# 生产模式
-python -m apps.search_app
+# 生产模式前台
+bssv start --foreground
 
-# 生产模式（指定索引）
-python -m apps.search_app -ei bili_videos_pro1 -ev elastic_pro
+# 生产模式后台（指定索引）
+bssv start -ei bili_videos_pro1 -ev elastic_pro
 
-# 开发模式
-python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev
+# 开发模式前台
+bssv start --foreground -m dev -ei bili_videos_dev6 -ev elastic_dev
 
 # 开发模式 + LLM（deepseek）
-python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bssv start --foreground -m dev -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 
-# 开发模式 + LLM（gpt）+ 后台运行 + 日志重定向
-python -m apps.search_app -m dev -ei bili_videos_dev6 -ev elastic_dev -lc gpt \
-  > /tmp/backend.log 2>&1 &
-echo "Backend PID=$!"
+# 开发模式 + LLM（gpt）+ 后台运行
+bssv start -m dev -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 ---

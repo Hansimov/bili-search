@@ -671,7 +671,7 @@ class VideoHitsRanker:
         elif method == "rrf":
             return self.rrf_rank(hits_info, top_k=top_k, **kwargs)
         elif method == "stats":
-            return self.stats_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
+            return self.stats_rank(hits_info, top_k=top_k, prefer=prefer)
         elif method == "relevance":
             return self.relevance_rank(hits_info, top_k=top_k, **kwargs)
         elif method == "tiered":
@@ -683,7 +683,7 @@ class VideoHitsRanker:
                 hits_info, top_k=top_k, prefer=prefer, **kwargs
             )
         else:
-            return self.stats_rank(hits_info, top_k=top_k, prefer=prefer, **kwargs)
+            return self.stats_rank(hits_info, top_k=top_k, prefer=prefer)
 
     def diversified_rank(
         self,
