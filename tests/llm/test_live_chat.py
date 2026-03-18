@@ -11,7 +11,7 @@ Usage:
     python -m tests.llm.test_live_chat
     python -m tests.llm.test_live_chat --verbose
     python -m tests.llm.test_live_chat --test 3
-    python -m tests.llm.test_live_chat --search-base-url http://127.0.0.1:21031
+    python -m tests.llm.test_live_chat --search-base-url http://127.0.0.1:21001
 """
 
 import argparse

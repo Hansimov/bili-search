@@ -26,7 +26,7 @@ DATA_DIR = WORKSPACE_ROOT / "logs" / "search_app"
 APP_TIMEZONE_NAME = "Asia/Shanghai"
 APP_TIMEZONE = ZoneInfo(APP_TIMEZONE_NAME)
 SERVICE_FILE_PATTERN = re.compile(
-    r"^server\.(?P<mode>[^.]+)\.p(?P<port>\d+)\.ei-(?P<elastic_index>[^.]+)\.ev-(?P<elastic_env_name>[^.]+)\.lc-(?P<llm_config>[^.]+)\.pid$"
+    r"^server\.p(?P<port>\d+)\.ei-(?P<elastic_index>[^.]+)\.ev-(?P<elastic_env_name>[^.]+)\.lc-(?P<llm_config>[^.]+)\.pid$"
 )
 
 
@@ -55,7 +55,6 @@ def safe_name(value) -> str:
 
 def service_files_for_envs(app_envs: dict) -> tuple[Path, Path]:
     parts = [
-        safe_name(app_envs.get("mode")),
         f"p{int(app_envs['port'])}",
         f"ei-{safe_name(app_envs.get('elastic_index'))}",
         f"ev-{safe_name(app_envs.get('elastic_env_name'))}",
@@ -166,9 +165,7 @@ def list_managed_service_instances(
             }
         )
 
-    return sorted(
-        instances, key=lambda item: (item["port"], item["mode"], item["pid"] or 0)
-    )
+    return sorted(instances, key=lambda item: (item["port"], item["pid"] or 0))
 
 
 def sanitize_log_file(log_file: Path):

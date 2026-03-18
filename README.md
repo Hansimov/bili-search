@@ -2,17 +2,12 @@
 
 Backend of Bili Search Engine (https://blbl.top) developped by Hansimov.
 
-## Runtime Notes
+Bili-Search 是 B 站搜索服务后端，提供视频搜索、探索、关系查询以及 LLM 工具调用能力。
 
-- `search_app` now exposes ES-TOK relation endpoints:
-	- `/related_tokens_by_tokens`
-	- `/related_owners_by_tokens`
-	- `/related_videos_by_videos`
-	- `/related_owners_by_videos`
-	- `/related_videos_by_owners`
-	- `/related_owners_by_owners`
-- `llms` can call local Google Hub for web search via `search_google`, but this is intentionally not exposed as a `search_app` HTTP endpoint.
-- Google Hub base URL defaults to `http://127.0.0.1:18100` and can be overridden with `BILI_GOOGLE_HUB_BASE_URL`.
-- Google Hub timeout defaults to `45s` and can be overridden with `BILI_GOOGLE_HUB_TIMEOUT`.
+## Documentation
 
-See [docs/run/bssv.md](/home/asimov/repos/bili-search/docs/run/bssv.md) for local service operations, [docs/run/bsdk.md](/home/asimov/repos/bili-search/docs/run/bsdk.md) for dockerized deployment flow, and [docs/run/relation_search.md](/home/asimov/repos/bili-search/docs/run/relation_search.md) for relation-search notes.
+- 运行与部署：[docs/run/bssv.md](/home/asimov/repos/bili-search/docs/run/bssv.md), [docs/run/bsdk.md](/home/asimov/repos/bili-search/docs/run/bsdk.md)
+- 测试与联调：[docs/tests/TEST.md](/home/asimov/repos/bili-search/docs/tests/TEST.md)
+- 能力说明：[docs/capabilities/relations.md](/home/asimov/repos/bili-search/docs/capabilities/relations.md)
+- DSL 文档：[docs/dsl/SYNTAX.md](/home/asimov/repos/bili-search/docs/dsl/SYNTAX.md), [docs/dsl/USAGE.md](/home/asimov/repos/bili-search/docs/dsl/USAGE.md), [docs/dsl/DESIGN.md](/home/asimov/repos/bili-search/docs/dsl/DESIGN.md)
+- 视频探索：[docs/videos_explore/USAGE.md](/home/asimov/repos/bili-search/docs/videos_explore/USAGE.md), [docs/videos_explore/DESIGN.md](/home/asimov/repos/bili-search/docs/videos_explore/DESIGN.md)

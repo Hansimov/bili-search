@@ -14,6 +14,7 @@ from docker.manager import DEFAULT_ENV_FILE
 from docker.manager import DEFAULT_BASE_DOCKERFILE
 from docker.manager import run_compose
 from docker.manager import ensure_base_image
+from docker.manager import find_bili_search_container_by_port
 from docker.manager import list_bili_search_containers
 from docker.manager import run_base_build
 from service.runtime import ensure_process_timezone, fetch_health, health_url
@@ -157,6 +158,34 @@ def _report_compose_result(result):
         raise SystemExit(result.returncode)
 
 
+def _resolve_existing_instance_args(args):
+    port = getattr(args, "port", None)
+    if port is None:
+        return args, resolve_runtime_envs_from_args(args)
+
+    try:
+        container = find_bili_search_container_by_port(port, include_all=True)
+    except LookupError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    args.project_name = container.get("project_name") or getattr(
+        args, "project_name", None
+    )
+    args.service_name = container.get("service_name") or getattr(
+        args, "service_name", None
+    )
+    args.container_name = container.get("name") or getattr(args, "container_name", None)
+    args.image = container.get("image") or getattr(args, "image", None)
+    app_envs = {
+        "host": getattr(args, "host", None) or "0.0.0.0",
+        "port": int(container["port"]),
+        "elastic_index": container.get("elastic_index"),
+        "elastic_env_name": container.get("elastic_env_name"),
+        "llm_config": container.get("llm_config"),
+    }
+    return args, app_envs
+
+
 def cmd_start(args):
     app_envs = resolve_runtime_envs_from_args(args)
     logger.note(
@@ -193,28 +222,28 @@ def cmd_build_base(args):
 
 
 def cmd_stop(args):
-    app_envs = resolve_runtime_envs_from_args(args)
+    args, app_envs = _resolve_existing_instance_args(args)
     logger.note("> Stopping dockerized search service ...")
     result = run_compose(args, "stop", app_envs)
     _report_compose_result(result)
 
 
 def cmd_down(args):
-    app_envs = resolve_runtime_envs_from_args(args)
+    args, app_envs = _resolve_existing_instance_args(args)
     logger.note("> Removing dockerized search service containers ...")
     result = run_compose(args, "down", app_envs)
     _report_compose_result(result)
 
 
 def cmd_restart(args):
-    app_envs = resolve_runtime_envs_from_args(args)
+    args, app_envs = _resolve_existing_instance_args(args)
     logger.note("> Restarting dockerized search service ...")
     result = run_compose(args, "restart", app_envs)
     _report_compose_result(result)
 
 
 def cmd_status(args):
-    app_envs = resolve_runtime_envs_from_args(args)
+    args, app_envs = _resolve_existing_instance_args(args)
     result = run_compose(args, "status", app_envs)
     _report_compose_result(result)
     try:
@@ -226,7 +255,7 @@ def cmd_status(args):
 
 
 def cmd_logs(args):
-    app_envs = resolve_runtime_envs_from_args(args)
+    args, app_envs = _resolve_existing_instance_args(args)
     result = run_compose(args, "logs", app_envs)
     _report_compose_result(result)
 
@@ -251,7 +280,7 @@ def cmd_ps(args):
             item["port"] or "-",
             item["status"],
             item["started_at"] or "-",
-            item["mode"] or "-",
+            item.get("uptime") or "-",
             item["llm_config"] or "-",
             item["name"],
         ]
@@ -259,7 +288,7 @@ def cmd_ps(args):
     ]
     print(
         format_table(
-            ["PORT", "STATUS", "STARTED_AT", "MODE", "LLM", "NAME"],
+            ["PORT", "STATUS", "STARTED_AT", "UPTIME", "LLM", "NAME"],
             rows,
         )
     )
@@ -271,11 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=root_epilog(
             quick_start=[
                 "bsdk build-base",
-                "bsdk start -m dev -p 21031 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
             ],
             examples=[
-                "bsdk start --source local-git --git-ref HEAD~1 -m dev -p 21031 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bsdk status -m dev -p 21031 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk start --source local-git --git-ref HEAD~1 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk status -p 21001",
                 "bsdk ps --all",
                 "bsdk config --source remote-git --git-url https://github.com/example/bili-search.git --git-ref main",
             ],

@@ -9,9 +9,8 @@ from unittest.mock import MagicMock, patch
 
 def make_runtime_args(**overrides):
     values = {
-        "mode": "dev",
         "host": None,
-        "port": 21031,
+        "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
         "llm_config": "gpt",
@@ -102,8 +101,7 @@ def test_ensure_base_image_skips_existing_image():
     from docker.manager import ensure_base_image
 
     app_envs = {
-        "mode": "dev",
-        "port": 21031,
+        "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
         "llm_config": "gpt",
@@ -132,8 +130,7 @@ def test_resolve_compose_settings_uses_defaults():
     from docker.manager import default_project_name, resolve_compose_settings
 
     app_envs = {
-        "mode": "dev",
-        "port": 21031,
+        "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
         "llm_config": "gpt",
@@ -155,16 +152,15 @@ def test_list_bili_search_containers_reads_runtime_metadata():
     inspect_payload = [
         {
             "Id": "abc123def4567890",
-            "Name": "/bili-search-dev-p21031",
+            "Name": "/bili-search-p21001",
             "Config": {
-                "Image": "bili-search:dev-p21031",
+                "Image": "bili-search:p21001",
                 "Labels": {
-                    "com.docker.compose.project": "bili-search-dev-p21031",
+                    "com.docker.compose.project": "bili-search-p21001",
                     "com.docker.compose.service": "bili-search",
                 },
                 "Env": [
-                    "BILI_SEARCH_APP_MODE=dev",
-                    "BILI_SEARCH_APP_PORT=21031",
+                    "BILI_SEARCH_APP_PORT=21001",
                     "BILI_SEARCH_APP_ELASTIC_INDEX=bili_videos_dev6",
                     "BILI_SEARCH_APP_ELASTIC_ENV_NAME=elastic_dev",
                     "BILI_SEARCH_APP_LLM_CONFIG=gpt",
@@ -186,12 +182,75 @@ def test_list_bili_search_containers_reads_runtime_metadata():
     ):
         from docker.manager import list_bili_search_containers
 
-        containers = list_bili_search_containers(filters={"mode": "dev"})
+        containers = list_bili_search_containers(filters={"port": 21001})
 
     assert len(containers) == 1
-    assert containers[0]["port"] == 21031
-    assert containers[0]["mode"] == "dev"
+    assert containers[0]["port"] == 21001
     assert containers[0]["started_at"] == "2026-03-18 09:02:03"
+
+
+def test_format_uptime_omits_zero_units():
+    from datetime import datetime, timezone
+
+    from docker.manager import _format_uptime
+
+    started_at = "2026-03-18T01:02:03Z"
+    now = datetime(2026, 3, 19, 3, 2, 8, tzinfo=timezone.utc)
+
+    assert _format_uptime(started_at, now=now) == "1d 2h 5s"
+
+
+def test_find_bili_search_container_by_port_prefers_running_instance():
+    from docker.manager import find_bili_search_container_by_port
+
+    with patch(
+        "docker.manager.list_bili_search_containers",
+        return_value=[
+            {"port": 21001, "status": "exited", "name": "old"},
+            {"port": 21001, "status": "running/healthy", "name": "live"},
+        ],
+    ):
+        container = find_bili_search_container_by_port(21001)
+
+    assert container["name"] == "live"
+
+
+def test_bsdk_stop_resolves_running_instance_by_port():
+    result = MagicMock(stdout="stopped\n", stderr="", returncode=0)
+    with (
+        patch(
+            "cli.bsdk.find_bili_search_container_by_port",
+            return_value={
+                "project_name": "bili-search-p21001",
+                "service_name": "bili-search",
+                "name": "bili-search-p21001",
+                "image": "bili-search:p21001",
+                "port": 21001,
+                "elastic_index": "bili_videos_dev6",
+                "elastic_env_name": "elastic_dev",
+                "llm_config": "gpt",
+            },
+        ) as mock_find,
+        patch("cli.bsdk.run_compose", return_value=result) as mock_run,
+        patch("cli.bsdk._report_compose_result"),
+    ):
+        from cli.bsdk import cmd_stop
+
+        cmd_stop(
+            make_runtime_args(
+                port=21001,
+                elastic_index=None,
+                elastic_env_name=None,
+                llm_config=None,
+            )
+        )
+
+    mock_find.assert_called_once_with(21001, include_all=True)
+    resolved_args = mock_run.call_args.args[0]
+    resolved_envs = mock_run.call_args.args[2]
+    assert resolved_args.project_name == "bili-search-p21001"
+    assert resolved_args.container_name == "bili-search-p21001"
+    assert resolved_envs["port"] == 21001
 
 
 def test_bsdk_ps_prints_container_table():
@@ -200,12 +259,12 @@ def test_bsdk_ps_prints_container_table():
             "cli.bsdk.list_bili_search_containers",
             return_value=[
                 {
-                    "port": 21031,
+                    "port": 21001,
                     "status": "running",
-                    "started_at": "2026-03-18 01:02:03 UTC",
-                    "mode": "dev",
+                    "started_at": "2026-03-18 09:02:03",
+                    "uptime": "2h 3min 4s",
                     "llm_config": "gpt",
-                    "name": "bili-search-dev-p21031",
+                    "name": "bili-search-p21001",
                 }
             ],
         ) as mock_list,
@@ -217,8 +276,7 @@ def test_bsdk_ps_prints_container_table():
 
     mock_list.assert_called_once_with(
         filters={
-            "mode": "dev",
-            "port": 21031,
+            "port": 21001,
             "elastic_index": "bili_videos_dev6",
             "elastic_env_name": "elastic_dev",
             "llm_config": "gpt",
@@ -227,5 +285,7 @@ def test_bsdk_ps_prints_container_table():
     )
     printed = mock_print.call_args.args[0]
     assert "PORT" in printed
-    assert "21031" in printed
-    assert "bili-search-dev-p21031" in printed
+    assert "UPTIME" in printed
+    assert "21001" in printed
+    assert "2h 3min 4s" in printed
+    assert "bili-search-p21001" in printed

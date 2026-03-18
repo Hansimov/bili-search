@@ -82,7 +82,6 @@ class SearchApp:
         logger.okay(f"> {self.title} - v{self.version}")
 
     def init_searchers(self):
-        self.mode = self.app_envs.get("mode", "prod")
         self.elastic_videos_index = self.app_envs["elastic_index"]
         self.elastic_env_name = self.app_envs.get("elastic_env_name", None)
         self.video_searcher = VideoSearcherV2(
@@ -553,7 +552,6 @@ class SearchApp:
             "service_name": self.title,
             "service_type": "remote",
             "version": self.version,
-            "mode": self.mode,
             "elastic_index": self.elastic_videos_index,
             "default_query_mode": "wv",
             "rerank_query_mode": "vwr",
@@ -588,5 +586,4 @@ def create_app(app_envs: dict | None = None) -> FastAPI:
 
 def create_app_from_env() -> FastAPI:
     overrides = get_search_app_env_overrides_from_env()
-    mode = overrides.pop("mode", None)
-    return create_app(resolve_search_app_envs(mode=mode, overrides=overrides))
+    return create_app(resolve_search_app_envs(overrides=overrides))

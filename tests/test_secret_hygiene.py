@@ -31,7 +31,7 @@ def test_sensitive_config_files_must_stay_untracked():
 def test_fast_mode_scans_only_staged_index_content(tmp_path):
     staged_list = MagicMock(stdout=b"configs/secrets.json\0docker/.env.example\0")
     staged_secret = MagicMock(stdout=b'{"api_' + b'key": "real' + b'SecretToken123"}')
-    staged_env = MagicMock(stdout=b"BILI_SEARCH_APP_PORT=21031\n")
+    staged_env = MagicMock(stdout=b"BILI_SEARCH_APP_PORT=21001\n")
 
     with patch(
         "debugs.scan_sensitive_info.subprocess.run",

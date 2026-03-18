@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 def make_runtime_args(**overrides):
     values = {
-        "mode": "dev",
         "host": None,
         "port": 21099,
         "elastic_index": "bili_videos_dev6",
@@ -41,7 +40,6 @@ def test_start_passes_runtime_env_to_service():
     kwargs = manager.start.call_args.kwargs
     assert kwargs["host"] == "0.0.0.0"
     assert kwargs["port"] == 21099
-    assert kwargs["extra_env"]["BILI_SEARCH_APP_MODE"] == "dev"
     assert kwargs["extra_env"]["BILI_SEARCH_APP_PORT"] == "21099"
     assert kwargs["extra_env"]["BILI_SEARCH_APP_ELASTIC_INDEX"] == "bili_videos_dev6"
     assert kwargs["extra_env"]["BILI_SEARCH_APP_ELASTIC_ENV_NAME"] == "elastic_dev"
@@ -127,9 +125,7 @@ def test_restart_uses_runtime_specific_service_manager():
 
 
 def test_list_managed_service_instances_reads_pid_files(tmp_path):
-    pid_file = (
-        tmp_path / "server.dev.p21031.ei-bili-videos-dev6.ev-elastic-dev.lc-gpt.pid"
-    )
+    pid_file = tmp_path / "server.p21001.ei-bili-videos-dev6.ev-elastic-dev.lc-gpt.pid"
     pid_file.write_text("4321\n", encoding="utf-8")
 
     with (
@@ -142,10 +138,10 @@ def test_list_managed_service_instances_reads_pid_files(tmp_path):
     ):
         from service.runtime import list_managed_service_instances
 
-        instances = list_managed_service_instances(filters={"mode": "dev"})
+        instances = list_managed_service_instances()
 
     assert len(instances) == 1
-    assert instances[0]["port"] == 21031
+    assert instances[0]["port"] == 21001
     assert instances[0]["pid"] == 4321
     assert instances[0]["started_at"] == "2026-03-18 09:02:03"
 
@@ -156,10 +152,9 @@ def test_bssv_ps_prints_service_table():
             "cli.bssv.list_managed_service_instances",
             return_value=[
                 {
-                    "port": 21031,
+                    "port": 21001,
                     "status": "running",
                     "started_at": "2026-03-18 09:02:03",
-                    "mode": "dev",
                     "llm_config": "gpt",
                     "pid": 4321,
                 }
@@ -169,14 +164,13 @@ def test_bssv_ps_prints_service_table():
     ):
         from cli.bssv import cmd_ps
 
-        args = make_runtime_args(port=21031, llm_config="gpt")
+        args = make_runtime_args(port=21001, llm_config="gpt")
         args.all = False
         cmd_ps(args)
 
     mock_list.assert_called_once_with(
         filters={
-            "mode": "dev",
-            "port": 21031,
+            "port": 21001,
             "elastic_index": "bili_videos_dev6",
             "elastic_env_name": "elastic_dev",
             "llm_config": "gpt",

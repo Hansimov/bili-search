@@ -25,7 +25,7 @@ DEFAULT_EMPTY_CONTEXT_DIR = DEFAULT_STAGE_ROOT / "empty_context"
 
 
 def default_project_name(app_envs: dict) -> str:
-    return f"bili-search-{safe_name(app_envs.get('mode'))}-p{int(app_envs['port'])}"
+    return f"bili-search-p{int(app_envs['port'])}"
 
 
 def default_container_name(app_envs: dict) -> str:
@@ -33,7 +33,7 @@ def default_container_name(app_envs: dict) -> str:
 
 
 def default_image_name(app_envs: dict) -> str:
-    return f"bili-search:{safe_name(app_envs.get('mode'))}-p{int(app_envs['port'])}"
+    return f"bili-search:p{int(app_envs['port'])}"
 
 
 def default_base_image_name() -> str:
@@ -204,6 +204,43 @@ def _format_started_at(value: str | None) -> str | None:
     return format_datetime_for_output(dt)
 
 
+def _parse_container_datetime(value: str | None) -> datetime | None:
+    if not value or value.startswith("0001-01-01"):
+        return None
+    text = value.rstrip("Z")
+    if "." in text:
+        head, frac = text.split(".", 1)
+        text = f"{head}.{frac[:6]}"
+    dt = datetime.fromisoformat(text)
+    if value.endswith("Z"):
+        return dt.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_uptime(value: str | None, *, now: datetime | None = None) -> str | None:
+    started_at = _parse_container_datetime(value)
+    if started_at is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    elapsed_seconds = max(int((current - started_at).total_seconds()), 0)
+    days, rem = divmod(elapsed_seconds, 24 * 3600)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}min")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
 def _is_bili_search_container(
     name: str, image: str, labels: dict, env_map: dict
 ) -> bool:
@@ -212,10 +249,8 @@ def _is_bili_search_container(
     search_fields = [name, image, project, service]
     if any("bili-search" in (field or "") for field in search_fields):
         return True
-    return (
-        "BILI_SEARCH_APP_PORT" in env_map
-        and "BILI_SEARCH_APP_MODE" in env_map
-        and (name.startswith("bili-") or image.startswith("bili-search"))
+    return "BILI_SEARCH_APP_PORT" in env_map and (
+        name.startswith("bili-") or image.startswith("bili-search")
     )
 
 
@@ -288,13 +323,15 @@ def list_bili_search_containers(
             "image": image,
             "project_name": labels.get("com.docker.compose.project", ""),
             "service_name": labels.get("com.docker.compose.service", ""),
-            "mode": env_map.get("BILI_SEARCH_APP_MODE"),
             "port": port,
             "elastic_index": env_map.get("BILI_SEARCH_APP_ELASTIC_INDEX"),
             "elastic_env_name": env_map.get("BILI_SEARCH_APP_ELASTIC_ENV_NAME"),
             "llm_config": env_map.get("BILI_SEARCH_APP_LLM_CONFIG"),
             "status": display_status,
             "started_at": _format_started_at(state.get("StartedAt")),
+            "uptime": (
+                _format_uptime(state.get("StartedAt")) if state.get("Running") else None
+            ),
             "network_mode": (item.get("HostConfig") or {}).get("NetworkMode"),
         }
         if not include_all and status != "running":
@@ -311,6 +348,28 @@ def list_bili_search_containers(
             item["name"],
         ),
     )
+
+
+def find_bili_search_container_by_port(port: int, *, include_all: bool = True) -> dict:
+    matches = list_bili_search_containers(
+        filters={"port": int(port)},
+        include_all=include_all,
+    )
+    if not matches:
+        raise LookupError(f"No bili-search docker container found on port {port}")
+
+    running_matches = [
+        item for item in matches if str(item.get("status") or "").startswith("running")
+    ]
+    if len(running_matches) == 1:
+        return running_matches[0]
+    if len(running_matches) > 1:
+        raise LookupError(
+            f"Multiple running bili-search docker containers found on port {port}"
+        )
+    if len(matches) == 1:
+        return matches[0]
+    raise LookupError(f"Multiple bili-search docker containers found on port {port}")
 
 
 def ensure_base_image(args, app_envs: dict) -> subprocess.CompletedProcess | None:

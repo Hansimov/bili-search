@@ -7,7 +7,6 @@ from copy import deepcopy
 
 SEARCH_APP_ENV_PREFIX = "BILI_SEARCH_APP_"
 SEARCH_APP_ENV_KEYS = {
-    "mode": f"{SEARCH_APP_ENV_PREFIX}MODE",
     "host": f"{SEARCH_APP_ENV_PREFIX}HOST",
     "port": f"{SEARCH_APP_ENV_PREFIX}PORT",
     "elastic_index": f"{SEARCH_APP_ENV_PREFIX}ELASTIC_INDEX",
@@ -25,17 +24,10 @@ def _default_search_app_envs() -> dict:
 def resolve_search_app_envs(
     app_envs: dict | None = None,
     *,
-    mode: str | None = None,
     overrides: dict | None = None,
 ) -> dict:
     base_envs = app_envs or _default_search_app_envs()
     resolved_envs = deepcopy(base_envs)
-    selected_mode = str(mode or resolved_envs.get("mode") or "prod")
-    resolved_envs["mode"] = selected_mode
-
-    for key, value in base_envs.items():
-        if isinstance(value, dict) and selected_mode in value:
-            resolved_envs[key] = value[selected_mode]
 
     for key, value in (overrides or {}).items():
         if value is not None:
@@ -54,7 +46,6 @@ def _get_env_override(name: str) -> str | None:
 
 def get_search_app_env_overrides_from_env() -> dict:
     overrides = {
-        "mode": _get_env_override(SEARCH_APP_ENV_KEYS["mode"]),
         "host": _get_env_override(SEARCH_APP_ENV_KEYS["host"]),
         "elastic_index": _get_env_override(SEARCH_APP_ENV_KEYS["elastic_index"]),
         "elastic_env_name": _get_env_override(SEARCH_APP_ENV_KEYS["elastic_env_name"]),

@@ -47,7 +47,6 @@ def create_test_app():
         app_envs = {
             "app_name": "Test Search App",
             "version": "0.0.1",
-            "mode": "test",
             "elastic_index": "test_index",
             "llm_config": LLM_CONFIG,
         }
@@ -302,7 +301,6 @@ def test_no_chat_without_llm_config():
         app_envs = {
             "app_name": "Test Search App",
             "version": "0.0.1",
-            "mode": "test",
             "elastic_index": "test_index",
             "llm_config": "",
         }
@@ -330,8 +328,6 @@ def test_shared_runtime_arg_resolution_allows_llm_config_override():
         "argv",
         [
             "search_app.py",
-            "-m",
-            "dev",
             "-ei",
             "bili_videos_dev6",
             "-ev",
@@ -348,10 +344,9 @@ def test_shared_runtime_arg_resolution_allows_llm_config_override():
         app_envs = {
             "app_name": "Test Search App",
             "version": "0.0.1",
-            "mode": "prod",
-            "host": {"prod": "0.0.0.0", "dev": "0.0.0.0"},
-            "port": {"prod": 20001, "dev": 21001},
-            "elastic_index": {"prod": "bili_videos_pro1", "dev": "bili_videos_dev6"},
+            "host": "0.0.0.0",
+            "port": 21001,
+            "elastic_index": "bili_videos_dev6",
             "llm_config": "gpt",
         }
         new_envs = parser.update_app_envs(app_envs)
@@ -364,7 +359,7 @@ def test_shared_runtime_arg_resolution_allows_llm_config_override():
     logger.success("[PASS] shared runtime arg resolution llm override")
 
 
-def test_search_app_env_helpers_support_service_mode():
+def test_search_app_env_helpers_support_service_overrides():
     """Test environment-based app factory helpers used by search_app_cli."""
     logger.note("=" * 60)
     logger.note("[TEST] search app env helpers")
@@ -372,7 +367,6 @@ def test_search_app_env_helpers_support_service_mode():
     with patch.dict(
         os.environ,
         {
-            "BILI_SEARCH_APP_MODE": "dev",
             "BILI_SEARCH_APP_PORT": "21015",
             "BILI_SEARCH_APP_ELASTIC_INDEX": "bili_videos_dev6",
             "BILI_SEARCH_APP_ELASTIC_ENV_NAME": "elastic_dev",
@@ -386,10 +380,8 @@ def test_search_app_env_helpers_support_service_mode():
         )
 
         overrides = get_search_app_env_overrides_from_env()
-        mode = overrides.pop("mode")
-        envs = resolve_search_app_envs(mode=mode, overrides=overrides)
+        envs = resolve_search_app_envs(overrides=overrides)
 
-    assert envs["mode"] == "dev"
     assert envs["port"] == 21015
     assert envs["elastic_index"] == "bili_videos_dev6"
     assert envs["elastic_env_name"] == "elastic_dev"
@@ -418,7 +410,7 @@ if __name__ == "__main__":
         ),
         (
             "search_app_env_helpers",
-            test_search_app_env_helpers_support_service_mode,
+            test_search_app_env_helpers_support_service_overrides,
         ),
     ]
 

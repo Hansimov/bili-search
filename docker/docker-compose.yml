@@ -10,16 +10,15 @@ services:
         webu_src: ${BSDK_WEBU_CONTEXT:-.}
       args:
         BILI_SEARCH_BASE_IMAGE: ${BSDK_BASE_IMAGE:-bili-search-base:ubuntu24.04-py3}
-    image: ${BSDK_IMAGE:-bili-search:dev}
-    container_name: ${BSDK_CONTAINER_NAME:-bili-search-dev}
+    image: ${BSDK_IMAGE:-bili-search:p21001}
+    container_name: ${BSDK_CONTAINER_NAME:-bili-search-p21001}
     working_dir: /app
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
-      BILI_SEARCH_APP_MODE: ${BILI_SEARCH_APP_MODE:-dev}
       BILI_SEARCH_APP_HOST: ${BILI_SEARCH_APP_HOST:-0.0.0.0}
-      BILI_SEARCH_APP_PORT: ${BILI_SEARCH_APP_PORT:-21031}
+      BILI_SEARCH_APP_PORT: ${BILI_SEARCH_APP_PORT:-21001}
       BILI_SEARCH_APP_ELASTIC_INDEX: ${BILI_SEARCH_APP_ELASTIC_INDEX:-bili_videos_dev6}
       BILI_SEARCH_APP_ELASTIC_ENV_NAME: ${BILI_SEARCH_APP_ELASTIC_ENV_NAME:-elastic_dev}
       BILI_SEARCH_APP_LLM_CONFIG: ${BILI_SEARCH_APP_LLM_CONFIG:-gpt}

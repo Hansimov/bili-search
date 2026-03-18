@@ -12,17 +12,17 @@ def test_search_service_client_explore(mock_post):
 
     from llms.tools.executor import SearchServiceClient
 
-    client = SearchServiceClient("http://127.0.0.1:21031", timeout=5)
+    client = SearchServiceClient("http://127.0.0.1:21001", timeout=5)
     result = client.explore("黑神话")
 
     assert result["hits"][0]["title"] == "黑神话"
-    assert mock_post.call_args.args[0] == "http://127.0.0.1:21031/explore"
+    assert mock_post.call_args.args[0] == "http://127.0.0.1:21001/explore"
 
 
 def test_create_search_service_prefers_http_client():
     from llms.tools.executor import SearchServiceClient, create_search_service
 
-    service = create_search_service(base_url="http://127.0.0.1:21031")
+    service = create_search_service(base_url="http://127.0.0.1:21001")
     assert isinstance(service, SearchServiceClient)
 
 
@@ -42,10 +42,10 @@ def test_search_service_client_capabilities(mock_get):
 
     from llms.tools.executor import SearchServiceClient
 
-    client = SearchServiceClient("http://127.0.0.1:21031", timeout=5)
+    client = SearchServiceClient("http://127.0.0.1:21001", timeout=5)
     capabilities = client.capabilities()
 
     assert capabilities["service_name"] == "Bili Search App"
     assert capabilities["default_query_mode"] == "wv"
     assert capabilities["relation_endpoints"] == ["related_owners_by_tokens"]
-    assert mock_get.call_args.args[0] == "http://127.0.0.1:21031/capabilities"
+    assert mock_get.call_args.args[0] == "http://127.0.0.1:21001/capabilities"

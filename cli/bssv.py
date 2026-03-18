@@ -27,7 +27,7 @@ def cmd_start(args):
     app_envs = resolve_runtime_envs_from_args(args)
     if getattr(args, "foreground", False):
         logger.note(
-            f"> Starting search app in foreground on {app_envs['host']}:{app_envs['port']} [{app_envs['mode']}] ..."
+            f"> Starting search app in foreground on {app_envs['host']}:{app_envs['port']} ..."
         )
         run_foreground(
             app_envs,
@@ -45,9 +45,7 @@ def cmd_start(args):
     ensure_data_dir()
     if getattr(args, "kill", False):
         kill_processes_on_port(int(app_envs["port"]))
-    logger.note(
-        f"> Starting search app on {app_envs['host']}:{app_envs['port']} [{app_envs['mode']}] ..."
-    )
+    logger.note(f"> Starting search app on {app_envs['host']}:{app_envs['port']} ...")
     result = service_manager.start(
         host=app_envs["host"],
         port=app_envs["port"],
@@ -87,9 +85,7 @@ def cmd_restart(args):
     if stop_result["status"] in ("stopped", "stale_pid") and stop_result["pid"]:
         logger.note(f"> Stopping search app (PID: {stop_result['pid']}) ...")
         logger.okay("  ✓ Search app stopped")
-    logger.note(
-        f"> Starting search app on {app_envs['host']}:{app_envs['port']} [{app_envs['mode']}] ..."
-    )
+    logger.note(f"> Starting search app on {app_envs['host']}:{app_envs['port']} ...")
     logger.okay(f"  ✓ Search app started (PID: {start_result['pid']})")
     logger.mesg(f"  Log: {logstr.file(service_manager.log_file)}")
 
@@ -156,7 +152,6 @@ def cmd_ps(args):
             item["port"],
             item["status"],
             item["started_at"] or "-",
-            item["mode"],
             item["llm_config"],
             item["pid"] or "-",
         ]
@@ -164,7 +159,7 @@ def cmd_ps(args):
     ]
     print(
         format_table(
-            ["PORT", "STATUS", "STARTED_AT", "MODE", "LLM", "PID"],
+            ["PORT", "STATUS", "STARTED_AT", "LLM", "PID"],
             rows,
         )
     )
@@ -175,13 +170,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Bili Search service CLI (bssv)",
         epilog=root_epilog(
             quick_start=[
-                "bssv start -m dev -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bssv start --foreground -m dev -p 21031 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bssv start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bssv start --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
             ],
             examples=[
-                "bssv status -m dev -p 21031 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bssv logs -f -m dev -p 21031 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bssv check -m dev -p 21031",
+                "bssv status -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bssv logs -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bssv check -p 21001",
                 "bssv ps --all",
             ],
         ),

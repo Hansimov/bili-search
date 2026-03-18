@@ -8,7 +8,6 @@ from service.envs import get_search_app_env_overrides_from_env, resolve_search_a
 def explicit_runtime_filters_from_args(args) -> dict:
     filters = {}
     for key in (
-        "mode",
         "port",
         "elastic_index",
         "elastic_env_name",
@@ -43,7 +42,6 @@ def add_shared_runtime_args(
     include_reload: bool = False,
     include_kill: bool = False,
 ):
-    parser.add_argument("-m", "--mode", type=str, default=None, help="Running mode")
     parser.add_argument("-s", "--host", type=str, default=None, help="Host override")
     parser.add_argument("-p", "--port", type=int, default=None, help="Port override")
     parser.add_argument(
@@ -102,10 +100,9 @@ def resolve_runtime_envs_from_args(args, base_envs: dict | None = None) -> dict:
         "llm_config": getattr(args, "llm_config", None),
     }
     overrides = {
-        **{key: value for key, value in env_overrides.items() if key != "mode"},
+        **env_overrides,
         **{
             key: value for key, value in explicit_overrides.items() if value is not None
         },
     }
-    mode = getattr(args, "mode", None) or env_overrides.get("mode")
-    return resolve_search_app_envs(base_envs, mode=mode, overrides=overrides)
+    return resolve_search_app_envs(base_envs, overrides=overrides)

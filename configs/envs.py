@@ -23,7 +23,6 @@ ELASTIC_PRO_ENVS = SECRETS["elastic_pro"]
 ELASTIC_DEV_ENVS = SECRETS["elastic_dev"]
 MONGO_ENVS = SECRETS["mongo"]
 LLMS_ENVS = SECRETS["llms"]
-MILVUS_ENVS = SECRETS["milvus"]
 TEI_CLIENTS_ENVS = SECRETS["tei_clients"]
 TEI_CLIENTS_ENDPOINTS = TEI_CLIENTS_ENVS.get("endpoints", [])
 LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "gpt")
