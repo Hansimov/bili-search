@@ -167,7 +167,8 @@ def test_execute_related_owners_by_tokens():
     owner = result_data["owners"][0]
     assert owner["mid"] == 946974
     assert owner["name"] == "影视飓风"
-    assert owner["link"].endswith("946974")
+    assert "link" not in owner
+    assert "doc_freq" not in owner
 
     logger.success("[PASS] execute related_owners_by_tokens")
 
@@ -194,7 +195,7 @@ def test_execute_unknown_tool():
 
 
 def test_tool_executor_merges_google_capability():
-    """Google Hub capability should be exposed even if search service omits it."""
+    """Google Hub capability should be exposed when health check passes."""
     logger.note("=" * 60)
     logger.note("[TEST] tool executor merges google capability")
 
@@ -205,9 +206,15 @@ def test_tool_executor_merges_google_capability():
         "relation_endpoints": ["related_owners_by_tokens"],
     }
     mock_google = MagicMock()
+    mock_google.base_url = "http://mock-google:18100"
 
     executor = ToolExecutor(search_client=mock_client, google_client=mock_google)
-    capabilities = executor.get_search_capabilities()
+
+    # Mock the health check HTTP call to return 200
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    with patch("llms.tools.executor.requests.get", return_value=mock_response):
+        capabilities = executor.get_search_capabilities()
 
     assert capabilities["supports_google_search"] is True
     assert capabilities["relation_endpoints"] == ["related_owners_by_tokens"]

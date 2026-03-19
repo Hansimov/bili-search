@@ -123,6 +123,11 @@ RANK_SLOT_MIN_DURATION = 15  # seconds — minimum for slot (top-10) positions
 RANK_LOW_ENGAGEMENT_THRESHOLD = 500  # views
 RANK_LOW_ENGAGEMENT_PENALTY = 0.7  # multiply quality_score by this
 
+# Very low engagement: near-zero-view content is almost certainly low-quality.
+# Much more aggressive penalty than the standard low-engagement tier.
+RANK_VERY_LOW_ENGAGEMENT_THRESHOLD = 100  # views
+RANK_VERY_LOW_ENGAGEMENT_PENALTY = 0.3  # multiply quality_score by this
+
 # =============================================================================
 # Title Match Bonus
 # =============================================================================

@@ -9,16 +9,14 @@ from tclogger import ts_to_str, get_now_ts, dt_to_zh_str
 # Minimized to reduce token consumption — only include what the LLM needs
 # to generate a useful response. desc/coin/danmaku are omitted
 # because the LLM only lists title, author, view count, and pubdate.
-# pic and duration are still extracted here so downstream formatting can
-# derive presentation fields from them when needed.
 LLM_HIT_FIELDS = [
     "title",
-    "tags",
     "bvid",
-    "pic",
     "owner",
     "pubdate",
     "duration",
+    "pic",
+    "tags",
     "stat.view",
 ]
 
@@ -115,14 +113,14 @@ def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
     add_pubdate_str(result)
     add_pub_to_now_str(result)
     add_duration_str(result)
-    # Remove raw timestamp — pubdate_str and pub_to_now_str are sufficient
-    result.pop("pubdate", None)
-    # Keep a presentation-friendly duration string instead of raw seconds.
-    result.pop("duration", None)
     # Truncate tags to save tokens
     if "tags" in result and isinstance(result["tags"], str):
-        tag_list = [t.strip() for t in result["tags"].split(",")]
-        result["tags"] = ", ".join(tag_list[:MAX_TAGS_PER_HIT])
+        tags_list = [t.strip() for t in result["tags"].split(",") if t.strip()]
+        result["tags"] = ",".join(tags_list[:MAX_TAGS_PER_HIT])
+    # Remove raw timestamp — pubdate_str and pub_to_now_str are sufficient
+    result.pop("pubdate", None)
+    # Remove raw duration — duration_str is sufficient
+    result.pop("duration", None)
     return result
 
 
@@ -187,8 +185,6 @@ def format_related_token_options(options: list[dict], max_hits: int = 10) -> lis
         {
             "text": option.get("text", ""),
             "score": option.get("score", 0),
-            "doc_freq": option.get("doc_freq", 0),
-            "type": option.get("type", ""),
         }
         for option in options[:max_hits]
     ]
@@ -197,14 +193,11 @@ def format_related_token_options(options: list[dict], max_hits: int = 10) -> lis
 def format_related_owners(owners: list[dict], max_hits: int = 10) -> list[dict]:
     formatted = []
     for owner in owners[:max_hits]:
-        mid = owner.get("mid")
         formatted.append(
             {
-                "mid": mid,
+                "mid": owner.get("mid"),
                 "name": owner.get("name", ""),
                 "score": owner.get("score", 0),
-                "doc_freq": owner.get("doc_freq", 0),
-                "link": f"https://space.bilibili.com/{mid}" if mid else "",
             }
         )
     return formatted
@@ -213,21 +206,14 @@ def format_related_owners(owners: list[dict], max_hits: int = 10) -> list[dict]:
 def format_related_videos(videos: list[dict], max_hits: int = 10) -> list[dict]:
     formatted = []
     for video in videos[:max_hits]:
-        bvid = video.get("bvid", "")
-        owner_mid = video.get("owner_mid")
         formatted.append(
             {
-                "bvid": bvid,
+                "bvid": video.get("bvid", ""),
                 "title": video.get("title", ""),
                 "score": video.get("score", 0),
-                "doc_freq": video.get("doc_freq", 0),
-                "link": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
                 "owner": {
-                    "mid": owner_mid,
+                    "mid": video.get("owner_mid"),
                     "name": video.get("owner_name", ""),
-                    "link": (
-                        f"https://space.bilibili.com/{owner_mid}" if owner_mid else ""
-                    ),
                 },
             }
         )

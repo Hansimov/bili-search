@@ -144,6 +144,12 @@ def test_direct_content_response():
     assert result["choices"][0]["message"]["role"] == "assistant"
     assert result["choices"][0]["message"]["content"] == "你好！我是AI助手。"
     assert result["choices"][0]["finish_reason"] == "stop"
+    assert "follow_up_options" in result
+    assert len(result["follow_up_options"]) == 3
+    assert all(
+        "label" in option and "query" in option
+        for option in result["follow_up_options"]
+    )
 
     # LLM should be called exactly once
     assert mock_llm.chat.call_count == 1
@@ -288,7 +294,6 @@ def test_fallback_tool_commands_for_single_author_timeline():
     )
 
     assert fallback == [
-        {"type": "related_owners_by_tokens", "args": {"text": "影视飓风"}},
         {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
     ]
 
@@ -312,6 +317,7 @@ def test_fallback_creator_discovery_commands():
 
     assert fallback == [
         {"type": "related_owners_by_tokens", "args": {"text": "黑神话悟空"}},
+        {"type": "search_videos", "args": {"queries": ["黑神话悟空 q=vwr"]}},
     ]
 
     logger.success("[PASS] fallback creator discovery commands")
@@ -334,6 +340,7 @@ def test_fallback_creator_discovery_commands_for_direct_request():
 
     assert fallback == [
         {"type": "related_owners_by_tokens", "args": {"text": "黑神话悟空"}},
+        {"type": "search_videos", "args": {"queries": ["黑神话悟空 q=vwr"]}},
     ]
 
     logger.success("[PASS] fallback creator discovery direct request")
@@ -362,6 +369,10 @@ def test_fallback_creator_discovery_commands_for_followup_dialogue():
         {
             "type": "related_owners_by_tokens",
             "args": {"text": "黑神话悟空 剧情解析和世界观考据"},
+        },
+        {
+            "type": "search_videos",
+            "args": {"queries": ["黑神话悟空 剧情解析和世界观考据 q=vwr"]},
         },
     ]
 
@@ -492,6 +503,78 @@ def test_preflight_tool_commands_for_followup_external_request():
     logger.success("[PASS] preflight follow-up external request")
 
 
+def test_duplicate_search_commands_are_suppressed_after_preflight():
+    """A command already executed by preflight should not be executed again."""
+    logger.note("=" * 60)
+    logger.note("[TEST] duplicate search commands suppressed after preflight")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我再搜一下 B 站相关视频。",
+            "<search_videos queries='[\"Gemini 2.5 q=vwr\"]' />",
+        ),
+        make_content_response("这里是 Gemini 2.5 的官方更新和对应 B 站解读。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+    mock_search.search_google.return_value = {
+        "results": [{"title": "Gemini 2.5 更新", "link": "https://example.com"}]
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+    handler.tool_executor._handlers["search_google"] = lambda args: {
+        "results": [{"title": "Gemini 2.5 更新", "link": "https://example.com"}]
+    }
+
+    result = handler.handle(
+        messages=[
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            }
+        ]
+    )
+
+    assert "Gemini 2.5" in result["choices"][0]["message"]["content"]
+    assert mock_search.explore.call_count == 1
+    assert len(result["tool_events"]) == 1
+    assert result["tool_events"][0]["preflight"] is True
+    assert result["tool_events"][0]["tools"] == ["search_google", "search_videos"]
+
+    logger.success("[PASS] duplicate search commands suppressed after preflight")
+
+
+def test_duplicate_commands_are_deduped_within_single_iteration():
+    """Identical tool commands emitted in one response should execute only once."""
+    logger.note("=" * 60)
+    logger.note("[TEST] duplicate commands deduped within single iteration")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我来搜索黑神话相关视频。",
+            "<search_videos queries='[\"黑神话 q=vwr\"]'/>\n"
+            "<search_videos queries='[\"黑神话 q=vwr\"]'/>",
+        ),
+        make_content_response("找到了黑神话相关视频。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(messages=[{"role": "user", "content": "搜索黑神话"}])
+
+    assert "黑神话" in result["choices"][0]["message"]["content"]
+    assert mock_search.explore.call_count == 1
+    assert result["tool_events"][0]["tools"] == ["search_videos"]
+
+    logger.success("[PASS] duplicate commands deduped within single iteration")
+
+
 def test_author_timeline_fallback_skips_official_update_queries():
     """Official-update queries should not be mistaken for creator timeline requests."""
     logger.note("=" * 60)
@@ -564,9 +647,73 @@ def test_fallback_similar_creator_commands():
 
     assert fallback == [
         {"type": "related_owners_by_tokens", "args": {"text": "影视飓风"}},
+        {"type": "search_videos", "args": {"queries": ["影视飓风 q=vwr"]}},
     ]
 
     logger.success("[PASS] fallback similar creator commands")
+
+
+def test_relation_only_commands_are_promoted_to_search_videos():
+    """Relation-only plans should be auto-promoted to include search_videos."""
+    logger.note("=" * 60)
+    logger.note("[TEST] relation-only commands promoted")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先找一些相关创作者。",
+            '<related_owners_by_tokens text="黑神话悟空"/>',
+        ),
+        make_content_response("这些创作者近期相关视频里，黑神话内容最活跃的是..."),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}]
+    )
+
+    assert "黑神话" in result["choices"][0]["message"]["content"]
+    mock_search.related_owners_by_tokens.assert_called_once_with(
+        text="黑神话悟空", size=8
+    )
+    mock_search.explore.assert_called_once_with(query="黑神话悟空 q=vwr")
+    assert result["tool_events"][0]["tools"] == [
+        "related_owners_by_tokens",
+        "search_videos",
+    ]
+
+    logger.success("[PASS] relation-only commands promoted")
+
+
+def test_old_results_messages_are_pruned():
+    """Only the newest injected tool result block should remain in context."""
+    logger.note("=" * 60)
+    logger.note("[TEST] old results messages pruned")
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "问题"},
+        {"role": "user", "content": "[搜索结果]\nsearch_videos():\n{}"},
+        {"role": "assistant", "content": "继续分析"},
+        {"role": "user", "content": "[搜索结果]\nrelated_owners_by_tokens():\n{}"},
+    ]
+
+    ChatHandler._prune_old_results_messages(messages)
+
+    result_messages = [
+        m
+        for m in messages
+        if m.get("role") == "user" and "[搜索结果]" in m.get("content", "")
+    ]
+    assert len(result_messages) == 1
+    assert "related_owners_by_tokens" in result_messages[0]["content"]
+
+    logger.success("[PASS] old results messages pruned")
 
 
 def test_cache_token_accumulation():
@@ -719,11 +866,15 @@ def test_streaming_response():
     assert last_data["choices"][0]["finish_reason"] == "stop"
     assert "perf_stats" in last_data
     assert "usage" in last_data
+    assert "usage_trace" in last_data
+    assert "follow_up_options" in last_data
+    assert len(last_data["follow_up_options"]) == 3
     # perf_stats should NOT contain token counts (they're in usage)
     assert "completion_tokens" not in last_data["perf_stats"]
     assert "total_tokens" not in last_data["perf_stats"]
     # tokens_per_second should be int
     assert isinstance(last_data["perf_stats"]["tokens_per_second"], int)
+    assert last_data["usage_trace"]["summary"]["llm_calls"] == 1
 
     # Reconstruct content from chunks
     content = ""
@@ -853,8 +1004,49 @@ def test_response_format():
     assert result["choices"][0]["message"]["role"] == "assistant"
     assert result["choices"][0]["finish_reason"] == "stop"
     assert "usage" in result
+    assert "usage_trace" in result
+    assert result["usage_trace"]["summary"]["llm_calls"] == 1
 
     logger.success("[PASS] response format")
+
+
+def test_usage_trace_reports_prompt_and_iterations():
+    """Test usage_trace exposes prompt profile and per-iteration diagnostics."""
+    logger.note("=" * 60)
+    logger.note("[TEST] usage trace diagnostics")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我来搜索黑神话相关视频。",
+            "<search_videos queries='[\"黑神话 q=vwr\"]'/>",
+        ),
+        make_content_response("找到了几条黑神话相关视频。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(messages=[{"role": "user", "content": "搜索黑神话"}])
+    usage_trace = result["usage_trace"]
+
+    assert usage_trace["prompt"]["total_chars"] > 0
+    assert usage_trace["prompt"]["section_chars"]["tool_commands"] > 0
+    assert usage_trace["summary"]["llm_calls"] == 2
+    assert usage_trace["summary"]["tool_iterations"] == 1
+    assert len(usage_trace["iterations"]) == 2
+
+    first_iter = usage_trace["iterations"][0]
+    second_iter = usage_trace["iterations"][1]
+    assert first_iter["tool_names"] == ["search_videos"]
+    assert first_iter["result_message_count"] == 0
+    assert second_iter["tool_names"] == []
+    assert second_iter["result_message_count"] == 1
+    assert second_iter["context_chars"] > first_iter["context_chars"]
+
+    logger.success("[PASS] usage trace diagnostics")
 
 
 def test_multi_turn_conversation():
@@ -957,13 +1149,13 @@ def test_thinking_mode_max_iterations():
         make_content_response("思考后的最终结果"),
     ]
 
-    # Thinking: max 10 iterations (default thinking max)
+    # Thinking: max 7 iterations (default thinking max)
     result_thinking = handler.handle(
         messages=[{"role": "user", "content": "test"}],
         thinking=True,
     )
     thinking_calls = mock_llm.chat.call_count
-    assert thinking_calls == 11  # 10 tool iterations + 1 forced
+    assert thinking_calls == 8  # 7 tool iterations + 1 forced
 
     logger.success("[PASS] thinking mode max iterations")
 
@@ -1098,6 +1290,8 @@ def test_streaming_with_thinking():
     assert done_chunk["choices"][0]["finish_reason"] == "stop"
     assert "perf_stats" in done_chunk
     assert "usage" in done_chunk
+    assert "usage_trace" in done_chunk
+    assert done_chunk["usage_trace"]["summary"]["tool_iterations"] == 1
 
     # Last element is [DONE]
     assert chunks[-1] == "[DONE]"
@@ -1574,6 +1768,18 @@ if __name__ == "__main__":
         ("streaming_reasoning_content", test_streaming_reasoning_content),
         ("system_prompt_included", test_system_prompt_included),
         ("response_format", test_response_format),
+        (
+            "usage_trace_reports_prompt_and_iterations",
+            test_usage_trace_reports_prompt_and_iterations,
+        ),
+        (
+            "duplicate_search_commands_are_suppressed_after_preflight",
+            test_duplicate_search_commands_are_suppressed_after_preflight,
+        ),
+        (
+            "duplicate_commands_are_deduped_within_single_iteration",
+            test_duplicate_commands_are_deduped_within_single_iteration,
+        ),
         ("multi_turn_conversation", test_multi_turn_conversation),
         ("thinking_mode", test_thinking_mode),
         ("thinking_mode_max_iterations", test_thinking_mode_max_iterations),

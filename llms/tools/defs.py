@@ -42,8 +42,8 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                 "搜索语句支持关键词和DSL过滤器。"
                 "过滤器以冒号':'开头，格式为 :<字段><操作符><值>。"
                 "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
-                f"搜索模式：默认q={default_mode}，需要更高相关性时添加q={rerank_mode}。"
-                f"示例queries：['黑神话 :view>=1w q={rerank_mode}', ':user=影视飓风 :date<=7d']。"
+                f"搜索模式：默认q={default_mode}（泛搜热门），精确主题匹配用q={rerank_mode}。"
+                f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']。"
             ),
             "parameters": {
                 "type": "object",
@@ -54,7 +54,7 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                         "description": (
                             "搜索语句列表。每个语句可包含关键词和/或DSL过滤器。"
                             "关键词用空格分隔，过滤器以冒号':'起始。"
-                            f"需要高相关性时在末尾添加 q={rerank_mode}。"
+                            f"精确主题搜索时在末尾添加 q={rerank_mode}。"
                         ),
                     },
                 },
@@ -154,7 +154,7 @@ def build_tool_definitions(
         tools.append(
             build_relation_tool(
                 "related_tokens_by_tokens",
-                "基于给定文本寻找相关联的 token 补全、主题词或纠错候选。适合补全关键词、发现相关话题词。",
+                "基于给定文本寻找相关 token 补全、主题词或纠错候选。只用于补充 query 线索和理解语义，不是最终结果来源。",
                 {
                     "text": {"type": "string", "description": "输入文本"},
                     "mode": {
@@ -181,7 +181,7 @@ def build_tool_definitions(
         tools.append(
             build_relation_tool(
                 "related_owners_by_tokens",
-                "根据话题文本寻找相关 UP 主。适合找某个领域、事件或作品下活跃的创作者。",
+                "根据话题文本寻找相关 UP 主候选。只用于补充作者候选和理解语义；拿到候选后通常还应继续调用 search_videos。",
                 {
                     "text": {"type": "string", "description": "输入话题文本"},
                     "size": {

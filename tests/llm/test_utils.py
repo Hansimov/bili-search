@@ -174,9 +174,13 @@ def test_format_hit_for_llm():
     assert "bvid" in result
     assert "title" in result
     assert "owner" in result
+    assert "duration_str" in result
+    assert "tags" in result
+    assert "pic" in result
+    # Raw duration should be removed (replaced by duration_str)
+    assert "duration" not in result
     # Should NOT have internal fields
     assert "score" not in result
-    assert "duration" not in result
 
     logger.success("[PASS] format_hit_for_llm")
 

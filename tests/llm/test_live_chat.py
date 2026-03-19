@@ -243,6 +243,7 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
     content = result["choices"][0]["message"]["content"]
     usage = result.get("usage", {})
     perf_stats = result.get("perf_stats", {})
+    usage_trace = result.get("usage_trace", {})
     tool_events = result.get("tool_events", [])
     used_tools = _flatten_tool_names(tool_events)
     total_tokens = usage.get("total_tokens", 0)
@@ -263,6 +264,16 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
         f"  Tokens: {total_tokens} (prompt={prompt_tokens}, cache_hit={cache_hit}, cache_miss={cache_miss})"
     )
     logger.mesg(f"  Tool events: {used_tools or ['<none>']}")
+    if usage_trace:
+        summary = usage_trace.get("summary", {})
+        prompt_meta = usage_trace.get("prompt", {})
+        logger.mesg(
+            "  Usage trace: "
+            f"llm_calls={summary.get('llm_calls', 0)}, "
+            f"tool_iterations={summary.get('tool_iterations', 0)}, "
+            f"prompt_chars={prompt_meta.get('total_chars', 0)}, "
+            f"peak_prompt_tokens={summary.get('peak_prompt_tokens', 0)}"
+        )
 
     failures = []
 
@@ -297,6 +308,9 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
     min_content_length = checks.get("min_content_length", 50)
     if len(content) < min_content_length:
         failures.append(f"content too short: {len(content)} chars")
+
+    if not usage_trace:
+        failures.append("usage_trace missing")
 
     if "DSML" in content or "function_calls" in content:
         failures.append("DSML markup leaked into content")

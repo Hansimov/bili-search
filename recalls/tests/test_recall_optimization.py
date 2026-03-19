@@ -1,6 +1,9 @@
 """Unit tests for recall optimization features."""
 
 import pytest
+from unittest.mock import MagicMock
+
+from recalls.manager import RecallManager, HYBRID_WORD_LANES
 from recalls.base import RecallPool, RecallResult, NoiseFilter
 
 
@@ -190,6 +193,60 @@ class TestNoiseFilterContentQuality:
         ]
         NoiseFilter.apply_content_quality_penalty(hits)
         assert hits[0]["score"] < hits[1]["score"]  # Low engagement penalized
+
+
+class TestRecallManagerHybridQuality:
+    """Test hybrid recall keeps quality-oriented word candidates."""
+
+    def _make_pool(self, hits: list[dict], lane_name: str) -> RecallPool:
+        return RecallPool(
+            hits=hits,
+            lanes_info={lane_name: {"hit_count": len(hits)}},
+            total_hits=len(hits),
+            took_ms=0,
+            timed_out=False,
+            lane_tags={h["bvid"]: {lane_name} for h in hits},
+        )
+
+    def test_hybrid_recall_uses_quality_word_lanes(self):
+        manager = RecallManager()
+        manager.word_recall = MagicMock()
+        manager.vector_recall = MagicMock()
+        manager.optimizer = MagicMock()
+        manager.optimizer.analyze.return_value = MagicMock(summary="ok")
+
+        manager.word_recall.recall.return_value = self._make_pool(
+            [
+                {
+                    "bvid": "BV_word",
+                    "score": 9.0,
+                    "title": "高质量标题",
+                    "desc": "desc" * 10,
+                }
+            ],
+            "quality",
+        )
+        manager.vector_recall.recall.return_value = self._make_pool(
+            [
+                {
+                    "bvid": "BV_vec",
+                    "score": 8.0,
+                    "title": "相关向量结果",
+                    "desc": "desc" * 10,
+                }
+            ],
+            "knn",
+        )
+
+        pool = manager.recall(
+            searcher=MagicMock(),
+            query="黑神话",
+            mode="hybrid",
+            target_count=2,
+        )
+
+        assert manager.word_recall.recall.call_args.kwargs["lanes"] == HYBRID_WORD_LANES
+        assert {hit["bvid"] for hit in pool.hits} == {"BV_word", "BV_vec"}
 
 
 if __name__ == "__main__":

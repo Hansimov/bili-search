@@ -46,6 +46,7 @@ from typing import Literal
 from tclogger import dict_get
 
 from ranks.scorers import StatsScorer, PubdateScorer
+from ranks.fusion import ScoreFuser
 from ranks.constants import (
     RANK_TOP_K,
     RANK_PREFER_TYPE,
@@ -67,6 +68,8 @@ from ranks.constants import (
     RANK_SLOT_MIN_DURATION,
     RANK_LOW_ENGAGEMENT_THRESHOLD,
     RANK_LOW_ENGAGEMENT_PENALTY,
+    RANK_VERY_LOW_ENGAGEMENT_THRESHOLD,
+    RANK_VERY_LOW_ENGAGEMENT_PENALTY,
     TITLE_MATCH_BONUS,
     RANK_NO_TITLE_KEYWORD_PENALTY,
     SLOT_RELEVANCE_DECAY_THRESHOLD,
@@ -257,6 +260,7 @@ class DiversifiedRanker:
         # Collect raw values for normalization
         raw_scores = []
         raw_views = []
+        raw_original_scores = []
         for h in hits:
             raw_scores.append(
                 h.get("rerank_score") or h.get("hybrid_score") or h.get("score") or 0
@@ -265,11 +269,18 @@ class DiversifiedRanker:
             # negative values which cause math.log1p to fail (domain error).
             view_val = dict_get(h, "stat.view", 0) or 0
             raw_views.append(max(view_val, 0))
+            # Original BM25 score (before reranking) for blend_relevance
+            raw_original_scores.append(h.get("original_score", 0) or 0)
 
         # Max-normalization for relevance (BM25/cosine scores are well-distributed)
         max_score = max(raw_scores) if raw_scores else 1.0
         if max_score <= 0:
             max_score = 1.0
+
+        # Max original BM25 score (for blending in reranked mode)
+        max_original_score = max(raw_original_scores) if raw_original_scores else 1.0
+        if max_original_score <= 0:
+            max_original_score = 1.0
 
         # Log-scale normalization for popularity (power-law distributed)
         log_views = [math.log1p(v) for v in raw_views]
@@ -292,8 +303,10 @@ class DiversifiedRanker:
                     hit,
                     i,
                     raw_scores,
+                    raw_original_scores,
                     log_views,
                     max_score,
+                    max_original_score,
                     max_log_view,
                     now_ts,
                     query_lower,
@@ -314,8 +327,10 @@ class DiversifiedRanker:
         hit: dict,
         idx: int,
         raw_scores: list[float],
+        raw_original_scores: list[float],
         log_views: list[float],
         max_score: float,
+        max_original_score: float,
         max_log_view: float,
         now_ts: float,
         query_lower: str,
@@ -323,8 +338,24 @@ class DiversifiedRanker:
         q_terms: list[str],
     ) -> None:
         """Score a single hit on all dimensions. Extracted for robustness."""
-        # Relevance: use best available score, normalized to [0, 1]
-        rel_norm = min(raw_scores[idx] / max_score, 1.0) if max_score > 0 else 0.0
+        # Relevance: for reranked hits, blend cosine + BM25 for better signal;
+        # for non-reranked hits, use max-normalized raw score.
+        cosine = hit.get("cosine_similarity")
+        if cosine is not None:
+            # Reranked hit: blend cosine similarity with BM25 original score
+            bm25_norm = (
+                min(raw_original_scores[idx] / max_original_score, 1.0)
+                if max_original_score > 0
+                else 0.0
+            )
+            keyword_boost = hit.get("keyword_boost", 1.0) or 1.0
+            rel_norm = ScoreFuser.blend_relevance(
+                cosine_similarity=cosine,
+                bm25_norm=bm25_norm,
+                keyword_boost=keyword_boost,
+            )
+        else:
+            rel_norm = min(raw_scores[idx] / max_score, 1.0) if max_score > 0 else 0.0
 
         # Content depth penalty: BM25 inflates scores for ultra-short titles
         # that are essentially just the query keywords.
@@ -392,9 +423,11 @@ class DiversifiedRanker:
         if 0 < len(title) < RANK_SHORT_TITLE_THRESHOLD:
             quality *= RANK_SHORT_TITLE_PENALTY
 
-        # Apply low-engagement penalty: few views indicate low-value content
+        # Apply tiered low-engagement penalty: few views indicate low-value content
         views = max(dict_get(hit, "stat.view", 0) or 0, 0)
-        if views < RANK_LOW_ENGAGEMENT_THRESHOLD:
+        if views < RANK_VERY_LOW_ENGAGEMENT_THRESHOLD:
+            quality *= RANK_VERY_LOW_ENGAGEMENT_PENALTY
+        elif views < RANK_LOW_ENGAGEMENT_THRESHOLD:
             quality *= RANK_LOW_ENGAGEMENT_PENALTY
 
         hit["quality_score"] = round(quality, 4)

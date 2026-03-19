@@ -3,6 +3,7 @@
 import json
 import os
 import requests
+import time
 
 from tclogger import logger
 
@@ -356,6 +357,11 @@ class ToolExecutor:
         )
         self.max_results = max_results
         self.verbose = verbose
+        # Cached Google availability: (is_available, timestamp)
+        self._google_available: bool | None = None
+        self._google_available_ts: float = 0.0
+        self._GOOGLE_HEALTH_TTL = 120.0  # re-check every 120 seconds
+        self._GOOGLE_HEALTH_TIMEOUT = 3.0  # fast health check timeout
         self._handlers = {
             "search_videos": self._search_videos,
             "search_google": self._search_google,
@@ -368,6 +374,29 @@ class ToolExecutor:
             "read_spec": self._read_spec,
         }
 
+    def _is_google_available(self) -> bool:
+        """Check Google search hub availability with cached result."""
+        if self.google_client is None:
+            return False
+        now = time.monotonic()
+        if (
+            self._google_available is not None
+            and (now - self._google_available_ts) < self._GOOGLE_HEALTH_TTL
+        ):
+            return self._google_available
+        try:
+            resp = requests.get(
+                f"{self.google_client.base_url}/health",
+                timeout=self._GOOGLE_HEALTH_TIMEOUT,
+            )
+            self._google_available = resp.status_code == 200
+        except Exception:
+            self._google_available = False
+        self._google_available_ts = now
+        if self.verbose:
+            logger.note(f"> Google search available: {self._google_available}")
+        return self._google_available
+
     def get_search_capabilities(self, refresh: bool = False) -> dict:
         capability_getter = getattr(self.search_client, "capabilities", None)
         if callable(capability_getter):
@@ -377,12 +406,12 @@ class ToolExecutor:
                 capabilities = capability_getter()
             if isinstance(capabilities, dict):
                 merged_capabilities = dict(capabilities)
-                if self.google_client is not None:
-                    merged_capabilities["supports_google_search"] = True
+                merged_capabilities["supports_google_search"] = (
+                    self._is_google_available()
+                )
                 return merged_capabilities
         capabilities = dict(DEFAULT_SEARCH_CAPABILITIES)
-        if self.google_client is not None:
-            capabilities["supports_google_search"] = True
+        capabilities["supports_google_search"] = self._is_google_available()
         return capabilities
 
     def get_tool_definitions(self, include_read_spec: bool = False) -> list[dict]:
@@ -489,7 +518,7 @@ class ToolExecutor:
         query = str(args.get("query", "")).strip()
         if not query:
             return {"error": "Missing query parameter", "results": []}
-        if self.google_client is None:
+        if not self._is_google_available():
             return {"error": "Google search unavailable", "results": []}
         num = int(args.get("num", 5) or 5)
         lang = args.get("lang")

@@ -27,14 +27,13 @@ from typing import Generator, Optional
 
 from llms.llm_client import LLMClient, ChatResponse, create_llm_client
 from llms.tools.executor import ToolExecutor
-from llms.prompts.copilot import build_system_prompt
+from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
 
 # Maximum tool-calling iterations to prevent infinite loops.
-# 5 allows multi-hop searches: search → relation expansion → refine → content.
-MAX_TOOL_ITERATIONS = 5
+MAX_TOOL_ITERATIONS = 4
 
-# Maximum iterations for thinking mode — allows deeper exploration
-MAX_TOOL_ITERATIONS_THINKING = 10
+# Thinking mode keeps a little more headroom, but still avoids long loops.
+MAX_TOOL_ITERATIONS_THINKING = 7
 
 # Regex to strip leaked DeepSeek DSML function-calling markup from content
 _DSML_PATTERN = re.compile(r"<｜.*?｜>")
@@ -78,6 +77,13 @@ _FORCE_CONTENT_NUDGE = (
     "不要再输出任何工具命令（如 <search_videos/> 或 <related_owners_by_tokens/>）。"
     "如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
+
+_DUPLICATE_TOOL_NUDGE = (
+    "相同或等价的搜索已经执行过，请不要重复输出同样的工具命令。"
+    "请直接基于已有搜索结果回答用户问题；只有在查询条件明显不同或补充了新信息时，才继续搜索。"
+)
+
+_FOLLOW_UP_OPTION_COUNT = 3
 
 # Thinking mode prompt: prepended to system prompt to encourage deeper reasoning
 _THINKING_PROMPT = (
@@ -367,12 +373,170 @@ class ChatHandler:
             content = (message.get("content") or "").strip()
             if content.startswith("[搜索结果]"):
                 continue
+            if content in (_FORCE_CONTENT_NUDGE, _DUPLICATE_TOOL_NUDGE):
+                continue
             if not content:
                 continue
             texts.append(content)
             if limit is not None and len(texts) >= limit:
                 break
         return texts
+
+    @staticmethod
+    def _normalize_follow_up_seed(text: str) -> str:
+        seed = (text or "").strip()
+        seed = re.sub(r"\s+", " ", seed)
+        return seed.strip(" ，。！？?：:；;、")[:72]
+
+    @classmethod
+    def _append_follow_up_option(
+        cls,
+        options: list[dict],
+        seen_queries: set[str],
+        *,
+        label: str,
+        query: str,
+    ):
+        normalized_query = cls._normalize_follow_up_seed(query)
+        normalized_label = cls._normalize_follow_up_seed(label)
+        if not normalized_query or normalized_query in seen_queries:
+            return
+        seen_queries.add(normalized_query)
+        options.append(
+            {
+                "label": normalized_label or normalized_query,
+                "query": normalized_query,
+            }
+        )
+
+    @classmethod
+    def _build_follow_up_options(
+        cls,
+        messages: list[dict],
+        tool_names: list[str] | None = None,
+    ) -> list[dict]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return []
+
+        latest_seed = cls._normalize_follow_up_seed(latest_user_text)
+        tool_name_set = set(tool_names or [])
+        options: list[dict] = []
+        seen_queries: set[str] = set()
+
+        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text) or "search_google" in tool_name_set:
+            subject = (
+                cls._extract_external_subject_from_text(latest_user_text)
+                or cls._extract_external_search_query(messages)
+                or latest_seed
+            )
+            subject = cls._normalize_follow_up_seed(subject)
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="看看官方原文怎么说",
+                query=f"{subject} 最近 30 天官网公告和 release notes 都说了什么？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="有没有好的视频解读",
+                query=f"{subject} B 站上有没有讲得好的解读视频？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="对开发者有什么影响",
+                query=f"{subject} 这次更新对开发者影响最大的是什么？",
+            )
+
+        creator_topic = cls._extract_creator_discovery_topic(messages)
+        similar_seed = cls._extract_similar_creator_seed(messages)
+        has_creator_intent = bool(
+            _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
+            or _SIMILAR_CREATOR_HINT_RE.search(latest_user_text)
+            or "related_owners_by_tokens" in tool_name_set
+            or "related_owners_by_owners" in tool_name_set
+        )
+        if not options and has_creator_intent:
+            topic = cls._normalize_follow_up_seed(creator_topic or similar_seed or latest_seed)
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="最近谁更新最勤",
+                query=f"{topic} 最近哪些 UP 主更新比较勤？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="有什么必看的代表作",
+                query=f"{topic} 有哪些播放和互动都很高的代表作？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="还能怎么细分",
+                query=f"{topic} 这个方向还能细分成哪几个小领域？",
+            )
+
+        if not options and _AUTHOR_TIMELINE_HINT_RE.search(latest_user_text):
+            author_name = cls._extract_timeline_author_name(messages) or latest_seed
+            author_name = cls._normalize_follow_up_seed(author_name)
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="这周更新了啥",
+                query=f"{author_name} 最近 7 天更新了什么？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="哪期播放最高",
+                query=f"{author_name} 最近哪期视频播放量最高？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="帮我按主题归个类",
+                query=f"帮我把 {author_name} 最近的视频按主题归个类",
+            )
+
+        if not options:
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="看看最近有什么新的",
+                query=f"{latest_seed} 最近 30 天有什么新内容？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="有没有更优质的",
+                query=f"{latest_seed} 有没有播放和互动都比较高的？",
+            )
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label="帮我按 UP 主归类",
+                query=f"{latest_seed} 帮我按 UP 主整理一下",
+            )
+
+        generic_fallbacks = [
+            ("帮我缩小一下范围", f"{latest_seed} 再帮我缩小一点范围"),
+            ("加上时间和质量条件", f"{latest_seed} 加上时间和质量条件再帮我筛一下"),
+            ("再深入聊聊", f"{latest_seed} 再深入聊聊"),
+        ]
+        for label, query in generic_fallbacks:
+            if len(options) >= _FOLLOW_UP_OPTION_COUNT:
+                break
+            cls._append_follow_up_option(
+                options,
+                seen_queries,
+                label=label,
+                query=query,
+            )
+
+        return options[:_FOLLOW_UP_OPTION_COUNT]
 
     @staticmethod
     def _has_tool_results_context(messages: list[dict]) -> bool:
@@ -502,11 +666,10 @@ class ChatHandler:
             return commands
 
         fallback = [
-            {"type": "related_owners_by_tokens", "args": {"text": author_name}},
             {
                 "type": "search_videos",
                 "args": {"queries": [f":user={author_name} :date<=15d"]},
-            },
+            }
         ]
         if self.verbose:
             logger.warn(
@@ -585,7 +748,10 @@ class ChatHandler:
         topic = self._extract_creator_discovery_topic(messages)
         if not topic:
             return commands
-        fallback = [{"type": "related_owners_by_tokens", "args": {"text": topic}}]
+        fallback = [
+            {"type": "related_owners_by_tokens", "args": {"text": topic}},
+            {"type": "search_videos", "args": {"queries": [f"{topic} q=vwr"]}},
+        ]
         if self.verbose:
             logger.warn(
                 "> Injecting fallback relation command for creator-discovery request"
@@ -725,12 +891,60 @@ class ChatHandler:
             or "推荐理由" in latest_user_text
         ):
             return commands
-        fallback = [{"type": "related_owners_by_tokens", "args": {"text": seed_name}}]
+        fallback = [
+            {"type": "related_owners_by_tokens", "args": {"text": seed_name}},
+            {"type": "search_videos", "args": {"queries": [f"{seed_name} q=vwr"]}},
+        ]
         if self.verbose:
             logger.warn(
                 "> Injecting fallback relation command for similar-creator request"
             )
         return fallback
+
+    @staticmethod
+    def _is_relation_command(cmd: dict) -> bool:
+        return str(cmd.get("type", "")).startswith("related_")
+
+    @classmethod
+    def _derive_relation_search_queries(
+        cls, commands: list[dict], messages: list[dict]
+    ) -> list[str]:
+        queries = []
+        topic = cls._extract_creator_discovery_topic(messages)
+        if topic:
+            queries.append(f"{topic} q=vwr")
+
+        seed_name = cls._extract_similar_creator_seed(messages)
+        if seed_name:
+            queries.append(f"{seed_name} q=vwr")
+
+        for cmd in commands:
+            if cmd.get("type") == "related_tokens_by_tokens":
+                text = str(cmd.get("args", {}).get("text", "")).strip()
+                if text:
+                    queries.append(f"{text} q=vwr")
+
+        deduped = []
+        for query in queries:
+            if query and query not in deduped:
+                deduped.append(query)
+        return deduped[:2]
+
+    @classmethod
+    def _promote_relation_only_commands(
+        cls, commands: list[dict], messages: list[dict]
+    ) -> list[dict]:
+        if not commands:
+            return commands
+        if any(cmd.get("type") == "search_videos" for cmd in commands):
+            return commands
+        if not any(cls._is_relation_command(cmd) for cmd in commands):
+            return commands
+
+        queries = cls._derive_relation_search_queries(commands, messages)
+        if not queries:
+            return commands
+        return list(commands) + [{"type": "search_videos", "args": {"queries": queries}}]
 
     @classmethod
     def _should_fallback_video_search(cls, messages: list[dict], content: str) -> bool:
@@ -825,11 +1039,131 @@ class ChatHandler:
         for r in results:
             cmd_type = r["type"]
             args = r["args"]
-            result = r["result"]
+            result = ChatHandler._compact_result_for_context(r["result"])
             formatted_args = ChatHandler._format_tool_args(args)
             parts.append(f"\n{cmd_type}({formatted_args}):")
             parts.append(json.dumps(result, ensure_ascii=False))
         return "\n".join(parts)
+
+    @staticmethod
+    def _compact_result_for_context(result: dict) -> dict:
+        if not isinstance(result, dict):
+            return result
+        if "hits" in result:
+            compact_hits = []
+            for hit in (result.get("hits") or [])[:4]:
+                owner = hit.get("owner") or {}
+                compact_hit = {
+                    "title": hit.get("title", ""),
+                    "bvid": hit.get("bvid", ""),
+                    "owner": owner.get("name", ""),
+                    "view": ((hit.get("stat") or {}).get("view")),
+                    "pub": hit.get("pub_to_now_str") or hit.get("pubdate_str", ""),
+                    "dur": hit.get("duration_str", ""),
+                    "tags": hit.get("tags", ""),
+                }
+                compact_hits.append(
+                    {k: v for k, v in compact_hit.items() if v not in (None, "")}
+                )
+            compact = {
+                "query": result.get("query", ""),
+                "total_hits": result.get("total_hits", len(compact_hits)),
+                "hits": compact_hits,
+            }
+            if result.get("error"):
+                compact["error"] = result["error"]
+            return compact
+        if "owners" in result:
+            return {
+                "text": result.get("text", ""),
+                "total_owners": result.get(
+                    "total_owners", len(result.get("owners") or [])
+                ),
+                "owners": [
+                    {
+                        "name": owner.get("name", ""),
+                        "mid": owner.get("mid"),
+                        "score": owner.get("score", 0),
+                    }
+                    for owner in (result.get("owners") or [])[:4]
+                ],
+            }
+        if "options" in result:
+            return {
+                "text": result.get("text", ""),
+                "total_options": result.get(
+                    "total_options", len(result.get("options") or [])
+                ),
+                "options": [
+                    {
+                        "text": option.get("text", ""),
+                        "score": option.get("score", 0),
+                    }
+                    for option in (result.get("options") or [])[:4]
+                ],
+            }
+        if "results" in result and isinstance(result.get("results"), list):
+            return {"results": result.get("results", [])[:2]}
+        return result
+
+    @staticmethod
+    def _prune_old_results_messages(messages: list[dict]):
+        result_indexes = [
+            idx
+            for idx, message in enumerate(messages)
+            if message.get("role") == "user"
+            and str(message.get("content") or "").startswith("[搜索结果]")
+        ]
+        for idx in reversed(result_indexes[:-1]):
+            del messages[idx]
+
+    @staticmethod
+    def _canonicalize_command_value(value):
+        if isinstance(value, dict):
+            return {
+                key: ChatHandler._canonicalize_command_value(val)
+                for key, val in sorted(value.items())
+            }
+        if isinstance(value, list):
+            canonical_items = [ChatHandler._canonicalize_command_value(item) for item in value]
+            sortable = all(
+                isinstance(item, (str, int, float, bool)) or item is None
+                for item in canonical_items
+            )
+            return sorted(canonical_items) if sortable else canonical_items
+        return value
+
+    @classmethod
+    def _command_signature(cls, command: dict) -> str:
+        payload = {
+            "type": command.get("type", ""),
+            "args": cls._canonicalize_command_value(command.get("args", {})),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    @classmethod
+    def _dedupe_commands(
+        cls, commands: list[dict], executed_signatures: set[str] | None = None
+    ) -> tuple[list[dict], int]:
+        executed_signatures = executed_signatures or set()
+        filtered = []
+        removed_count = 0
+        seen_signatures = set(executed_signatures)
+        for command in commands or []:
+            signature = cls._command_signature(command)
+            if signature in seen_signatures:
+                removed_count += 1
+                continue
+            seen_signatures.add(signature)
+            filtered.append(command)
+        return filtered, removed_count
+
+    @classmethod
+    def _record_executed_command_signatures(
+        cls, commands: list[dict], executed_signatures: set[str]
+    ):
+        for command in commands or []:
+            executed_signatures.add(cls._command_signature(command))
 
     def _preflight_tool_commands(self, messages: list[dict]) -> list[dict]:
         if self._has_tool_results_context(messages):
@@ -852,6 +1186,95 @@ class ChatHandler:
         return self._fallback_external_search_commands(
             [], messages=messages, content="我先查一下官方更新，再看看 B 站解读。"
         )
+
+    @staticmethod
+    def _summarize_context(messages: list[dict]) -> dict:
+        summary = {
+            "message_count": len(messages or []),
+            "user_message_count": 0,
+            "assistant_message_count": 0,
+            "system_message_count": 0,
+            "result_message_count": 0,
+            "context_chars": 0,
+            "result_context_chars": 0,
+        }
+        for message in messages or []:
+            role = message.get("role") or ""
+            content = str(message.get("content") or "")
+            summary["context_chars"] += len(content)
+            if role == "user":
+                summary["user_message_count"] += 1
+                if content.startswith("[搜索结果]"):
+                    summary["result_message_count"] += 1
+                    summary["result_context_chars"] += len(content)
+            elif role == "assistant":
+                summary["assistant_message_count"] += 1
+            elif role == "system":
+                summary["system_message_count"] += 1
+        return summary
+
+    @classmethod
+    def _build_usage_trace_entry(
+        cls,
+        *,
+        phase: str,
+        iteration: int,
+        messages: list[dict],
+        usage: dict,
+        commands: list[dict] | None = None,
+    ) -> dict:
+        normalized_usage = cls._normalize_usage(usage or {})
+        tool_names = [cmd.get("type") for cmd in commands or [] if cmd.get("type")]
+        entry = {
+            "phase": phase,
+            "iteration": iteration,
+            **cls._summarize_context(messages),
+            "prompt_tokens": normalized_usage.get("prompt_tokens", 0),
+            "completion_tokens": normalized_usage.get("completion_tokens", 0),
+            "total_tokens": normalized_usage.get("total_tokens", 0),
+            "prompt_cache_hit_tokens": normalized_usage.get(
+                "prompt_cache_hit_tokens", 0
+            ),
+            "prompt_cache_miss_tokens": normalized_usage.get(
+                "prompt_cache_miss_tokens", 0
+            ),
+            "reasoning_tokens": normalized_usage.get("reasoning_tokens", 0),
+            "tool_count": len(tool_names),
+            "tool_names": tool_names,
+        }
+        return entry
+
+    @staticmethod
+    def _finalize_usage_trace(
+        prompt_profile: dict,
+        usage_trace_entries: list[dict],
+        preflight_commands: list[dict] | None = None,
+    ) -> dict:
+        prompt_meta = dict(prompt_profile or {})
+        preflight_tool_names = [
+            cmd.get("type") for cmd in (preflight_commands or []) if cmd.get("type")
+        ]
+        prompt_meta["preflight_tools"] = preflight_tool_names
+
+        peak_prompt_tokens = max(
+            (entry.get("prompt_tokens", 0) for entry in usage_trace_entries), default=0
+        )
+        peak_context_chars = max(
+            (entry.get("context_chars", 0) for entry in usage_trace_entries), default=0
+        )
+        tool_iterations = sum(
+            1 for entry in usage_trace_entries if entry.get("tool_count", 0) > 0
+        )
+        return {
+            "prompt": prompt_meta,
+            "iterations": usage_trace_entries,
+            "summary": {
+                "llm_calls": len(usage_trace_entries),
+                "tool_iterations": tool_iterations,
+                "peak_prompt_tokens": peak_prompt_tokens,
+                "peak_context_chars": peak_context_chars,
+            },
+        }
 
     def handle(
         self,
@@ -886,19 +1309,32 @@ class ChatHandler:
             )
 
         full_messages = self._build_messages(messages, thinking=thinking)
+        prompt_profile = build_system_prompt_profile(self.search_capabilities)
+        if thinking:
+            prompt_profile = {
+                **prompt_profile,
+                "thinking_prompt_chars": len(_THINKING_PROMPT),
+                "total_chars": prompt_profile.get("total_chars", 0)
+                + len(_THINKING_PROMPT),
+            }
         total_usage = {}
         last_usage = {}  # Track last LLM call's usage for prompt_tokens
         tool_events = []
+        usage_trace_entries = []
+        executed_signatures: set[str] = set()
         final_content = None
 
         preflight_commands = self._preflight_tool_commands(full_messages)
         if preflight_commands:
+            preflight_commands, _ = self._dedupe_commands(preflight_commands, executed_signatures)
             tool_names = [cmd["type"] for cmd in preflight_commands]
             tool_events.append(
                 {"iteration": 0, "tools": tool_names, "preflight": True}
             )
             results = self._execute_tool_commands(preflight_commands)
+            self._record_executed_command_signatures(preflight_commands, executed_signatures)
             full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
+            self._prune_old_results_messages(full_messages)
             full_messages.append(
                 {
                     "role": "user",
@@ -947,12 +1383,34 @@ class ChatHandler:
                 messages=full_messages,
                 content=content,
             )
+            commands = self._promote_relation_only_commands(commands, full_messages)
+            commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
+            usage_trace_entries.append(
+                self._build_usage_trace_entry(
+                    phase="tool_loop",
+                    iteration=iteration + 1,
+                    messages=full_messages,
+                    usage=response.usage,
+                    commands=commands,
+                )
+            )
+
+            if duplicate_count and not commands:
+                full_messages.append({"role": "assistant", "content": content})
+                full_messages.append({"role": "user", "content": _DUPLICATE_TOOL_NUDGE})
+                if self.verbose:
+                    logger.warn(
+                        "> Suppressed duplicate tool commands and requested direct answer"
+                    )
+                continue
 
             if commands:
                 tool_names = [cmd["type"] for cmd in commands]
                 tool_events.append({"iteration": iteration + 1, "tools": tool_names})
                 results = self._execute_tool_commands(commands)
+                self._record_executed_command_signatures(commands, executed_signatures)
                 full_messages.append({"role": "assistant", "content": content})
+                self._prune_old_results_messages(full_messages)
                 full_messages.append(
                     {
                         "role": "user",
@@ -976,11 +1434,28 @@ class ChatHandler:
             )
             self._accumulate_usage(total_usage, response.usage)
             last_usage = response.usage
+            usage_trace_entries.append(
+                self._build_usage_trace_entry(
+                    phase="forced_content",
+                    iteration=resolved_iterations + 1,
+                    messages=full_messages,
+                    usage=response.usage,
+                    commands=[],
+                )
+            )
             final_content = (
                 response.content or final_content or "[抱歉，处理超时，请重试]"
             )
 
         final_content = _sanitize_content(final_content)
+        follow_up_options = self._build_follow_up_options(
+            full_messages,
+            tool_names=[
+                tool_name
+                for event in tool_events
+                for tool_name in event.get("tools", [])
+            ],
+        )
 
         elapsed_seconds = time.perf_counter() - start_time
         elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -991,6 +1466,11 @@ class ChatHandler:
         final_usage = self._merge_final_usage(total_usage, last_usage)
         normalized_usage = self._normalize_usage(final_usage)
         perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
+        usage_trace = self._finalize_usage_trace(
+            prompt_profile,
+            usage_trace_entries,
+            preflight_commands=preflight_commands,
+        )
 
         return self._format_completion(
             request_id=request_id,
@@ -998,6 +1478,8 @@ class ChatHandler:
             usage=normalized_usage,
             perf_stats=perf_stats,
             tool_events=tool_events,
+            usage_trace=usage_trace,
+            follow_up_options=follow_up_options,
             thinking=thinking,
         )
 
@@ -1059,8 +1541,19 @@ class ChatHandler:
             )
 
         full_messages = self._build_messages(messages, thinking=thinking)
+        prompt_profile = build_system_prompt_profile(self.search_capabilities)
+        if thinking:
+            prompt_profile = {
+                **prompt_profile,
+                "thinking_prompt_chars": len(_THINKING_PROMPT),
+                "total_chars": prompt_profile.get("total_chars", 0)
+                + len(_THINKING_PROMPT),
+            }
         total_usage = {}
         last_usage = {}  # Track last LLM call's usage for prompt_tokens
+        usage_trace_entries = []
+        executed_signatures: set[str] = set()
+        tool_events_summary: list[dict] = []
 
         # First chunk: role + metadata
         yield self._format_stream_chunk(
@@ -1218,6 +1711,26 @@ class ChatHandler:
                 messages=full_messages,
                 content=content,
             )
+            commands = self._promote_relation_only_commands(commands, full_messages)
+            commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
+            usage_trace_entries.append(
+                self._build_usage_trace_entry(
+                    phase="tool_loop",
+                    iteration=iteration + 1,
+                    messages=full_messages,
+                    usage=iter_usage,
+                    commands=commands,
+                )
+            )
+
+            if duplicate_count and not commands:
+                full_messages.append({"role": "assistant", "content": content})
+                full_messages.append({"role": "user", "content": _DUPLICATE_TOOL_NUDGE})
+                if self.verbose:
+                    logger.warn(
+                        "> Suppressed duplicate tool commands and requested direct answer"
+                    )
+                continue
 
             if commands:
                 had_tools = True
@@ -1254,6 +1767,9 @@ class ChatHandler:
 
                 # Yield pending tool calls (before execution)
                 tool_names = [cmd["type"] for cmd in commands]
+                tool_events_summary.append(
+                    {"iteration": iteration + 1, "tools": tool_names}
+                )
                 pending_calls = [
                     {
                         "type": cmd["type"],
@@ -1280,6 +1796,7 @@ class ChatHandler:
 
                 # Execute commands
                 results = self._execute_tool_commands(commands)
+                self._record_executed_command_signatures(commands, executed_signatures)
 
                 # Yield completed tool calls (after execution)
                 completed_calls = [
@@ -1304,6 +1821,7 @@ class ChatHandler:
 
                 # Inject assistant message + results into conversation
                 full_messages.append({"role": "assistant", "content": content})
+                self._prune_old_results_messages(full_messages)
                 full_messages.append(
                     {
                         "role": "user",
@@ -1354,6 +1872,19 @@ class ChatHandler:
                 normalized_usage = self._normalize_usage(final_usage)
                 elapsed_seconds = time.perf_counter() - start_time
                 perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
+                usage_trace = self._finalize_usage_trace(
+                    prompt_profile,
+                    usage_trace_entries,
+                    preflight_commands=[],
+                )
+                follow_up_options = self._build_follow_up_options(
+                    full_messages,
+                    tool_names=[
+                        tool_name
+                        for event in tool_events_summary
+                        for tool_name in event.get("tools", [])
+                    ],
+                )
 
                 if self.verbose:
                     elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -1365,6 +1896,8 @@ class ChatHandler:
                     finish_reason="stop",
                     usage=normalized_usage,
                     perf_stats=perf_stats,
+                    usage_trace=usage_trace,
+                    follow_up_options=follow_up_options,
                 )
                 yield "[DONE]"
                 return
@@ -1426,11 +1959,33 @@ class ChatHandler:
         if stream_usage:
             self._accumulate_usage(total_usage, stream_usage)
             last_usage = stream_usage
+            usage_trace_entries.append(
+                self._build_usage_trace_entry(
+                    phase="forced_content",
+                    iteration=resolved_iterations + 1,
+                    messages=full_messages,
+                    usage=stream_usage,
+                    commands=[],
+                )
+            )
 
         final_usage = self._merge_final_usage(total_usage, last_usage)
         normalized_usage = self._normalize_usage(final_usage)
         elapsed_seconds = time.perf_counter() - start_time
         perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
+        usage_trace = self._finalize_usage_trace(
+            prompt_profile,
+            usage_trace_entries,
+            preflight_commands=[],
+        )
+        follow_up_options = self._build_follow_up_options(
+            full_messages,
+            tool_names=[
+                tool_name
+                for event in tool_events_summary
+                for tool_name in event.get("tools", [])
+            ],
+        )
 
         if self.verbose:
             elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -1442,6 +1997,8 @@ class ChatHandler:
             finish_reason="stop",
             usage=normalized_usage,
             perf_stats=perf_stats,
+            usage_trace=usage_trace,
+            follow_up_options=follow_up_options,
         )
 
         yield "[DONE]"
@@ -1581,6 +2138,8 @@ class ChatHandler:
         usage: dict = None,
         perf_stats: dict = None,
         tool_events: list = None,
+        usage_trace: dict = None,
+        follow_up_options: list[dict] = None,
         thinking: bool = False,
     ) -> dict:
         """Format response as OpenAI-compatible chat completion."""
@@ -1603,6 +2162,10 @@ class ChatHandler:
             result["perf_stats"] = perf_stats
         if tool_events:
             result["tool_events"] = tool_events
+        if usage_trace:
+            result["usage_trace"] = usage_trace
+        if follow_up_options:
+            result["follow_up_options"] = follow_up_options
         if thinking:
             result["thinking"] = True
         return result
@@ -1615,6 +2178,8 @@ class ChatHandler:
         usage: dict = None,
         perf_stats: dict = None,
         tool_events: list = None,
+        usage_trace: dict = None,
+        follow_up_options: list[dict] = None,
         thinking: bool = None,
     ) -> str:
         """Format a single SSE stream chunk as JSON string."""
@@ -1635,6 +2200,10 @@ class ChatHandler:
             chunk["perf_stats"] = perf_stats
         if tool_events:
             chunk["tool_events"] = tool_events
+        if usage_trace:
+            chunk["usage_trace"] = usage_trace
+        if follow_up_options:
+            chunk["follow_up_options"] = follow_up_options
         if thinking is not None:
             chunk["thinking"] = thinking
         return json.dumps(chunk, ensure_ascii=False)

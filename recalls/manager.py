@@ -24,6 +24,13 @@ from recalls.optimizer import RecallPoolOptimizer, PoolHints
 from ranks.constants import EXPLORE_RANK_TOP_K
 
 
+HYBRID_WORD_LANES = [
+    "relevance",
+    "title_match",
+    "quality",
+]
+
+
 class RecallManager:
     """Manages recall strategy selection and execution.
 
@@ -200,7 +207,7 @@ class RecallManager:
                 source_fields=source_fields,
                 extra_filters=extra_filters,
                 suggest_info=suggest_info,
-                lanes=["relevance"],
+                lanes=HYBRID_WORD_LANES,
                 timeout=timeout,
                 verbose=verbose,
             )

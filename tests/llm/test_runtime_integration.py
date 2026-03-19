@@ -241,10 +241,13 @@ def test_runtime_chat_completion_scenarios(case):
     data = response.json()
 
     content = data["choices"][0]["message"]["content"]
+    usage_trace = data.get("usage_trace", {})
     tool_events = data.get("tool_events", [])
     used_tools = [tool for event in tool_events for tool in event.get("tools", [])]
 
     assert len(content) >= 50
+    assert usage_trace
+    assert usage_trace.get("summary", {}).get("llm_calls", 0) >= 1
     for expected_tool in case["expected_tools"]:
         assert expected_tool in used_tools
     for keyword in case["content_contains"]:
