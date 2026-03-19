@@ -120,6 +120,14 @@ MOCK_RELATED_OWNERS_RESULT = {
     ],
 }
 
+MOCK_RELATED_TOKENS_RESULT = {
+    "text": "康夫UI",
+    "options": [
+        {"text": "ComfyUI", "score": 0.93},
+        {"text": "Comfy UI", "score": 0.81},
+    ],
+}
+
 
 # ============================================================
 # Tests
@@ -312,7 +320,54 @@ def test_normalize_author_timeline_search_command():
         {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
     ]
 
+    mixed_commands = handler._normalize_author_timeline_commands(
+        [
+            {
+                "type": "search_videos",
+                "args": {
+                    "queries": [":user=影视飓风 :date<=15d", "影视飓风 最近视频 q=wv"]
+                },
+            }
+        ],
+        messages=[{"role": "user", "content": "影视飓风最近有什么新视频？"}],
+    )
+
+    assert mixed_commands == [
+        {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
+    ]
+
     logger.success("[PASS] normalize author timeline search command")
+
+
+def test_author_timeline_final_content_retains_author_name():
+    """Author timeline answers should keep the author name even if the LLM omits it."""
+    logger.note("=" * 60)
+    logger.note("[TEST] author timeline final content retains author name")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我来搜索影视飓风最近的视频。",
+            "<search_videos queries=" "'" '["影视飓风 最近视频 q=wv"]' "'" "/>",
+        ),
+        make_content_response("- [港口都在运些什么](BV1xxx) — 383.7万（6天前）"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "影视飓风最近有什么新视频？"}]
+    )
+
+    content = result["choices"][0]["message"]["content"]
+    assert "影视飓风" in content
+    assert content.startswith("影视飓风最近视频：")
+    mock_search.explore.assert_called_once_with(query=":user=影视飓风 :date<=15d")
+
+    logger.success("[PASS] author timeline final content retains author name")
 
 
 def test_fallback_creator_discovery_commands():
@@ -336,6 +391,40 @@ def test_fallback_creator_discovery_commands():
     ]
 
     logger.success("[PASS] fallback creator discovery commands")
+
+
+def test_token_assisted_search_fallback_uses_canonical_entity_query():
+    """Token correction should fall through to search_videos with the canonical entity, not the raw typo."""
+    logger.note("=" * 60)
+    logger.note("[TEST] token-assisted canonical search fallback")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先补一下术语。",
+            '<related_tokens_by_tokens text="康夫UI" mode="auto"/>',
+        ),
+        make_content_response("我继续整理一下搜索词。"),
+        make_content_response("这里是 ComfyUI 入门教程。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_tokens_by_tokens.return_value = MOCK_RELATED_TOKENS_RESULT
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "康夫UI 有什么入门教程？"}]
+    )
+
+    assert "ComfyUI" in result["choices"][0]["message"]["content"]
+    mock_search.related_tokens_by_tokens.assert_called_once_with(
+        text="康夫UI", mode="auto", size=8
+    )
+    mock_search.explore.assert_called_once_with(query="ComfyUI 入门教程 q=vwr")
+
+    logger.success("[PASS] token-assisted canonical search fallback")
 
 
 def test_fallback_creator_discovery_commands_for_direct_request():

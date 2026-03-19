@@ -37,10 +37,11 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
         "function": {
             "name": "search_videos",
             "description": (
-                "搜索B站视频。"
+                "搜索B站视频。这是大多数 B 站问题的主力工具和默认首选。"
                 f"{multi_query_text}"
                 "搜索语句必须是规范 DSL 搜索语句，而不是用户原话整句。"
-                "不要把寒暄、能力提问、纯口语追问、账号关系问题直接塞进 queries。"
+                "queries 中优先保留关键实体和检索条件，例如作品名、人物名、作者名、产品名、主题词、时间窗、热度条件。"
+                "不要把寒暄、能力提问、纯口语追问、助词、功能词、账号关系问题直接塞进 queries。"
                 "搜索语句支持关键词和DSL过滤器。"
                 "过滤器以冒号':'开头，格式为 :<字段><操作符><值>。"
                 "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
@@ -58,7 +59,7 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                         "description": (
                             "搜索语句列表。每个语句可包含关键词和/或DSL过滤器。"
                             "关键词用空格分隔，过滤器以冒号':'起始。"
-                            "每个 query 都应是整理后的检索语句，而不是用户对话原句。"
+                            "每个 query 都应是整理后的检索语句，尽量只保留关键实体和检索条件，而不是用户对话原句。"
                             f"精确主题搜索时在末尾添加 q={rerank_mode}。"
                         ),
                     },
@@ -160,7 +161,7 @@ def build_tool_definitions(
         tools.append(
             build_relation_tool(
                 "related_tokens_by_tokens",
-                "基于给定文本寻找相关 token 补全、主题词或纠错候选。只用于补充 query 线索和理解语义，不是最终结果来源；拿到候选后通常还应继续调用 search_videos。",
+                "辅助工具。基于给定文本寻找相关 token 补全、主题词或纠错候选。只在无法稳定抽出关键实体时使用，不是最终结果来源；拿到候选后通常还应继续调用 search_videos。",
                 {
                     "text": {"type": "string", "description": "输入文本"},
                     "mode": {
@@ -187,7 +188,7 @@ def build_tool_definitions(
         tools.append(
             build_relation_tool(
                 "related_owners_by_tokens",
-                "根据话题文本寻找相关 UP 主候选。适合创作者发现、作者候选补全、关联账号/矩阵号/主副号等作者关系问题。若最终目标是视频清单或代表作，拿到候选后通常还应继续调用 search_videos；若最终目标就是作者关系本身，也可以直接基于该结果回答。",
+                "辅助工具。根据话题文本寻找相关 UP 主候选。仅在创作者发现、作者候选补全、关联账号/矩阵号/主副号等作者关系问题里使用。若最终目标是视频清单或代表作，拿到候选后通常还应继续调用 search_videos；若最终目标就是作者关系本身，也可以直接基于该结果回答。",
                 {
                     "text": {"type": "string", "description": "输入话题文本"},
                     "size": {

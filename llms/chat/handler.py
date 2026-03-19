@@ -480,7 +480,8 @@ class ChatHandler:
             return commands
 
         normalized = []
-        timeline_query = f":user={author_name} :date<=15d"
+        window = cls._extract_recent_window(cls._get_latest_user_text(messages) or "")
+        timeline_query = f":user={author_name} :date<={window}"
         for command in commands or []:
             if command.get("type") != "search_videos":
                 normalized.append(command)
@@ -491,9 +492,6 @@ class ChatHandler:
             if isinstance(queries, str):
                 queries = [queries]
             if not isinstance(queries, list) or not queries:
-                normalized.append(command)
-                continue
-            if any(":user=" in str(query) for query in queries):
                 normalized.append(command)
                 continue
 
@@ -543,6 +541,137 @@ class ChatHandler:
                 }
             )
         return normalized
+
+    @classmethod
+    def _ensure_author_timeline_context(
+        cls, messages: list[dict], content: str
+    ) -> str:
+        final_content = (content or "").strip()
+        if not final_content:
+            return final_content
+
+        author_name = cls._extract_timeline_author_name(messages)
+        if not author_name or author_name in final_content:
+            return final_content
+        return f"{author_name}最近视频：\n{final_content}"
+
+    @staticmethod
+    def _normalize_entity_focused_query_text(text: str) -> str:
+        query = (text or "").strip()
+        if not query:
+            return ""
+        query = re.sub(r"[？?！!。，“”,、；;：:]", " ", query)
+        query = re.sub(
+            r"^(请问|麻烦|帮我|给我|我想看|想看|想找|找一下|找找|推荐一下|推荐几个|推荐一些|推荐|搜一下|搜搜|看看|了解一下)",
+            "",
+            query,
+        )
+        query = re.sub(r"(有什么|有哪些|有无|有没有|怎么|是什么)", " ", query)
+        query = re.sub(r"(介绍一下|介绍下|讲一下|讲下|说说|就行|即可)", " ", query)
+        query = re.sub(r"(一下|呢|吗|么|吧|呀|啊)$", "", query)
+        query = re.sub(r"\bB站\b", " ", query)
+        query = re.sub(r"\s+", " ", query)
+        return query.strip(" ，。！？?：:")
+
+    @classmethod
+    def _extract_token_rewrite_from_results(
+        cls, results: list[dict] | None
+    ) -> tuple[str, str] | None:
+        for result_item in results or []:
+            if result_item.get("type") != "related_tokens_by_tokens":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            if not source_text:
+                continue
+            for option in result.get("options") or []:
+                candidate = str(option.get("text") or "").strip()
+                if candidate and candidate != source_text:
+                    return source_text, candidate
+        return None
+
+    @classmethod
+    def _build_token_assisted_video_query(
+        cls, messages: list[dict], token_rewrite: tuple[str, str] | None
+    ) -> str | None:
+        if not token_rewrite:
+            return None
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
+            return None
+
+        source_text, canonical_text = token_rewrite
+        rewritten = latest_user_text.replace(source_text, canonical_text)
+        rewritten = cls._normalize_entity_focused_query_text(rewritten)
+        if not rewritten:
+            rewritten = canonical_text
+        if canonical_text not in rewritten:
+            rewritten = f"{canonical_text} {rewritten}".strip()
+        rewritten = re.sub(r"\s+", " ", rewritten).strip()
+        if not rewritten:
+            return None
+        if "q=" not in rewritten and ":user=" not in rewritten and ":uid=" not in rewritten:
+            rewritten = f"{rewritten} q=vwr"
+        return rewritten
+
+    @classmethod
+    def _normalize_token_assisted_search_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        token_rewrite = cls._extract_token_rewrite_from_results(last_tool_results)
+        if not token_rewrite:
+            return commands
+
+        source_text, _ = token_rewrite
+        replacement_query = cls._build_token_assisted_video_query(messages, token_rewrite)
+        if not replacement_query:
+            return commands
+
+        normalized = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                normalized.append(command)
+                continue
+            args = dict(command.get("args") or {})
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list) or not queries:
+                normalized.append(command)
+                continue
+            if not any(source_text in str(query) for query in queries):
+                normalized.append(command)
+                continue
+            normalized.append(
+                {
+                    "type": "search_videos",
+                    "args": {
+                        **args,
+                        "queries": [replacement_query],
+                    },
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _fallback_token_assisted_search_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        if commands or not last_tool_results:
+            return commands
+        token_rewrite = cls._extract_token_rewrite_from_results(last_tool_results)
+        query = cls._build_token_assisted_video_query(messages, token_rewrite)
+        if not query:
+            return commands
+        return [{"type": "search_videos", "args": {"queries": [query]}}]
 
     @staticmethod
     def _clean_followup_refinement(text: str) -> str | None:
@@ -981,12 +1110,6 @@ class ChatHandler:
         if seed_name:
             queries.append(f"{seed_name} q=vwr")
 
-        for cmd in commands:
-            if cmd.get("type") == "related_tokens_by_tokens":
-                text = str(cmd.get("args", {}).get("text", "")).strip()
-                if text:
-                    queries.append(f"{text} q=vwr")
-
         deduped = []
         for query in queries:
             if query and query not in deduped:
@@ -1001,7 +1124,10 @@ class ChatHandler:
             return commands
         if any(cmd.get("type") == "search_videos" for cmd in commands):
             return commands
-        if not any(cls._is_relation_command(cmd) for cmd in commands):
+        relation_commands = [cmd for cmd in commands if cls._is_relation_command(cmd)]
+        if not relation_commands:
+            return commands
+        if all(cmd.get("type") == "related_tokens_by_tokens" for cmd in relation_commands):
             return commands
 
         queries = cls._derive_relation_search_queries(commands, messages)
@@ -1400,6 +1526,7 @@ class ChatHandler:
         usage_trace_entries = []
         executed_signatures: set[str] = set()
         final_content = None
+        last_tool_results: list[dict] | None = None
 
         preflight_commands = self._preflight_tool_commands(full_messages)
         if preflight_commands:
@@ -1460,6 +1587,16 @@ class ChatHandler:
                 messages=full_messages,
                 content=content,
             )
+            commands = self._normalize_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._fallback_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
             commands = self._normalize_author_timeline_commands(commands, full_messages)
             commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
             commands = self._promote_relation_only_commands(commands, full_messages)
@@ -1487,6 +1624,7 @@ class ChatHandler:
                 tool_names = [cmd["type"] for cmd in commands]
                 tool_events.append({"iteration": iteration + 1, "tools": tool_names})
                 results = self._execute_tool_commands(commands)
+                last_tool_results = results
                 self._record_executed_command_signatures(commands, executed_signatures)
                 full_messages.append({"role": "assistant", "content": content})
                 self._prune_old_results_messages(full_messages)
@@ -1547,6 +1685,7 @@ class ChatHandler:
             final_content = _sanitize_content(response.content or "")
         if not final_content:
             final_content = _EMPTY_CONTENT_FALLBACK
+        final_content = self._ensure_author_timeline_context(full_messages, final_content)
 
         elapsed_seconds = time.perf_counter() - start_time
         elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -1644,6 +1783,7 @@ class ChatHandler:
         usage_trace_entries = []
         executed_signatures: set[str] = set()
         tool_events_summary: list[dict] = []
+        last_tool_results: list[dict] | None = None
 
         # First chunk: role + metadata
         yield self._format_stream_chunk(
@@ -1807,6 +1947,16 @@ class ChatHandler:
                 messages=full_messages,
                 content=content,
             )
+            commands = self._normalize_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._fallback_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
             commands = self._normalize_author_timeline_commands(commands, full_messages)
             commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
             commands = self._promote_relation_only_commands(commands, full_messages)
@@ -1894,6 +2044,7 @@ class ChatHandler:
 
                 # Execute commands
                 results = self._execute_tool_commands(commands)
+                last_tool_results = results
                 self._record_executed_command_signatures(commands, executed_signatures)
 
                 # Yield completed tool calls (after execution)

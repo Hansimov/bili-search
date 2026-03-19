@@ -295,6 +295,25 @@ TEST_CASES = [
         ],
     },
     {
+        "id": 16,
+        "name": "token_alias_then_video_search",
+        "description": "别名/错写先做 token 补全，再落成实体化视频搜索，不应把原始错写直接塞进 search_videos。",
+        "messages": [
+            {"role": "user", "content": "康夫UI 有什么入门教程？"},
+        ],
+        "checks": {
+            "expected_tools_all": ["related_tokens_by_tokens", "search_videos"],
+            "content_contains": ["ComfyUI"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "content_not_contains": ["康夫UI q=vwr"],
+            "max_tokens": 14000,
+        },
+        "manual_review_focus": [
+            "是否先完成术语纠错，再用纠正后的实体名搜索",
+            "search_videos query 是否已经去掉口语词和原始错写",
+        ],
+    },
+    {
         "id": 9,
         "name": "multi_hop_topic_drill",
         "description": "先找热门主题，再追到作者的其他热门视频，检验多跳链路。",

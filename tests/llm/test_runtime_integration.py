@@ -144,6 +144,15 @@ LIVE_CHAT_CASES = [
         "content_contains": ["老番茄", "影视飓风"],
         "content_not_contains": [],
     },
+    {
+        "name": "token_alias_then_video_search",
+        "messages": [
+            {"role": "user", "content": "康夫UI 有什么入门教程？"},
+        ],
+        "expected_tools": ["related_tokens_by_tokens", "search_videos"],
+        "content_contains": ["ComfyUI"],
+        "content_not_contains": ["康夫UI q=vwr"],
+    },
 ]
 
 
