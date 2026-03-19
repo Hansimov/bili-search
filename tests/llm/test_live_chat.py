@@ -134,6 +134,104 @@ TEST_CASES = [
         "manual_review_focus": ["是否按照最近时间线回答", "是否避免站外检索"],
     },
     {
+        "id": 10,
+        "name": "official_updates_google_only",
+        "description": "只问官方更新，不要为了凑流程再搜 B 站视频。",
+        "messages": [
+            {"role": "user", "content": "Gemini 2.5 最近有哪些官方更新？"},
+        ],
+        "checks": {
+            "expected_tools_any": ["search_google"],
+            "forbidden_tools": ["search_videos"],
+            "content_contains": ["Gemini 2.5"],
+            "max_tokens": 12000,
+        },
+        "manual_review_focus": ["是否以官方来源为主", "是否避免无意义的 B 站扩搜"],
+    },
+    {
+        "id": 13,
+        "name": "official_updates_followup_official_only",
+        "description": "首轮问官方更新 + B站解读，follow-up 改成只看官网后，不应再继承视频搜索。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "先只看官网就行"},
+        ],
+        "checks": {
+            "expected_tools_any": ["search_google"],
+            "forbidden_tools": ["search_videos"],
+            "content_contains": ["Gemini 2.5"],
+            "max_tokens": 12000,
+        },
+        "manual_review_focus": [
+            "是否停止继承上一轮的 B 站解读需求",
+            "是否以官网/官方发布信息为主",
+        ],
+    },
+    {
+        "id": 11,
+        "name": "account_query_after_capability_chat",
+        "description": "前一轮是能力闲聊，后一轮问关联账号，不应把口语历史塞进视频搜索。",
+        "messages": [
+            {"role": "user", "content": "你有什么功能？"},
+            {"role": "assistant", "content": "我可以帮你搜索 B 站内容。"},
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+        ],
+        "checks": {
+            "expected_tools_any": ["related_owners_by_tokens"],
+            "forbidden_tools": ["search_videos"],
+            "content_not_contains": ["你有什么功能 q=vwr"],
+            "max_tokens": 12000,
+        },
+        "manual_review_focus": [
+            "是否避免把能力闲聊污染成 query",
+            "是否优先回答作者关系而不是视频列表",
+        ],
+    },
+    {
+        "id": 12,
+        "name": "account_followup_pronoun_dialogue",
+        "description": "代词 follow-up 的账号关系问题，应继承上文作者但不要补视频搜索。",
+        "messages": [
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "他还有别的号吗？"},
+        ],
+        "checks": {
+            "expected_tools_any": ["related_owners_by_tokens"],
+            "forbidden_tools": ["search_videos"],
+            "content_not_contains": ["他还有别的号吗 q=vwr"],
+            "max_tokens": 12000,
+        },
+        "manual_review_focus": [
+            "是否正确继承何同学作为主体",
+            "是否避免把代词口语转成视频 query",
+        ],
+    },
+    {
+        "id": 14,
+        "name": "creator_relation_then_representative_videos",
+        "description": "先问作者关系，再追问代表作，要求继承作者主体并落到 :user= 定向视频搜索。",
+        "messages": [
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "那他的代表作有哪些？"},
+        ],
+        "checks": {
+            "expected_tools_any": ["search_videos"],
+            "content_contains": ["何同学"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "max_tokens": 15000,
+        },
+        "manual_review_focus": [
+            "是否继承何同学而不是把代词原样塞进 query",
+            "是否给出这位作者自己的代表作而非泛数码热视频",
+        ],
+    },
+    {
         "id": 7,
         "name": "seed_owner_similarity",
         "description": "以已有作者为种子找相近创作者，观察 relation 工具是否被合理使用。",
@@ -173,6 +271,27 @@ TEST_CASES = [
         "manual_review_focus": [
             "是否真的比较了两边近一个月产量",
             "结论是否和列出的视频一致",
+        ],
+    },
+    {
+        "id": 15,
+        "name": "multi_creator_productivity_comparison_followup_guard",
+        "description": "多作者近期产量对比，要求优先拆成每位作者自己的时间窗查询，而不是一句泛搜。",
+        "messages": [
+            {
+                "role": "user",
+                "content": "对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？",
+            },
+        ],
+        "checks": {
+            "expected_tools_any": ["search_videos"],
+            "content_contains": ["老番茄", "影视飓风"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "max_tokens": 18000,
+        },
+        "manual_review_focus": [
+            "是否真的按两位作者各自近一个月的视频来比较",
+            "是否避免把整句口语直接作为 query",
         ],
     },
     {

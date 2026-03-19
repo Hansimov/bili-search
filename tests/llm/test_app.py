@@ -16,6 +16,17 @@ from fastapi.testclient import TestClient
 from configs.envs import LLM_CONFIG
 
 
+def make_chat_response(content: str, usage: dict | None = None):
+    from llms.llm_client import ChatResponse
+
+    return ChatResponse(
+        content=content,
+        finish_reason="stop",
+        usage=usage
+        or {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+    )
+
+
 # ============================================================
 # Test setup
 # ============================================================
@@ -209,6 +220,99 @@ def test_streaming_response():
     logger.success("[PASS] streaming response")
 
 
+def test_chat_completions_account_query_stays_relation_only():
+    """Account/meta queries should not be auto-promoted to search_videos at the API layer."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /chat/completions account query stays relation-only")
+
+    search_app, mock_llm, _, _ = create_test_app()
+    mock_llm.chat.side_effect = [
+        make_chat_response(
+            '我先找一下何同学相关作者线索。\n<related_owners_by_tokens text="何同学"/>'
+        ),
+        make_chat_response("找到了何同学相关的作者候选。"),
+    ]
+    search_app.relations_client.related_owners_by_tokens.return_value = {
+        "owners": [{"mid": 1, "name": "何同学小号候选"}]
+    }
+
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/chat/completions",
+        json={
+            "messages": [
+                {"role": "user", "content": "你有什么功能"},
+                {"role": "assistant", "content": "我可以帮你搜索 B 站内容。"},
+                {"role": "user", "content": "何同学有哪些关联账号？"},
+            ],
+            "stream": False,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["choices"][0]["message"]["content"] == "找到了何同学相关的作者候选。"
+    used_tools = [
+        tool for event in data.get("tool_events", []) for tool in event.get("tools", [])
+    ]
+    assert "related_owners_by_tokens" in used_tools
+    assert "search_videos" not in used_tools
+    search_app.relations_client.related_owners_by_tokens.assert_called_once_with(
+        text="何同学", size=8
+    )
+    search_app.video_explorer.unified_explore.assert_not_called()
+
+    logger.success("[PASS] /chat/completions account query stays relation-only")
+
+
+def test_chat_completions_account_followup_stays_relation_only():
+    """Pronoun-based account follow-ups should inherit creator context without video search promotion."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /chat/completions account follow-up stays relation-only")
+
+    search_app, mock_llm, _, _ = create_test_app()
+    mock_llm.chat.side_effect = [
+        make_chat_response(
+            '我先继续找这个作者相关账号。\n<related_owners_by_tokens text="何同学"/>'
+        ),
+        make_chat_response("补充找到了何同学的其他关联作者候选。"),
+    ]
+    search_app.relations_client.related_owners_by_tokens.return_value = {
+        "owners": [{"mid": 2, "name": "何同学关联候选"}]
+    }
+
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/chat/completions",
+        json={
+            "messages": [
+                {"role": "user", "content": "何同学有哪些关联账号？"},
+                {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+                {"role": "user", "content": "他还有别的号吗？"},
+            ],
+            "stream": False,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert (
+        data["choices"][0]["message"]["content"]
+        == "补充找到了何同学的其他关联作者候选。"
+    )
+    used_tools = [
+        tool for event in data.get("tool_events", []) for tool in event.get("tools", [])
+    ]
+    assert "related_owners_by_tokens" in used_tools
+    assert "search_videos" not in used_tools
+    search_app.relations_client.related_owners_by_tokens.assert_called_once_with(
+        text="何同学", size=8
+    )
+    search_app.video_explorer.unified_explore.assert_not_called()
+
+    logger.success("[PASS] /chat/completions account follow-up stays relation-only")
+
+
 def test_search_and_suggest_endpoints_match_searcher_v2_signature():
     """Test that search_app no longer forwards removed kwargs to VideoSearcherV2."""
     logger.note("=" * 60)
@@ -398,6 +502,14 @@ if __name__ == "__main__":
         ("chat_completions_v1_path", test_chat_completions_v1_path),
         ("request_validation", test_chat_request_validation),
         ("streaming_response", test_streaming_response),
+        (
+            "chat_completions_account_query_relation_only",
+            test_chat_completions_account_query_stays_relation_only,
+        ),
+        (
+            "chat_completions_account_followup_relation_only",
+            test_chat_completions_account_followup_stays_relation_only,
+        ),
         (
             "search_and_suggest_signature_compat",
             test_search_and_suggest_endpoints_match_searcher_v2_signature,

@@ -12,7 +12,7 @@ from tclogger import logger
 import threading
 
 from llms.llm_client import LLMClient, ChatResponse
-from llms.chat.handler import ChatHandler
+from llms.chat.handler import ChatHandler, _FORCE_CONTENT_NUDGE
 
 
 # ============================================================
@@ -294,6 +294,27 @@ def test_fallback_tool_commands_for_single_author_timeline():
     logger.success("[PASS] fallback tool commands for author timeline")
 
 
+def test_normalize_author_timeline_search_command():
+    """Single-author timeline search commands should be normalized to :user queries."""
+    logger.note("=" * 60)
+    logger.note("[TEST] normalize author timeline search command")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    commands = handler._normalize_author_timeline_commands(
+        [{"type": "search_videos", "args": {"queries": ["影视飓风 q=vwr"]}}],
+        messages=[{"role": "user", "content": "影视飓风最近有什么新视频？"}],
+    )
+
+    assert commands == [
+        {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
+    ]
+
+    logger.success("[PASS] normalize author timeline search command")
+
+
 def test_fallback_creator_discovery_commands():
     """Creator discovery requests should fall back to relation search."""
     logger.note("=" * 60)
@@ -435,6 +456,35 @@ def test_fallback_external_search_commands_for_followup_dialogue():
     ]
 
     logger.success("[PASS] fallback external search follow-up dialogue")
+
+
+def test_fallback_external_search_commands_for_official_only_followup():
+    """Official-only follow-ups should stop inheriting the earlier Bilibili decode request."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback external search official-only follow-up")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_external_search_commands(
+        [],
+        messages=[
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "先只看官网就行"},
+        ],
+        content="我继续只查官网。",
+    )
+
+    assert fallback == [
+        {"type": "search_google", "args": {"query": "Gemini 2.5 最近有哪些官方更新"}},
+    ]
+
+    logger.success("[PASS] fallback external search official-only follow-up")
 
 
 def test_preflight_tool_commands_for_direct_external_request():
@@ -617,6 +667,32 @@ def test_fallback_video_search_commands_for_explicit_video_request():
     ]
 
     logger.success("[PASS] fallback video search commands")
+
+
+def test_fallback_video_search_commands_for_creator_video_followup():
+    """Creator video follow-ups should inherit the earlier creator and search by :user."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback video search creator follow-up")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_video_search_commands(
+        [],
+        messages=[
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "那他的代表作有哪些？"},
+        ],
+        content="我来搜索这位作者的代表作。",
+    )
+
+    assert fallback == [
+        {"type": "search_videos", "args": {"queries": [":user=何同学"]}},
+    ]
+
+    logger.success("[PASS] fallback video search creator follow-up")
 
 
 def test_fallback_similar_creator_commands():
@@ -1338,6 +1414,74 @@ def test_parallel_tool_calls():
     logger.success("[PASS] parallel tool calls")
 
 
+def test_fallback_video_search_commands_for_multi_creator_productivity_comparison():
+    """Multi-creator productivity comparisons should fall back to parallel :user queries."""
+    logger.note("=" * 60)
+    logger.note("[TEST] fallback video search multi-creator comparison")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    fallback = handler._fallback_video_search_commands(
+        [],
+        messages=[
+            {
+                "role": "user",
+                "content": "对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？",
+            }
+        ],
+        content="我来分别搜一下两位作者最近一个月的视频。",
+    )
+
+    assert fallback == [
+        {
+            "type": "search_videos",
+            "args": {
+                "queries": [":user=老番茄 :date<=30d", ":user=影视飓风 :date<=30d"]
+            },
+        }
+    ]
+
+    logger.success("[PASS] fallback video search multi-creator comparison")
+
+
+def test_normalize_multi_creator_compare_search_command():
+    """Multi-creator comparison search commands should be normalized to per-author :user queries."""
+    logger.note("=" * 60)
+    logger.note("[TEST] normalize multi-creator comparison search command")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    commands = handler._normalize_multi_creator_compare_commands(
+        [
+            {
+                "type": "search_videos",
+                "args": {"queries": ["老番茄 影视飓风 谁更高产 q=vwr"]},
+            }
+        ],
+        messages=[
+            {
+                "role": "user",
+                "content": "对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？",
+            }
+        ],
+    )
+
+    assert commands == [
+        {
+            "type": "search_videos",
+            "args": {
+                "queries": [":user=老番茄 :date<=30d", ":user=影视飓风 :date<=30d"]
+            },
+        }
+    ]
+
+    logger.success("[PASS] normalize multi-creator comparison search command")
+
+
 def test_multi_query_search():
     """Test handler with multi-query search_videos (queries array)."""
     logger.note("=" * 60)
@@ -1368,6 +1512,42 @@ def test_multi_query_search():
     assert mock_search.explore.call_count == 2
 
     logger.success("[PASS] multi-query search")
+
+
+def test_empty_final_content_retries_with_force_content_nudge():
+    """Tool-backed answers should retry once when the final content is empty."""
+    logger.note("=" * 60)
+    logger.note("[TEST] empty final content retry")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先找相关作者。",
+            '<related_owners_by_tokens text="何同学"/>',
+        ),
+        make_content_response(""),
+        make_content_response("何同学相关账号候选如下。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "何同学有哪些关联账号？"}]
+    )
+
+    assert result["choices"][0]["message"]["content"] == "何同学相关账号候选如下。"
+    assert mock_llm.chat.call_count == 3
+
+    retry_call_messages = mock_llm.chat.call_args_list[-1].kwargs["messages"]
+    assert retry_call_messages[-1]["content"] == _FORCE_CONTENT_NUDGE
+
+    phases = [entry["phase"] for entry in result["usage_trace"]["iterations"]]
+    assert "empty_content_retry" in phases
+
+    logger.success("[PASS] empty final content retry")
 
 
 def test_streaming_reasoning_content():
@@ -1683,6 +1863,232 @@ def test_explicit_video_request_injects_fallback_search_when_model_skips_tools()
     assert mock_llm.chat.call_count == 2
 
     logger.success("[PASS] explicit video request fallback search")
+
+
+def test_extract_creator_discovery_topic_does_not_leak_unrelated_history():
+    """Creator topic extraction should not inherit unrelated previous turns."""
+    logger.note("=" * 60)
+    logger.note("[TEST] creator topic extraction ignores unrelated history")
+
+    topic = ChatHandler._extract_creator_discovery_topic(
+        [
+            {"role": "user", "content": "你有什么功能"},
+            {"role": "assistant", "content": "我可以帮你搜索 B 站内容。"},
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+        ]
+    )
+
+    assert topic == "何同学"
+
+    logger.success("[PASS] creator topic extraction ignores unrelated history")
+
+
+def test_extract_creator_discovery_topic_for_real_account_dialogues():
+    """Creator topic extraction should work for realistic account/matrix dialogues."""
+    logger.note("=" * 60)
+    logger.note("[TEST] creator topic extraction for real account dialogues")
+
+    cases = [
+        (
+            [
+                {"role": "user", "content": "你支持哪些搜索方式？"},
+                {"role": "assistant", "content": "我可以搜索视频、作者和关系。"},
+                {"role": "user", "content": "半佛仙人有没有小号？"},
+            ],
+            "半佛仙人",
+        ),
+        (
+            [
+                {"role": "user", "content": "你能做什么？"},
+                {"role": "assistant", "content": "我能做视频和作者搜索。"},
+                {"role": "user", "content": "影视飓风账号矩阵有哪些？"},
+            ],
+            "影视飓风",
+        ),
+        (
+            [
+                {"role": "user", "content": "何同学有哪些关联账号？"},
+                {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+                {"role": "user", "content": "他还有别的号吗？"},
+            ],
+            "何同学",
+        ),
+        (
+            [
+                {"role": "user", "content": "先说说你能帮我做什么"},
+                {"role": "assistant", "content": "我能帮你搜索视频、作者和关系。"},
+                {"role": "user", "content": "老番茄有没有其他账号？"},
+            ],
+            "老番茄",
+        ),
+        (
+            [
+                {"role": "user", "content": "老师我想先了解下你的能力边界"},
+                {"role": "assistant", "content": "可以，我支持 B 站内容搜索。"},
+                {"role": "user", "content": "那影视飓风主号和副号分别是什么？"},
+            ],
+            "影视飓风",
+        ),
+    ]
+
+    for messages, expected in cases:
+        assert ChatHandler._extract_creator_discovery_topic(messages) == expected
+
+    logger.success("[PASS] creator topic extraction for real account dialogues")
+
+
+def test_relation_only_account_query_does_not_promote_to_search_videos():
+    """Relation-only account queries should not be auto-promoted to video search."""
+    logger.note("=" * 60)
+    logger.note("[TEST] relation-only account query skips search_videos promotion")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先找一下何同学相关作者线索。",
+            '<related_owners_by_tokens text="何同学"/>',
+        ),
+        make_content_response("找到了何同学相关的作者候选。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[
+            {"role": "user", "content": "你有什么功能"},
+            {"role": "assistant", "content": "我可以帮你搜索 B 站内容。"},
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+        ]
+    )
+
+    assert result["choices"][0]["message"]["content"] == "找到了何同学相关的作者候选。"
+    mock_search.related_owners_by_tokens.assert_called_once_with(text="何同学", size=8)
+    mock_search.explore.assert_not_called()
+    assert mock_llm.chat.call_count == 2
+
+    logger.success("[PASS] relation-only account query skips search_videos promotion")
+
+
+def test_direct_account_query_injects_relation_fallback_when_model_skips_tools():
+    """Direct account/meta queries should still trigger relation fallback when the model emits no tools."""
+    logger.note("=" * 60)
+    logger.note(
+        "[TEST] direct account query injects relation fallback when model skips tools"
+    )
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_content_response("我来帮你查一下。"),
+        make_content_response("找到了何同学相关的作者候选。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[
+            {"role": "user", "content": "你有什么功能"},
+            {"role": "assistant", "content": "我可以帮你搜索 B 站内容。"},
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+        ]
+    )
+
+    assert result["choices"][0]["message"]["content"] == "找到了何同学相关的作者候选。"
+    mock_search.related_owners_by_tokens.assert_called_once_with(text="何同学", size=8)
+    mock_search.explore.assert_not_called()
+    assert mock_llm.chat.call_count == 2
+
+    logger.success(
+        "[PASS] direct account query injects relation fallback when model skips tools"
+    )
+
+
+def test_relation_only_account_followup_still_skips_search_videos():
+    """Pronoun-based account follow-ups should inherit creator context but avoid video search."""
+    logger.note("=" * 60)
+    logger.note("[TEST] relation-only account follow-up skips search_videos promotion")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先继续找这个作者相关账号。",
+            '<related_owners_by_tokens text="何同学"/>',
+        ),
+        make_content_response("补充找到了何同学的其他关联作者候选。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "他还有别的号吗？"},
+        ]
+    )
+
+    assert (
+        result["choices"][0]["message"]["content"]
+        == "补充找到了何同学的其他关联作者候选。"
+    )
+    mock_search.related_owners_by_tokens.assert_called_once_with(text="何同学", size=8)
+    mock_search.explore.assert_not_called()
+    assert mock_llm.chat.call_count == 2
+
+    logger.success(
+        "[PASS] relation-only account follow-up skips search_videos promotion"
+    )
+
+
+def test_relation_only_matrix_query_after_capability_chat_skips_search_videos():
+    """Capability chatter before a matrix/account query should not trigger video search promotion."""
+    logger.note("=" * 60)
+    logger.note(
+        "[TEST] matrix query after capability chat skips search_videos promotion"
+    )
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先找一下影视飓风相关账号。",
+            '<related_owners_by_tokens text="影视飓风"/>',
+        ),
+        make_content_response("找到了影视飓风相关的账号候选。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[
+            {"role": "user", "content": "你都支持什么功能？"},
+            {"role": "assistant", "content": "我支持视频搜索、作者搜索和关系查询。"},
+            {"role": "user", "content": "影视飓风账号矩阵有哪些？"},
+        ]
+    )
+
+    assert (
+        result["choices"][0]["message"]["content"] == "找到了影视飓风相关的账号候选。"
+    )
+    mock_search.related_owners_by_tokens.assert_called_once_with(
+        text="影视飓风", size=8
+    )
+    mock_search.explore.assert_not_called()
+    assert mock_llm.chat.call_count == 2
+
+    logger.success(
+        "[PASS] matrix query after capability chat skips search_videos promotion"
+    )
 
 
 def test_chat_interruptible_cancels_mid_stream():

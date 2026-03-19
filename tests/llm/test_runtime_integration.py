@@ -62,6 +62,88 @@ LIVE_CHAT_CASES = [
         "content_contains": ["Gemini 2.5", "API"],
         "content_not_contains": [],
     },
+    {
+        "name": "official_updates_google_only",
+        "messages": [
+            {"role": "user", "content": "Gemini 2.5 最近有哪些官方更新？"},
+        ],
+        "expected_tools": ["search_google"],
+        "forbidden_tools": ["search_videos"],
+        "content_contains": ["Gemini 2.5"],
+        "content_not_contains": [],
+    },
+    {
+        "name": "official_updates_followup_official_only",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读视频？",
+            },
+            {"role": "assistant", "content": "我先查一下官方更新。"},
+            {"role": "user", "content": "先只看官网就行"},
+        ],
+        "expected_tools": ["search_google"],
+        "forbidden_tools": ["search_videos"],
+        "content_contains": ["Gemini 2.5"],
+        "content_not_contains": [],
+    },
+    {
+        "name": "author_timeline_recent_posts",
+        "messages": [
+            {"role": "user", "content": "影视飓风最近有什么新视频？"},
+        ],
+        "expected_tools": ["search_videos"],
+        "forbidden_tools": ["search_google"],
+        "content_contains": ["影视飓风"],
+        "content_not_contains": [],
+    },
+    {
+        "name": "account_query_after_capability_chat",
+        "messages": [
+            {"role": "user", "content": "你有什么功能？"},
+            {"role": "assistant", "content": "我可以帮你搜索 B 站内容。"},
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+        ],
+        "expected_tools": ["related_owners_by_tokens"],
+        "forbidden_tools": ["search_videos"],
+        "content_contains": [],
+        "content_not_contains": ["你有什么功能 q=vwr"],
+    },
+    {
+        "name": "account_followup_pronoun_dialogue",
+        "messages": [
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "他还有别的号吗？"},
+        ],
+        "expected_tools": ["related_owners_by_tokens"],
+        "forbidden_tools": ["search_videos"],
+        "content_contains": [],
+        "content_not_contains": ["他还有别的号吗 q=vwr"],
+    },
+    {
+        "name": "creator_relation_then_representative_videos",
+        "messages": [
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "那他的代表作有哪些？"},
+        ],
+        "expected_tools": ["search_videos"],
+        "content_contains": ["何同学"],
+        "content_not_contains": [],
+    },
+    {
+        "name": "multi_creator_productivity_comparison",
+        "messages": [
+            {
+                "role": "user",
+                "content": "对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？",
+            },
+        ],
+        "expected_tools": ["search_videos"],
+        "content_contains": ["老番茄", "影视飓风"],
+        "content_not_contains": [],
+    },
 ]
 
 
@@ -250,6 +332,8 @@ def test_runtime_chat_completion_scenarios(case):
     assert usage_trace.get("summary", {}).get("llm_calls", 0) >= 1
     for expected_tool in case["expected_tools"]:
         assert expected_tool in used_tools
+    for forbidden_tool in case.get("forbidden_tools", []):
+        assert forbidden_tool not in used_tools
     for keyword in case["content_contains"]:
         assert keyword in content
     for keyword in case["content_not_contains"]:

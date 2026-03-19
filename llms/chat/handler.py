@@ -83,6 +83,8 @@ _DUPLICATE_TOOL_NUDGE = (
     "请直接基于已有搜索结果回答用户问题；只有在查询条件明显不同或补充了新信息时，才继续搜索。"
 )
 
+_EMPTY_CONTENT_FALLBACK = "抱歉，我拿到了搜索结果，但这次没能整理成答案。请重试。"
+
 # Thinking mode prompt: prepended to system prompt to encourage deeper reasoning
 _THINKING_PROMPT = (
     "[思考模式] 你现在处于深度思考模式。请认真分析用户的问题，"
@@ -103,6 +105,9 @@ _AUTHOR_TIMELINE_HINT_RE = re.compile(
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
     r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
 )
+_MULTI_CREATOR_COMPARE_RE = re.compile(
+    r"^(?:请|帮我|麻烦)?(?:对比(?:一下)?|比较(?:一下)?|对比下)?(?P<left>.+?)(?:和|跟|与|vs|VS)(?P<right>.+?)(?:最近|近\d+[天日周月]|过去\d+[天日周月])"
+)
 _CREATOR_DISCOVERY_HINT_RE = re.compile(
     r"UP主|创作者|作者|博主|谁发的|谁做的|谁在做|推荐几个做|有哪些做|做.+内容的"
 )
@@ -111,6 +116,15 @@ _CREATOR_DISCOVERY_REQUEST_RE = re.compile(
 )
 _CREATOR_DISCOVERY_FOLLOWUP_RE = re.compile(
     r"更偏|偏.+(呢|吗)|这类|这种|类似的|再来几个|还有吗|主要看"
+)
+_CREATOR_META_HINT_RE = re.compile(
+    r"关联账号|账号矩阵|矩阵号|主号|副号|小号|分身|马甲|别的号|其他账号|另一个号|另一个账号"
+)
+_CREATOR_META_FOLLOWUP_RE = re.compile(
+    r"还有(别的|其他).*(号|账号)|另一个(号|账号)|主号呢|副号呢|小号呢|矩阵呢"
+)
+_GENERIC_CREATOR_REF_RE = re.compile(
+    r"^(他|她|它|ta|TA|这位|这个|这个人|该(?:位)?)(?:UP主|up主|作者|创作者|博主|人)?$"
 )
 _SIMILAR_CREATOR_HINT_RE = re.compile(
     r"风格接近|类似的UP主|像.+的UP主|同类型.*UP主|同风格|接近的创作者"
@@ -124,14 +138,23 @@ _BILIBILI_DECODE_HINT_RE = re.compile(
 _EXTERNAL_SEARCH_FOLLOWUP_RE = re.compile(
     r"更偏开发者|更偏产品|API 侧|应用侧|官网|官方|B站.*解读|有没有.*解读|有没有.*视频"
 )
+_OFFICIAL_ONLY_FOLLOWUP_RE = re.compile(
+    r"只看官网|只看官方|官网就行|官方就行|只要官网|只要官方|先不用B站|先不用视频|不用B站解读|不用看视频"
+)
 _MISSING_RESULTS_HINT_RE = re.compile(
     r"没收到|未收到|没有收到|搜索结果|工具链路|接口|重试|系统返回"
 )
 _VIDEO_SEARCH_INTENT_RE = re.compile(
-    r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放"
+    r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放|代表作"
 )
 _EXPLICIT_VIDEO_REQUEST_RE = re.compile(
     r"^(推荐几条|找几条|帮我找|给我找|想看|推荐|找|有没有)"
+)
+_CREATOR_VIDEO_FOLLOWUP_RE = re.compile(
+    r"^(?:那|那他|那她|那这个|那这位|他|她|这位|这个UP主|这个作者|这个博主).*(?:代表作|最近.*视频|最新.*视频|高播放|热门视频)"
+)
+_MULTI_CREATOR_COMPARE_HINT_RE = re.compile(
+    r"谁更高产|谁发得更多|谁更新更多|谁更新更勤|谁更活跃|哪个更高产"
 )
 _SEARCH_PLEDGE_HINT_RE = re.compile(
     r"我来搜索|我先帮你搜|我来帮你搜|我先帮你把|我来帮你找|我先帮你找|我来先找|我先找一下|先找一下"
@@ -410,6 +433,118 @@ class ChatHandler:
         return name
 
     @staticmethod
+    def _extract_recent_window(text: str) -> str:
+        source = (text or "").strip()
+        if re.search(r"一个月|1个?月|30天|近月", source):
+            return "30d"
+        if re.search(r"一周|1周|7天|近周", source):
+            return "7d"
+        day_match = re.search(r"(\d+)[天日]", source)
+        if day_match:
+            return f"{day_match.group(1)}d"
+        week_match = re.search(r"(\d+)周", source)
+        if week_match:
+            return f"{int(week_match.group(1)) * 7}d"
+        month_match = re.search(r"(\d+)个?月", source)
+        if month_match:
+            return f"{int(month_match.group(1)) * 30}d"
+        return "15d"
+
+    @classmethod
+    def _extract_multi_creator_compare_queries(cls, messages: list[dict]) -> list[str]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not _MULTI_CREATOR_COMPARE_HINT_RE.search(latest_user_text):
+            return []
+
+        match = _MULTI_CREATOR_COMPARE_RE.search(latest_user_text)
+        if not match:
+            return []
+
+        left = match.group("left").strip(" ，。！？?：:")
+        right = match.group("right").strip(" ，。！？?：:")
+        right = re.sub(r"(?:最近|近\d+[天日周月]|过去\d+[天日周月]).*$", "", right).strip(
+            " ，。！？?：:"
+        )
+        if not left or not right:
+            return []
+
+        window = cls._extract_recent_window(latest_user_text)
+        return [f":user={left} :date<={window}", f":user={right} :date<={window}"]
+
+    @classmethod
+    def _normalize_author_timeline_commands(
+        cls, commands: list[dict], messages: list[dict]
+    ) -> list[dict]:
+        author_name = cls._extract_timeline_author_name(messages)
+        if not author_name:
+            return commands
+
+        normalized = []
+        timeline_query = f":user={author_name} :date<=15d"
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                normalized.append(command)
+                continue
+
+            args = dict(command.get("args") or {})
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list) or not queries:
+                normalized.append(command)
+                continue
+            if any(":user=" in str(query) for query in queries):
+                normalized.append(command)
+                continue
+
+            normalized.append(
+                {
+                    "type": "search_videos",
+                    "args": {
+                        **args,
+                        "queries": [timeline_query],
+                    },
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _normalize_multi_creator_compare_commands(
+        cls, commands: list[dict], messages: list[dict]
+    ) -> list[dict]:
+        compare_queries = cls._extract_multi_creator_compare_queries(messages)
+        if not compare_queries:
+            return commands
+
+        normalized = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                normalized.append(command)
+                continue
+
+            args = dict(command.get("args") or {})
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list) or not queries:
+                normalized.append(command)
+                continue
+            if all(":user=" in str(query) for query in queries) and len(queries) >= 2:
+                normalized.append(command)
+                continue
+
+            normalized.append(
+                {
+                    "type": "search_videos",
+                    "args": {
+                        **args,
+                        "queries": compare_queries,
+                    },
+                }
+            )
+        return normalized
+
+    @staticmethod
     def _clean_followup_refinement(text: str) -> str | None:
         refinement = (text or "").strip()
         if not refinement:
@@ -432,6 +567,25 @@ class ChatHandler:
         topic = (text or "").strip()
         if not topic:
             return None
+        meta_match = re.search(
+            r"^(?P<name>.+?)(?:有哪[些个]|有没有|都有哪些|还有)?(?:关联账号|账号矩阵|矩阵号|主号|副号|小号|分身|马甲|别的号|其他账号|另一个号|另一个账号).*$",
+            topic,
+        )
+        if meta_match:
+            name = meta_match.group("name").strip(" ，。！？?：:")
+            name = re.sub(r"^(那|那位|那这个|那这位)", "", name).strip(" ，。！？?：:")
+            if _GENERIC_CREATOR_REF_RE.fullmatch(name):
+                return None
+            return name or None
+        request_match = re.search(
+            r"^(?P<topic>.+?)(?:有哪[些个]|有没有|找几个|找一些|推荐几个|推荐一些|谁在做|谁做的).*(?:UP主|创作者|作者|博主).*$",
+            topic,
+        )
+        if request_match:
+            candidate = request_match.group("topic").strip(" ，。！？?：:")
+            candidate = re.sub(r"^(那|那位|那这个|那这位)", "", candidate).strip(" ，。！？?：:")
+            if candidate:
+                return candidate
         topic = re.sub(
             r"^(推荐几个|推荐一些|有哪些|有没有|谁发的|谁做的|帮我找|找一下|找找|找几个|找一些)",
             "",
@@ -442,6 +596,11 @@ class ChatHandler:
         topic = re.sub(r"(内容)?的?(UP主|创作者|作者|博主).*$", "", topic)
         topic = re.sub(r"是谁发的.*$", "", topic)
         topic = topic.strip(" ，。！？?：:")
+        topic = re.sub(r"^(那|那位|那这个|那这位)", "", topic).strip(" ，。！？?：:")
+        if _GENERIC_CREATOR_REF_RE.fullmatch(topic):
+            return None
+        if _CREATOR_META_FOLLOWUP_RE.search(topic) and re.match(r"^(他|她|它|ta|TA)", topic):
+            return None
         return topic or None
 
     @classmethod
@@ -527,17 +686,27 @@ class ChatHandler:
 
         latest_user_text = recent_user_texts[0]
         current_topic = cls._extract_creator_topic_from_text(latest_user_text)
-        if current_topic and current_topic != latest_user_text and (
+        has_explicit_latest_creator_intent = bool(
             _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
             or _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
-        ):
+            or _CREATOR_META_HINT_RE.search(latest_user_text)
+        )
+        if current_topic and current_topic != latest_user_text and has_explicit_latest_creator_intent:
             return current_topic
 
         refinement = None
-        if _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text):
+        has_creator_followup = bool(
+            _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)
+        )
+        has_meta_followup = bool(_CREATOR_META_FOLLOWUP_RE.search(latest_user_text))
+        has_followup_refinement = has_creator_followup or has_meta_followup
+        if has_creator_followup:
             refinement = cls._clean_followup_refinement(latest_user_text)
 
-        for previous_text in recent_user_texts[1:]:
+        if current_topic and has_explicit_latest_creator_intent and not has_followup_refinement:
+            return current_topic
+
+        for previous_text in recent_user_texts[1:] if has_followup_refinement else []:
             previous_topic = cls._extract_creator_topic_from_text(previous_text)
             if not previous_topic:
                 continue
@@ -561,24 +730,39 @@ class ChatHandler:
         if not recent_user_texts:
             return commands
         latest_user_text = recent_user_texts[0]
-        has_creator_context = bool(_CREATOR_DISCOVERY_HINT_RE.search(latest_user_text))
-        if not has_creator_context and _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text):
+        has_creator_context = bool(
+            _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
+            or _CREATOR_META_HINT_RE.search(latest_user_text)
+        )
+        if not has_creator_context and (
+            _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)
+            or _CREATOR_META_FOLLOWUP_RE.search(latest_user_text)
+        ):
             has_creator_context = any(
-                _CREATOR_DISCOVERY_HINT_RE.search(text) for text in recent_user_texts[1:]
+                _CREATOR_DISCOVERY_HINT_RE.search(text)
+                or _CREATOR_META_HINT_RE.search(text)
+                for text in recent_user_texts[1:]
             )
-        has_followup_context = bool(_CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)) and any(
-            _CREATOR_DISCOVERY_HINT_RE.search(text) for text in recent_user_texts[1:]
+        has_followup_context = bool(
+            _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)
+            or _CREATOR_META_FOLLOWUP_RE.search(latest_user_text)
+        ) and any(
+            _CREATOR_DISCOVERY_HINT_RE.search(text)
+            or _CREATOR_META_HINT_RE.search(text)
+            for text in recent_user_texts[1:]
         )
         if not has_creator_context and not has_followup_context:
             return commands
         if (
             _VIDEO_SEARCH_INTENT_RE.search(latest_user_text)
             and not _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
+            and not _CREATOR_META_HINT_RE.search(latest_user_text)
             and not has_followup_context
         ):
             return commands
         is_explicit_creator_request = bool(
             _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
+            or _CREATOR_META_HINT_RE.search(latest_user_text)
         )
         if not (
             _MISSING_RESULTS_HINT_RE.search(content or "")
@@ -590,10 +774,11 @@ class ChatHandler:
         topic = self._extract_creator_discovery_topic(messages)
         if not topic:
             return commands
-        fallback = [
-            {"type": "related_owners_by_tokens", "args": {"text": topic}},
-            {"type": "search_videos", "args": {"queries": [f"{topic} q=vwr"]}},
-        ]
+        fallback = [{"type": "related_owners_by_tokens", "args": {"text": topic}}]
+        if not _CREATOR_META_HINT_RE.search(latest_user_text):
+            fallback.append(
+                {"type": "search_videos", "args": {"queries": [f"{topic} q=vwr"]}}
+            )
         if self.verbose:
             logger.warn(
                 "> Injecting fallback relation command for creator-discovery request"
@@ -606,13 +791,16 @@ class ChatHandler:
         if not recent_user_texts:
             return None
         latest_user_text = recent_user_texts[0]
-        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text):
+        official_only_followup = cls._wants_official_only_followup(messages)
+        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text) and not cls._wants_official_only_followup(
+            messages
+        ):
             query = re.sub(r"B站上有没有.*$", "", latest_user_text)
             query = re.sub(r"有没有.*解读.*$", "", query)
             query = query.strip(" ，。！？?：:")
             return query or latest_user_text.strip(" ，。！？?：:") or None
 
-        latest_focus = cls._clean_followup_refinement(latest_user_text)
+        latest_focus = None if official_only_followup else cls._clean_followup_refinement(latest_user_text)
         for previous_text in recent_user_texts[1:]:
             previous_subject = cls._extract_external_subject_from_text(previous_text)
             if not previous_subject:
@@ -627,6 +815,34 @@ class ChatHandler:
                 return f"{latest_subject} {latest_focus} 最近有哪些官方更新".strip()
             return f"{latest_subject} 最近有哪些官方更新"
         return None
+
+    @classmethod
+    def _wants_official_only_followup(cls, messages: list[dict]) -> bool:
+        latest_user_text = cls._get_latest_user_text(messages)
+        return bool(latest_user_text and _OFFICIAL_ONLY_FOLLOWUP_RE.search(latest_user_text))
+
+    @classmethod
+    def _extract_creator_video_followup_query(cls, messages: list[dict]) -> str | None:
+        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
+        if len(recent_user_texts) < 2:
+            return None
+
+        latest_user_text = recent_user_texts[0]
+        if not _CREATOR_VIDEO_FOLLOWUP_RE.search(latest_user_text):
+            return None
+
+        subject_name = None
+        for previous_text in recent_user_texts[1:]:
+            subject_name = cls._extract_creator_topic_from_text(previous_text)
+            if subject_name:
+                break
+        if not subject_name:
+            return None
+
+        query = f":user={subject_name}"
+        if "最近" in latest_user_text or "最新" in latest_user_text:
+            query = f"{query} :date<=15d"
+        return query
 
     @classmethod
     def _extract_bilibili_topic_queries(cls, messages: list[dict]) -> list[str]:
@@ -699,8 +915,9 @@ class ChatHandler:
         fallback = []
         if google_query:
             fallback.append({"type": "search_google", "args": {"query": google_query}})
-        wants_bilibili_decode = bool(_BILIBILI_DECODE_HINT_RE.search(latest_user_text)) or any(
-            _BILIBILI_DECODE_HINT_RE.search(text) for text in recent_user_texts[1:]
+        wants_bilibili_decode = not self._wants_official_only_followup(messages) and (
+            bool(_BILIBILI_DECODE_HINT_RE.search(latest_user_text))
+            or any(_BILIBILI_DECODE_HINT_RE.search(text) for text in recent_user_texts[1:])
         )
         if bilibili_queries and wants_bilibili_decode:
             fallback.append({"type": "search_videos", "args": {"queries": bilibili_queries}})
@@ -751,6 +968,10 @@ class ChatHandler:
     def _derive_relation_search_queries(
         cls, commands: list[dict], messages: list[dict]
     ) -> list[str]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if latest_user_text and _CREATOR_META_HINT_RE.search(latest_user_text):
+            return []
+
         queries = []
         topic = cls._extract_creator_discovery_topic(messages)
         if topic:
@@ -827,6 +1048,20 @@ class ChatHandler:
             return commands
         if self._has_tool_results_context(messages):
             return commands
+        compare_queries = self._extract_multi_creator_compare_queries(messages)
+        if compare_queries and (
+            _SEARCH_PLEDGE_HINT_RE.search(content or "")
+            or _MISSING_RESULTS_HINT_RE.search(content or "")
+            or _MULTI_CREATOR_COMPARE_HINT_RE.search(self._get_latest_user_text(messages) or "")
+        ):
+            return [{"type": "search_videos", "args": {"queries": compare_queries}}]
+        creator_followup_query = self._extract_creator_video_followup_query(messages)
+        if creator_followup_query and (
+            _SEARCH_PLEDGE_HINT_RE.search(content or "")
+            or _MISSING_RESULTS_HINT_RE.search(content or "")
+            or _CREATOR_VIDEO_FOLLOWUP_RE.search(self._get_latest_user_text(messages) or "")
+        ):
+            return [{"type": "search_videos", "args": {"queries": [creator_followup_query]}}]
         if not self._should_fallback_video_search(messages, content):
             return commands
 
@@ -1225,6 +1460,8 @@ class ChatHandler:
                 messages=full_messages,
                 content=content,
             )
+            commands = self._normalize_author_timeline_commands(commands, full_messages)
+            commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
             commands = self._promote_relation_only_commands(commands, full_messages)
             commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
             usage_trace_entries.append(
@@ -1290,6 +1527,26 @@ class ChatHandler:
             )
 
         final_content = _sanitize_content(final_content)
+        if not final_content and self._has_tool_results_context(full_messages):
+            full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
+            response = self.llm_client.chat(
+                messages=full_messages,
+                temperature=temp,
+            )
+            self._accumulate_usage(total_usage, response.usage)
+            last_usage = response.usage
+            usage_trace_entries.append(
+                self._build_usage_trace_entry(
+                    phase="empty_content_retry",
+                    iteration=len(usage_trace_entries) + 1,
+                    messages=full_messages,
+                    usage=response.usage,
+                    commands=[],
+                )
+            )
+            final_content = _sanitize_content(response.content or "")
+        if not final_content:
+            final_content = _EMPTY_CONTENT_FALLBACK
 
         elapsed_seconds = time.perf_counter() - start_time
         elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -1550,6 +1807,8 @@ class ChatHandler:
                 messages=full_messages,
                 content=content,
             )
+            commands = self._normalize_author_timeline_commands(commands, full_messages)
+            commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
             commands = self._promote_relation_only_commands(commands, full_messages)
             commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
             usage_trace_entries.append(
@@ -1672,6 +1931,7 @@ class ChatHandler:
                 # No tool commands: the final answer.
                 # Flush any content still in the look-ahead buffer, then
                 # finalize the stream with stats.
+                yielded_final_content = False
                 if has_reasoning:
                     # Content was buffered (reasoning was streamed instead).
                     # Sanitize echoed results, then strip leading text that
@@ -1695,6 +1955,7 @@ class ChatHandler:
                             request_id=request_id,
                             delta={"content": final},
                         )
+                        yielded_final_content = True
                 elif content_sent_ptr < len(content):
                     remaining = _sanitize_content(content[content_sent_ptr:])
                     if remaining:
@@ -1705,6 +1966,15 @@ class ChatHandler:
                             request_id=request_id,
                             delta={"content": remaining},
                         )
+                        yielded_final_content = True
+
+                if not yielded_final_content and self._has_tool_results_context(full_messages):
+                    if self.verbose:
+                        logger.warn(
+                            "> Final answer was empty after tool results, forcing content generation"
+                        )
+                    full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
+                    break
 
                 # Finalize: compute stats and yield final chunk
                 final_usage = self._merge_final_usage(total_usage, last_usage)
@@ -1800,6 +2070,13 @@ class ChatHandler:
                     usage=stream_usage,
                     commands=[],
                 )
+            )
+
+        if not _sanitize_content(final_content):
+            final_content = _EMPTY_CONTENT_FALLBACK
+            yield self._format_stream_chunk(
+                request_id=request_id,
+                delta={"content": final_content},
             )
 
         final_usage = self._merge_final_usage(total_usage, last_usage)
