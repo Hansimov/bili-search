@@ -125,8 +125,8 @@ RANK_LOW_ENGAGEMENT_PENALTY = 0.7  # multiply quality_score by this
 
 # Very low engagement: near-zero-view content is almost certainly low-quality.
 # Much more aggressive penalty than the standard low-engagement tier.
-RANK_VERY_LOW_ENGAGEMENT_THRESHOLD = 100  # views
-RANK_VERY_LOW_ENGAGEMENT_PENALTY = 0.3  # multiply quality_score by this
+RANK_VERY_LOW_ENGAGEMENT_THRESHOLD = 200  # views
+RANK_VERY_LOW_ENGAGEMENT_PENALTY = 0.25  # multiply quality_score by this
 
 # =============================================================================
 # Title Match Bonus
@@ -196,7 +196,7 @@ NOISE_SHORT_TEXT_PENALTY = 0.4  # Multiply score by this when content is too sho
 
 # Quality engagement floor: even if BM25 score is high, docs with near-zero
 # engagement are likely low-quality (spam, empty, test uploads).
-NOISE_MIN_ENGAGEMENT_VIEWS = 50  # Minimum views to pass quality gate
+NOISE_MIN_ENGAGEMENT_VIEWS = 100  # Minimum views to pass quality gate
 NOISE_LOW_ENGAGEMENT_PENALTY = 0.25  # Score penalty factor for very low engagement
 
 # =============================================================================

@@ -83,8 +83,6 @@ _DUPLICATE_TOOL_NUDGE = (
     "请直接基于已有搜索结果回答用户问题；只有在查询条件明显不同或补充了新信息时，才继续搜索。"
 )
 
-_FOLLOW_UP_OPTION_COUNT = 3
-
 # Thinking mode prompt: prepended to system prompt to encourage deeper reasoning
 _THINKING_PROMPT = (
     "[思考模式] 你现在处于深度思考模式。请认真分析用户的问题，"
@@ -381,162 +379,6 @@ class ChatHandler:
             if limit is not None and len(texts) >= limit:
                 break
         return texts
-
-    @staticmethod
-    def _normalize_follow_up_seed(text: str) -> str:
-        seed = (text or "").strip()
-        seed = re.sub(r"\s+", " ", seed)
-        return seed.strip(" ，。！？?：:；;、")[:72]
-
-    @classmethod
-    def _append_follow_up_option(
-        cls,
-        options: list[dict],
-        seen_queries: set[str],
-        *,
-        label: str,
-        query: str,
-    ):
-        normalized_query = cls._normalize_follow_up_seed(query)
-        normalized_label = cls._normalize_follow_up_seed(label)
-        if not normalized_query or normalized_query in seen_queries:
-            return
-        seen_queries.add(normalized_query)
-        options.append(
-            {
-                "label": normalized_label or normalized_query,
-                "query": normalized_query,
-            }
-        )
-
-    @classmethod
-    def _build_follow_up_options(
-        cls,
-        messages: list[dict],
-        tool_names: list[str] | None = None,
-    ) -> list[dict]:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
-            return []
-
-        latest_seed = cls._normalize_follow_up_seed(latest_user_text)
-        tool_name_set = set(tool_names or [])
-        options: list[dict] = []
-        seen_queries: set[str] = set()
-
-        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text) or "search_google" in tool_name_set:
-            subject = (
-                cls._extract_external_subject_from_text(latest_user_text)
-                or cls._extract_external_search_query(messages)
-                or latest_seed
-            )
-            subject = cls._normalize_follow_up_seed(subject)
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="看看官方原文怎么说",
-                query=f"{subject} 最近 30 天官网公告和 release notes 都说了什么？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="有没有好的视频解读",
-                query=f"{subject} B 站上有没有讲得好的解读视频？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="对开发者有什么影响",
-                query=f"{subject} 这次更新对开发者影响最大的是什么？",
-            )
-
-        creator_topic = cls._extract_creator_discovery_topic(messages)
-        similar_seed = cls._extract_similar_creator_seed(messages)
-        has_creator_intent = bool(
-            _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
-            or _SIMILAR_CREATOR_HINT_RE.search(latest_user_text)
-            or "related_owners_by_tokens" in tool_name_set
-            or "related_owners_by_owners" in tool_name_set
-        )
-        if not options and has_creator_intent:
-            topic = cls._normalize_follow_up_seed(creator_topic or similar_seed or latest_seed)
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="最近谁更新最勤",
-                query=f"{topic} 最近哪些 UP 主更新比较勤？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="有什么必看的代表作",
-                query=f"{topic} 有哪些播放和互动都很高的代表作？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="还能怎么细分",
-                query=f"{topic} 这个方向还能细分成哪几个小领域？",
-            )
-
-        if not options and _AUTHOR_TIMELINE_HINT_RE.search(latest_user_text):
-            author_name = cls._extract_timeline_author_name(messages) or latest_seed
-            author_name = cls._normalize_follow_up_seed(author_name)
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="这周更新了啥",
-                query=f"{author_name} 最近 7 天更新了什么？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="哪期播放最高",
-                query=f"{author_name} 最近哪期视频播放量最高？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="帮我按主题归个类",
-                query=f"帮我把 {author_name} 最近的视频按主题归个类",
-            )
-
-        if not options:
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="看看最近有什么新的",
-                query=f"{latest_seed} 最近 30 天有什么新内容？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="有没有更优质的",
-                query=f"{latest_seed} 有没有播放和互动都比较高的？",
-            )
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label="帮我按 UP 主归类",
-                query=f"{latest_seed} 帮我按 UP 主整理一下",
-            )
-
-        generic_fallbacks = [
-            ("帮我缩小一下范围", f"{latest_seed} 再帮我缩小一点范围"),
-            ("加上时间和质量条件", f"{latest_seed} 加上时间和质量条件再帮我筛一下"),
-            ("再深入聊聊", f"{latest_seed} 再深入聊聊"),
-        ]
-        for label, query in generic_fallbacks:
-            if len(options) >= _FOLLOW_UP_OPTION_COUNT:
-                break
-            cls._append_follow_up_option(
-                options,
-                seen_queries,
-                label=label,
-                query=query,
-            )
-
-        return options[:_FOLLOW_UP_OPTION_COUNT]
 
     @staticmethod
     def _has_tool_results_context(messages: list[dict]) -> bool:
@@ -1448,14 +1290,6 @@ class ChatHandler:
             )
 
         final_content = _sanitize_content(final_content)
-        follow_up_options = self._build_follow_up_options(
-            full_messages,
-            tool_names=[
-                tool_name
-                for event in tool_events
-                for tool_name in event.get("tools", [])
-            ],
-        )
 
         elapsed_seconds = time.perf_counter() - start_time
         elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -1479,7 +1313,6 @@ class ChatHandler:
             perf_stats=perf_stats,
             tool_events=tool_events,
             usage_trace=usage_trace,
-            follow_up_options=follow_up_options,
             thinking=thinking,
         )
 
@@ -1599,6 +1432,7 @@ class ChatHandler:
             has_reasoning = False
             accumulated_reasoning = ""
             iter_usage = {}
+            llm_finish_reason = None
 
             for chunk in self.llm_client.chat_stream(
                 messages=full_messages,
@@ -1616,6 +1450,11 @@ class ChatHandler:
                     continue
 
                 delta = choices[0].get("delta", {})
+
+                # Track the LLM provider's finish_reason (e.g. "length" for truncation)
+                chunk_finish = choices[0].get("finish_reason")
+                if chunk_finish:
+                    llm_finish_reason = chunk_finish
 
                 # Stream reasoning_content to frontend in real-time (unchanged)
                 reasoning_delta = delta.get("reasoning_content", "")
@@ -1877,15 +1716,6 @@ class ChatHandler:
                     usage_trace_entries,
                     preflight_commands=[],
                 )
-                follow_up_options = self._build_follow_up_options(
-                    full_messages,
-                    tool_names=[
-                        tool_name
-                        for event in tool_events_summary
-                        for tool_name in event.get("tools", [])
-                    ],
-                )
-
                 if self.verbose:
                     elapsed_ms = round(elapsed_seconds * 1000, 1)
                     logger.success(f"> Stream completed in {elapsed_ms}ms")
@@ -1897,7 +1727,6 @@ class ChatHandler:
                     usage=normalized_usage,
                     perf_stats=perf_stats,
                     usage_trace=usage_trace,
-                    follow_up_options=follow_up_options,
                 )
                 yield "[DONE]"
                 return
@@ -1923,6 +1752,7 @@ class ChatHandler:
 
         final_content = ""
         stream_usage = {}
+        phase2_finish_reason = None
         for chunk in self.llm_client.chat_stream(
             messages=full_messages,
             temperature=temp,
@@ -1937,6 +1767,9 @@ class ChatHandler:
                     stream_usage = chunk["usage"]
                 continue
             delta = choices[0].get("delta", {})
+            chunk_finish = choices[0].get("finish_reason")
+            if chunk_finish:
+                phase2_finish_reason = chunk_finish
 
             reasoning_delta = delta.get("reasoning_content", "")
             if reasoning_delta:
@@ -1978,14 +1811,6 @@ class ChatHandler:
             usage_trace_entries,
             preflight_commands=[],
         )
-        follow_up_options = self._build_follow_up_options(
-            full_messages,
-            tool_names=[
-                tool_name
-                for event in tool_events_summary
-                for tool_name in event.get("tools", [])
-            ],
-        )
 
         if self.verbose:
             elapsed_ms = round(elapsed_seconds * 1000, 1)
@@ -1998,7 +1823,6 @@ class ChatHandler:
             usage=normalized_usage,
             perf_stats=perf_stats,
             usage_trace=usage_trace,
-            follow_up_options=follow_up_options,
         )
 
         yield "[DONE]"
@@ -2139,7 +1963,6 @@ class ChatHandler:
         perf_stats: dict = None,
         tool_events: list = None,
         usage_trace: dict = None,
-        follow_up_options: list[dict] = None,
         thinking: bool = False,
     ) -> dict:
         """Format response as OpenAI-compatible chat completion."""
@@ -2164,8 +1987,6 @@ class ChatHandler:
             result["tool_events"] = tool_events
         if usage_trace:
             result["usage_trace"] = usage_trace
-        if follow_up_options:
-            result["follow_up_options"] = follow_up_options
         if thinking:
             result["thinking"] = True
         return result
@@ -2179,7 +2000,6 @@ class ChatHandler:
         perf_stats: dict = None,
         tool_events: list = None,
         usage_trace: dict = None,
-        follow_up_options: list[dict] = None,
         thinking: bool = None,
     ) -> str:
         """Format a single SSE stream chunk as JSON string."""
@@ -2202,8 +2022,6 @@ class ChatHandler:
             chunk["tool_events"] = tool_events
         if usage_trace:
             chunk["usage_trace"] = usage_trace
-        if follow_up_options:
-            chunk["follow_up_options"] = follow_up_options
         if thinking is not None:
             chunk["thinking"] = thinking
         return json.dumps(chunk, ensure_ascii=False)

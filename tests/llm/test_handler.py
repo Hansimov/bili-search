@@ -144,12 +144,6 @@ def test_direct_content_response():
     assert result["choices"][0]["message"]["role"] == "assistant"
     assert result["choices"][0]["message"]["content"] == "你好！我是AI助手。"
     assert result["choices"][0]["finish_reason"] == "stop"
-    assert "follow_up_options" in result
-    assert len(result["follow_up_options"]) == 3
-    assert all(
-        "label" in option and "query" in option
-        for option in result["follow_up_options"]
-    )
 
     # LLM should be called exactly once
     assert mock_llm.chat.call_count == 1
@@ -867,8 +861,6 @@ def test_streaming_response():
     assert "perf_stats" in last_data
     assert "usage" in last_data
     assert "usage_trace" in last_data
-    assert "follow_up_options" in last_data
-    assert len(last_data["follow_up_options"]) == 3
     # perf_stats should NOT contain token counts (they're in usage)
     assert "completion_tokens" not in last_data["perf_stats"]
     assert "total_tokens" not in last_data["perf_stats"]
