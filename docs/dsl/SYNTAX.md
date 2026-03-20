@@ -11,12 +11,12 @@ A DSL query is a single-line expression combining keywords, filters, and boolean
 
 ## Keywords (word_expr)
 
-Plain text or quoted strings for full-text search.
+Plain text or quoted exact segments for full-text search.
 
 | Syntax | Description | Example |
 |--------|-------------|---------|
 | `text` | Search for text | `影视飓风` |
-| `"text"` | Exact phrase search | `"deep learning"` |
+| `"text"` | Exact segment search | `"deep learning"` |
 | `k=text` | Explicit keyword | `k=你好` |
 | `k!=[a,b]` | Must NOT match keywords | `k!=[你好,世界]` |
 | `text?` | Optional/fuzzy match | `hello?` |
@@ -24,14 +24,14 @@ Plain text or quoted strings for full-text search.
 
 ## Token Constraints (constraint_expr)
 
-Token constraints use `+` and `-` prefixes to require or exclude specific tokens via `es_tok_constraints`.
+这是一次破坏性变更：`+` / `-` / `"..."` 不再下沉成 `es_tok_constraints.have_token` 的替代写法，而是直接进入 `es_tok_query_string`，按 analyzer-aware exact segment 语义执行。
 
 | Syntax | Description | Example |
 |--------|-------------|---------|
-| `+token` | Must have token | `+影视飓风` |
-| `-token` | Must NOT have token | `-广告` |
+| `+token` | Must contain exact segment | `+影视飓风` |
+| `-token` | Must NOT contain exact segment | `-广告` |
 | `!token` | Same as `-token` | `!广告` |
-| `+"quoted"` | Must have quoted token | `+"影视飓风"` |
+| `+"quoted"` | Must contain quoted exact segment | `+"影视飓风"` |
 
 ### Constraint Boolean Combinations
 
@@ -50,9 +50,15 @@ Multiple constraints default to AND. Use `&`, `|`, `()` for complex logic.
 Constraints can be combined with keyword search and filters:
 
 ```
-世界 +影视飓风 -广告        → search "世界", must have "影视飓风", exclude "广告"
-影视飓风 +小米 v>10k        → search "影视飓风", must have "小米", views > 10k
+世界 +影视飓风 -广告        → search "世界", must contain exact segment "影视飓风", exclude exact segment "广告"
+影视飓风 +小米 v>10k        → search "影视飓风", must contain exact segment "小米", views > 10k
 ```
+
+迁移提示：
+
+- 不要再把 `+/-` 语义等价理解为 `es_tok_constraints.have_token`。
+- 不要再给 `es_tok_query_string` 发送 `type`、`lenient`、wildcard/regexp/fuzziness 相关参数。
+- 复杂字段内联、范围、布尔过滤请放到外层 DSL 结构，而不是继续内联到文本查询里。
 
 ## Date Filters (date_expr)
 

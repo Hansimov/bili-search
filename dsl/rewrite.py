@@ -68,8 +68,9 @@ class DslExprRewriter:
         """Extract scoring keywords, date keywords, and constraint texts from tree.
 
         Constraint words (+token/-token) are separated from scoring keywords
-        because they don't produce BM25 scoring — they become es_tok_constraints
-        filters. Only regular word_expr nodes produce BM25 scoring clauses.
+        because they don't produce BM25 scoring. They remain in the main
+        es_tok_query_string text, and are also exposed separately for
+        embedding or prefilter construction.
 
         Returns:
             (words_body, words_date, constraint_texts):
@@ -109,51 +110,48 @@ class DslExprRewriter:
                 words_body.append(word_expr)
         return words_body, words_date, constraint_texts
 
-    def get_constraint_filter_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
-        """Build es_tok_constraints filter from +/- constraint words in the tree.
+    def build_constraint_expr_tree(self, expr_tree: DslExprNode) -> DslExprNode | None:
+        """Keep only +/- constraint words in a copy of the expression tree."""
+        from dsl.fields.constraint import is_constraint_word_expr
 
-        This extracts constraint information from the expression tree and returns
-        an es_tok_constraints dict suitable for use as a KNN pre-filter or as a
-        standalone constraint filter.
+        constraint_expr_tree = expr_tree.filter_atoms_by_keys(
+            include_keys=["word_expr"]
+        )
+        word_expr_nodes = constraint_expr_tree.find_all_childs_with_key("word_expr")
+
+        has_constraints = False
+        for word_node in word_expr_nodes:
+            if is_constraint_word_expr(word_node):
+                has_constraints = True
+                continue
+            atom_node = word_node.find_parent_with_key("atom")
+            if atom_node and atom_node.parent:
+                atom_node.disconnect_from_parent()
+
+        if not has_constraints:
+            return None
+        return constraint_expr_tree
+
+    def get_constraint_filter_from_expr_tree(self, expr_tree: DslExprNode) -> dict:
+        """Build an exact-segment prefilter from +/- constraint words.
+
+        The filter stays on es_tok_query_string so analyzer-split Chinese
+        segments keep the same exact semantics as the main text query.
 
         Args:
             expr_tree: Expression tree containing word_expr nodes.
 
         Returns:
-            es_tok_constraints dict, or empty dict if no constraints found.
-            Example: {"es_tok_constraints": {"constraints": [...], "fields": [...]}}
+            Query filter dict, or empty dict if no constraints found.
         """
-        from dsl.fields.constraint import (
-            is_constraint_word_expr,
-            get_constraint_pp_key,
-            get_constraint_text,
-        )
-        from elastics.videos.constants import SEARCH_MATCH_FIELDS
-
-        word_expr_nodes = expr_tree.find_all_childs_with_key("word_expr")
-        constraints = []
-        for word_node in word_expr_nodes:
-            if not is_constraint_word_expr(word_node):
-                continue
-            pp_key = get_constraint_pp_key(word_node)
-            text = get_constraint_text(word_node)
-            if not text:
-                continue
-            if pp_key == "pl":
-                t = text.lower()
-                constraints.append({"have_token": [t]})
-            elif pp_key in ["mi", "nq"]:
-                t = text.lower()
-                constraints.append({"NOT": {"have_token": [t]}})
-
-        if not constraints:
+        constraint_expr_tree = self.build_constraint_expr_tree(expr_tree)
+        if not constraint_expr_tree:
             return {}
-        return {
-            "es_tok_constraints": {
-                "constraints": constraints,
-                "fields": SEARCH_MATCH_FIELDS,
-            }
-        }
+
+        constraint_filter = self.elastic_converter.expr_tree_to_dict(
+            constraint_expr_tree
+        )
+        return constraint_filter or {}
 
     def replace_words_in_expr_tree(
         self, expr_tree: DslExprNode, qword_hword_dict: dict[str, str]
@@ -185,7 +183,7 @@ class DslExprRewriter:
             "keywords_date":     list[str]
             "constraint_texts":  list[str]  # +token texts (for display/embedding)
             "query_expr_tree":   DslExprNode(...)
-            "constraint_filter": dict  # es_tok_constraints dict, or {}
+            "constraint_filter": dict  # exact-segment prefilter dict, or {}
         }
         ```
         #ANCHOR[id=query_info]

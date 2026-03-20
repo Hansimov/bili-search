@@ -15,9 +15,7 @@ from dsl.fields.word import WordExprElasticConverter
 from dsl.fields.word import WordNodeToExprConstructor
 from dsl.fields.bool import BoolElasticReducer
 from dsl.fields.qmod import QmodExprElasticConverter
-from dsl.fields.constraint import ConstraintTreeConverter
 from elastics.videos.constants import SEARCH_MATCH_TYPE, QUERY_TYPE_DEFAULT
-from elastics.videos.constants import SEARCH_MATCH_FIELDS
 
 BMM = BM_MAP[QUERY_TYPE_DEFAULT]["BM"]
 BMMQ = BM_MAP[QUERY_TYPE_DEFAULT]["BMQ"]
@@ -38,7 +36,6 @@ class DslExprToElasticConverter:
         self.dura_converter = DuraExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
         self.qmod_converter = QmodExprElasticConverter()
-        self.constraint_converter = ConstraintTreeConverter()
         self.verbose = verbose
 
     def atom_node_to_elastic_dict(self, node: DslExprNode) -> dict:
@@ -149,48 +146,7 @@ class DslExprToElasticConverter:
         expr_tree: DslExprNode,
     ) -> dict:
         expr_tree = self.flatter.flatten(expr_tree)
-        # Normalize constraint word_exprs:
-        #   +token → extract text, remove from tree (added as constraint below)
-        #   -token → extract text, remove from tree (added as constraint below)
-        # Regular words remain in the tree and merge into the main query.
-        must_have_texts, must_not_texts, expr_tree = (
-            self.constraint_converter.normalize_constraints_in_tree(expr_tree)
-        )
-        elastic_dict = self.node_to_elastic_dict(expr_tree)
-
-        # Build es_tok_constraints for +/- tokens.
-        # Uses have_token for exact token matching. The es-tok tokenizer
-        # preserves eng/arab categ tokens (like "08", "hbk") even when
-        # covered by boundary vocab words, and generates bigrams before
-        # dropping CJK categ tokens, so have_token is sufficient.
-        # All constraints go into a single es_tok_constraints dict in bool.filter.
-        if must_have_texts or must_not_texts:
-            constraints = []
-            for text in must_have_texts:
-                t = text.lower()
-                constraints.append({"have_token": [t]})
-            for text in must_not_texts:
-                t = text.lower()
-                constraints.append({"NOT": {"have_token": [t]}})
-            constraint_filter = {
-                "es_tok_constraints": {
-                    "constraints": constraints,
-                    "fields": SEARCH_MATCH_FIELDS,
-                }
-            }
-
-            if not elastic_dict:
-                elastic_dict = {"bool": {}}
-            bool_dict = elastic_dict.setdefault("bool", {})
-            existing_filter = bool_dict.get("filter", None)
-            if existing_filter is None:
-                bool_dict["filter"] = constraint_filter
-            elif isinstance(existing_filter, list):
-                existing_filter.append(constraint_filter)
-            elif isinstance(existing_filter, dict):
-                bool_dict["filter"] = [existing_filter, constraint_filter]
-
-        return elastic_dict
+        return self.node_to_elastic_dict(expr_tree)
 
     def expr_to_dict(self, expr: str) -> dict:
         expr_tree = self.construct_expr_tree(expr)

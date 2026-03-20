@@ -1241,12 +1241,10 @@ class VideoSearcherV2:
         # Combine with extra_filters
         all_filters = filter_clauses + list(extra_filters)
 
-        # Also include constraint filters from +/- token expressions.
-        # These are word_expr nodes that become es_tok_constraints filters,
-        # not BM25 scoring clauses. Without this, constraint-only queries
-        # (e.g., "+seedance +2.0") would have no constraint filtering in
-        # filter_only_search, returning all docs instead of just those
-        # containing the required tokens.
+        # Also include exact-segment prefilters from +/- token expressions.
+        # Without this, constraint-only queries (e.g., "+seedance +2.0")
+        # would have no filtering in filter_only_search, returning all docs
+        # instead of just those matching the required exact segments.
         constraint_filter = query_info.get("constraint_filter", {})
         if constraint_filter:
             all_filters.append(constraint_filter)
@@ -1315,8 +1313,8 @@ class VideoSearcherV2:
         Args:
             query_vector: Query vector as byte array (signed int8 list).
             filter_clauses: Filter clauses to apply during KNN search.
-            constraint_filter: Optional es_tok_constraints query dict for
-                token-level filtering via the es-tok plugin.
+            constraint_filter: Optional query dict for exact-segment filtering
+                via the es-tok plugin.
             source_fields: Fields to include in _source.
             knn_field: The dense_vector field to search.
             k: Number of nearest neighbors to return.
@@ -1382,8 +1380,8 @@ class VideoSearcherV2:
             query: Query string (can include DSL expressions for filtering).
             source_fields: Fields to include in results.
             extra_filters: Additional filter clauses.
-            constraint_filter: Optional es_tok_constraints query dict for
-                token-level filtering via the es-tok plugin.
+            constraint_filter: Optional query dict for exact-segment filtering
+                via the es-tok plugin.
             knn_field: The dense_vector field to search.
             k: Number of nearest neighbors.
             num_candidates: Candidates per shard.

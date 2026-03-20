@@ -2538,8 +2538,7 @@ def test_es_tok_query_params():
         "雷军 2024",
     ]
 
-    unsupported_params = ["min_kept_tokens_count", "min_kept_tokens_ratio"]
-    supported_params = ["query", "type", "fields", "max_freq"]
+    unsupported_params = ["min_kept_tokens_count", "min_kept_tokens_ratio", '"type"']
 
     all_passed = True
     for query in test_queries:
@@ -2647,6 +2646,148 @@ def test_dsl_query_construction():
     else:
         logger.warn("\n× Some DSL construction tests failed!")
     assert all_passed, "DSL construction test failures"
+
+
+def test_es_tok_query_preserves_constraint_syntax_in_query_text():
+    """Ensure +/- stay inside es_tok_query_string instead of becoming es_tok_constraints."""
+    import json
+    from dsl.elastic import DslExprToElasticConverter
+
+    converter = DslExprToElasticConverter()
+    expr_tree = converter.construct_expr_tree("游戏音乐 +若生命将于明日落幕 -广告")
+    query_dsl_dict = converter.expr_tree_to_dict(expr_tree)
+    dsl_str = json.dumps(query_dsl_dict, ensure_ascii=False)
+
+    assert "es_tok_query_string" in dsl_str
+    assert "+若生命将于明日落幕" in dsl_str
+    assert "-广告" in dsl_str
+    assert "es_tok_constraints" not in dsl_str
+
+
+def test_constraint_filter_uses_es_tok_query_string_exact_syntax():
+    """Constraint prefilters should use the same exact-segment syntax as the main query."""
+    import json
+    from dsl.rewrite import DslExprRewriter
+
+    rewriter = DslExprRewriter()
+    query_info = rewriter.get_query_info("游戏音乐 +若生命将于明日落幕 -广告")
+    constraint_filter = query_info.get("constraint_filter", {})
+    dsl_str = json.dumps(constraint_filter, ensure_ascii=False)
+
+    assert "es_tok_query_string" in dsl_str
+    assert "+若生命将于明日落幕" in dsl_str
+    assert "-广告" in dsl_str
+    assert "游戏音乐" not in dsl_str
+    assert "es_tok_constraints" not in dsl_str
+
+
+def test_constraint_filter_preserves_or_structure_for_exact_segments():
+    """OR-ed exact constraints should stay in the prefilter instead of collapsing to AND."""
+    import json
+    from dsl.rewrite import DslExprRewriter
+
+    rewriter = DslExprRewriter()
+    query_info = rewriter.get_query_info("(+若生命将于明日落幕 || +工藤晴香) 游戏音乐")
+    constraint_filter = query_info.get("constraint_filter", {})
+    dsl_str = json.dumps(constraint_filter, ensure_ascii=False)
+
+    assert "es_tok_query_string" in dsl_str
+    assert "+若生命将于明日落幕" in dsl_str
+    assert "+工藤晴香" in dsl_str
+    assert "minimum_should_match" in dsl_str
+    assert "游戏音乐" not in dsl_str
+
+
+def test_es_tok_query_constraints_work_in_live_searcher_path():
+    """Validate required and excluded exact segments through the real bili-search path."""
+    searcher = make_searcher()
+
+    required_res = searcher.search(
+        "+若生命将于明日落幕",
+        source_fields=["bvid", "title"],
+        add_highlights_info=False,
+        limit=10,
+        timeout=5,
+        verbose=False,
+    )
+    required_hits = required_res.get("hits", [])
+    required_bvids = {hit.get("bvid") for hit in required_hits if hit.get("bvid")}
+    assert "BV1v8w8zwEBQ" in required_bvids
+
+    excluded_res = searcher.search(
+        "游戏音乐 -若生命将于明日落幕",
+        source_fields=["bvid", "title"],
+        add_highlights_info=False,
+        limit=20,
+        timeout=5,
+        verbose=False,
+    )
+    excluded_hits = excluded_res.get("hits", [])
+    excluded_bvids = {hit.get("bvid") for hit in excluded_hits if hit.get("bvid")}
+    assert "BV1v8w8zwEBQ" not in excluded_bvids
+
+
+def test_es_tok_query_quoted_exact_segments_work_in_live_searcher_path():
+    """Validate quoted exact-segment syntax through the real bili-search path."""
+    searcher = make_searcher()
+
+    split_cn_res = searcher.search(
+        '"若生命将于明日落幕"',
+        source_fields=["bvid", "title"],
+        add_highlights_info=False,
+        limit=10,
+        timeout=5,
+        verbose=False,
+    )
+    split_cn_bvids = {
+        hit.get("bvid") for hit in split_cn_res.get("hits", []) if hit.get("bvid")
+    }
+    assert "BV1v8w8zwEBQ" in split_cn_bvids
+
+    named_res = searcher.search(
+        '"工藤晴香"',
+        source_fields=["bvid", "title"],
+        add_highlights_info=False,
+        limit=10,
+        timeout=5,
+        verbose=False,
+    )
+    named_bvids = {
+        hit.get("bvid") for hit in named_res.get("hits", []) if hit.get("bvid")
+    }
+    assert "BV1gcwuzhEaX" in named_bvids
+
+
+def test_es_tok_query_required_exact_segment_works_with_keywords_in_live_searcher_path():
+    """Required exact segments should still work when combined with normal keywords."""
+    searcher = make_searcher()
+
+    res = searcher.search(
+        "游戏音乐 +若生命将于明日落幕",
+        source_fields=["bvid", "title"],
+        add_highlights_info=False,
+        limit=10,
+        timeout=5,
+        verbose=False,
+    )
+    bvids = {hit.get("bvid") for hit in res.get("hits", []) if hit.get("bvid")}
+    assert "BV1v8w8zwEBQ" in bvids
+
+
+def test_es_tok_query_contradictory_exact_constraints_return_no_hits():
+    """A query that both requires and excludes the same exact segment must return nothing."""
+    searcher = make_searcher()
+
+    res = searcher.search(
+        "+若生命将于明日落幕 -若生命将于明日落幕",
+        source_fields=["bvid", "title"],
+        add_highlights_info=False,
+        limit=10,
+        timeout=5,
+        verbose=False,
+    )
+    hits = res.get("hits", [])
+    assert not hits
 
 
 def test_word_search_basic():

@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         for violation in violations:
             logger.warn(f"- {violation}")
         return 1
-    logger.note(f"Sensitive information scan passed ({mode} mode).")
+    logger.okay(f"Sensitive information scan passed ({mode} mode).")
     return 0
 
 

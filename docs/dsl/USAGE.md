@@ -7,7 +7,7 @@ The DSL enables concise, one-line queries that combine text search with filters.
 ### Basic Search
 ```
 影视飓风                    # Simple keyword search
-"deep learning"             # Exact phrase search
+"deep learning"             # Exact segment search
 影视飓风 风光摄影             # Multiple keywords (implicit AND)
 影视飓风 || 飓多多            # OR search
 ```
@@ -21,12 +21,26 @@ The DSL enables concise, one-line queries that combine text search with filters.
 ```
 
 ### Token Constraints
-Use `+`/`-` to require or exclude specific tokens:
+Use `+`/`-`/`"..."` to express exact segments:
 ```
-影视飓风 +小米              # Must have token "小米" in title/tags
-影视飓风 -广告              # Must NOT have token "广告"
-+影视飓风 -广告 -推广        # Must have "影视飓风", exclude "广告" and "推广"
+影视飓风 +小米              # Must contain exact segment "小米"
+影视飓风 -广告              # Must NOT contain exact segment "广告"
+"影视飓风"                 # Exact segment, but not forced MUST / MUST_NOT
++影视飓风 -广告 -推广        # Must contain "影视飓风", exclude "广告" and "推广"
 ```
+
+### Breaking Change And Migration
+
+上游 `es-tok` 已经把 `es_tok_query_string` 收敛成最小 DSL。bili-search 也已经同步切换到新语义：
+
+- `+片段` / `-片段` / `"片段"` 会保留在 `es_tok_query_string.query` 里，由插件执行 analyzer-aware exact matching。
+- 旧的 `have_token` 路径只保留给真正的 `es_tok_constraints` 业务过滤；不要再把 `+/-` 预先改写成它。
+- bili-search 侧已经停止向 `es_tok_query_string` 发送 `type` 这类旧参数。
+
+调用方迁移时请注意：
+
+- 以前依赖 Lucene `query_string` 的 `field:term`、`foo*`、`[a TO b]`、`AND/OR/NOT` 关键字语义，需要迁移到 DSL 的外层字段/过滤表达式。
+- 以前把 `+/-` 当成普通词或 must_not 子句理解的代码，需要改成 exact segment 语义。
 
 ### Complex Queries
 ```
@@ -49,13 +63,14 @@ The DSL is designed for programmatic generation by LLM agents during search and 
 
 ### Constraint-Based Filtering
 
-Token constraints (`+`/`-`) are handled through the same query mechanism as regular words:
-- `+token`: Becomes a regular word in the search query (same analyzer, same fields)
-- `-token`: Added as a `bool.must_not` clause (excluded from results)
+Exact constraints (`+`/`-`/`"..."`) are handled by `es_tok_query_string` itself:
+- `+token`: Must contain the exact segment.
+- `-token`: Must NOT contain the exact segment.
+- `"token"`: Exact segment without forcing MUST / MUST_NOT.
 
 They are especially useful for:
 
-- **Precision**: Ensure results contain or exclude specific tokens
+- **Precision**: Ensure results contain or exclude specific analyzer-aware exact segments
 - **Iterative refinement**: Add/remove constraints without changing the main query
 
 ### Query Mode Control
@@ -95,6 +110,6 @@ converter = DslExprToElasticConverter()
 # Simple query
 result = converter.expr_to_dict("影视飓风 v>10k")
 
-# With constraints (+token included in query, -token excluded via must_not)
+# With exact constraints preserved inside es_tok_query_string
 result = converter.expr_to_dict("+影视飓风 -广告 v>10k")
 ```

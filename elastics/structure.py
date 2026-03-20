@@ -183,9 +183,8 @@ def construct_knn_query(
         k: Number of nearest neighbors to return.
         num_candidates: Number of candidates to consider per shard.
         filter_clauses: Optional list of filter clauses to apply.
-        constraint_filter: Optional es_tok_constraints query dict for
-            token-level filtering. Applied as a pre-filter alongside
-            other filter_clauses.
+        constraint_filter: Optional query dict applied as a pre-filter
+            alongside other filter_clauses.
         similarity: Optional minimum similarity threshold.
 
     Returns:

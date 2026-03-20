@@ -65,16 +65,20 @@ atom > pa (parentheses) > and > co (implicit AND) > or
 
 ### Token Constraints
 Words with `+`/`-` prefixes are treated as token constraints:
-- `+token` → converted to a regular word in the search query (same matching as normal words)
-- `-token` → converted to a `bool.must_not` clause using the same query mechanism
+- `+token` → kept inside `es_tok_query_string` and interpreted as an analyzer-aware exact segment requirement
+- `-token` → kept inside `es_tok_query_string` and interpreted as an analyzer-aware exact segment exclusion
+- `"token"` → same exact-segment semantics without forcing MUST / MUST_NOT
 
-Both use `es_tok_query_string` with all search match fields, ensuring consistent
-analyzer behavior and full field coverage. This replaces the old approach of using
-`es_tok_constraints` with `have_token` which did exact token-level matching and
-bypassed the analyzer — causing poor recall for mixed-script tokens.
+主查询和 `constraint_filter` 都统一走 `es_tok_query_string`，确保 analyzer 行为、field coverage 和 exact 语义一致。旧的 `es_tok_constraints.have_token` 路径只保留给真正的 token-level 业务过滤，不再承担 `+/-` 的文本语义。
+
+这次变更是破坏性的：
+
+- 不再把 `+/-` 从查询文本里抽成 `have_token`。
+- 不再给 `es_tok_query_string` 发送 `type` 这类旧参数。
+- analyzer-split 中文片段会通过 exact-segment + position-aware phrase fallback 保留“不可拆分”的含义，而不是退化成松散 token 组合。
 
 ```
-世界 +影视飓风 -广告    → search "世界 影视飓风" + must NOT match "广告"
+世界 +影视飓风 -广告    → search "世界" + exact include "影视飓风" + exact exclude "广告"
 ```
 
 ### Query Mode (qmod)

@@ -47,17 +47,18 @@ class WordExprElasticConverter:
             match_fields = self.date_match_fields
         else:
             match_fields = self.match_fields
-        query_dict = {
-            "query": query,
-            "type": self.match_type,
-            "fields": match_fields,
-        }
         if self.query_type == "es_tok_query_string":
-            query_dict.update(
-                {
-                    "max_freq": ES_TOK_QUERY_STRING_MAX_FREQ,
-                }
-            )
+            query_dict = {
+                "query": query,
+                "fields": match_fields,
+                "max_freq": ES_TOK_QUERY_STRING_MAX_FREQ,
+            }
+        else:
+            query_dict = {
+                "query": query,
+                "type": self.match_type,
+                "fields": match_fields,
+            }
         return {self.query_type: query_dict}
 
     def node_to_match_dict(self, node: DslExprNode) -> dict:

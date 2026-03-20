@@ -160,6 +160,22 @@ pytest -q tests/test_secret_hygiene.py
 pytest -q tests/llm/test_search_service.py tests/llm/test_app.py
 ```
 
+`es_tok_query_string` 破坏性改动后的推荐回归入口：
+
+```bash
+pytest -q elastics/tests/test_es_tok_query_smoke.py
+pytest -q elastics/tests/test_videos.py -k 'es_tok_query'
+python -m elastics.tests.benchmark_es_tok_exact_segments
+conda run -n ai python debugs/profile_es_tok_exclusion_path.py
+```
+
+说明：
+
+- `test_es_tok_query_smoke.py` 是 reload 插件后最快的 live smoke suite。
+- `test_videos.py -k 'es_tok_query'` 覆盖 DSL 构造、constraint_filter 保真和更多真实索引 case。
+- `benchmark_es_tok_exact_segments` 用来对比 plain / quoted / `+` / `-` exact query 的真实性能。
+- `profile_es_tok_exclusion_path.py` 用来拆 `-exact` 慢路径里 ES 查询、script_score 和 `track_total_hits` 的成本。
+
 ## 清理服务
 
 停止本地后台实例：
