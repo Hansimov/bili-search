@@ -758,6 +758,98 @@ def test_fallback_video_search_commands_for_explicit_video_request():
     logger.success("[PASS] fallback video search commands")
 
 
+def test_handle_stream_preserves_model_default_reasoning_in_normal_mode():
+    """Normal streaming mode should not force-disable provider reasoning."""
+    logger.note("=" * 60)
+    logger.note("[TEST] handle_stream preserves default reasoning")
+
+    mock_llm = MagicMock(spec=LLMClient)
+
+    def chat_stream_side_effect(*, enable_thinking=None, **_kwargs):
+        reasoning = "先分析一下问题。" if enable_thinking is not False else None
+        return make_stream_chunks("这是最终答案。", reasoning=reasoning)
+
+    mock_llm.chat_stream.side_effect = chat_stream_side_effect
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    chunks = list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "央视新闻最近有什么新视频？"}],
+            thinking=False,
+        )
+    )
+
+    payloads = [json.loads(chunk) for chunk in chunks if chunk != "[DONE]"]
+    reasoning_deltas = [
+        payload["choices"][0]["delta"].get("reasoning_content", "")
+        for payload in payloads
+        if payload.get("choices")
+    ]
+
+    assert any(reasoning_deltas)
+    assert mock_llm.chat_stream.call_args.kwargs["enable_thinking"] is None
+
+    logger.success("[PASS] handle_stream preserves default reasoning")
+
+
+def test_handle_stream_thinking_mode_still_forces_reasoning():
+    """Explicit thinking mode should still force-enable provider reasoning."""
+    logger.note("=" * 60)
+    logger.note("[TEST] handle_stream explicit thinking mode")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat_stream.side_effect = lambda **_kwargs: make_stream_chunks(
+        "这是最终答案。", reasoning="先深入分析。"
+    )
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "央视新闻最近有什么新视频？"}],
+            thinking=True,
+        )
+    )
+
+    assert mock_llm.chat_stream.call_args.kwargs["enable_thinking"] is True
+
+    logger.success("[PASS] handle_stream explicit thinking mode")
+
+
+def test_forced_content_retry_does_not_disable_model_default_reasoning():
+    """Forced content generation should not send enable_thinking=False in normal mode."""
+    logger.note("=" * 60)
+    logger.note("[TEST] forced content preserves default reasoning")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先搜索央视新闻最近视频。",
+            "<search_videos queries='[\":user=央视新闻 :date<=15d\"]'/>",
+        ),
+        make_content_response("整理后给你：央视新闻近期视频如下。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+    handler = ChatHandler(
+        llm_client=mock_llm,
+        search_client=mock_search,
+        max_iterations=1,
+    )
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "央视新闻最近有什么新视频？"}],
+        thinking=False,
+    )
+
+    assert "央视新闻" in result["choices"][0]["message"]["content"]
+    assert mock_llm.chat.call_args_list[1].kwargs["enable_thinking"] is None
+
+    logger.success("[PASS] forced content preserves default reasoning")
+
+
 def test_fallback_video_search_commands_for_creator_video_followup():
     """Creator video follow-ups should inherit the earlier creator and search by :user."""
     logger.note("=" * 60)

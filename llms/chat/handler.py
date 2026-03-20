@@ -1626,6 +1626,7 @@ class ChatHandler:
         start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
+        enable_thinking_override = True if thinking else None
 
         # Resolve max_iterations: explicit override > thinking default > normal default
         resolved_iterations = max_iterations
@@ -1772,7 +1773,7 @@ class ChatHandler:
             response = self.llm_client.chat(
                 messages=full_messages,
                 temperature=temp,
-                enable_thinking=thinking,
+                enable_thinking=enable_thinking_override,
             )
             self._accumulate_usage(total_usage, response.usage)
             last_usage = response.usage
@@ -1795,7 +1796,7 @@ class ChatHandler:
             response = self.llm_client.chat(
                 messages=full_messages,
                 temperature=temp,
-                enable_thinking=thinking,
+                enable_thinking=enable_thinking_override,
             )
             self._accumulate_usage(total_usage, response.usage)
             last_usage = response.usage
@@ -1887,6 +1888,7 @@ class ChatHandler:
         start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         temp = temperature if temperature is not None else self.temperature
+        enable_thinking_override = True if thinking else None
 
         # Resolve max_iterations: explicit override > thinking default > normal default
         resolved_iterations = max_iterations
@@ -1960,7 +1962,7 @@ class ChatHandler:
             for chunk in self.llm_client.chat_stream(
                 messages=full_messages,
                 temperature=temp,
-                enable_thinking=thinking,
+                enable_thinking=enable_thinking_override,
             ):
                 if _is_cancelled():
                     logger.warn("> Chat cancelled during LLM streaming")
@@ -2307,7 +2309,7 @@ class ChatHandler:
         for chunk in self.llm_client.chat_stream(
             messages=full_messages,
             temperature=temp,
-            enable_thinking=thinking,
+            enable_thinking=enable_thinking_override,
         ):
             if _is_cancelled():
                 logger.warn("> Chat cancelled during Phase 2 streaming")

@@ -2774,6 +2774,41 @@ def test_es_tok_query_required_exact_segment_works_with_keywords_in_live_searche
     assert "BV1v8w8zwEBQ" in bvids
 
 
+def test_es_tok_query_owner_words_match_mixed_ascii_in_live_searcher_path():
+    """HBK08 and +红警HBK08 should match docs whose owner.name is 红警HBK08 after reindex."""
+    searcher = make_searcher()
+
+    loose_res = searcher.search(
+        "HBK08",
+        source_fields=["bvid", "title", "owner"],
+        add_highlights_info=False,
+        limit=20,
+        timeout=5,
+        verbose=False,
+    )
+    loose_owner_names = {
+        hit.get("owner", {}).get("name")
+        for hit in loose_res.get("hits", [])
+        if hit.get("owner")
+    }
+    assert "红警HBK08" in loose_owner_names
+
+    exact_res = searcher.search(
+        "+红警HBK08",
+        source_fields=["bvid", "title", "owner"],
+        add_highlights_info=False,
+        limit=20,
+        timeout=5,
+        verbose=False,
+    )
+    exact_owner_names = {
+        hit.get("owner", {}).get("name")
+        for hit in exact_res.get("hits", [])
+        if hit.get("owner")
+    }
+    assert "红警HBK08" in exact_owner_names
+
+
 def test_es_tok_query_contradictory_exact_constraints_return_no_hits():
     """A query that both requires and excludes the same exact segment must return nothing."""
     searcher = make_searcher()
