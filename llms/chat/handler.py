@@ -2210,7 +2210,9 @@ class ChatHandler:
                 # No tool commands: the final answer.
                 # Flush any content still in the look-ahead buffer, then
                 # finalize the stream with stats.
-                yielded_final_content = False
+                yielded_final_content = bool(
+                    not has_reasoning and content_sent_ptr > 0
+                )
                 if has_reasoning:
                     # Content was buffered (reasoning was streamed instead).
                     # Sanitize echoed results, then strip leading text that
