@@ -162,6 +162,22 @@ _SEARCH_PLEDGE_HINT_RE = re.compile(
 _EXTERNAL_SEARCH_PLEDGE_HINT_RE = re.compile(
     r"我先查|我来查|先查一下|先看一下|联网|Google|官网|官方"
 )
+_LEADING_QUERY_FILLER_RE = re.compile(
+    r"^(?:请问|麻烦(?:帮我)?|帮我|给我|我想看|我想找|想看|想找|找一下|找找|搜一下|搜搜|查一下|查查|推荐(?:一下|几个|一些)?|看看)+"
+)
+_INLINE_QUERY_FILLER_RE = re.compile(
+    r"(?:有没有|有无|有什么|有哪些|介绍一下|介绍下|讲一下|讲下|说说|来点|就行|即可|帮我|给我|我想看|我想找|相关的|相关|辅助的|辅助内容|口语化|口语的)"
+)
+_TRAILING_QUERY_FILLER_RE = re.compile(r"(?:一下|呢|吗|么|吧|呀|啊)+$")
+_REDUNDANT_QUERY_TOKENS = {
+    "视频",
+    "一下",
+    "介绍",
+    "内容",
+    "相关",
+    "辅助",
+    "辅助的",
+}
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -207,7 +223,38 @@ def _sanitize_content(content: str) -> str:
     content = _RESULTS_ECHO_RE.sub("", content)
     # Collapse runs of 3+ newlines left by stripped blocks
     content = re.sub(r"\n{3,}", "\n\n", content)
+    content = _dedupe_repeated_output(content)
     return content.strip()
+
+
+def _dedupe_repeated_output(content: str) -> str:
+    text = (content or "").strip()
+    if not text:
+        return ""
+
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    if paragraphs:
+        for repeat in (3, 2):
+            if len(paragraphs) >= repeat and len(paragraphs) % repeat == 0:
+                unit = len(paragraphs) // repeat
+                chunks = [
+                    "\n\n".join(paragraphs[index * unit : (index + 1) * unit]).strip()
+                    for index in range(repeat)
+                ]
+                if len(set(chunks)) == 1:
+                    return chunks[0]
+
+        deduped: list[str] = []
+        previous_norm = None
+        for paragraph in paragraphs:
+            paragraph_norm = re.sub(r"\s+", " ", paragraph)
+            if paragraph_norm == previous_norm:
+                continue
+            deduped.append(paragraph)
+            previous_norm = paragraph_norm
+        return "\n\n".join(deduped)
+
+    return text
 
 
 class ChatHandler:
@@ -236,7 +283,7 @@ class ChatHandler:
         llm_client: LLMClient,
         search_client,
         max_iterations: int = MAX_TOOL_ITERATIONS,
-        max_tool_results: int = 6,
+        max_tool_results: int = 15,
         temperature: float = None,
         verbose: bool = False,
     ):
@@ -572,6 +619,82 @@ class ChatHandler:
         query = re.sub(r"\bB站\b", " ", query)
         query = re.sub(r"\s+", " ", query)
         return query.strip(" ，。！？?：:")
+
+    @classmethod
+    def _normalize_search_video_query(cls, query: str) -> str | None:
+        text = (query or "").strip()
+        if not text:
+            return None
+
+        tokens = re.findall(r'"[^"]*"|\S+', text)
+        cleaned_tokens: list[str] = []
+        for token in tokens:
+            raw = token.strip("，。！？?：:；;、（）()[]{}")
+            if not raw:
+                continue
+            if raw.startswith(":") or raw.startswith("q=") or (raw[0] in "+-" and len(raw) > 1):
+                cleaned_tokens.append(raw)
+                continue
+            if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+                inner = cls._normalize_entity_focused_query_text(raw[1:-1])
+                if inner:
+                    cleaned_tokens.append(f'"{inner}"')
+                continue
+
+            raw = _LEADING_QUERY_FILLER_RE.sub("", raw)
+            raw = _INLINE_QUERY_FILLER_RE.sub(" ", raw)
+            raw = _TRAILING_QUERY_FILLER_RE.sub("", raw)
+            raw = cls._normalize_entity_focused_query_text(raw)
+            if not raw or raw in _REDUNDANT_QUERY_TOKENS:
+                continue
+            cleaned_tokens.append(raw)
+
+        if not cleaned_tokens:
+            return None
+
+        normalized = re.sub(r"\s+", " ", " ".join(cleaned_tokens)).strip()
+        if normalized in {"q=vwr", "q=wv"}:
+            return None
+        return normalized or None
+
+    @classmethod
+    def _normalize_search_video_commands(cls, commands: list[dict]) -> list[dict]:
+        normalized_commands = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                normalized_commands.append(command)
+                continue
+
+            args = dict(command.get("args") or {})
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            elif queries is None and isinstance(args.get("query"), str):
+                queries = [args.get("query")]
+
+            if not isinstance(queries, list):
+                normalized_commands.append(command)
+                continue
+
+            cleaned_queries: list[str] = []
+            for query in queries:
+                cleaned = cls._normalize_search_video_query(str(query))
+                if cleaned and cleaned not in cleaned_queries:
+                    cleaned_queries.append(cleaned)
+
+            if not cleaned_queries:
+                continue
+
+            normalized_commands.append(
+                {
+                    "type": "search_videos",
+                    "args": {
+                        **args,
+                        "queries": cleaned_queries,
+                    },
+                }
+            )
+        return normalized_commands
 
     @classmethod
     def _extract_token_rewrite_from_results(
@@ -1600,6 +1723,7 @@ class ChatHandler:
             commands = self._normalize_author_timeline_commands(commands, full_messages)
             commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
             commands = self._promote_relation_only_commands(commands, full_messages)
+            commands = self._normalize_search_video_commands(commands)
             commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
             usage_trace_entries.append(
                 self._build_usage_trace_entry(
@@ -1648,6 +1772,7 @@ class ChatHandler:
             response = self.llm_client.chat(
                 messages=full_messages,
                 temperature=temp,
+                enable_thinking=thinking,
             )
             self._accumulate_usage(total_usage, response.usage)
             last_usage = response.usage
@@ -1670,6 +1795,7 @@ class ChatHandler:
             response = self.llm_client.chat(
                 messages=full_messages,
                 temperature=temp,
+                enable_thinking=thinking,
             )
             self._accumulate_usage(total_usage, response.usage)
             last_usage = response.usage
@@ -1834,6 +1960,7 @@ class ChatHandler:
             for chunk in self.llm_client.chat_stream(
                 messages=full_messages,
                 temperature=temp,
+                enable_thinking=thinking,
             ):
                 if _is_cancelled():
                     logger.warn("> Chat cancelled during LLM streaming")
@@ -1960,6 +2087,7 @@ class ChatHandler:
             commands = self._normalize_author_timeline_commands(commands, full_messages)
             commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
             commands = self._promote_relation_only_commands(commands, full_messages)
+            commands = self._normalize_search_video_commands(commands)
             commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
             usage_trace_entries.append(
                 self._build_usage_trace_entry(
@@ -2177,6 +2305,7 @@ class ChatHandler:
         for chunk in self.llm_client.chat_stream(
             messages=full_messages,
             temperature=temp,
+            enable_thinking=thinking,
         ):
             if _is_cancelled():
                 logger.warn("> Chat cancelled during Phase 2 streaming")

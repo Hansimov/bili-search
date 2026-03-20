@@ -117,10 +117,6 @@ def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
     if "tags" in result and isinstance(result["tags"], str):
         tags_list = [t.strip() for t in result["tags"].split(",") if t.strip()]
         result["tags"] = ",".join(tags_list[:MAX_TAGS_PER_HIT])
-    # Remove raw timestamp — pubdate_str and pub_to_now_str are sufficient
-    result.pop("pubdate", None)
-    # Remove raw duration — duration_str is sufficient
-    result.pop("duration", None)
     return result
 
 
