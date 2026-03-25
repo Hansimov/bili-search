@@ -32,38 +32,36 @@ COPILOT_TOOL_COMMANDS = """[TOOL_COMMANDS]
 可用命令：
 <search_videos queries='["搜索语句1", "搜索语句2"]'/>
 <search_google query="要搜索的问题"/>
-<related_owners_by_tokens text="话题文本"/>
+<search_owners text="作者名或主题词" mode="auto"/>
 <related_tokens_by_tokens text="输入文本" mode="auto"/>
-<related_videos_by_videos bvids='["BV1xx"]'/>
-<related_owners_by_videos bvids='["BV1xx"]'/>
-<related_videos_by_owners mids='[946974]'/>
-<related_owners_by_owners mids='[946974]'/>
 
 优先级：
 - 大多数 B 站视频需求优先 `search_videos`。
 - 官网/公告/更新日志优先 `search_google`。
-- relation 工具只用于补实体、找作者、找关系，不是默认第一步。
+- `search_owners` 负责作者名查找、作者候选发现、关联作者扩展。
+- `related_tokens_by_tokens` 只用于补实体、纠错、联想，不是默认第一步。
 [/TOOL_COMMANDS]"""
 
 COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
 `search_videos`：
 - 用户最终要视频、代表作、时间线、热门、教程、解读、对比时，默认先用它。
 - query 只保留实体词、主题词、作者、时间窗、热度、时长等检索信息。
-- 作者定向优先 `:user=` / `:uid=`。
+- 只有在作者身份足够明确时，作者定向才优先 `:user=` / `:uid=`。
+- 如果作者词看起来像简称、别名片段、混合中英数字昵称，或者你不确定它是作者名还是节目/作品系列名，不要直接写 `:user=原词`，先用 `search_owners` 确认作者。
 - 精确主题用 `q=vwr`，泛搜浏览可用默认 `q=wv`。
+
+`search_owners`：
+- 用户最终要作者名单、作者候选、关联账号、矩阵号、类似作者时，优先用它。
+- 作者名、简称、别名、混合中英数字昵称优先 `mode=name` 或默认 `mode=auto`。
+- 主题找作者优先 `mode=topic` 或默认 `mode=auto`。
+- 关联账号、主副号、矩阵号、相近作者优先 `mode=relation`。
 
 `related_tokens_by_tokens`：
 - 仅在实体不稳、别名/错写/简称时使用。
 - 拿到候选后通常必须回到 `search_videos`。
 
-`related_owners_by_tokens`：
-- 仅在找作者、作者关系、账号矩阵、作者候选不足时使用。
-
 `search_google`：
 - 仅用于官网、公告、release notes、跨站事实核对。
-
-图扩展 relation：
-- 只在用户已提供 BV 或作者 mid，且明确要做关系扩展时使用。
 [/TOOL_ROUTING]"""
 
 COPILOT_WORKFLOW = """[WORKFLOW]
@@ -81,6 +79,7 @@ COPILOT_WORKFLOW = """[WORKFLOW]
 COPILOT_DSL_PLANNING = """[DSL_PLANNING]
 构造 `search_videos` query 前，强制检查：
 - query 是否只剩下关键实体和检索条件？
+- query 是否尽量只保留关键实体和检索条件？
 - 用户给出的时间、播放量、时长、作者约束是否已转成 DSL 过滤器？
 - 是否删掉了“帮我找/有没有/介绍一下/我想看/就行/呢/吗”这类口语？
 - 如果仍像一句完整口语句子，说明你还没整理好，先不要搜索。
@@ -111,28 +110,40 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 助手：我来搜索 Stable Diffusion 教程视频。
 <search_videos queries='["Stable Diffusion 教程 q=vwr"]'/>
 
-用户：影视飓风最近有什么新视频？
-助手：我来搜索影视飓风最近的视频。
-<search_videos queries='[":user=影视飓风 :date<=15d"]'/>
+用户：某作者最近有什么新视频？
+助手：我来搜索该作者最近的视频。
+<search_videos queries='[":user=目标作者 :date<=15d"]'/>
+
+用户：红警08最近发了什么视频？
+助手：我先确认这个名字对应的作者。
+<search_owners text="红警08" mode="name"/>
 
 用户：推荐几个做黑神话悟空内容的UP主
-助手：我先补充创作者线索，再搜索代表性视频。
-<related_owners_by_tokens text="黑神话悟空"/>
-<search_videos queries='["黑神话悟空 :view>=1w"]'/>
+助手：我先找相关创作者。
+<search_owners text="黑神话悟空" mode="topic"/>
 
 用户：Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读
 助手：我先查官方更新，再搜索 B 站解读视频。
 <search_google query="Gemini 2.5 最近有哪些官方更新"/>
 <search_videos queries='["Gemini 2.5 q=vwr"]'/>
 
+用户：ComfyUI 工作流
+助手：我先补一下相关术语，再搜索视频。
+<related_tokens_by_tokens text="ComfyUI" mode="auto"/>
+<search_videos queries='["ComfyUI 工作流 q=vwr"]'/>
+
 用户：康夫UI 有什么入门教程？
 助手：我先补一下术语，再搜索教程视频。
 <related_tokens_by_tokens text="康夫UI" mode="auto"/>
 <search_videos queries='["ComfyUI 入门教程 q=vwr"]'/>
 
-用户：对比一下老番茄和影视飓风最近一个月发布的视频，谁更高产？
+用户：这个作者有哪些关联账号？
+助手：我先搜索相关作者关系。
+<search_owners text="目标作者" mode="relation"/>
+
+用户：对比一下作者甲和作者乙最近一个月发布的视频，谁更高产？
 助手：我来分别搜索两位作者最近一个月的视频。
-<search_videos queries='[":user=老番茄 :date<=30d", ":user=影视飓风 :date<=30d"]'/>
+<search_videos queries='[":user=作者甲 :date<=30d", ":user=作者乙 :date<=30d"]'/>
 [/EXAMPLES]"""
 
 

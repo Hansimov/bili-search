@@ -11,6 +11,7 @@ DEFAULT_SEARCH_CAPABILITIES = {
     "rerank_query_mode": "vwr",
     "supports_multi_query": True,
     "supports_author_check": False,
+    "supports_owner_search": False,
     "supports_google_search": False,
     "relation_endpoints": [],
     "docs": ["search_syntax"],
@@ -47,6 +48,8 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                 "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
                 "如果用户最终要的是具体视频清单、时间线、代表作、热视频、教程/攻略/解读，优先使用本工具。"
                 "如果用户问的是作者资料/关联账号/矩阵号，这通常不是本工具的首选。"
+                "如果用户给出的作者词像简称、别名片段、混合中英数字昵称，或者你不确定它到底是不是作者名，"
+                "不要直接把原词写成 :user=xxx，先调用 search_owners 再回到本工具。"
                 f"搜索模式：默认q={default_mode}（泛搜热门），精确主题匹配用q={rerank_mode}。"
                 f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']。"
             ),
@@ -91,6 +94,45 @@ def build_search_google_tool(capabilities: dict | None = None) -> dict:
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    }
+
+
+def build_search_owners_tool(capabilities: dict | None = None) -> dict:
+    _merge_capabilities(capabilities)
+    return {
+        "type": "function",
+        "function": {
+            "name": "search_owners",
+            "description": (
+                "搜索作者/UP主。用于作者名查找、别名补全、作者候选发现、关联账号/矩阵号/相近作者扩展。"
+                "当用户目标是找作者本身，而不是直接列视频时，优先使用本工具。"
+                "若用户明确提到作者名、简称、缩写、混合中英数字昵称，优先用它。"
+                "当用户想看‘某作者最近发了什么视频’但作者词本身不够稳定时，也应先用它确认作者，再继续 search_videos。"
+                "若用户在问谁在做某个主题内容，也优先用它，而不是把作者问题硬转成视频搜索。"
+                "mode=relation 适合关联账号、矩阵号、主副号、类似作者；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "作者名、别名、主题词或作者线索文本",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "name", "topic", "relation"],
+                        "description": "搜索模式，默认 auto",
+                        "default": "auto",
+                    },
+                    "size": {
+                        "type": "integer",
+                        "description": "返回作者数量",
+                        "default": 8,
+                    },
+                },
+                "required": ["text"],
             },
         },
     }
@@ -154,6 +196,8 @@ def build_tool_definitions(
     ]
     if _merge_capabilities(capabilities).get("supports_google_search", False):
         tools.append(build_search_google_tool(capabilities))
+    if _merge_capabilities(capabilities).get("supports_owner_search", False):
+        tools.append(build_search_owners_tool(capabilities))
     relation_endpoints = set(
         _merge_capabilities(capabilities).get("relation_endpoints") or []
     )
@@ -184,70 +228,6 @@ def build_tool_definitions(
                 ["text"],
             )
         )
-    if "related_owners_by_tokens" in relation_endpoints:
-        tools.append(
-            build_relation_tool(
-                "related_owners_by_tokens",
-                "辅助工具。根据话题文本寻找相关 UP 主候选。仅在创作者发现、作者候选补全、关联账号/矩阵号/主副号等作者关系问题里使用。若最终目标是视频清单或代表作，拿到候选后通常还应继续调用 search_videos；若最终目标就是作者关系本身，也可以直接基于该结果回答。",
-                {
-                    "text": {"type": "string", "description": "输入话题文本"},
-                    "size": {
-                        "type": "integer",
-                        "description": "返回作者数量",
-                        "default": 8,
-                    },
-                },
-                ["text"],
-            )
-        )
-    for endpoint, description, key_name, key_desc in [
-        (
-            "related_videos_by_videos",
-            "根据种子视频找相似或相关视频。适合用户已经给出 BV 号，想继续扩展相似视频时使用。",
-            "bvids",
-            "种子视频 BV 号数组",
-        ),
-        (
-            "related_owners_by_videos",
-            "根据种子视频找相关作者。适合从一条视频反推相关作者候选。",
-            "bvids",
-            "种子视频 BV 号数组",
-        ),
-        (
-            "related_videos_by_owners",
-            "根据种子作者找相关视频。适合已知作者 mid 后继续扩展相关视频。",
-            "mids",
-            "种子作者 mid 数组",
-        ),
-        (
-            "related_owners_by_owners",
-            "根据种子作者找相关作者。适合基于已知作者 mid 扩展相近作者候选。",
-            "mids",
-            "种子作者 mid 数组",
-        ),
-    ]:
-        if endpoint in relation_endpoints:
-            tools.append(
-                build_relation_tool(
-                    endpoint,
-                    description,
-                    {
-                        key_name: {
-                            "type": "array",
-                            "items": {
-                                "type": "string" if key_name == "bvids" else "integer"
-                            },
-                            "description": key_desc,
-                        },
-                        "size": {
-                            "type": "integer",
-                            "description": "返回候选数量",
-                            "default": 10,
-                        },
-                    },
-                    [key_name],
-                )
-            )
     if include_read_spec:
         tools.append(build_read_spec_tool(capabilities))
     return tools

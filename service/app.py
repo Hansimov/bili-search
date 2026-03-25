@@ -14,6 +14,7 @@ from tclogger import TCLogger
 from typing import List, Optional, Union
 
 from converters.embed.embed_client import init_embed_client_with_keepalive
+from elastics.owners import OwnerSearcher
 from elastics.relations import RELATED_ENDPOINTS, RelationsClient
 from elastics.videos.constants import DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import MAX_SEARCH_DETAIL_LEVEL
@@ -96,6 +97,11 @@ class SearchApp:
             self.elastic_videos_index,
             elastic_env_name=self.elastic_env_name,
         )
+        self.owner_searcher = OwnerSearcher(
+            self.elastic_videos_index,
+            elastic_env_name=self.elastic_env_name,
+            relations_client=self.relations_client,
+        )
 
     def init_chat_handler(self):
         llm_config = self.app_envs.get("llm_config", "")
@@ -112,6 +118,7 @@ class SearchApp:
         search_service = SearchService(
             video_searcher=self.video_searcher,
             video_explorer=self.video_explorer,
+            owner_searcher=self.owner_searcher,
             relations_client=self.relations_client,
             verbose=True,
         )
@@ -287,6 +294,18 @@ class SearchApp:
             use_pinyin=use_pinyin,
         )
 
+    def search_owners(
+        self,
+        text: str = Body(...),
+        mode: str = Body("auto"),
+        size: int = Body(8),
+    ):
+        return self.owner_searcher.search(
+            text=text,
+            mode=mode,
+            size=size,
+        )
+
     def related_owners_by_tokens(
         self,
         text: str = Body(...),
@@ -378,6 +397,10 @@ class SearchApp:
             "/related_tokens_by_tokens",
             summary="Find related tokens by tokens",
         )(self.related_tokens_by_tokens)
+        self.app.post(
+            "/search_owners",
+            summary="Search owners by name, topic, or relation",
+        )(self.search_owners)
         self.app.post(
             "/related_owners_by_tokens",
             summary="Find related owners by topic tokens",
@@ -557,6 +580,7 @@ class SearchApp:
             "rerank_query_mode": "vwr",
             "supports_multi_query": True,
             "supports_author_check": False,
+            "supports_owner_search": True,
             "supports_google_search": False,
             "relation_endpoints": list(RELATED_ENDPOINTS),
             "available_endpoints": [
@@ -570,6 +594,7 @@ class SearchApp:
                 "/doc",
                 "/knn_search",
                 "/hybrid_search",
+                "/search_owners",
                 *[f"/{endpoint}" for endpoint in RELATED_ENDPOINTS],
             ],
             "docs": ["search_syntax"],

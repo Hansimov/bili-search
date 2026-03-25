@@ -69,6 +69,27 @@ MOCK_RELATED_OWNERS_RESULT = {
     ],
 }
 
+MOCK_SEARCH_OWNERS_RESULT = {
+    "text": "红警08",
+    "mode": "name",
+    "owners": [
+        {
+            "mid": 546195,
+            "name": "红警HBK08",
+            "score": 168.2,
+            "sources": ["name"],
+            "sample_title": "红警月亮3对战复盘",
+            "sample_bvid": "BV1owner1",
+        },
+        {
+            "mid": 946974,
+            "name": "红警月亮3",
+            "score": 88.5,
+            "sources": ["topic"],
+        },
+    ],
+}
+
 # ============================================================
 # Tests
 # ============================================================
@@ -171,6 +192,40 @@ def test_execute_related_owners_by_tokens():
     assert "doc_freq" not in owner
 
     logger.success("[PASS] execute related_owners_by_tokens")
+
+
+def test_execute_search_owners():
+    """Test search_owners tool execution."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.return_value = MOCK_SEARCH_OWNERS_RESULT
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_test_owners",
+        name="search_owners",
+        arguments=json.dumps({"text": "红警08", "mode": "name"}),
+    )
+    result_msg = executor.execute(tc)
+
+    assert result_msg["role"] == "tool"
+    assert result_msg["tool_call_id"] == "call_test_owners"
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["text"] == "红警08"
+    assert result_data["mode"] == "name"
+    assert result_data["total_owners"] == 2
+    assert result_data["owners"][0]["name"] == "红警HBK08"
+    assert result_data["owners"][0]["sources"] == ["name"]
+    assert result_data["owners"][0]["sample_title"] == "红警月亮3对战复盘"
+    mock_client.search_owners.assert_called_once_with(
+        text="红警08", mode="name", size=8
+    )
+
+    logger.success("[PASS] execute search_owners")
 
 
 def test_execute_unknown_tool():
@@ -418,6 +473,7 @@ if __name__ == "__main__":
     tests = [
         ("tool_definitions_format", test_tool_definitions_format),
         ("execute_search_videos", test_execute_search_videos),
+        ("execute_search_owners", test_execute_search_owners),
         ("execute_related_owners_by_tokens", test_execute_related_owners_by_tokens),
         (
             "tool_executor_merges_google_capability",

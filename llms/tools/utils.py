@@ -113,6 +113,7 @@ def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
     add_pubdate_str(result)
     add_pub_to_now_str(result)
     add_duration_str(result)
+    result.pop("duration", None)
     # Truncate tags to save tokens
     if "tags" in result and isinstance(result["tags"], str):
         tags_list = [t.strip() for t in result["tags"].split(",") if t.strip()]
@@ -189,13 +190,18 @@ def format_related_token_options(options: list[dict], max_hits: int = 10) -> lis
 def format_related_owners(owners: list[dict], max_hits: int = 10) -> list[dict]:
     formatted = []
     for owner in owners[:max_hits]:
-        formatted.append(
-            {
-                "mid": owner.get("mid"),
-                "name": owner.get("name", ""),
-                "score": owner.get("score", 0),
-            }
-        )
+        item = {
+            "mid": owner.get("mid"),
+            "name": owner.get("name", ""),
+            "score": owner.get("score", 0),
+        }
+        if owner.get("sources"):
+            item["sources"] = owner.get("sources")
+        if owner.get("sample_title"):
+            item["sample_title"] = owner.get("sample_title")
+        if owner.get("sample_bvid"):
+            item["sample_bvid"] = owner.get("sample_bvid")
+        formatted.append(item)
     return formatted
 
 

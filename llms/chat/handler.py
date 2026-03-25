@@ -44,6 +44,7 @@ _DSML_BLOCK_PATTERN = re.compile(
 _SUPPORTED_TOOL_NAMES: tuple[str, ...] = (
     "search_videos",
     "search_google",
+    "search_owners",
     "related_tokens_by_tokens",
     "related_owners_by_tokens",
     "related_videos_by_videos",
@@ -74,7 +75,7 @@ _RESULTS_ECHO_RE = re.compile(
 # Nudge message injected before forcing content generation
 _FORCE_CONTENT_NUDGE = (
     "你已经进行了充分的搜索。请根据以上搜索结果直接回答用户的问题。"
-    "不要再输出任何工具命令（如 <search_videos/> 或 <related_owners_by_tokens/>）。"
+    "不要再输出任何工具命令（如 <search_videos/> 或 <search_owners/>）。"
     "如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
 
@@ -105,6 +106,7 @@ _AUTHOR_TIMELINE_HINT_RE = re.compile(
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
     r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
 )
+_AMBIGUOUS_AUTHOR_HINT_RE = re.compile(r"[A-Za-z0-9]")
 _MULTI_CREATOR_COMPARE_RE = re.compile(
     r"^(?:请|帮我|麻烦)?(?:对比(?:一下)?|比较(?:一下)?|对比下)?(?P<left>.+?)(?:和|跟|与|vs|VS)(?P<right>.+?)(?:最近|近\d+[天日周月]|过去\d+[天日周月])"
 )
@@ -209,7 +211,7 @@ def _sanitize_content(content: str) -> str:
 
     Handles:
     - DeepSeek DSML function-calling tags
-    - Inline XML tool commands (<search_videos/>, <related_owners_by_tokens/>, ...)
+    - Inline XML tool commands (<search_videos/>, <search_owners/>, ...)
     - Echoed tool results in _format_results_message format
     """
     # Remove full DSML blocks first
@@ -497,6 +499,36 @@ class ChatHandler:
             return f"{int(month_match.group(1)) * 30}d"
         return "15d"
 
+    @staticmethod
+    def _normalize_name_key(text: str) -> str:
+        return re.sub(r"\s+", "", (text or "").strip()).lower()
+
+    @classmethod
+    def _should_resolve_timeline_author_first(
+        cls, author_name: str, latest_user_text: str = ""
+    ) -> bool:
+        normalized = cls._normalize_name_key(author_name)
+        if not normalized:
+            return False
+        if _AMBIGUOUS_AUTHOR_HINT_RE.search(normalized):
+            return True
+        latest_text = (latest_user_text or "").strip()
+        if re.search(r"对应|到底是|是不是|应该是|可能是|还是|节目|系列|作品", latest_text):
+            return True
+        return False
+
+    @classmethod
+    def _build_timeline_owner_lookup_commands(cls, messages: list[dict]) -> list[dict]:
+        author_name = cls._extract_timeline_author_name(messages)
+        if not author_name:
+            return []
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not cls._should_resolve_timeline_author_first(author_name, latest_user_text):
+            return []
+        return [
+            {"type": "search_owners", "args": {"text": author_name, "mode": "name"}}
+        ]
+
     @classmethod
     def _extract_multi_creator_compare_queries(cls, messages: list[dict]) -> list[str]:
         latest_user_text = cls._get_latest_user_text(messages)
@@ -524,6 +556,10 @@ class ChatHandler:
     ) -> list[dict]:
         author_name = cls._extract_timeline_author_name(messages)
         if not author_name:
+            return commands
+
+        latest_user_text = cls._get_latest_user_text(messages)
+        if cls._should_resolve_timeline_author_first(author_name, latest_user_text):
             return commands
 
         normalized = []
@@ -629,7 +665,7 @@ class ChatHandler:
         tokens = re.findall(r'"[^"]*"|\S+', text)
         cleaned_tokens: list[str] = []
         for token in tokens:
-            raw = token.strip("，。！？?：:；;、（）()[]{}")
+            raw = token.strip("，。！？?；;、（）()[]{}")
             if not raw:
                 continue
             if raw.startswith(":") or raw.startswith("q=") or (raw[0] in "+-" and len(raw) > 1):
@@ -716,6 +752,64 @@ class ChatHandler:
         return None
 
     @classmethod
+    def _extract_owner_rewrite_from_results(
+        cls,
+        results: list[dict] | None,
+        messages: list[dict],
+    ) -> dict | None:
+        author_name = cls._extract_timeline_author_name(messages)
+        if not author_name:
+            return None
+        author_key = cls._normalize_name_key(author_name)
+        for result_item in results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            source_key = cls._normalize_name_key(source_text)
+            if source_key and source_key != author_key:
+                continue
+            owners = result.get("owners") or []
+            if not owners:
+                continue
+            top_owner = owners[0]
+            owner_name = str(top_owner.get("name") or "").strip()
+            owner_mid = top_owner.get("mid")
+            if not owner_name and not owner_mid:
+                continue
+            return {
+                "source_text": source_text or author_name,
+                "name": owner_name,
+                "mid": owner_mid,
+            }
+        return None
+
+    @classmethod
+    def _build_owner_resolved_timeline_query(
+        cls,
+        messages: list[dict],
+        owner_rewrite: dict | None,
+        query_text: str = "",
+    ) -> str | None:
+        if not owner_rewrite:
+            return None
+        latest_user_text = cls._get_latest_user_text(messages)
+        author_name = cls._extract_timeline_author_name(messages)
+        if not author_name or not latest_user_text:
+            return None
+        query_source = str(query_text or latest_user_text)
+        window = cls._extract_recent_window(query_source)
+        owner_mid = owner_rewrite.get("mid")
+        owner_name = str(owner_rewrite.get("name") or "").strip()
+        if owner_mid:
+            return f":uid={int(owner_mid)} :date<={window}"
+        if owner_name:
+            return f":user={owner_name} :date<={window}"
+        return None
+
+    @classmethod
     def _build_token_assisted_video_query(
         cls, messages: list[dict], token_rewrite: tuple[str, str] | None
     ) -> str | None:
@@ -782,6 +876,66 @@ class ChatHandler:
         return normalized
 
     @classmethod
+    def _normalize_owner_assisted_timeline_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        owner_rewrite = cls._extract_owner_rewrite_from_results(last_tool_results, messages)
+        if not owner_rewrite:
+            return commands
+
+        source_text = str(owner_rewrite.get("source_text") or "").strip()
+        source_key = cls._normalize_name_key(source_text)
+        normalized = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                normalized.append(command)
+                continue
+            args = dict(command.get("args") or {})
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list) or not queries:
+                normalized.append(command)
+                continue
+
+            should_replace = False
+            for query in queries:
+                query_text = str(query or "")
+                query_key = cls._normalize_name_key(query_text)
+                if source_key and source_key in query_key:
+                    should_replace = True
+                    break
+                if ":user=" in query_text and source_text and source_text in query_text:
+                    should_replace = True
+                    break
+            if not should_replace:
+                normalized.append(command)
+                continue
+
+            resolved_query = cls._build_owner_resolved_timeline_query(
+                messages,
+                owner_rewrite,
+                query_text=" ".join(str(query or "") for query in queries),
+            )
+            if not resolved_query:
+                normalized.append(command)
+                continue
+
+            normalized.append(
+                {
+                    "type": "search_videos",
+                    "args": {
+                        **args,
+                        "queries": [resolved_query],
+                    },
+                }
+            )
+        return normalized
+
+    @classmethod
     def _fallback_token_assisted_search_commands(
         cls,
         commands: list[dict],
@@ -792,6 +946,21 @@ class ChatHandler:
             return commands
         token_rewrite = cls._extract_token_rewrite_from_results(last_tool_results)
         query = cls._build_token_assisted_video_query(messages, token_rewrite)
+        if not query:
+            return commands
+        return [{"type": "search_videos", "args": {"queries": [query]}}]
+
+    @classmethod
+    def _fallback_owner_assisted_timeline_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        if commands or not last_tool_results:
+            return commands
+        owner_rewrite = cls._extract_owner_rewrite_from_results(last_tool_results, messages)
+        query = cls._build_owner_resolved_timeline_query(messages, owner_rewrite)
         if not query:
             return commands
         return [{"type": "search_videos", "args": {"queries": [query]}}]
@@ -918,6 +1087,14 @@ class ChatHandler:
         if not author_name:
             return commands
 
+        owner_lookup_commands = self._build_timeline_owner_lookup_commands(messages)
+        if owner_lookup_commands:
+            if self.verbose:
+                logger.warn(
+                    "> Injecting owner-lookup fallback before author timeline video search"
+                )
+            return owner_lookup_commands
+
         fallback = [
             {
                 "type": "search_videos",
@@ -1026,7 +1203,8 @@ class ChatHandler:
         topic = self._extract_creator_discovery_topic(messages)
         if not topic:
             return commands
-        fallback = [{"type": "related_owners_by_tokens", "args": {"text": topic}}]
+        owner_mode = "relation" if _CREATOR_META_HINT_RE.search(latest_user_text) else "topic"
+        fallback = [{"type": "search_owners", "args": {"text": topic, "mode": owner_mode}}]
         if not _CREATOR_META_HINT_RE.search(latest_user_text):
             fallback.append(
                 {"type": "search_videos", "args": {"queries": [f"{topic} q=vwr"]}}
@@ -1203,7 +1381,7 @@ class ChatHandler:
         ):
             return commands
         fallback = [
-            {"type": "related_owners_by_tokens", "args": {"text": seed_name}},
+            {"type": "search_owners", "args": {"text": seed_name, "mode": "relation"}},
             {"type": "search_videos", "args": {"queries": [f"{seed_name} q=vwr"]}},
         ]
         if self.verbose:
@@ -1508,6 +1686,9 @@ class ChatHandler:
             or _BILIBILI_DECODE_HINT_RE.search(latest_user_text)
         )
         if not has_external_followup and not has_direct_external_request:
+            timeline_lookup_commands = self._build_timeline_owner_lookup_commands(messages)
+            if timeline_lookup_commands:
+                return timeline_lookup_commands
             return []
         return self._fallback_external_search_commands(
             [], messages=messages, content="我先查一下官方更新，再看看 B 站解读。"
@@ -1660,6 +1841,7 @@ class ChatHandler:
                 {"iteration": 0, "tools": tool_names, "preflight": True}
             )
             results = self._execute_tool_commands(preflight_commands)
+            last_tool_results = results
             self._record_executed_command_signatures(preflight_commands, executed_signatures)
             full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
             self._prune_old_results_messages(full_messages)
@@ -1716,7 +1898,17 @@ class ChatHandler:
                 full_messages,
                 last_tool_results,
             )
+            commands = self._normalize_owner_assisted_timeline_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
             commands = self._fallback_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._fallback_owner_assisted_timeline_commands(
                 commands,
                 full_messages,
                 last_tool_results,
@@ -2081,7 +2273,17 @@ class ChatHandler:
                 full_messages,
                 last_tool_results,
             )
+            commands = self._normalize_owner_assisted_timeline_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
             commands = self._fallback_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._fallback_owner_assisted_timeline_commands(
                 commands,
                 full_messages,
                 last_tool_results,

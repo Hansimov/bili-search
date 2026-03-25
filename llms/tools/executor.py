@@ -41,11 +41,13 @@ class SearchService:
         self,
         video_searcher,
         video_explorer,
+        owner_searcher=None,
         relations_client=None,
         verbose: bool = False,
     ):
         self.video_searcher = video_searcher
         self.video_explorer = video_explorer
+        self.owner_searcher = owner_searcher
         self.relations_client = relations_client
         self.verbose = verbose
         self._capabilities = self._build_capabilities()
@@ -56,6 +58,7 @@ class SearchService:
             "service_type": "local",
             "service_name": "integrated_search",
             "supports_author_check": False,
+            "supports_owner_search": self.owner_searcher is not None,
             "supports_multi_query": True,
             "supports_google_search": False,
             "relation_endpoints": (
@@ -79,6 +82,7 @@ class SearchService:
                 "/doc",
                 "/knn_search",
                 "/hybrid_search",
+                "/search_owners",
                 "/related_tokens_by_tokens",
                 "/related_owners_by_tokens",
                 "/related_videos_by_videos",
@@ -115,6 +119,11 @@ class SearchService:
         except Exception as e:
             logger.warn(f"× Search suggest error: {e}")
             return {"error": str(e), "hits": [], "total_hits": 0}
+
+    def search_owners(self, **kwargs) -> dict:
+        if self.owner_searcher is None:
+            return {"error": "Owner search unavailable", "owners": []}
+        return self.owner_searcher.search(**kwargs)
 
     def _relation_method(self, name: str):
         if self.relations_client is None:
@@ -238,6 +247,9 @@ class SearchServiceClient:
         }
         return self._post("/suggest", payload)
 
+    def search_owners(self, **kwargs) -> dict:
+        return self._post("/search_owners", kwargs)
+
     def related_tokens_by_tokens(self, **kwargs) -> dict:
         return self._post("/related_tokens_by_tokens", kwargs)
 
@@ -318,6 +330,7 @@ def create_search_service(
     *,
     video_searcher=None,
     video_explorer=None,
+    owner_searcher=None,
     relations_client=None,
     base_url: str | None = None,
     timeout: float = 30.0,
@@ -328,6 +341,7 @@ def create_search_service(
     return SearchService(
         video_searcher=video_searcher,
         video_explorer=video_explorer,
+        owner_searcher=owner_searcher,
         relations_client=relations_client,
         verbose=verbose,
     )
@@ -365,6 +379,7 @@ class ToolExecutor:
         self._handlers = {
             "search_videos": self._search_videos,
             "search_google": self._search_google,
+            "search_owners": self._search_owners,
             "related_tokens_by_tokens": self._related_tokens_by_tokens,
             "related_owners_by_tokens": self._related_owners_by_tokens,
             "related_videos_by_videos": self._related_videos_by_videos,
@@ -537,6 +552,25 @@ class ToolExecutor:
                 result.get("result_count", len(result.get("results", []))) or 0
             ),
             "results": format_google_results(result.get("results", []), max_hits=5),
+        }
+
+    def _search_owners(self, args: dict) -> dict:
+        text = str(args.get("text", "")).strip()
+        if not text:
+            return {"error": "Missing text parameter", "owners": []}
+        result = self.search_client.search_owners(
+            text=text,
+            mode=str(args.get("mode", "auto") or "auto"),
+            size=int(args.get("size", 8) or 8),
+        )
+        if result.get("error"):
+            return {"text": text, "error": result["error"], "owners": []}
+        owners = result.get("owners", [])
+        return {
+            "text": text,
+            "mode": result.get("mode", args.get("mode", "auto")),
+            "total_owners": len(owners),
+            "owners": format_related_owners(owners, max_hits=self.max_results),
         }
 
     def _related_tokens_by_tokens(self, args: dict) -> dict:
