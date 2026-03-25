@@ -17,6 +17,7 @@ Token optimization strategy:
 """
 
 import json
+import math
 import re
 import threading
 import time
@@ -346,7 +347,7 @@ class ChatHandler:
                 return json.loads(value)
         except Exception:
             pass
-        if re.fullmatch(r"-?\d+", value):
+        if re.fullmatch(r"-?(?:0|[1-9]\d*)", value):
             return int(value)
         if re.fullmatch(r"-?\d+\.\d+", value):
             return float(value)
@@ -447,6 +448,174 @@ class ChatHandler:
     def _normalize_name_key(text: str) -> str:
         return re.sub(r"\s+", "", (text or "").strip()).lower()
 
+    @staticmethod
+    def _extract_owner_text_parts(text: str) -> list[str]:
+        return re.findall(r"[A-Za-z]+|\d+|[\u4e00-\u9fff]+", (text or ""))
+
+    @staticmethod
+    def _extract_cjk_tokens(text: str) -> list[str]:
+        tokens = re.findall(r"[\u4e00-\u9fff]{2,4}", (text or ""))
+        deduped: list[str] = []
+        for token in tokens:
+            if token not in deduped:
+                deduped.append(token)
+        return deduped
+
+    @classmethod
+    def _owner_name_matches_source(cls, source_text: str, owner_name: str) -> bool:
+        parts = cls._extract_owner_text_parts(source_text)
+        if not parts:
+            return False
+        normalized_name = cls._normalize_name_key(owner_name)
+        cursor = 0
+        for part in parts:
+            normalized_part = cls._normalize_name_key(part)
+            if not normalized_part:
+                continue
+            index = normalized_name.find(normalized_part, cursor)
+            if index < 0:
+                return False
+            cursor = index + len(normalized_part)
+        return True
+
+    @classmethod
+    def _extract_owner_context_tokens(
+        cls, source_text: str, owner_name: str
+    ) -> list[str]:
+        parts = cls._extract_owner_text_parts(source_text)
+        if not parts:
+            return []
+
+        search_start = 0
+        first_index = None
+        last_end = None
+        for part in parts:
+            index = owner_name.find(part, search_start)
+            if index < 0:
+                first_index = None
+                last_end = None
+                break
+            if first_index is None:
+                first_index = index
+            last_end = index + len(part)
+            search_start = last_end
+
+        if first_index is not None and last_end is not None:
+            prefix = owner_name[:first_index]
+            suffix = owner_name[last_end:]
+            tokens = cls._extract_cjk_tokens(prefix) + cls._extract_cjk_tokens(suffix)
+            deduped: list[str] = []
+            for token in tokens:
+                if token not in deduped:
+                    deduped.append(token)
+            return deduped
+
+        source_tokens = set(cls._extract_cjk_tokens(source_text))
+        return [
+            token
+            for token in cls._extract_cjk_tokens(owner_name)
+            if token not in source_tokens
+        ]
+
+    @classmethod
+    def _is_short_ambiguous_owner_text(cls, text: str) -> bool:
+        normalized = cls._normalize_name_key(text)
+        if not normalized:
+            return False
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", normalized))
+        has_alnum = bool(re.search(r"[A-Za-z0-9]", normalized))
+        return has_alnum and (not has_cjk or len(normalized) <= 2)
+
+    @classmethod
+    def _score_owner_candidate(
+        cls,
+        source_text: str,
+        owner: dict,
+        hint_tokens: list[str] | None = None,
+    ) -> float:
+        owner_name = str(owner.get("name") or "").strip()
+        if not owner_name:
+            return float("-inf")
+
+        hint_tokens = hint_tokens or []
+        score = float(owner.get("score") or 0.0)
+        if cls._owner_name_matches_source(source_text, owner_name):
+            score += 100.0
+
+        context_tokens = cls._extract_owner_context_tokens(source_text, owner_name)
+        score += 20.0 * len(context_tokens)
+
+        sample_title = str(owner.get("sample_title") or "")
+        for token in hint_tokens:
+            if token and token in owner_name:
+                score += 120.0
+            elif token and token in sample_title:
+                score += 40.0
+
+        sample_view = owner.get("sample_view") or 0
+        try:
+            sample_view = int(sample_view)
+        except (TypeError, ValueError):
+            sample_view = 0
+        if sample_view > 0:
+            score += min(math.log10(sample_view + 1) * 8.0, 40.0)
+
+        if cls._is_short_ambiguous_owner_text(source_text):
+            has_cjk_phrase = bool(re.search(r"[\u4e00-\u9fff]{2,}", owner_name))
+            if not has_cjk_phrase and not any(token in owner_name for token in hint_tokens):
+                score -= 120.0
+
+        return score
+
+    @classmethod
+    def _select_best_owner_candidate(
+        cls,
+        source_text: str,
+        owners: list[dict] | None,
+        hint_tokens: list[str] | None = None,
+    ) -> dict | None:
+        candidates = owners or []
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda owner: cls._score_owner_candidate(
+                source_text,
+                owner,
+                hint_tokens=hint_tokens,
+            ),
+        )
+
+    @classmethod
+    def _is_confident_owner_candidate(
+        cls,
+        source_text: str,
+        owner: dict | None,
+        hint_tokens: list[str] | None = None,
+    ) -> bool:
+        if not owner:
+            return False
+
+        owner_name = str(owner.get("name") or "").strip()
+        if not owner_name or not cls._owner_name_matches_source(source_text, owner_name):
+            return False
+
+        hint_tokens = hint_tokens or []
+        context_tokens = cls._extract_owner_context_tokens(source_text, owner_name)
+        if context_tokens:
+            return True
+        if any(token and token in owner_name for token in hint_tokens):
+            return True
+        if not cls._is_short_ambiguous_owner_text(source_text):
+            return True
+
+        sample_view = owner.get("sample_view") or 0
+        try:
+            sample_view = int(sample_view)
+        except (TypeError, ValueError):
+            sample_view = 0
+        return sample_view >= 50000
+
     @classmethod
     def _should_resolve_timeline_author_first(
         cls, author_name: str, latest_user_text: str = ""
@@ -455,6 +624,8 @@ class ChatHandler:
         if not normalized:
             return False
         if _AMBIGUOUS_AUTHOR_HINT_RE.search(normalized):
+            return True
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,3}", normalized):
             return True
         latest_text = (latest_user_text or "").strip()
         if re.search(r"对应|到底是|是不是|应该是|可能是|还是|节目|系列|作品", latest_text):
@@ -609,8 +780,6 @@ class ChatHandler:
                 continue
             for query in queries:
                 for name in cls._extract_user_filters_from_query(str(query)):
-                    if not cls._should_resolve_timeline_author_first(name, name):
-                        continue
                     if name not in names:
                         names.append(name)
         return names
@@ -628,7 +797,9 @@ class ChatHandler:
             owners = result.get("owners") or []
             if not source_text or not owners:
                 continue
-            top_owner = owners[0]
+            top_owner = cls._select_best_owner_candidate(source_text, owners)
+            if not cls._is_confident_owner_candidate(source_text, top_owner):
+                continue
             key = cls._normalize_name_key(source_text)
             if not key:
                 continue
@@ -638,6 +809,207 @@ class ChatHandler:
                 "mid": top_owner.get("mid"),
             }
         return resolved
+
+    @classmethod
+    def _merge_owner_result_context(
+        cls,
+        context: dict[str, dict] | None,
+        results: list[dict] | None,
+    ) -> dict[str, dict]:
+        merged = dict(context or {})
+        for result_item in results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            key = cls._normalize_name_key(source_text)
+            if key:
+                merged[key] = result_item
+        return merged
+
+    @classmethod
+    def _filter_superseded_owner_results(
+        cls,
+        results: list[dict] | None,
+    ) -> list[dict]:
+        owner_results = [
+            result_item
+            for result_item in results or []
+            if result_item.get("type") == "search_owners"
+        ]
+        effective: list[dict] = []
+        source_texts = [
+            str(
+                (result_item.get("result") or {}).get("text")
+                or (result_item.get("args") or {}).get("text")
+                or ""
+            ).strip()
+            for result_item in owner_results
+        ]
+        for result_item, source_text in zip(owner_results, source_texts):
+            source_key = cls._normalize_name_key(source_text)
+            if not source_key:
+                continue
+            superseded = any(
+                other_text
+                and cls._normalize_name_key(other_text) != source_key
+                and len(cls._normalize_name_key(other_text)) > len(source_key)
+                and cls._owner_name_matches_source(source_text, other_text)
+                for other_text in source_texts
+            )
+            if not superseded:
+                effective.append(result_item)
+        return effective
+
+    @classmethod
+    def _collect_owner_context_hints(cls, results: list[dict] | None) -> list[str]:
+        hints: list[str] = []
+        for result_item in results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            candidate = cls._select_best_owner_candidate(source_text, owners)
+            if not cls._is_confident_owner_candidate(source_text, candidate):
+                continue
+            if cls._is_short_ambiguous_owner_text(source_text):
+                continue
+            for token in cls._extract_owner_context_tokens(
+                source_text,
+                str(candidate.get("name") or ""),
+            ):
+                if token not in hints:
+                    hints.append(token)
+        return hints
+
+    @classmethod
+    def _build_contextual_owner_search_commands(
+        cls,
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
+            return []
+
+        hint_tokens = cls._collect_owner_context_hints(last_tool_results)
+        if not hint_tokens:
+            return []
+
+        commands: list[dict] = []
+        seen_texts: set[str] = {
+            cls._normalize_name_key(
+                str(
+                    (result_item.get("result") or {}).get("text")
+                    or (result_item.get("args") or {}).get("text")
+                    or ""
+                )
+            )
+            for result_item in last_tool_results or []
+            if result_item.get("type") == "search_owners"
+        }
+        primary_hint = hint_tokens[0]
+        for result_item in last_tool_results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            if not source_text or primary_hint in source_text:
+                continue
+
+            candidate = cls._select_best_owner_candidate(
+                source_text,
+                owners,
+                hint_tokens=hint_tokens,
+            )
+            owner_name = str((candidate or {}).get("name") or "")
+            should_retry = False
+            if cls._is_short_ambiguous_owner_text(source_text):
+                should_retry = True
+            elif owner_name and any(token in owner_name for token in hint_tokens):
+                should_retry = True
+
+            if not should_retry:
+                continue
+
+            contextual_text = f"{primary_hint}{source_text}"
+            contextual_key = cls._normalize_name_key(contextual_text)
+            if contextual_key in seen_texts:
+                continue
+            seen_texts.add(contextual_key)
+            commands.append(
+                {
+                    "type": "search_owners",
+                    "args": {"text": contextual_text, "mode": "name"},
+                }
+            )
+
+        return commands
+
+    @classmethod
+    def _build_owner_assisted_video_search_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        if not last_tool_results:
+            return commands
+
+        owner_only_commands = bool(commands) and all(
+            command.get("type") == "search_owners" for command in commands
+        )
+        if commands and not owner_only_commands:
+            return commands
+
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
+            return commands
+
+        contextual_owner_commands = cls._build_contextual_owner_search_commands(
+            messages,
+            last_tool_results,
+        )
+        if contextual_owner_commands:
+            return contextual_owner_commands
+
+        window = cls._extract_recent_window(latest_user_text)
+        queries: list[str] = []
+        effective_owner_results = cls._filter_superseded_owner_results(last_tool_results)
+        for result_item in effective_owner_results:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            candidate = cls._select_best_owner_candidate(source_text, owners)
+            if not cls._is_confident_owner_candidate(source_text, candidate):
+                return commands
+
+            owner_mid = candidate.get("mid")
+            owner_name = str(candidate.get("name") or "").strip()
+            if owner_mid:
+                query = f":uid={int(owner_mid)} :date<={window}"
+            elif owner_name:
+                query = f":user={owner_name} :date<={window}"
+            else:
+                return commands
+            if query not in queries:
+                queries.append(query)
+
+        if not queries:
+            return commands
+        return [{"type": "search_videos", "args": {"queries": queries}}]
 
     @classmethod
     def _build_owner_resolution_commands(
@@ -1434,6 +1806,7 @@ class ChatHandler:
         executed_signatures: set[str] = set()
         final_content = None
         last_tool_results: list[dict] | None = None
+        owner_result_context: dict[str, dict] = {}
         duplicate_tool_nudged = False
 
         preflight_commands = self._preflight_tool_commands(full_messages)
@@ -1445,6 +1818,10 @@ class ChatHandler:
             )
             results = self._execute_tool_commands(preflight_commands)
             last_tool_results = results
+            owner_result_context = self._merge_owner_result_context(
+                owner_result_context,
+                results,
+            )
             self._record_executed_command_signatures(preflight_commands, executed_signatures)
             full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
             self._prune_old_results_messages(full_messages)
@@ -1471,11 +1848,20 @@ class ChatHandler:
             last_usage = response.usage
 
             content = response.content or ""
+            owner_result_scope = (
+                list(owner_result_context.values())
+                if last_tool_results
+                and all(
+                    result_item.get("type") == "search_owners"
+                    for result_item in last_tool_results
+                )
+                else last_tool_results
+            )
             commands = self._parse_tool_commands(content)
             commands = self._normalize_search_video_commands(commands)
             commands = self._rewrite_search_video_commands_with_owner_results(
                 commands,
-                last_tool_results,
+                owner_result_scope,
             )
             commands = self._normalize_token_assisted_search_commands(
                 commands,
@@ -1487,6 +1873,11 @@ class ChatHandler:
                 full_messages,
                 last_tool_results,
             )
+            commands = self._build_owner_assisted_video_search_commands(
+                commands,
+                full_messages,
+                owner_result_scope,
+            )
             commands = self._fallback_token_assisted_search_commands(
                 commands,
                 full_messages,
@@ -1495,7 +1886,7 @@ class ChatHandler:
             commands = self._normalize_search_video_commands(commands)
             owner_resolution_commands = self._build_owner_resolution_commands(
                 commands,
-                last_tool_results,
+                owner_result_scope,
             )
             if owner_resolution_commands:
                 passthrough_commands = [
@@ -1552,6 +1943,10 @@ class ChatHandler:
                 tool_events.append({"iteration": iteration + 1, "tools": tool_names})
                 results = self._execute_tool_commands(commands)
                 last_tool_results = results
+                owner_result_context = self._merge_owner_result_context(
+                    owner_result_context,
+                    results,
+                )
                 self._record_executed_command_signatures(commands, executed_signatures)
                 full_messages.append({"role": "assistant", "content": content})
                 self._prune_old_results_messages(full_messages)
@@ -1714,6 +2109,7 @@ class ChatHandler:
         executed_signatures: set[str] = set()
         tool_events_summary: list[dict] = []
         last_tool_results: list[dict] | None = None
+        owner_result_context: dict[str, dict] = {}
 
         # First chunk: role + metadata
         yield self._format_stream_chunk(
@@ -1854,11 +2250,20 @@ class ChatHandler:
             last_usage = iter_usage
 
             content = accumulated_content
+            owner_result_scope = (
+                list(owner_result_context.values())
+                if last_tool_results
+                and all(
+                    result_item.get("type") == "search_owners"
+                    for result_item in last_tool_results
+                )
+                else last_tool_results
+            )
             commands = self._parse_tool_commands(content)
             commands = self._normalize_search_video_commands(commands)
             commands = self._rewrite_search_video_commands_with_owner_results(
                 commands,
-                last_tool_results,
+                owner_result_scope,
             )
             commands = self._normalize_token_assisted_search_commands(
                 commands,
@@ -1870,6 +2275,11 @@ class ChatHandler:
                 full_messages,
                 last_tool_results,
             )
+            commands = self._build_owner_assisted_video_search_commands(
+                commands,
+                full_messages,
+                owner_result_scope,
+            )
             commands = self._fallback_token_assisted_search_commands(
                 commands,
                 full_messages,
@@ -1878,7 +2288,7 @@ class ChatHandler:
             commands = self._normalize_search_video_commands(commands)
             owner_resolution_commands = self._build_owner_resolution_commands(
                 commands,
-                last_tool_results,
+                owner_result_scope,
             )
             if owner_resolution_commands:
                 passthrough_commands = [
@@ -1979,6 +2389,10 @@ class ChatHandler:
                 # Execute commands
                 results = self._execute_tool_commands(commands)
                 last_tool_results = results
+                owner_result_context = self._merge_owner_result_context(
+                    owner_result_context,
+                    results,
+                )
                 self._record_executed_command_signatures(commands, executed_signatures)
 
                 # Yield completed tool calls (after execution)

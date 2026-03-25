@@ -20,6 +20,11 @@ CASES = {
             {"role": "user", "content": "红警08最近发了什么视频？"},
         ],
     },
+    "double_alias_recent_videos": {
+        "messages": [
+            {"role": "user", "content": "08和月亮3最近都发了哪些视频？"},
+        ],
+    },
     "similar_hardware_creators": {
         "messages": [
             {

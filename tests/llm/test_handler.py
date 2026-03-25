@@ -152,6 +152,69 @@ MOCK_TIMELINE_OWNER_RESULT = {
     ],
 }
 
+MOCK_HE_TONGXUE_OWNER_RESULT = {
+    "text": "何同学",
+    "mode": "name",
+    "owners": [
+        {
+            "mid": 163637592,
+            "name": "老师好我叫何同学",
+            "score": 216.0,
+            "sample_view": 4144389,
+            "sources": ["name"],
+        }
+    ],
+}
+
+MOCK_MOON_OWNER_RESULT = {
+    "text": "月亮3",
+    "mode": "name",
+    "owners": [
+        {
+            "mid": 3706948637690233,
+            "name": "月亮377-",
+            "score": 220.5,
+            "sample_view": 11,
+            "sources": ["name"],
+        },
+        {
+            "mid": 674510452,
+            "name": "红警月亮3",
+            "score": 216.0,
+            "sample_view": 57686,
+            "sources": ["name"],
+        },
+    ],
+}
+
+MOCK_CONTEXTUAL_08_OWNER_RESULT = {
+    "text": "红警08",
+    "mode": "name",
+    "owners": [
+        {
+            "mid": 1629347259,
+            "name": "红警HBK08",
+            "score": 184.0,
+            "sample_view": 223624,
+            "sources": ["name"],
+        }
+    ],
+}
+
+MOCK_CONTEXTUAL_MOON_OWNER_RESULT = {
+    "text": "红警月亮3",
+    "mode": "name",
+    "owners": [
+        {
+            "mid": 674510452,
+            "name": "红警月亮3",
+            "score": 250.0,
+            "sample_view": 57686,
+            "sources": ["name"],
+        }
+    ],
+}
+
 MOCK_RELATED_TOKENS_RESULT = {
     "text": "康夫UI",
     "options": [
@@ -281,12 +344,27 @@ def test_multi_tool_calls():
             '<related_owners_by_tokens text="影视飓风"/>\n'
             "<search_videos queries='[\":user=影视飓风 :date<=7d\"]'/>",
         ),
-        # 2. Final content
+        # 2. Model pauses after owner resolution; handler should continue the plan.
+        make_content_response("我继续整理影视飓风最近7天的视频。"),
+        # 3. Final content
         make_content_response("影视飓风最近7天发布了以下视频..."),
     ]
 
     mock_search = MagicMock()
     mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+    mock_search.search_owners.return_value = {
+        "text": "影视飓风",
+        "mode": "name",
+        "owners": [
+            {
+                "mid": 946974,
+                "name": "影视飓风",
+                "score": 264.0,
+                "sample_view": 3785326,
+                "sources": ["name"],
+            }
+        ],
+    }
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -298,17 +376,22 @@ def test_multi_tool_calls():
     content = result["choices"][0]["message"]["content"]
     assert "影视飓风" in content
 
-    # LLM called 2 times (commands + content)
-    assert mock_llm.chat.call_count == 2
+    # Generic owner resolution inserts an owner-search pass before video search.
+    assert mock_llm.chat.call_count == 3
 
-    # Both tools were called
+    # Both tools were called, plus owner canonicalization for :user=影视飓风.
     mock_search.related_owners_by_tokens.assert_called_once()
-    mock_search.explore.assert_called_once()
+    mock_search.search_owners.assert_called_once_with(
+        text="影视飓风",
+        mode="name",
+        size=8,
+    )
+    mock_search.explore.assert_called_once_with(query=":uid=946974 :date<=7d")
 
     # Final usage uses last prompt_tokens + accumulated completion_tokens.
     assert result["usage"]["prompt_tokens"] == 10
-    assert result["usage"]["completion_tokens"] == 15
-    assert result["usage"]["total_tokens"] == 25
+    assert result["usage"]["completion_tokens"] == 20
+    assert result["usage"]["total_tokens"] == 30
 
     logger.success("[PASS] multi tool calls")
 
@@ -476,6 +559,146 @@ def test_ambiguous_author_timeline_is_resolved_before_video_search():
     assert result["tool_events"][1]["tools"] == ["search_videos"]
 
     logger.success("[PASS] ambiguous author timeline resolved before video search")
+
+
+def test_multi_owner_recent_videos_continue_after_contextual_owner_resolution():
+    """Multi-owner recent-video requests should keep iterating via contextual owner resolution instead of asking the user to clarify."""
+    logger.note("=" * 60)
+    logger.note(
+        "[TEST] multi-owner recent videos continue after contextual owner resolution"
+    )
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先确认这两个名字对应的作者。",
+            '<search_owners text="08" mode="name"/>\n'
+            '<search_owners text="月亮3" mode="name"/>',
+        ),
+        make_content_response(
+            "当前无法确认“08”对应哪个作者；“月亮3”较可能是“红警月亮3”。"
+        ),
+        make_content_response("我继续整理他们最近的视频。"),
+        make_content_response(
+            "08和月亮3最近视频：\n- [红警全油田一排排](BV1aaa)\n- [红警海盗争霸一块地](BV1bbb)"
+        ),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.search_owners.side_effect = [
+        {
+            "text": "08",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 3706942411246433,
+                    "name": "08-v嫖",
+                    "score": 224.0,
+                    "sample_view": 0,
+                    "sources": ["name"],
+                }
+            ],
+        },
+        MOCK_MOON_OWNER_RESULT,
+        MOCK_CONTEXTUAL_08_OWNER_RESULT,
+        MOCK_CONTEXTUAL_MOON_OWNER_RESULT,
+    ]
+    mock_search.explore.side_effect = [MOCK_EXPLORE_RESULT, MOCK_EXPLORE_RESULT]
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "08和月亮3最近都发了哪些视频？"}]
+    )
+
+    assert "最近视频" in result["choices"][0]["message"]["content"]
+    assert mock_search.search_owners.call_args_list == [
+        call(text="08", mode="name", size=8),
+        call(text="月亮3", mode="name", size=8),
+        call(text="红警08", mode="name", size=8),
+        call(text="红警月亮3", mode="name", size=8),
+    ]
+    assert mock_search.explore.call_args_list == [
+        call(query=":uid=1629347259 :date<=15d"),
+        call(query=":uid=674510452 :date<=15d"),
+    ]
+    assert result["tool_events"][0]["tools"] == ["search_owners", "search_owners"]
+    assert result["tool_events"][1]["tools"] == ["search_owners", "search_owners"]
+    assert result["tool_events"][2]["tools"] == ["search_videos"]
+
+    logger.success(
+        "[PASS] multi-owner recent videos continue after contextual owner resolution"
+    )
+
+
+def test_owner_only_followup_plan_is_promoted_to_video_search_once_resolved():
+    """If the model keeps emitting search_owners after contextual owner resolution, the handler should promote the plan to search_videos."""
+    logger.note("=" * 60)
+    logger.note("[TEST] owner-only follow-up plan promoted to video search")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先确认这两个名字对应的作者。",
+            '<search_owners text="08" mode="name"/>\n'
+            '<search_owners text="月亮3" mode="name"/>',
+        ),
+        make_tool_cmd_response(
+            "我继续确认更准确的作者。",
+            '<search_owners text="红警08" mode="name"/>\n'
+            '<search_owners text="红警月亮3" mode="name"/>',
+        ),
+        make_tool_cmd_response(
+            "我再确认一下作者。",
+            '<search_owners text="红警HBK08" mode="name"/>\n'
+            '<search_owners text="红警月亮3" mode="name"/>',
+        ),
+        make_content_response(
+            "最近视频：\n- [红警全油田一排排](BV1aaa)\n- [红警海盗争霸一块地](BV1bbb)"
+        ),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.search_owners.side_effect = [
+        {
+            "text": "08",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 3706942411246433,
+                    "name": "08-v嫖",
+                    "score": 224.0,
+                    "sample_view": 0,
+                    "sources": ["name"],
+                }
+            ],
+        },
+        MOCK_MOON_OWNER_RESULT,
+        MOCK_CONTEXTUAL_08_OWNER_RESULT,
+        MOCK_CONTEXTUAL_MOON_OWNER_RESULT,
+    ]
+    mock_search.explore.side_effect = [MOCK_EXPLORE_RESULT, MOCK_EXPLORE_RESULT]
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "08和月亮3最近都发了哪些视频？"}]
+    )
+
+    assert "最近视频" in result["choices"][0]["message"]["content"]
+    assert mock_search.search_owners.call_args_list == [
+        call(text="08", mode="name", size=8),
+        call(text="月亮3", mode="name", size=8),
+        call(text="红警08", mode="name", size=8),
+        call(text="红警月亮3", mode="name", size=8),
+    ]
+    assert mock_search.explore.call_args_list == [
+        call(query=":uid=1629347259 :date<=15d"),
+        call(query=":uid=674510452 :date<=15d"),
+    ]
+    assert result["tool_events"][-1]["tools"] == ["search_videos"]
+
+    logger.success("[PASS] owner-only follow-up plan promoted to video search")
 
 
 def test_author_timeline_final_content_retains_author_name():
@@ -1691,12 +1914,30 @@ def test_parallel_tool_calls():
             '<related_owners_by_tokens text="影视飓风"/>\n'
             '<search_videos queries=\'[":user=何同学 :date<=15d", ":user=影视飓风 :date<=15d"]\'/>',
         ),
-        # 2. Final content
+        # 2. Model pauses after owner resolution; handler should continue the plan.
+        make_content_response("我继续整理这两位作者最近的视频。"),
+        # 3. Final content
         make_content_response("这是何同学和影视飓风最近的视频..."),
     ]
 
     mock_search = MagicMock()
     mock_search.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+    mock_search.search_owners.side_effect = [
+        MOCK_HE_TONGXUE_OWNER_RESULT,
+        {
+            "text": "影视飓风",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 946974,
+                    "name": "影视飓风",
+                    "score": 264.0,
+                    "sample_view": 3785326,
+                    "sources": ["name"],
+                }
+            ],
+        },
+    ]
     mock_search.explore.return_value = MOCK_EXPLORE_RESULT
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
@@ -1708,20 +1949,79 @@ def test_parallel_tool_calls():
     content = result["choices"][0]["message"]["content"]
     assert "何同学" in content or "影视飓风" in content
 
-    # LLM called 2 times (commands + content)
-    assert mock_llm.chat.call_count == 2
+    # Generic owner resolution inserts an extra owner-search pass before video search.
+    assert mock_llm.chat.call_count == 3
 
     # Both related_owners_by_tokens calls should have been made
     assert mock_search.related_owners_by_tokens.call_count == 2
+
+    # Both :user filters should be canonicalized through owner search first.
+    assert mock_search.search_owners.call_count == 2
 
     # Search was called (from the multi-query)
     assert mock_search.explore.call_count >= 1
 
     assert result["usage"]["prompt_tokens"] == 10
-    assert result["usage"]["completion_tokens"] == 15
-    assert result["usage"]["total_tokens"] == 25
+    assert result["usage"]["completion_tokens"] == 20
+    assert result["usage"]["total_tokens"] == 30
 
     logger.success("[PASS] parallel tool calls")
+
+
+def test_multi_author_recent_videos_resolves_short_cjk_alias_before_search():
+    """Multi-author recent-video queries should resolve short Chinese aliases like 何同学 before searching videos."""
+    logger.note("=" * 60)
+    logger.note("[TEST] multi author recent videos resolve short CJK alias")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我来分别搜索两位作者最近 15 天的视频。",
+            '<search_videos queries=\'[":user=何同学 :date<=15d", ":user=影视飓风 :date<=15d"]\'/>',
+        ),
+        make_content_response("我继续整理这两位作者最近的视频。"),
+        make_content_response("这是老师好我叫何同学和影视飓风最近的视频..."),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.search_owners.side_effect = [
+        MOCK_HE_TONGXUE_OWNER_RESULT,
+        {
+            "text": "影视飓风",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 946974,
+                    "name": "影视飓风",
+                    "score": 264.0,
+                    "sample_view": 3785326,
+                    "sources": ["name"],
+                }
+            ],
+        },
+    ]
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "何同学和影视飓风最近都发了哪些视频？"}]
+    )
+
+    assert "何同学" in result["choices"][0]["message"]["content"]
+    assert mock_search.search_owners.call_args_list == [
+        call(text="何同学", mode="name", size=8),
+        call(text="影视飓风", mode="name", size=8),
+    ]
+    assert mock_search.explore.call_args_list == [
+        call(query=":uid=163637592 :date<=15d"),
+        call(query=":uid=946974 :date<=15d"),
+    ]
+    assert result["tool_events"][0]["tools"] == ["search_owners", "search_owners"]
+    assert result["tool_events"][1]["tools"] == ["search_videos"]
+    assert mock_llm.chat.call_count == 3
+
+    logger.success("[PASS] multi author recent videos resolve short CJK alias")
 
 
 def test_fallback_video_search_commands_for_multi_creator_productivity_comparison():
