@@ -55,6 +55,8 @@ COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
 - 作者名、简称、别名、混合中英数字昵称优先 `mode=name` 或默认 `mode=auto`。
 - 主题找作者优先 `mode=topic` 或默认 `mode=auto`。
 - 关联账号、主副号、矩阵号、相近作者优先 `mode=relation`。
+- 同一问题里如果同时出现“种子作者 + 主题偏向”，先把种子作者和主题限制拆开：种子作者用 `mode=name`，主题偏向用 `mode=topic`。
+- 只有当作者确实出现在工具结果里时，才能把它写进最终答案；不要补写猜测的作者主页链接或空链接。
 
 `related_tokens_by_tokens`：
 - 仅在实体不稳、别名/错写/简称时使用。
@@ -64,12 +66,32 @@ COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
 - 仅用于官网、公告、release notes、跨站事实核对。
 [/TOOL_ROUTING]"""
 
+COPILOT_INTENT_METHOD = """[INTENT_METHOD]
+统一按这 3 步思考，不要靠固定话术匹配：
+1. 先判断用户最终要的产物是什么：视频、作者名单/关系，还是站外事实。
+2. 再判断关键实体是否已经足够确定：
+    - 已确定：可以直接进入终局工具。
+    - 不够确定：先做实体确认，再进入终局工具。
+3. 最后只补最少的一步：
+    - 视频问题：优先 `search_videos`。
+    - 作者或作者关系问题：优先 `search_owners`。
+    - 实体写法不稳、简称/别名/错写：先 `search_owners` 或 `related_tokens_by_tokens`，再继续。
+    - 官方信息或跨站事实：`search_google`。
+
+硬规则：
+- 不要因为用户句子里出现“最近/推荐/解读/有没有”就机械套固定模板。
+- 只有当作者身份已经确认时，才把作者写进 `:user=` 或 `:uid=`。
+- 如果一个问题需要“先确认实体，再搜视频”，就分两步，不要跳步。
+- 如果作者候选结果明显不可靠或不够支撑结论，直接说明当前无法确认，不要拿常识猜作者名单或主页链接来补答案。
+[/INTENT_METHOD]"""
+
 COPILOT_WORKFLOW = """[WORKFLOW]
 决策顺序：
 1. 先判断最终目标是视频、作者、关系，还是站外事实。
-2. 默认先尝试终局工具，不要为了流程感滥用中间工具。
-3. 一轮能列全必要命令，就不要拆多轮。
-4. 如果上一轮只拿到中间结果，再补最后一步。
+2. 再判断实体是否已经足够确定；如果不确定，先确认实体。
+3. 默认先尝试终局工具，不要为了流程感滥用中间工具。
+4. 一轮能列全必要命令，就不要拆多轮。
+5. 如果上一轮只拿到中间结果，再补最后一步。
 
 重点：
 - 多作者对比优先并行多个 `search_videos` queries。
@@ -118,6 +140,20 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 助手：我先确认这个名字对应的作者。
 <search_owners text="红警08" mode="name"/>
 
+用户：和影视飓风风格接近，但更偏硬件评测的作者有哪些？
+助手：我先确认种子作者，再找偏硬件评测的作者候选。
+<search_owners text="影视飓风" mode="name"/>
+<search_owners text="硬件评测" mode="topic"/>
+
+用户：Gemini 2.5 最近官方更新里，和开发者 API 最相关的点有哪些，B站有没有偏 API 侧的解读？
+助手：我先查官方更新，再搜索 B 站里的 API 向解读视频。
+<search_google query="Gemini 2.5 开发者 API 最近有哪些官方更新"/>
+<search_videos queries='["Gemini 2.5 开发者 API q=vwr"]'/>
+
+用户：对比一下老番茄和红警08最近一个月谁更高产
+助手：我先确认不够稳定的作者名，再继续做视频对比。
+<search_owners text="红警08" mode="name"/>
+
 用户：推荐几个做黑神话悟空内容的UP主
 助手：我先找相关创作者。
 <search_owners text="黑神话悟空" mode="topic"/>
@@ -155,6 +191,7 @@ def build_system_prompt_profile(capabilities: dict | None = None) -> dict:
         "output_protocol": COPILOT_OUTPUT_PROTOCOL,
         "tool_commands": COPILOT_TOOL_COMMANDS,
         "tool_routing": COPILOT_TOOL_ROUTING,
+        "intent_method": COPILOT_INTENT_METHOD,
         "dsl_syntax": COPILOT_DSL_SYNTAX,
         "workflow": COPILOT_WORKFLOW,
         "dsl_planning": COPILOT_DSL_PLANNING,
@@ -207,6 +244,7 @@ def build_system_prompt(capabilities: dict | None = None) -> str:
         COPILOT_OUTPUT_PROTOCOL,
         COPILOT_TOOL_COMMANDS,
         COPILOT_TOOL_ROUTING,
+        COPILOT_INTENT_METHOD,
         COPILOT_DSL_SYNTAX,
         COPILOT_WORKFLOW,
         COPILOT_DSL_PLANNING,

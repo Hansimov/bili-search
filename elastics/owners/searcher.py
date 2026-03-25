@@ -9,15 +9,6 @@ from configs.envs import ELASTIC_PRO_ENVS, SECRETS
 from elastics.relations import RelationsClient
 
 
-OWNER_META_HINT_RE = re.compile(
-    r"关联账号|账号矩阵|矩阵号|主号|副号|小号|分身|马甲|别的号|其他账号|另一个号|另一个账号"
-)
-RELATION_QUERY_NOISE_RE = re.compile(
-    r"有哪?些|有什么|还有什么|还有哪些|还有|相关的|关联的|关联账号|账号矩阵|矩阵号|主号|副号|小号|分身|马甲|别的号|别的账号|其他号|其他账号|另一个号|另一个账号",
-)
-TOPIC_HINT_RE = re.compile(
-    r"教程|攻略|剧情|解说|评测|测评|盘点|解析|世界观|内容|视频|作者|创作者|博主|UP主"
-)
 OWNER_TOKEN_RE = re.compile(r"[A-Za-z]+|\d+|[\u4e00-\u9fff]+")
 
 
@@ -80,7 +71,9 @@ class OwnerSearcher:
         if not query:
             return {"text": "", "mode": mode, "owners": []}
 
-        resolved_mode = self._resolve_mode(query, mode)
+        resolved_mode = str(mode or "auto").strip().lower()
+        if resolved_mode not in {"auto", "name", "topic", "relation"}:
+            resolved_mode = "auto"
         prepared_query = self._prepare_query(query, resolved_mode)
 
         name_hits: list[dict] = []
@@ -127,24 +120,6 @@ class OwnerSearcher:
             "owners": [candidate.to_dict() for candidate in merged],
         }
 
-    def _resolve_mode(self, query: str, mode: str) -> str:
-        normalized_mode = str(mode or "auto").strip().lower()
-        if normalized_mode in {"name", "topic", "relation"}:
-            return normalized_mode
-        if OWNER_META_HINT_RE.search(query):
-            return "relation"
-        if TOPIC_HINT_RE.search(query) and not self._looks_like_owner_name(query):
-            return "topic"
-        return "auto"
-
-    def _looks_like_owner_name(self, query: str) -> bool:
-        compact = re.sub(r"\s+", "", query)
-        if not compact:
-            return False
-        if len(compact) <= 8:
-            return True
-        return bool(re.search(r"[A-Za-z0-9]", compact))
-
     def _search_name_candidates(self, query: str, size: int) -> list[dict]:
         body = self._build_name_search_body(query=query, size=size)
         try:
@@ -180,10 +155,8 @@ class OwnerSearcher:
 
     def _prepare_query(self, query: str, mode: str) -> str:
         prepared = (query or "").strip()
-        if mode == "relation":
-            prepared = RELATION_QUERY_NOISE_RE.sub(" ", prepared)
-            prepared = re.sub(r"[?？,，。.!！:：]+", " ", prepared)
-            prepared = re.sub(r"\s+", " ", prepared).strip()
+        prepared = re.sub(r"[?？,，。.!！:：]+", " ", prepared)
+        prepared = re.sub(r"\s+", " ", prepared).strip()
         return prepared or query
 
     def _build_name_search_body(self, query: str, size: int) -> dict:

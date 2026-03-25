@@ -14,10 +14,13 @@ def test_build_name_search_body_uses_only_indexed_owner_name_fields():
     ]
 
 
-def test_prepare_query_strips_relation_noise():
+def test_prepare_query_normalizes_punctuation_and_spacing():
     searcher = OwnerSearcher.__new__(OwnerSearcher)
 
-    assert searcher._prepare_query("影视飓风有哪些关联账号", "relation") == "影视飓风"
+    assert (
+        searcher._prepare_query("  影视飓风：有哪些关联账号？  ", "relation")
+        == "影视飓风 有哪些关联账号"
+    )
 
 
 def test_search_topic_mode_skips_name_candidates():
@@ -28,7 +31,6 @@ def test_search_topic_mode_skips_name_candidates():
         called["name"] = True
         return []
 
-    searcher._resolve_mode = lambda query, mode: "topic"
     searcher._prepare_query = lambda query, mode: query
     searcher._search_name_candidates = mark_name
     searcher._search_topic_candidates = lambda query, size: [
@@ -45,7 +47,6 @@ def test_search_topic_mode_skips_name_candidates():
 def test_search_relation_mode_prefers_relation_results_over_seed_name_hits():
     searcher = OwnerSearcher.__new__(OwnerSearcher)
 
-    searcher._resolve_mode = lambda query, mode: "relation"
     searcher._prepare_query = lambda query, mode: query
     searcher._search_name_candidates = lambda query, size: [
         {"mid": 1, "name": "影视飓风", "score": 120.0, "sources": ["name"]}

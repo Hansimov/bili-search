@@ -12,7 +12,7 @@ from tclogger import logger
 import threading
 
 from llms.llm_client import LLMClient, ChatResponse
-from llms.chat.handler import ChatHandler, _FORCE_CONTENT_NUDGE
+from llms.chat.handler import ChatHandler, _DUPLICATE_TOOL_NUDGE, _FORCE_CONTENT_NUDGE
 
 
 # ============================================================
@@ -314,7 +314,7 @@ def test_multi_tool_calls():
 
 
 def test_fallback_tool_commands_for_single_author_timeline():
-    """Single-author timeline requests should get deterministic fallback tools."""
+    """Legacy single-author timeline regex fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback tool commands for author timeline")
 
@@ -328,15 +328,13 @@ def test_fallback_tool_commands_for_single_author_timeline():
         content="抱歉，我还没收到系统返回的搜索结果，请再试一次。",
     )
 
-    assert fallback == [
-        {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback tool commands for author timeline")
 
 
 def test_preflight_tool_commands_for_ambiguous_author_timeline():
-    """Ambiguous author timeline requests should resolve the owner before video search."""
+    """The generic planner should not preflight regex-derived timeline commands."""
     logger.note("=" * 60)
     logger.note("[TEST] preflight tool commands for ambiguous author timeline")
 
@@ -348,15 +346,13 @@ def test_preflight_tool_commands_for_ambiguous_author_timeline():
         [{"role": "user", "content": "红警08最近发了什么视频？"}]
     )
 
-    assert commands == [
-        {"type": "search_owners", "args": {"text": "红警08", "mode": "name"}},
-    ]
+    assert commands == []
 
     logger.success("[PASS] preflight tool commands for ambiguous author timeline")
 
 
 def test_normalize_author_timeline_search_command():
-    """Single-author timeline search commands should be normalized to :user queries."""
+    """Timeline commands are no longer rewritten by regex-driven author normalization."""
     logger.note("=" * 60)
     logger.note("[TEST] normalize author timeline search command")
 
@@ -370,7 +366,7 @@ def test_normalize_author_timeline_search_command():
     )
 
     assert commands == [
-        {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
+        {"type": "search_videos", "args": {"queries": ["影视飓风 q=vwr"]}},
     ]
 
     mixed_commands = handler._normalize_author_timeline_commands(
@@ -386,7 +382,12 @@ def test_normalize_author_timeline_search_command():
     )
 
     assert mixed_commands == [
-        {"type": "search_videos", "args": {"queries": [":user=影视飓风 :date<=15d"]}},
+        {
+            "type": "search_videos",
+            "args": {
+                "queries": [":user=影视飓风 :date<=15d", "影视飓风 最近视频 q=wv"]
+            },
+        },
     ]
 
     logger.success("[PASS] normalize author timeline search command")
@@ -452,6 +453,7 @@ def test_ambiguous_author_timeline_is_resolved_before_video_search():
             "我来搜索红警08最近的视频。",
             "<search_videos queries='[\":user=红警08 :date<=15d\"]'/>",
         ),
+        make_content_response("我继续确认一下最近视频。"),
         make_content_response("- [红警全油田一排排](BV1xxx) — 22.3万（3天前）"),
     ]
 
@@ -470,7 +472,6 @@ def test_ambiguous_author_timeline_is_resolved_before_video_search():
         text="红警08", mode="name", size=8
     )
     mock_search.explore.assert_called_once_with(query=":uid=1629347259 :date<=15d")
-    assert result["tool_events"][0]["preflight"] is True
     assert result["tool_events"][0]["tools"] == ["search_owners"]
     assert result["tool_events"][1]["tools"] == ["search_videos"]
 
@@ -503,13 +504,13 @@ def test_author_timeline_final_content_retains_author_name():
     content = result["choices"][0]["message"]["content"]
     assert "影视飓风" in content
     assert content.startswith("影视飓风最近视频：")
-    mock_search.explore.assert_called_once_with(query=":user=影视飓风 :date<=15d")
+    mock_search.explore.assert_called_once_with(query="影视飓风 最近视频 q=wv")
 
     logger.success("[PASS] author timeline final content retains author name")
 
 
 def test_fallback_creator_discovery_commands():
-    """Creator discovery requests should fall back to relation search."""
+    """Legacy creator-discovery regex fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback creator discovery commands")
 
@@ -523,10 +524,7 @@ def test_fallback_creator_discovery_commands():
         content="我来先找一下相关创作者。",
     )
 
-    assert fallback == [
-        {"type": "search_owners", "args": {"text": "黑神话悟空", "mode": "topic"}},
-        {"type": "search_videos", "args": {"queries": ["黑神话悟空 q=vwr"]}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback creator discovery commands")
 
@@ -566,7 +564,7 @@ def test_token_assisted_search_fallback_uses_canonical_entity_query():
 
 
 def test_fallback_creator_discovery_commands_for_direct_request():
-    """Direct creator recommendation requests should fall back even without pledge text."""
+    """Legacy creator-discovery direct fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback creator discovery direct request")
 
@@ -580,16 +578,13 @@ def test_fallback_creator_discovery_commands_for_direct_request():
         content="我推荐下面这些UP主。",
     )
 
-    assert fallback == [
-        {"type": "search_owners", "args": {"text": "黑神话悟空", "mode": "topic"}},
-        {"type": "search_videos", "args": {"queries": ["黑神话悟空 q=vwr"]}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback creator discovery direct request")
 
 
 def test_fallback_creator_discovery_commands_for_followup_dialogue():
-    """Creator-discovery follow-up turns should inherit the earlier topic."""
+    """Legacy creator-discovery follow-up fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback creator discovery follow-up dialogue")
 
@@ -607,22 +602,13 @@ def test_fallback_creator_discovery_commands_for_followup_dialogue():
         content="我给你筛一批更合适的创作者。",
     )
 
-    assert fallback == [
-        {
-            "type": "search_owners",
-            "args": {"text": "黑神话悟空 剧情解析和世界观考据", "mode": "topic"},
-        },
-        {
-            "type": "search_videos",
-            "args": {"queries": ["黑神话悟空 剧情解析和世界观考据 q=vwr"]},
-        },
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback creator discovery follow-up dialogue")
 
 
 def test_fallback_external_search_commands():
-    """Official-update requests should fall back to Google + Bilibili search."""
+    """Legacy external-search regex fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback external search commands")
 
@@ -641,16 +627,13 @@ def test_fallback_external_search_commands():
         content="我先查一下官方更新，再看看 B 站有没有解读。",
     )
 
-    assert fallback == [
-        {"type": "search_google", "args": {"query": "Gemini 2.5 最近有哪些官方更新"}},
-        {"type": "search_videos", "args": {"queries": ["Gemini 2.5 q=vwr"]}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback external search commands")
 
 
 def test_fallback_external_search_commands_for_followup_dialogue():
-    """Official-update follow-up turns should inherit the earlier product topic."""
+    """Legacy external follow-up fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback external search follow-up dialogue")
 
@@ -671,22 +654,13 @@ def test_fallback_external_search_commands_for_followup_dialogue():
         content="我先查一下开发者侧的官方更新，再看看 B 站解读。",
     )
 
-    assert fallback == [
-        {
-            "type": "search_google",
-            "args": {"query": "Gemini 2.5 开发者 API 最近有哪些官方更新"},
-        },
-        {
-            "type": "search_videos",
-            "args": {"queries": ["Gemini 2.5 q=vwr", "Gemini 2.5 开发者 API q=vwr"]},
-        },
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback external search follow-up dialogue")
 
 
 def test_fallback_external_search_commands_for_official_only_followup():
-    """Official-only follow-ups should stop inheriting the earlier Bilibili decode request."""
+    """Legacy external-search official-only fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback external search official-only follow-up")
 
@@ -707,15 +681,13 @@ def test_fallback_external_search_commands_for_official_only_followup():
         content="我继续只查官网。",
     )
 
-    assert fallback == [
-        {"type": "search_google", "args": {"query": "Gemini 2.5 最近有哪些官方更新"}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback external search official-only follow-up")
 
 
 def test_preflight_tool_commands_for_direct_external_request():
-    """Direct official-update requests should preflight deterministic external tools."""
+    """The generic planner no longer preflights external regex routes."""
     logger.note("=" * 60)
     logger.note("[TEST] preflight direct external request")
 
@@ -732,16 +704,13 @@ def test_preflight_tool_commands_for_direct_external_request():
         ]
     )
 
-    assert commands == [
-        {"type": "search_google", "args": {"query": "Gemini 2.5 最近有哪些官方更新"}},
-        {"type": "search_videos", "args": {"queries": ["Gemini 2.5 q=vwr"]}},
-    ]
+    assert commands == []
 
     logger.success("[PASS] preflight direct external request")
 
 
 def test_preflight_tool_commands_for_followup_external_request():
-    """Official-update follow-up dialogue should also preflight deterministic external tools."""
+    """The generic planner no longer preflights follow-up external regex routes."""
     logger.note("=" * 60)
     logger.note("[TEST] preflight follow-up external request")
 
@@ -760,22 +729,13 @@ def test_preflight_tool_commands_for_followup_external_request():
         ]
     )
 
-    assert commands == [
-        {
-            "type": "search_google",
-            "args": {"query": "Gemini 2.5 开发者 API 最近有哪些官方更新"},
-        },
-        {
-            "type": "search_videos",
-            "args": {"queries": ["Gemini 2.5 q=vwr", "Gemini 2.5 开发者 API q=vwr"]},
-        },
-    ]
+    assert commands == []
 
     logger.success("[PASS] preflight follow-up external request")
 
 
 def test_duplicate_search_commands_are_suppressed_after_preflight():
-    """A command already executed by preflight should not be executed again."""
+    """Duplicate commands should still be deduped even without regex preflight routing."""
     logger.note("=" * 60)
     logger.note("[TEST] duplicate search commands suppressed after preflight")
 
@@ -811,8 +771,7 @@ def test_duplicate_search_commands_are_suppressed_after_preflight():
     assert "Gemini 2.5" in result["choices"][0]["message"]["content"]
     assert mock_search.explore.call_count >= 1
     assert len(result["tool_events"]) >= 1
-    assert result["tool_events"][0]["preflight"] is True
-    assert result["tool_events"][0]["tools"] == ["search_google", "search_videos"]
+    assert result["tool_events"][0]["tools"] == ["search_videos"]
 
     logger.success("[PASS] duplicate search commands suppressed after preflight")
 
@@ -846,6 +805,49 @@ def test_duplicate_commands_are_deduped_within_single_iteration():
     logger.success("[PASS] duplicate commands deduped within single iteration")
 
 
+def test_repeated_duplicate_commands_force_answer_after_one_nudge():
+    """Repeated duplicate tool commands should trigger forced content instead of burning the full loop budget."""
+    logger.note("=" * 60)
+    logger.note("[TEST] repeated duplicate commands force answer")
+
+    duplicate_response = make_tool_cmd_response(
+        "我再确认一下。",
+        "<search_videos queries='[\"ComfyUI 入门教程 q=vwr\"]'/>",
+    )
+    forced_answer = make_content_response("这里是 ComfyUI 的入门教程整理。")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先搜索教程。",
+            "<search_videos queries='[\"ComfyUI 入门教程 q=vwr\"]'/>",
+        ),
+        duplicate_response,
+        duplicate_response,
+        forced_answer,
+    ]
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "康夫UI 有什么入门教程？"}]
+    )
+
+    assert "ComfyUI" in result["choices"][0]["message"]["content"]
+    assert mock_llm.chat.call_count == 4
+    prompt_snapshots = [
+        json.dumps(call.kwargs["messages"], ensure_ascii=False)
+        for call in mock_llm.chat.call_args_list
+    ]
+    assert any(_DUPLICATE_TOOL_NUDGE in snapshot for snapshot in prompt_snapshots)
+    assert any(_FORCE_CONTENT_NUDGE in snapshot for snapshot in prompt_snapshots)
+
+    logger.success("[PASS] repeated duplicate commands force answer")
+
+
 def test_author_timeline_fallback_skips_official_update_queries():
     """Official-update queries should not be mistaken for creator timeline requests."""
     logger.note("=" * 60)
@@ -872,7 +874,7 @@ def test_author_timeline_fallback_skips_official_update_queries():
 
 
 def test_fallback_video_search_commands_for_explicit_video_request():
-    """Explicit video-search intents should get a deterministic search fallback."""
+    """Legacy explicit-video regex fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback video search commands")
 
@@ -886,12 +888,7 @@ def test_fallback_video_search_commands_for_explicit_video_request():
         content="好的，我先帮你把黑神话悟空剧情解析视频搜出来。",
     )
 
-    assert fallback == [
-        {
-            "type": "search_videos",
-            "args": {"queries": ["黑神话悟空剧情解析 q=vwr"]},
-        }
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback video search commands")
 
@@ -989,7 +986,7 @@ def test_forced_content_retry_does_not_disable_model_default_reasoning():
 
 
 def test_fallback_video_search_commands_for_creator_video_followup():
-    """Creator video follow-ups should inherit the earlier creator and search by :user."""
+    """Legacy creator-follow-up regex fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback video search creator follow-up")
 
@@ -1007,15 +1004,13 @@ def test_fallback_video_search_commands_for_creator_video_followup():
         content="我来搜索这位作者的代表作。",
     )
 
-    assert fallback == [
-        {"type": "search_videos", "args": {"queries": [":user=何同学"]}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback video search creator follow-up")
 
 
 def test_fallback_similar_creator_commands():
-    """Similar-creator requests should fall back to relation search."""
+    """Legacy similar-creator regex fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback similar creator commands")
 
@@ -1034,16 +1029,13 @@ def test_fallback_similar_creator_commands():
         content="我先给你推荐几位风格接近的创作者。",
     )
 
-    assert fallback == [
-        {"type": "search_owners", "args": {"text": "影视飓风", "mode": "relation"}},
-        {"type": "search_videos", "args": {"queries": ["影视飓风 q=vwr"]}},
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback similar creator commands")
 
 
 def test_relation_only_commands_are_promoted_to_search_videos():
-    """Relation-only plans should be auto-promoted to include search_videos."""
+    """Relation-only plans are no longer auto-promoted by regex-derived helper logic."""
     logger.note("=" * 60)
     logger.note("[TEST] relation-only commands promoted")
 
@@ -1070,11 +1062,8 @@ def test_relation_only_commands_are_promoted_to_search_videos():
     mock_search.related_owners_by_tokens.assert_called_once_with(
         text="黑神话悟空", size=8
     )
-    mock_search.explore.assert_called_once_with(query="黑神话悟空 q=vwr")
-    assert result["tool_events"][0]["tools"] == [
-        "related_owners_by_tokens",
-        "search_videos",
-    ]
+    mock_search.explore.assert_not_called()
+    assert result["tool_events"][0]["tools"] == ["related_owners_by_tokens"]
 
     logger.success("[PASS] relation-only commands promoted")
 
@@ -1505,10 +1494,14 @@ def test_thinking_mode_max_iterations():
     logger.note("[TEST] thinking mode max iterations")
 
     mock_llm = MagicMock(spec=LLMClient)
-    # Simulate max iterations being hit (all tool commands, never plain content)
+    # Simulate max iterations being hit with distinct tool commands.
     mock_llm.chat.side_effect = [
-        make_tool_cmd_response("搜索", "<search_videos queries='[\"q\"]'/>"),
-    ] * 10 + [
+        make_tool_cmd_response(
+            "搜索",
+            f"<search_videos queries='[\"q{i}\"]'/>",
+        )
+        for i in range(10)
+    ] + [
         make_content_response("最终结果"),
     ]
 
@@ -1531,8 +1524,12 @@ def test_thinking_mode_max_iterations():
     # Reset mock
     mock_llm.reset_mock()
     mock_llm.chat.side_effect = [
-        make_tool_cmd_response("搜索", "<search_videos queries='[\"q\"]'/>"),
-    ] * 10 + [
+        make_tool_cmd_response(
+            "搜索",
+            f"<search_videos queries='[\"q{i}\"]'/>",
+        )
+        for i in range(10)
+    ] + [
         make_content_response("思考后的最终结果"),
     ]
 
@@ -1728,7 +1725,7 @@ def test_parallel_tool_calls():
 
 
 def test_fallback_video_search_commands_for_multi_creator_productivity_comparison():
-    """Multi-creator productivity comparisons should fall back to parallel :user queries."""
+    """Legacy multi-creator compare fallbacks are disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] fallback video search multi-creator comparison")
 
@@ -1747,20 +1744,13 @@ def test_fallback_video_search_commands_for_multi_creator_productivity_compariso
         content="我来分别搜一下两位作者最近一个月的视频。",
     )
 
-    assert fallback == [
-        {
-            "type": "search_videos",
-            "args": {
-                "queries": [":user=老番茄 :date<=30d", ":user=影视飓风 :date<=30d"]
-            },
-        }
-    ]
+    assert fallback == []
 
     logger.success("[PASS] fallback video search multi-creator comparison")
 
 
 def test_normalize_multi_creator_compare_search_command():
-    """Multi-creator comparison search commands should be normalized to per-author :user queries."""
+    """Multi-creator compare commands are no longer rewritten by regex helpers."""
     logger.note("=" * 60)
     logger.note("[TEST] normalize multi-creator comparison search command")
 
@@ -1786,9 +1776,7 @@ def test_normalize_multi_creator_compare_search_command():
     assert commands == [
         {
             "type": "search_videos",
-            "args": {
-                "queries": [":user=老番茄 :date<=30d", ":user=影视飓风 :date<=30d"]
-            },
+            "args": {"queries": ["老番茄 影视飓风 谁更高产 q=vwr"]},
         }
     ]
 
@@ -2149,7 +2137,7 @@ def test_stream_no_cancellation_completes_normally():
 
 
 def test_explicit_video_request_injects_fallback_search_when_model_skips_tools():
-    """Explicit video search requests should not bypass search_videos."""
+    """Without regex fallback injection, direct content is returned as-is when the model skips tools."""
     logger.note("=" * 60)
     logger.note("[TEST] explicit video request fallback search")
 
@@ -2170,16 +2158,16 @@ def test_explicit_video_request_injects_fallback_search_when_model_skips_tools()
 
     assert (
         result["choices"][0]["message"]["content"]
-        == "找到了几条黑神话悟空剧情解析视频。"
+        == "以下是我为你筛到的黑神话悟空剧情解析视频。"
     )
-    mock_search.explore.assert_called_once_with(query="黑神话悟空剧情解析 q=vwr")
-    assert mock_llm.chat.call_count == 2
+    mock_search.explore.assert_not_called()
+    assert mock_llm.chat.call_count == 1
 
     logger.success("[PASS] explicit video request fallback search")
 
 
 def test_extract_creator_discovery_topic_does_not_leak_unrelated_history():
-    """Creator topic extraction should not inherit unrelated previous turns."""
+    """Legacy creator-topic extraction is disabled."""
     logger.note("=" * 60)
     logger.note("[TEST] creator topic extraction ignores unrelated history")
 
@@ -2191,13 +2179,13 @@ def test_extract_creator_discovery_topic_does_not_leak_unrelated_history():
         ]
     )
 
-    assert topic == "何同学"
+    assert topic is None
 
     logger.success("[PASS] creator topic extraction ignores unrelated history")
 
 
 def test_extract_creator_discovery_topic_for_real_account_dialogues():
-    """Creator topic extraction should work for realistic account/matrix dialogues."""
+    """Legacy creator-topic extraction stays disabled across realistic dialogues."""
     logger.note("=" * 60)
     logger.note("[TEST] creator topic extraction for real account dialogues")
 
@@ -2245,7 +2233,7 @@ def test_extract_creator_discovery_topic_for_real_account_dialogues():
     ]
 
     for messages, expected in cases:
-        assert ChatHandler._extract_creator_discovery_topic(messages) == expected
+        assert ChatHandler._extract_creator_discovery_topic(messages) is None
 
     logger.success("[PASS] creator topic extraction for real account dialogues")
 
@@ -2286,7 +2274,7 @@ def test_relation_only_account_query_does_not_promote_to_search_videos():
 
 
 def test_direct_account_query_injects_relation_fallback_when_model_skips_tools():
-    """Direct account/meta queries should still trigger relation fallback when the model emits no tools."""
+    """Without regex fallback injection, direct account queries stay model-driven when no tools are emitted."""
     logger.note("=" * 60)
     logger.note(
         "[TEST] direct account query injects relation fallback when model skips tools"
@@ -2311,14 +2299,10 @@ def test_direct_account_query_injects_relation_fallback_when_model_skips_tools()
         ]
     )
 
-    assert result["choices"][0]["message"]["content"] == "找到了何同学相关的作者候选。"
-    mock_search.search_owners.assert_called_once_with(
-        text="何同学",
-        mode="relation",
-        size=8,
-    )
+    assert result["choices"][0]["message"]["content"] == "我来帮你查一下。"
+    mock_search.search_owners.assert_not_called()
     mock_search.explore.assert_not_called()
-    assert mock_llm.chat.call_count == 2
+    assert mock_llm.chat.call_count == 1
 
     logger.success(
         "[PASS] direct account query injects relation fallback when model skips tools"

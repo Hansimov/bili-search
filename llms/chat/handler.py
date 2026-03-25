@@ -100,69 +100,12 @@ _THINKING_PROMPT = (
 _TOOL_PREFIXES: tuple[str, ...] = tuple(f"<{name}" for name in _SUPPORTED_TOOL_NAMES)
 _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 
-_AUTHOR_TIMELINE_HINT_RE = re.compile(
-    r"最近|最新|新视频|新投稿|近\d+[天日周月]|时间线|投稿列表|更新了什么"
-)
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
     r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
 )
 _AMBIGUOUS_AUTHOR_HINT_RE = re.compile(r"[A-Za-z0-9]")
-_MULTI_CREATOR_COMPARE_RE = re.compile(
-    r"^(?:请|帮我|麻烦)?(?:对比(?:一下)?|比较(?:一下)?|对比下)?(?P<left>.+?)(?:和|跟|与|vs|VS)(?P<right>.+?)(?:最近|近\d+[天日周月]|过去\d+[天日周月])"
-)
-_CREATOR_DISCOVERY_HINT_RE = re.compile(
-    r"UP主|创作者|作者|博主|谁发的|谁做的|谁在做|推荐几个做|有哪些做|做.+内容的"
-)
-_CREATOR_DISCOVERY_REQUEST_RE = re.compile(
-    r"^(推荐几个|推荐一些|有哪些|有没有|帮我找|找几个|找一些|谁在做|谁做的)"
-)
-_CREATOR_DISCOVERY_FOLLOWUP_RE = re.compile(
-    r"更偏|偏.+(呢|吗)|这类|这种|类似的|再来几个|还有吗|主要看"
-)
-_CREATOR_META_HINT_RE = re.compile(
-    r"关联账号|账号矩阵|矩阵号|主号|副号|小号|分身|马甲|别的号|其他账号|另一个号|另一个账号"
-)
-_CREATOR_META_FOLLOWUP_RE = re.compile(
-    r"还有(别的|其他).*(号|账号)|另一个(号|账号)|主号呢|副号呢|小号呢|矩阵呢"
-)
-_GENERIC_CREATOR_REF_RE = re.compile(
-    r"^(他|她|它|ta|TA|这位|这个|这个人|该(?:位)?)(?:UP主|up主|作者|创作者|博主|人)?$"
-)
-_SIMILAR_CREATOR_HINT_RE = re.compile(
-    r"风格接近|类似的UP主|像.+的UP主|同类型.*UP主|同风格|接近的创作者"
-)
-_OFFICIAL_INFO_HINT_RE = re.compile(
-    r"官方更新|更新日志|更新了什么|官方公告|官网|release notes|changelog|发布说明|API 更新|模型更新"
-)
-_BILIBILI_DECODE_HINT_RE = re.compile(
-    r"B站.*解读|B站.*视频|有没有.*解读|有没有.*视频|相关解读|相关视频"
-)
-_EXTERNAL_SEARCH_FOLLOWUP_RE = re.compile(
-    r"更偏开发者|更偏产品|API 侧|应用侧|官网|官方|B站.*解读|有没有.*解读|有没有.*视频"
-)
-_OFFICIAL_ONLY_FOLLOWUP_RE = re.compile(
-    r"只看官网|只看官方|官网就行|官方就行|只要官网|只要官方|先不用B站|先不用视频|不用B站解读|不用看视频"
-)
-_MISSING_RESULTS_HINT_RE = re.compile(
-    r"没收到|未收到|没有收到|搜索结果|工具链路|接口|重试|系统返回"
-)
 _VIDEO_SEARCH_INTENT_RE = re.compile(
     r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放|代表作"
-)
-_EXPLICIT_VIDEO_REQUEST_RE = re.compile(
-    r"^(推荐几条|找几条|帮我找|给我找|想看|推荐|找|有没有)"
-)
-_CREATOR_VIDEO_FOLLOWUP_RE = re.compile(
-    r"^(?:那|那他|那她|那这个|那这位|他|她|这位|这个UP主|这个作者|这个博主).*(?:代表作|最近.*视频|最新.*视频|高播放|热门视频)"
-)
-_MULTI_CREATOR_COMPARE_HINT_RE = re.compile(
-    r"谁更高产|谁发得更多|谁更新更多|谁更新更勤|谁更活跃|哪个更高产"
-)
-_SEARCH_PLEDGE_HINT_RE = re.compile(
-    r"我来搜索|我先帮你搜|我来帮你搜|我先帮你把|我来帮你找|我先帮你找|我来先找|我先找一下|先找一下"
-)
-_EXTERNAL_SEARCH_PLEDGE_HINT_RE = re.compile(
-    r"我先查|我来查|先查一下|先看一下|联网|Google|官网|官方"
 )
 _LEADING_QUERY_FILLER_RE = re.compile(
     r"^(?:请问|麻烦(?:帮我)?|帮我|给我|我想看|我想找|想看|想找|找一下|找找|搜一下|搜搜|查一下|查查|推荐(?:一下|几个|一些)?|看看)+"
@@ -180,6 +123,7 @@ _REDUNDANT_QUERY_TOKENS = {
     "辅助",
     "辅助的",
 }
+_USER_FILTER_RE = re.compile(r":user=([^\s]+)")
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -519,111 +463,23 @@ class ChatHandler:
 
     @classmethod
     def _build_timeline_owner_lookup_commands(cls, messages: list[dict]) -> list[dict]:
-        author_name = cls._extract_timeline_author_name(messages)
-        if not author_name:
-            return []
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not cls._should_resolve_timeline_author_first(author_name, latest_user_text):
-            return []
-        return [
-            {"type": "search_owners", "args": {"text": author_name, "mode": "name"}}
-        ]
+        return []
 
     @classmethod
     def _extract_multi_creator_compare_queries(cls, messages: list[dict]) -> list[str]:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text or not _MULTI_CREATOR_COMPARE_HINT_RE.search(latest_user_text):
-            return []
-
-        match = _MULTI_CREATOR_COMPARE_RE.search(latest_user_text)
-        if not match:
-            return []
-
-        left = match.group("left").strip(" ，。！？?：:")
-        right = match.group("right").strip(" ，。！？?：:")
-        right = re.sub(r"(?:最近|近\d+[天日周月]|过去\d+[天日周月]).*$", "", right).strip(
-            " ，。！？?：:"
-        )
-        if not left or not right:
-            return []
-
-        window = cls._extract_recent_window(latest_user_text)
-        return [f":user={left} :date<={window}", f":user={right} :date<={window}"]
+        return []
 
     @classmethod
     def _normalize_author_timeline_commands(
         cls, commands: list[dict], messages: list[dict]
     ) -> list[dict]:
-        author_name = cls._extract_timeline_author_name(messages)
-        if not author_name:
-            return commands
-
-        latest_user_text = cls._get_latest_user_text(messages)
-        if cls._should_resolve_timeline_author_first(author_name, latest_user_text):
-            return commands
-
-        normalized = []
-        window = cls._extract_recent_window(cls._get_latest_user_text(messages) or "")
-        timeline_query = f":user={author_name} :date<={window}"
-        for command in commands or []:
-            if command.get("type") != "search_videos":
-                normalized.append(command)
-                continue
-
-            args = dict(command.get("args") or {})
-            queries = args.get("queries")
-            if isinstance(queries, str):
-                queries = [queries]
-            if not isinstance(queries, list) or not queries:
-                normalized.append(command)
-                continue
-
-            normalized.append(
-                {
-                    "type": "search_videos",
-                    "args": {
-                        **args,
-                        "queries": [timeline_query],
-                    },
-                }
-            )
-        return normalized
+        return commands
 
     @classmethod
     def _normalize_multi_creator_compare_commands(
         cls, commands: list[dict], messages: list[dict]
     ) -> list[dict]:
-        compare_queries = cls._extract_multi_creator_compare_queries(messages)
-        if not compare_queries:
-            return commands
-
-        normalized = []
-        for command in commands or []:
-            if command.get("type") != "search_videos":
-                normalized.append(command)
-                continue
-
-            args = dict(command.get("args") or {})
-            queries = args.get("queries")
-            if isinstance(queries, str):
-                queries = [queries]
-            if not isinstance(queries, list) or not queries:
-                normalized.append(command)
-                continue
-            if all(":user=" in str(query) for query in queries) and len(queries) >= 2:
-                normalized.append(command)
-                continue
-
-            normalized.append(
-                {
-                    "type": "search_videos",
-                    "args": {
-                        **args,
-                        "queries": compare_queries,
-                    },
-                }
-            )
-        return normalized
+        return commands
 
     @classmethod
     def _ensure_author_timeline_context(
@@ -731,6 +587,180 @@ class ChatHandler:
                 }
             )
         return normalized_commands
+
+    @staticmethod
+    def _extract_user_filters_from_query(query: str) -> list[str]:
+        text = str(query or "")
+        if ":uid=" in text:
+            return []
+        return [name.strip() for name in _USER_FILTER_RE.findall(text) if name.strip()]
+
+    @classmethod
+    def _extract_owner_candidates_from_commands(cls, commands: list[dict]) -> list[str]:
+        names: list[str] = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                continue
+            args = command.get("args") or {}
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list):
+                continue
+            for query in queries:
+                for name in cls._extract_user_filters_from_query(str(query)):
+                    if not cls._should_resolve_timeline_author_first(name, name):
+                        continue
+                    if name not in names:
+                        names.append(name)
+        return names
+
+    @classmethod
+    def _extract_resolved_owner_map(cls, results: list[dict] | None) -> dict[str, dict]:
+        resolved: dict[str, dict] = {}
+        for result_item in results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            if not source_text or not owners:
+                continue
+            top_owner = owners[0]
+            key = cls._normalize_name_key(source_text)
+            if not key:
+                continue
+            resolved[key] = {
+                "source_text": source_text,
+                "name": str(top_owner.get("name") or "").strip(),
+                "mid": top_owner.get("mid"),
+            }
+        return resolved
+
+    @classmethod
+    def _build_owner_resolution_commands(
+        cls,
+        commands: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        resolved_map = cls._extract_resolved_owner_map(last_tool_results)
+        in_flight = {
+            cls._normalize_name_key(str((command.get("args") or {}).get("text") or ""))
+            for command in commands or []
+            if command.get("type") == "search_owners"
+        }
+        unresolved = []
+        for name in cls._extract_owner_candidates_from_commands(commands):
+            name_key = cls._normalize_name_key(name)
+            if name_key in resolved_map or name_key in in_flight:
+                continue
+            unresolved.append(name)
+        return [
+            {"type": "search_owners", "args": {"text": name, "mode": "name"}}
+            for name in unresolved
+        ]
+
+    @classmethod
+    def _rewrite_search_video_commands_with_owner_results(
+        cls,
+        commands: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        resolved_map = cls._extract_resolved_owner_map(last_tool_results)
+        if not resolved_map:
+            return commands
+
+        rewritten = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                rewritten.append(command)
+                continue
+            args = dict(command.get("args") or {})
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list) or not queries:
+                rewritten.append(command)
+                continue
+
+            rewritten_queries: list[str] = []
+            for query in queries:
+                query_text = str(query or "")
+                updated_query = query_text
+                for name in cls._extract_user_filters_from_query(query_text):
+                    resolved_owner = resolved_map.get(cls._normalize_name_key(name))
+                    if not resolved_owner or not resolved_owner.get("mid"):
+                        continue
+                    updated_query = updated_query.replace(
+                        f":user={name}",
+                        f":uid={int(resolved_owner['mid'])}",
+                    )
+                if updated_query not in rewritten_queries:
+                    rewritten_queries.append(updated_query)
+
+            rewritten.append(
+                {
+                    "type": "search_videos",
+                    "args": {
+                        **args,
+                        "queries": rewritten_queries,
+                    },
+                }
+            )
+        return rewritten
+
+    @classmethod
+    def _extract_recent_assistant_commands(cls, messages: list[dict]) -> list[dict]:
+        for message in reversed(messages or []):
+            if message.get("role") != "assistant":
+                continue
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            commands = cls._parse_tool_commands(content)
+            if commands:
+                return commands
+        return []
+
+    @classmethod
+    def _continue_intermediate_plan(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        if commands or not last_tool_results:
+            return commands
+
+        intermediate_tool_types = {
+            result_item.get("type")
+            for result_item in last_tool_results
+            if result_item.get("type")
+        }
+        if not intermediate_tool_types.intersection(
+            {"search_owners", "related_tokens_by_tokens"}
+        ):
+            return commands
+
+        recovered = cls._extract_recent_assistant_commands(messages)
+        if not recovered:
+            return commands
+
+        recovered = cls._normalize_search_video_commands(recovered)
+        recovered = cls._rewrite_search_video_commands_with_owner_results(
+            recovered,
+            last_tool_results,
+        )
+        recovered = cls._normalize_token_assisted_search_commands(
+            recovered,
+            messages,
+            last_tool_results,
+        )
+        if not any(command.get("type") == "search_videos" for command in recovered):
+            return commands
+        return recovered
 
     @classmethod
     def _extract_token_rewrite_from_results(
@@ -985,81 +1015,19 @@ class ChatHandler:
 
     @classmethod
     def _extract_creator_topic_from_text(cls, text: str) -> str | None:
-        topic = (text or "").strip()
-        if not topic:
-            return None
-        meta_match = re.search(
-            r"^(?P<name>.+?)(?:有哪[些个]|有没有|都有哪些|还有)?(?:关联账号|账号矩阵|矩阵号|主号|副号|小号|分身|马甲|别的号|其他账号|另一个号|另一个账号).*$",
-            topic,
-        )
-        if meta_match:
-            name = meta_match.group("name").strip(" ，。！？?：:")
-            name = re.sub(r"^(那|那位|那这个|那这位)", "", name).strip(" ，。！？?：:")
-            if _GENERIC_CREATOR_REF_RE.fullmatch(name):
-                return None
-            return name or None
-        request_match = re.search(
-            r"^(?P<topic>.+?)(?:有哪[些个]|有没有|找几个|找一些|推荐几个|推荐一些|谁在做|谁做的).*(?:UP主|创作者|作者|博主).*$",
-            topic,
-        )
-        if request_match:
-            candidate = request_match.group("topic").strip(" ，。！？?：:")
-            candidate = re.sub(r"^(那|那位|那这个|那这位)", "", candidate).strip(" ，。！？?：:")
-            if candidate:
-                return candidate
-        topic = re.sub(
-            r"^(推荐几个|推荐一些|有哪些|有没有|谁发的|谁做的|帮我找|找一下|找找|找几个|找一些)",
-            "",
-            topic,
-        )
-        topic = re.sub(r"B站上.*$", "", topic)
-        topic = re.sub(r"(做|讲|聊)", "", topic, count=1)
-        topic = re.sub(r"(内容)?的?(UP主|创作者|作者|博主).*$", "", topic)
-        topic = re.sub(r"是谁发的.*$", "", topic)
-        topic = topic.strip(" ，。！？?：:")
-        topic = re.sub(r"^(那|那位|那这个|那这位)", "", topic).strip(" ，。！？?：:")
-        if _GENERIC_CREATOR_REF_RE.fullmatch(topic):
-            return None
-        if _CREATOR_META_FOLLOWUP_RE.search(topic) and re.match(r"^(他|她|它|ta|TA)", topic):
-            return None
-        return topic or None
+        return None
 
     @classmethod
     def _extract_similar_creator_seed(cls, messages: list[dict]) -> str | None:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
-            return None
-
-        patterns = [
-            r"(?:和|跟)(?P<name>.+?)(?:风格接近|类似|同类型|同风格)",
-            r"像(?P<name>.+?)这样的(?:UP主|创作者|作者|博主)",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, latest_user_text)
-            if not match:
-                continue
-            name = match.group("name").strip(" ，。！？?：:")
-            if name:
-                return name
         return None
 
     @classmethod
     def _extract_external_subject_from_text(cls, text: str) -> str | None:
-        subject = (text or "").strip()
-        if not subject:
-            return None
-        subject = re.sub(r"B站上有没有.*$", "", subject)
-        subject = re.sub(r"有没有.*解读.*$", "", subject)
-        subject = re.sub(r"最近有哪些官方更新.*$", "", subject)
-        subject = re.sub(r"官方更新|更新日志|更新了什么|官方公告|官网", "", subject)
-        subject = re.sub(r"release notes|changelog|发布说明|模型更新", "", subject, flags=re.I)
-        subject = subject.strip(" ，。！？?：:")
-        return subject or None
+        return None
 
     @classmethod
     def _has_recent_user_intent(cls, messages: list[dict], pattern: re.Pattern, limit: int = 4) -> bool:
-        recent_user_texts = cls._get_recent_user_texts(messages, limit=limit)
-        return any(pattern.search(text) for text in recent_user_texts)
+        return False
 
     def _fallback_tool_commands(
         self,
@@ -1067,83 +1035,11 @@ class ChatHandler:
         messages: list[dict],
         content: str = "",
     ) -> list[dict]:
-        if commands:
-            return commands
-        if self._has_tool_results_context(messages):
-            return commands
-        latest_user_text = self._get_latest_user_text(messages)
-        if not latest_user_text:
-            return commands
-        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text) or _BILIBILI_DECODE_HINT_RE.search(
-            latest_user_text
-        ):
-            return commands
-        if not _AUTHOR_TIMELINE_HINT_RE.search(latest_user_text):
-            return commands
-        if not _MISSING_RESULTS_HINT_RE.search(content or ""):
-            return commands
-
-        author_name = self._extract_timeline_author_name(messages)
-        if not author_name:
-            return commands
-
-        owner_lookup_commands = self._build_timeline_owner_lookup_commands(messages)
-        if owner_lookup_commands:
-            if self.verbose:
-                logger.warn(
-                    "> Injecting owner-lookup fallback before author timeline video search"
-                )
-            return owner_lookup_commands
-
-        fallback = [
-            {
-                "type": "search_videos",
-                "args": {"queries": [f":user={author_name} :date<=15d"]},
-            }
-        ]
-        if self.verbose:
-            logger.warn(
-                "> Injecting fallback tool commands for explicit author timeline request"
-            )
-        return fallback
+        return commands
 
     @classmethod
     def _extract_creator_discovery_topic(cls, messages: list[dict]) -> str | None:
-        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
-        if not recent_user_texts:
-            return None
-
-        latest_user_text = recent_user_texts[0]
-        current_topic = cls._extract_creator_topic_from_text(latest_user_text)
-        has_explicit_latest_creator_intent = bool(
-            _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
-            or _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
-            or _CREATOR_META_HINT_RE.search(latest_user_text)
-        )
-        if current_topic and current_topic != latest_user_text and has_explicit_latest_creator_intent:
-            return current_topic
-
-        refinement = None
-        has_creator_followup = bool(
-            _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)
-        )
-        has_meta_followup = bool(_CREATOR_META_FOLLOWUP_RE.search(latest_user_text))
-        has_followup_refinement = has_creator_followup or has_meta_followup
-        if has_creator_followup:
-            refinement = cls._clean_followup_refinement(latest_user_text)
-
-        if current_topic and has_explicit_latest_creator_intent and not has_followup_refinement:
-            return current_topic
-
-        for previous_text in recent_user_texts[1:] if has_followup_refinement else []:
-            previous_topic = cls._extract_creator_topic_from_text(previous_text)
-            if not previous_topic:
-                continue
-            if refinement and refinement not in previous_topic:
-                return f"{previous_topic} {refinement}".strip()
-            return previous_topic
-
-        return current_topic or refinement
+        return None
 
     def _fallback_creator_discovery_commands(
         self,
@@ -1151,163 +1047,23 @@ class ChatHandler:
         messages: list[dict],
         content: str = "",
     ) -> list[dict]:
-        if commands:
-            return commands
-        if self._has_tool_results_context(messages):
-            return commands
-        recent_user_texts = self._get_recent_user_texts(messages, limit=4)
-        if not recent_user_texts:
-            return commands
-        latest_user_text = recent_user_texts[0]
-        has_creator_context = bool(
-            _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
-            or _CREATOR_META_HINT_RE.search(latest_user_text)
-        )
-        if not has_creator_context and (
-            _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)
-            or _CREATOR_META_FOLLOWUP_RE.search(latest_user_text)
-        ):
-            has_creator_context = any(
-                _CREATOR_DISCOVERY_HINT_RE.search(text)
-                or _CREATOR_META_HINT_RE.search(text)
-                for text in recent_user_texts[1:]
-            )
-        has_followup_context = bool(
-            _CREATOR_DISCOVERY_FOLLOWUP_RE.search(latest_user_text)
-            or _CREATOR_META_FOLLOWUP_RE.search(latest_user_text)
-        ) and any(
-            _CREATOR_DISCOVERY_HINT_RE.search(text)
-            or _CREATOR_META_HINT_RE.search(text)
-            for text in recent_user_texts[1:]
-        )
-        if not has_creator_context and not has_followup_context:
-            return commands
-        if (
-            _VIDEO_SEARCH_INTENT_RE.search(latest_user_text)
-            and not _CREATOR_DISCOVERY_HINT_RE.search(latest_user_text)
-            and not _CREATOR_META_HINT_RE.search(latest_user_text)
-            and not has_followup_context
-        ):
-            return commands
-        is_explicit_creator_request = bool(
-            _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
-            or _CREATOR_META_HINT_RE.search(latest_user_text)
-        )
-        if not (
-            _MISSING_RESULTS_HINT_RE.search(content or "")
-            or _SEARCH_PLEDGE_HINT_RE.search(content or "")
-            or is_explicit_creator_request
-            or has_followup_context
-        ):
-            return commands
-        topic = self._extract_creator_discovery_topic(messages)
-        if not topic:
-            return commands
-        owner_mode = "relation" if _CREATOR_META_HINT_RE.search(latest_user_text) else "topic"
-        fallback = [{"type": "search_owners", "args": {"text": topic, "mode": owner_mode}}]
-        if not _CREATOR_META_HINT_RE.search(latest_user_text):
-            fallback.append(
-                {"type": "search_videos", "args": {"queries": [f"{topic} q=vwr"]}}
-            )
-        if self.verbose:
-            logger.warn(
-                "> Injecting fallback relation command for creator-discovery request"
-            )
-        return fallback
+        return commands
 
     @classmethod
     def _extract_external_search_query(cls, messages: list[dict]) -> str | None:
-        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
-        if not recent_user_texts:
-            return None
-        latest_user_text = recent_user_texts[0]
-        official_only_followup = cls._wants_official_only_followup(messages)
-        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text) and not cls._wants_official_only_followup(
-            messages
-        ):
-            query = re.sub(r"B站上有没有.*$", "", latest_user_text)
-            query = re.sub(r"有没有.*解读.*$", "", query)
-            query = query.strip(" ，。！？?：:")
-            return query or latest_user_text.strip(" ，。！？?：:") or None
-
-        latest_focus = None if official_only_followup else cls._clean_followup_refinement(latest_user_text)
-        for previous_text in recent_user_texts[1:]:
-            previous_subject = cls._extract_external_subject_from_text(previous_text)
-            if not previous_subject:
-                continue
-            if latest_focus and latest_focus not in previous_subject:
-                return f"{previous_subject} {latest_focus} 最近有哪些官方更新".strip()
-            return f"{previous_subject} 最近有哪些官方更新"
-
-        latest_subject = cls._extract_external_subject_from_text(latest_user_text)
-        if latest_subject:
-            if latest_focus and latest_focus not in latest_subject:
-                return f"{latest_subject} {latest_focus} 最近有哪些官方更新".strip()
-            return f"{latest_subject} 最近有哪些官方更新"
         return None
 
     @classmethod
     def _wants_official_only_followup(cls, messages: list[dict]) -> bool:
-        latest_user_text = cls._get_latest_user_text(messages)
-        return bool(latest_user_text and _OFFICIAL_ONLY_FOLLOWUP_RE.search(latest_user_text))
+        return False
 
     @classmethod
     def _extract_creator_video_followup_query(cls, messages: list[dict]) -> str | None:
-        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
-        if len(recent_user_texts) < 2:
-            return None
-
-        latest_user_text = recent_user_texts[0]
-        if not _CREATOR_VIDEO_FOLLOWUP_RE.search(latest_user_text):
-            return None
-
-        subject_name = None
-        for previous_text in recent_user_texts[1:]:
-            subject_name = cls._extract_creator_topic_from_text(previous_text)
-            if subject_name:
-                break
-        if not subject_name:
-            return None
-
-        query = f":user={subject_name}"
-        if "最近" in latest_user_text or "最新" in latest_user_text:
-            query = f"{query} :date<=15d"
-        return query
+        return None
 
     @classmethod
     def _extract_bilibili_topic_queries(cls, messages: list[dict]) -> list[str]:
-        recent_user_texts = cls._get_recent_user_texts(messages, limit=4)
-        if not recent_user_texts:
-            return []
-        latest_user_text = recent_user_texts[0]
-        base_query = None
-        refinement = None
-
-        if _OFFICIAL_INFO_HINT_RE.search(latest_user_text):
-            base_query = cls._extract_external_subject_from_text(latest_user_text)
-        else:
-            refinement = cls._clean_followup_refinement(latest_user_text)
-            for previous_text in recent_user_texts[1:]:
-                previous_subject = cls._extract_external_subject_from_text(previous_text)
-                if previous_subject:
-                    base_query = previous_subject
-                    break
-            if not base_query:
-                base_query = cls._extract_external_subject_from_text(latest_user_text)
-        if not base_query:
-            return []
-
-        query_candidates = []
-        for raw_query in [
-            base_query,
-            f"{base_query} {refinement}".strip() if refinement else None,
-        ]:
-            if not raw_query:
-                continue
-            query = raw_query if "q=" in raw_query else f"{raw_query} q=vwr"
-            if query not in query_candidates:
-                query_candidates.append(query)
-        return query_candidates
+        return []
 
     def _fallback_external_search_commands(
         self,
@@ -1315,47 +1071,7 @@ class ChatHandler:
         messages: list[dict],
         content: str = "",
     ) -> list[dict]:
-        if commands:
-            return commands
-        if self._has_tool_results_context(messages):
-            return commands
-        recent_user_texts = self._get_recent_user_texts(messages, limit=4)
-        if not recent_user_texts:
-            return commands
-        latest_user_text = recent_user_texts[0]
-        has_external_context = bool(
-            _OFFICIAL_INFO_HINT_RE.search(latest_user_text)
-            or _BILIBILI_DECODE_HINT_RE.search(latest_user_text)
-        )
-        if not has_external_context and _EXTERNAL_SEARCH_FOLLOWUP_RE.search(latest_user_text):
-            has_external_context = any(
-                _OFFICIAL_INFO_HINT_RE.search(text)
-                or _BILIBILI_DECODE_HINT_RE.search(text)
-                for text in recent_user_texts[1:]
-            )
-        if not has_external_context:
-            return commands
-        if not (
-            _MISSING_RESULTS_HINT_RE.search(content or "")
-            or _EXTERNAL_SEARCH_PLEDGE_HINT_RE.search(content or "")
-        ):
-            return commands
-        google_query = self._extract_external_search_query(messages)
-        bilibili_queries = self._extract_bilibili_topic_queries(messages)
-        fallback = []
-        if google_query:
-            fallback.append({"type": "search_google", "args": {"query": google_query}})
-        wants_bilibili_decode = not self._wants_official_only_followup(messages) and (
-            bool(_BILIBILI_DECODE_HINT_RE.search(latest_user_text))
-            or any(_BILIBILI_DECODE_HINT_RE.search(text) for text in recent_user_texts[1:])
-        )
-        if bilibili_queries and wants_bilibili_decode:
-            fallback.append({"type": "search_videos", "args": {"queries": bilibili_queries}})
-        if self.verbose and fallback:
-            logger.warn(
-                "> Injecting fallback external-search commands for official-update request"
-            )
-        return fallback or commands
+        return commands
 
     def _fallback_similar_creator_commands(
         self,
@@ -1363,32 +1079,7 @@ class ChatHandler:
         messages: list[dict],
         content: str = "",
     ) -> list[dict]:
-        if commands:
-            return commands
-        if self._has_tool_results_context(messages):
-            return commands
-        latest_user_text = self._get_latest_user_text(messages)
-        if not latest_user_text or not _SIMILAR_CREATOR_HINT_RE.search(latest_user_text):
-            return commands
-        seed_name = self._extract_similar_creator_seed(messages)
-        if not seed_name:
-            return commands
-        if not (
-            _MISSING_RESULTS_HINT_RE.search(content or "")
-            or _SEARCH_PLEDGE_HINT_RE.search(content or "")
-            or _CREATOR_DISCOVERY_REQUEST_RE.search(latest_user_text)
-            or "推荐理由" in latest_user_text
-        ):
-            return commands
-        fallback = [
-            {"type": "search_owners", "args": {"text": seed_name, "mode": "relation"}},
-            {"type": "search_videos", "args": {"queries": [f"{seed_name} q=vwr"]}},
-        ]
-        if self.verbose:
-            logger.warn(
-                "> Injecting fallback relation command for similar-creator request"
-            )
-        return fallback
+        return commands
 
     @staticmethod
     def _is_relation_command(cmd: dict) -> bool:
@@ -1398,24 +1089,7 @@ class ChatHandler:
     def _derive_relation_search_queries(
         cls, commands: list[dict], messages: list[dict]
     ) -> list[str]:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if latest_user_text and _CREATOR_META_HINT_RE.search(latest_user_text):
-            return []
-
-        queries = []
-        topic = cls._extract_creator_discovery_topic(messages)
-        if topic:
-            queries.append(f"{topic} q=vwr")
-
-        seed_name = cls._extract_similar_creator_seed(messages)
-        if seed_name:
-            queries.append(f"{seed_name} q=vwr")
-
-        deduped = []
-        for query in queries:
-            if query and query not in deduped:
-                deduped.append(query)
-        return deduped[:2]
+        return []
 
     @classmethod
     def _promote_relation_only_commands(
@@ -1438,32 +1112,11 @@ class ChatHandler:
 
     @classmethod
     def _should_fallback_video_search(cls, messages: list[dict], content: str) -> bool:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
-            return False
-        if not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
-            return False
-        if _EXPLICIT_VIDEO_REQUEST_RE.search(latest_user_text):
-            return True
-        return bool(_SEARCH_PLEDGE_HINT_RE.search(content or "")) or bool(
-            _MISSING_RESULTS_HINT_RE.search(content or "")
-        )
+        return False
 
     @classmethod
     def _extract_video_search_query(cls, messages: list[dict]) -> str | None:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
-            return None
-        query = re.sub(
-            r"^(推荐几条|找几条|帮我找|给我找|想看|推荐|找)", "", latest_user_text
-        )
-        query = query.strip(" ，。！？?：:")
-        query = re.sub(r"视频$", "", query).strip()
-        if not query:
-            return None
-        if "q=" not in query:
-            query = f"{query} q=vwr"
-        return query
+        return None
 
     def _fallback_video_search_commands(
         self,
@@ -1471,36 +1124,7 @@ class ChatHandler:
         messages: list[dict],
         content: str = "",
     ) -> list[dict]:
-        if commands:
-            return commands
-        if self._has_tool_results_context(messages):
-            return commands
-        compare_queries = self._extract_multi_creator_compare_queries(messages)
-        if compare_queries and (
-            _SEARCH_PLEDGE_HINT_RE.search(content or "")
-            or _MISSING_RESULTS_HINT_RE.search(content or "")
-            or _MULTI_CREATOR_COMPARE_HINT_RE.search(self._get_latest_user_text(messages) or "")
-        ):
-            return [{"type": "search_videos", "args": {"queries": compare_queries}}]
-        creator_followup_query = self._extract_creator_video_followup_query(messages)
-        if creator_followup_query and (
-            _SEARCH_PLEDGE_HINT_RE.search(content or "")
-            or _MISSING_RESULTS_HINT_RE.search(content or "")
-            or _CREATOR_VIDEO_FOLLOWUP_RE.search(self._get_latest_user_text(messages) or "")
-        ):
-            return [{"type": "search_videos", "args": {"queries": [creator_followup_query]}}]
-        if not self._should_fallback_video_search(messages, content):
-            return commands
-
-        query = self._extract_video_search_query(messages)
-        if not query:
-            return commands
-        fallback = [{"type": "search_videos", "args": {"queries": [query]}}]
-        if self.verbose:
-            logger.warn(
-                "> Injecting fallback search_videos command for explicit video search request"
-            )
-        return fallback
+        return commands
 
     @staticmethod
     def _strip_tool_commands(content: str) -> str:
@@ -1670,29 +1294,7 @@ class ChatHandler:
             executed_signatures.add(cls._command_signature(command))
 
     def _preflight_tool_commands(self, messages: list[dict]) -> list[dict]:
-        if self._has_tool_results_context(messages):
-            return []
-        recent_user_texts = self._get_recent_user_texts(messages, limit=4)
-        if not recent_user_texts:
-            return []
-        latest_user_text = recent_user_texts[0]
-        has_external_followup = bool(_EXTERNAL_SEARCH_FOLLOWUP_RE.search(latest_user_text)) and any(
-            _OFFICIAL_INFO_HINT_RE.search(text)
-            or _BILIBILI_DECODE_HINT_RE.search(text)
-            for text in recent_user_texts[1:]
-        )
-        has_direct_external_request = bool(
-            _OFFICIAL_INFO_HINT_RE.search(latest_user_text)
-            or _BILIBILI_DECODE_HINT_RE.search(latest_user_text)
-        )
-        if not has_external_followup and not has_direct_external_request:
-            timeline_lookup_commands = self._build_timeline_owner_lookup_commands(messages)
-            if timeline_lookup_commands:
-                return timeline_lookup_commands
-            return []
-        return self._fallback_external_search_commands(
-            [], messages=messages, content="我先查一下官方更新，再看看 B 站解读。"
-        )
+        return []
 
     @staticmethod
     def _summarize_context(messages: list[dict]) -> dict:
@@ -1832,6 +1434,7 @@ class ChatHandler:
         executed_signatures: set[str] = set()
         final_content = None
         last_tool_results: list[dict] | None = None
+        duplicate_tool_nudged = False
 
         preflight_commands = self._preflight_tool_commands(full_messages)
         if preflight_commands:
@@ -1868,37 +1471,18 @@ class ChatHandler:
             last_usage = response.usage
 
             content = response.content or ""
-            commands = self._fallback_tool_commands(
-                self._parse_tool_commands(content),
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_creator_discovery_commands(
+            commands = self._parse_tool_commands(content)
+            commands = self._normalize_search_video_commands(commands)
+            commands = self._rewrite_search_video_commands_with_owner_results(
                 commands,
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_external_search_commands(
-                commands,
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_similar_creator_commands(
-                commands,
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_video_search_commands(
-                commands,
-                messages=full_messages,
-                content=content,
+                last_tool_results,
             )
             commands = self._normalize_token_assisted_search_commands(
                 commands,
                 full_messages,
                 last_tool_results,
             )
-            commands = self._normalize_owner_assisted_timeline_commands(
+            commands = self._continue_intermediate_plan(
                 commands,
                 full_messages,
                 last_tool_results,
@@ -1908,15 +1492,16 @@ class ChatHandler:
                 full_messages,
                 last_tool_results,
             )
-            commands = self._fallback_owner_assisted_timeline_commands(
+            commands = self._normalize_search_video_commands(commands)
+            owner_resolution_commands = self._build_owner_resolution_commands(
                 commands,
-                full_messages,
                 last_tool_results,
             )
-            commands = self._normalize_author_timeline_commands(commands, full_messages)
-            commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
-            commands = self._promote_relation_only_commands(commands, full_messages)
-            commands = self._normalize_search_video_commands(commands)
+            if owner_resolution_commands:
+                passthrough_commands = [
+                    command for command in commands if command.get("type") != "search_videos"
+                ]
+                commands = passthrough_commands + owner_resolution_commands
             commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
             usage_trace_entries.append(
                 self._build_usage_trace_entry(
@@ -1930,6 +1515,30 @@ class ChatHandler:
 
             if duplicate_count and not commands:
                 full_messages.append({"role": "assistant", "content": content})
+                if duplicate_tool_nudged:
+                    logger.warn(
+                        "> Duplicate tool commands repeated after nudge, forcing content generation"
+                    )
+                    full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
+                    response = self.llm_client.chat(
+                        messages=full_messages,
+                        temperature=temp,
+                    )
+                    self._accumulate_usage(total_usage, response.usage)
+                    last_usage = response.usage
+                    usage_trace_entries.append(
+                        self._build_usage_trace_entry(
+                            phase="forced_content",
+                            iteration=iteration + 2,
+                            messages=full_messages,
+                            usage=response.usage,
+                            commands=[],
+                        )
+                    )
+                    final_content = response.content or final_content
+                    break
+
+                duplicate_tool_nudged = True
                 full_messages.append({"role": "user", "content": _DUPLICATE_TOOL_NUDGE})
                 if self.verbose:
                     logger.warn(
@@ -1938,6 +1547,7 @@ class ChatHandler:
                 continue
 
             if commands:
+                duplicate_tool_nudged = False
                 tool_names = [cmd["type"] for cmd in commands]
                 tool_events.append({"iteration": iteration + 1, "tools": tool_names})
                 results = self._execute_tool_commands(commands)
@@ -2122,6 +1732,7 @@ class ChatHandler:
         # Collect analysis texts from tool-calling iterations so we can
         # strip duplicate leading text from the final answer.
         tool_analyses: list[str] = []
+        duplicate_tool_nudged = False
 
         for iteration in range(resolved_iterations):
             if _is_cancelled():
@@ -2243,37 +1854,18 @@ class ChatHandler:
             last_usage = iter_usage
 
             content = accumulated_content
-            commands = self._fallback_tool_commands(
-                self._parse_tool_commands(content),
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_creator_discovery_commands(
+            commands = self._parse_tool_commands(content)
+            commands = self._normalize_search_video_commands(commands)
+            commands = self._rewrite_search_video_commands_with_owner_results(
                 commands,
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_external_search_commands(
-                commands,
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_similar_creator_commands(
-                commands,
-                messages=full_messages,
-                content=content,
-            )
-            commands = self._fallback_video_search_commands(
-                commands,
-                messages=full_messages,
-                content=content,
+                last_tool_results,
             )
             commands = self._normalize_token_assisted_search_commands(
                 commands,
                 full_messages,
                 last_tool_results,
             )
-            commands = self._normalize_owner_assisted_timeline_commands(
+            commands = self._continue_intermediate_plan(
                 commands,
                 full_messages,
                 last_tool_results,
@@ -2283,15 +1875,16 @@ class ChatHandler:
                 full_messages,
                 last_tool_results,
             )
-            commands = self._fallback_owner_assisted_timeline_commands(
+            commands = self._normalize_search_video_commands(commands)
+            owner_resolution_commands = self._build_owner_resolution_commands(
                 commands,
-                full_messages,
                 last_tool_results,
             )
-            commands = self._normalize_author_timeline_commands(commands, full_messages)
-            commands = self._normalize_multi_creator_compare_commands(commands, full_messages)
-            commands = self._promote_relation_only_commands(commands, full_messages)
-            commands = self._normalize_search_video_commands(commands)
+            if owner_resolution_commands:
+                passthrough_commands = [
+                    command for command in commands if command.get("type") != "search_videos"
+                ]
+                commands = passthrough_commands + owner_resolution_commands
             commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
             usage_trace_entries.append(
                 self._build_usage_trace_entry(
@@ -2305,6 +1898,14 @@ class ChatHandler:
 
             if duplicate_count and not commands:
                 full_messages.append({"role": "assistant", "content": content})
+                if duplicate_tool_nudged:
+                    logger.warn(
+                        "> Duplicate tool commands repeated after nudge, forcing content generation"
+                    )
+                    full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
+                    break
+
+                duplicate_tool_nudged = True
                 full_messages.append({"role": "user", "content": _DUPLICATE_TOOL_NUDGE})
                 if self.verbose:
                     logger.warn(
@@ -2313,6 +1914,7 @@ class ChatHandler:
                 continue
 
             if commands:
+                duplicate_tool_nudged = False
                 had_tools = True
 
                 if _is_cancelled():

@@ -50,6 +50,7 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
     assert "对比一下作者甲和作者乙最近一个月发布的视频，谁更高产" in prompt
     assert "红警08最近发了什么视频" in prompt
     assert '<search_owners text="红警08" mode="name"/>' in prompt
+    assert '<search_owners text="硬件评测" mode="topic"/>' in prompt
     assert (
         "<search_videos queries="
         "'"
@@ -70,6 +71,7 @@ def test_build_system_prompt_emphasizes_search_videos_as_primary_route():
         "用户最终要视频、代表作、时间线、热门、教程、解读、对比时，默认先用它" in prompt
     )
     assert "不要直接写 `:user=原词`，先用 `search_owners` 确认作者" in prompt
+    assert "不要补写猜测的作者主页链接或空链接" in prompt
 
 
 def test_build_system_prompt_requires_entity_focused_video_queries():
