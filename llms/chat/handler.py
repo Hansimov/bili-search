@@ -107,7 +107,6 @@ _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
     r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
 )
-_AMBIGUOUS_AUTHOR_HINT_RE = re.compile(r"[A-Za-z0-9]")
 _VIDEO_SEARCH_INTENT_RE = re.compile(
     r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放|代表作"
 )
@@ -131,6 +130,7 @@ _USER_FILTER_RE = re.compile(r":user=([^\s]+)")
 _IDENTITY_OWNER_QUERY_RE = re.compile(
     r"^(?:请问|想知道|想了解|麻烦问下|麻烦问一下|能说说|告诉我)?\s*(?P<name>.+?)\s*(?:是谁|是什么人|是哪个up主|是哪位up主|是哪个博主|是哪位博主|是什么账号|是做什么的)(?:[呢吗嘛呀啊?？!！]*)$"
 )
+_TOKEN_OPTION_CANONICAL_RE = re.compile(r"[^A-Za-z0-9\u4e00-\u9fff]+")
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -623,42 +623,6 @@ class ChatHandler:
         return sample_view >= 50000
 
     @classmethod
-    def _should_resolve_timeline_author_first(
-        cls, author_name: str, latest_user_text: str = ""
-    ) -> bool:
-        normalized = cls._normalize_name_key(author_name)
-        if not normalized:
-            return False
-        if _AMBIGUOUS_AUTHOR_HINT_RE.search(normalized):
-            return True
-        if re.fullmatch(r"[\u4e00-\u9fff]{2,3}", normalized):
-            return True
-        latest_text = (latest_user_text or "").strip()
-        if re.search(r"对应|到底是|是不是|应该是|可能是|还是|节目|系列|作品", latest_text):
-            return True
-        return False
-
-    @classmethod
-    def _build_timeline_owner_lookup_commands(cls, messages: list[dict]) -> list[dict]:
-        return []
-
-    @classmethod
-    def _extract_multi_creator_compare_queries(cls, messages: list[dict]) -> list[str]:
-        return []
-
-    @classmethod
-    def _normalize_author_timeline_commands(
-        cls, commands: list[dict], messages: list[dict]
-    ) -> list[dict]:
-        return commands
-
-    @classmethod
-    def _normalize_multi_creator_compare_commands(
-        cls, commands: list[dict], messages: list[dict]
-    ) -> list[dict]:
-        return commands
-
-    @classmethod
     def _ensure_author_timeline_context(
         cls, messages: list[dict], content: str
     ) -> str:
@@ -900,7 +864,7 @@ class ChatHandler:
         last_tool_results: list[dict] | None,
     ) -> list[dict]:
         latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text or not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
+        if not latest_user_text or not cls._wants_video_results(messages):
             return []
 
         hint_tokens = cls._collect_owner_context_hints(last_tool_results)
@@ -977,7 +941,7 @@ class ChatHandler:
             return commands
 
         latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text or not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
+        if not latest_user_text or not cls._wants_video_results(messages, commands):
             return commands
 
         contextual_owner_commands = cls._build_contextual_owner_search_commands(
@@ -1028,6 +992,8 @@ class ChatHandler:
             cls._normalize_name_key(str((command.get("args") or {}).get("text") or ""))
             for command in commands or []
             if command.get("type") == "search_owners"
+            and str((command.get("args") or {}).get("mode") or "auto").lower()
+            in {"auto", "name"}
         }
         unresolved = []
         for name in cls._extract_owner_candidates_from_commands(commands):
@@ -1102,6 +1068,29 @@ class ChatHandler:
                 return commands
         return []
 
+    @staticmethod
+    def _commands_target_videos(commands: list[dict] | None) -> bool:
+        return any(command.get("type") == "search_videos" for command in commands or [])
+
+    @classmethod
+    def _wants_video_results(
+        cls,
+        messages: list[dict],
+        commands: list[dict] | None = None,
+    ) -> bool:
+        if cls._commands_target_videos(commands):
+            return True
+        recent_commands = cls._extract_recent_assistant_commands(messages)
+        if cls._commands_target_videos(recent_commands):
+            return True
+        if recent_commands and all(
+            command.get("type") == "related_tokens_by_tokens"
+            for command in recent_commands
+        ):
+            return True
+        latest_user_text = cls._get_latest_user_text(messages)
+        return bool(latest_user_text and _VIDEO_SEARCH_INTENT_RE.search(latest_user_text))
+
     @classmethod
     def _continue_intermediate_plan(
         cls,
@@ -1143,7 +1132,7 @@ class ChatHandler:
     @classmethod
     def _extract_token_rewrite_from_results(
         cls, results: list[dict] | None
-    ) -> tuple[str, str] | None:
+    ) -> dict | None:
         for result_item in results or []:
             if result_item.get("type") != "related_tokens_by_tokens":
                 continue
@@ -1153,93 +1142,87 @@ class ChatHandler:
             ).strip()
             if not source_text:
                 continue
+            candidates: list[str] = []
             for option in result.get("options") or []:
                 candidate = str(option.get("text") or "").strip()
-                if candidate and candidate != source_text:
-                    return source_text, candidate
+                if candidate and candidate != source_text and candidate not in candidates:
+                    candidates.append(candidate)
+            if candidates:
+                return {
+                    "source_text": source_text,
+                    "candidates": candidates,
+                }
         return None
 
+    @staticmethod
+    def _canonicalize_token_option_key(text: str) -> str:
+        return _TOKEN_OPTION_CANONICAL_RE.sub("", (text or "").strip()).lower()
+
     @classmethod
-    def _extract_owner_rewrite_from_results(
+    def _select_distinct_token_candidates(
         cls,
-        results: list[dict] | None,
-        messages: list[dict],
-    ) -> dict | None:
-        author_name = cls._extract_timeline_author_name(messages)
-        if not author_name:
-            return None
-        author_key = cls._normalize_name_key(author_name)
-        for result_item in results or []:
-            if result_item.get("type") != "search_owners":
+        source_text: str,
+        candidates: list[str] | None,
+        limit: int = 3,
+    ) -> list[str]:
+        source_key = cls._canonicalize_token_option_key(source_text)
+        distinct: list[str] = []
+        seen_keys: set[str] = set()
+        for candidate in candidates or []:
+            key = cls._canonicalize_token_option_key(candidate)
+            if not key or key == source_key or key in seen_keys:
                 continue
-            result = result_item.get("result") or {}
-            source_text = str(
-                result.get("text") or result_item.get("args", {}).get("text") or ""
-            ).strip()
-            source_key = cls._normalize_name_key(source_text)
-            if source_key and source_key != author_key:
-                continue
-            owners = result.get("owners") or []
-            if not owners:
-                continue
-            top_owner = owners[0]
-            owner_name = str(top_owner.get("name") or "").strip()
-            owner_mid = top_owner.get("mid")
-            if not owner_name and not owner_mid:
-                continue
-            return {
-                "source_text": source_text or author_name,
-                "name": owner_name,
-                "mid": owner_mid,
-            }
-        return None
+            seen_keys.add(key)
+            distinct.append(candidate)
+            if len(distinct) >= limit:
+                break
+        return distinct
 
     @classmethod
-    def _build_owner_resolved_timeline_query(
+    def _build_token_assisted_video_queries(
         cls,
         messages: list[dict],
-        owner_rewrite: dict | None,
-        query_text: str = "",
-    ) -> str | None:
-        if not owner_rewrite:
-            return None
-        latest_user_text = cls._get_latest_user_text(messages)
-        author_name = cls._extract_timeline_author_name(messages)
-        if not author_name or not latest_user_text:
-            return None
-        query_source = str(query_text or latest_user_text)
-        window = cls._extract_recent_window(query_source)
-        owner_mid = owner_rewrite.get("mid")
-        owner_name = str(owner_rewrite.get("name") or "").strip()
-        if owner_mid:
-            return f":uid={int(owner_mid)} :date<={window}"
-        if owner_name:
-            return f":user={owner_name} :date<={window}"
-        return None
-
-    @classmethod
-    def _build_token_assisted_video_query(
-        cls, messages: list[dict], token_rewrite: tuple[str, str] | None
-    ) -> str | None:
+        token_rewrite: dict | None,
+        *,
+        commands: list[dict] | None = None,
+    ) -> list[str]:
         if not token_rewrite:
-            return None
+            return []
         latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text or not _VIDEO_SEARCH_INTENT_RE.search(latest_user_text):
-            return None
+        if not latest_user_text or not cls._wants_video_results(messages, commands):
+            return []
 
-        source_text, canonical_text = token_rewrite
-        rewritten = latest_user_text.replace(source_text, canonical_text)
-        rewritten = cls._normalize_entity_focused_query_text(rewritten)
-        if not rewritten:
-            rewritten = canonical_text
-        if canonical_text not in rewritten:
-            rewritten = f"{canonical_text} {rewritten}".strip()
-        rewritten = re.sub(r"\s+", " ", rewritten).strip()
-        if not rewritten:
-            return None
-        if "q=" not in rewritten and ":user=" not in rewritten and ":uid=" not in rewritten:
-            rewritten = f"{rewritten} q=vwr"
-        return rewritten
+        source_text = str(token_rewrite.get("source_text") or "").strip()
+        candidates = cls._select_distinct_token_candidates(
+            source_text,
+            token_rewrite.get("candidates") or [],
+            limit=4,
+        )
+        if not source_text or not candidates:
+            return []
+
+        residual_text = latest_user_text.replace(source_text, " ")
+        residual_text = cls._normalize_entity_focused_query_text(residual_text)
+        source_query = cls._normalize_entity_focused_query_text(source_text)
+        residual_is_weak = (
+            not residual_text
+            or residual_text == source_query
+            or len(cls._normalize_name_key(residual_text)) <= 2
+        )
+
+        query_candidates = candidates[:3] if residual_is_weak else candidates[:1]
+        queries: list[str] = []
+        for candidate in query_candidates:
+            candidate_text = cls._normalize_entity_focused_query_text(candidate) or candidate
+            query = candidate_text if residual_is_weak else f"{candidate_text} {residual_text}".strip()
+            query = re.sub(r"\s+", " ", query).strip()
+            if not query:
+                continue
+            if "q=" not in query and ":user=" not in query and ":uid=" not in query:
+                query = f"{query} q=vwr"
+            if query not in queries:
+                queries.append(query)
+        return queries
 
     @classmethod
     def _normalize_token_assisted_search_commands(
@@ -1252,9 +1235,13 @@ class ChatHandler:
         if not token_rewrite:
             return commands
 
-        source_text, _ = token_rewrite
-        replacement_query = cls._build_token_assisted_video_query(messages, token_rewrite)
-        if not replacement_query:
+        source_text = str(token_rewrite.get("source_text") or "").strip()
+        replacement_queries = cls._build_token_assisted_video_queries(
+            messages,
+            token_rewrite,
+            commands=commands,
+        )
+        if not replacement_queries:
             return commands
 
         normalized = []
@@ -1272,72 +1259,21 @@ class ChatHandler:
             if not any(source_text in str(query) for query in queries):
                 normalized.append(command)
                 continue
-            normalized.append(
-                {
-                    "type": "search_videos",
-                    "args": {
-                        **args,
-                        "queries": [replacement_query],
-                    },
-                }
-            )
-        return normalized
-
-    @classmethod
-    def _normalize_owner_assisted_timeline_commands(
-        cls,
-        commands: list[dict],
-        messages: list[dict],
-        last_tool_results: list[dict] | None,
-    ) -> list[dict]:
-        owner_rewrite = cls._extract_owner_rewrite_from_results(last_tool_results, messages)
-        if not owner_rewrite:
-            return commands
-
-        source_text = str(owner_rewrite.get("source_text") or "").strip()
-        source_key = cls._normalize_name_key(source_text)
-        normalized = []
-        for command in commands or []:
-            if command.get("type") != "search_videos":
-                normalized.append(command)
-                continue
-            args = dict(command.get("args") or {})
-            queries = args.get("queries")
-            if isinstance(queries, str):
-                queries = [queries]
-            if not isinstance(queries, list) or not queries:
-                normalized.append(command)
-                continue
-
-            should_replace = False
+            rewritten_queries: list[str] = []
             for query in queries:
-                query_text = str(query or "")
-                query_key = cls._normalize_name_key(query_text)
-                if source_key and source_key in query_key:
-                    should_replace = True
-                    break
-                if ":user=" in query_text and source_text and source_text in query_text:
-                    should_replace = True
-                    break
-            if not should_replace:
-                normalized.append(command)
-                continue
-
-            resolved_query = cls._build_owner_resolved_timeline_query(
-                messages,
-                owner_rewrite,
-                query_text=" ".join(str(query or "") for query in queries),
-            )
-            if not resolved_query:
-                normalized.append(command)
-                continue
-
+                if source_text in str(query):
+                    for replacement_query in replacement_queries:
+                        if replacement_query not in rewritten_queries:
+                            rewritten_queries.append(replacement_query)
+                    continue
+                if query not in rewritten_queries:
+                    rewritten_queries.append(query)
             normalized.append(
                 {
                     "type": "search_videos",
                     "args": {
                         **args,
-                        "queries": [resolved_query],
+                        "queries": rewritten_queries,
                     },
                 }
             )
@@ -1353,25 +1289,10 @@ class ChatHandler:
         if commands or not last_tool_results:
             return commands
         token_rewrite = cls._extract_token_rewrite_from_results(last_tool_results)
-        query = cls._build_token_assisted_video_query(messages, token_rewrite)
-        if not query:
+        queries = cls._build_token_assisted_video_queries(messages, token_rewrite)
+        if not queries:
             return commands
-        return [{"type": "search_videos", "args": {"queries": [query]}}]
-
-    @classmethod
-    def _fallback_owner_assisted_timeline_commands(
-        cls,
-        commands: list[dict],
-        messages: list[dict],
-        last_tool_results: list[dict] | None,
-    ) -> list[dict]:
-        if commands or not last_tool_results:
-            return commands
-        owner_rewrite = cls._extract_owner_rewrite_from_results(last_tool_results, messages)
-        query = cls._build_owner_resolved_timeline_query(messages, owner_rewrite)
-        if not query:
-            return commands
-        return [{"type": "search_videos", "args": {"queries": [query]}}]
+        return [{"type": "search_videos", "args": {"queries": queries}}]
 
     @staticmethod
     def _clean_followup_refinement(text: str) -> str | None:
@@ -1390,119 +1311,6 @@ class ChatHandler:
         if len(refinement) < 2:
             return None
         return refinement
-
-    @classmethod
-    def _extract_creator_topic_from_text(cls, text: str) -> str | None:
-        return None
-
-    @classmethod
-    def _extract_similar_creator_seed(cls, messages: list[dict]) -> str | None:
-        return None
-
-    @classmethod
-    def _extract_external_subject_from_text(cls, text: str) -> str | None:
-        return None
-
-    @classmethod
-    def _has_recent_user_intent(cls, messages: list[dict], pattern: re.Pattern, limit: int = 4) -> bool:
-        return False
-
-    def _fallback_tool_commands(
-        self,
-        commands: list[dict],
-        messages: list[dict],
-        content: str = "",
-    ) -> list[dict]:
-        return commands
-
-    @classmethod
-    def _extract_creator_discovery_topic(cls, messages: list[dict]) -> str | None:
-        return None
-
-    def _fallback_creator_discovery_commands(
-        self,
-        commands: list[dict],
-        messages: list[dict],
-        content: str = "",
-    ) -> list[dict]:
-        return commands
-
-    @classmethod
-    def _extract_external_search_query(cls, messages: list[dict]) -> str | None:
-        return None
-
-    @classmethod
-    def _wants_official_only_followup(cls, messages: list[dict]) -> bool:
-        return False
-
-    @classmethod
-    def _extract_creator_video_followup_query(cls, messages: list[dict]) -> str | None:
-        return None
-
-    @classmethod
-    def _extract_bilibili_topic_queries(cls, messages: list[dict]) -> list[str]:
-        return []
-
-    def _fallback_external_search_commands(
-        self,
-        commands: list[dict],
-        messages: list[dict],
-        content: str = "",
-    ) -> list[dict]:
-        return commands
-
-    def _fallback_similar_creator_commands(
-        self,
-        commands: list[dict],
-        messages: list[dict],
-        content: str = "",
-    ) -> list[dict]:
-        return commands
-
-    @staticmethod
-    def _is_relation_command(cmd: dict) -> bool:
-        return str(cmd.get("type", "")).startswith("related_")
-
-    @classmethod
-    def _derive_relation_search_queries(
-        cls, commands: list[dict], messages: list[dict]
-    ) -> list[str]:
-        return []
-
-    @classmethod
-    def _promote_relation_only_commands(
-        cls, commands: list[dict], messages: list[dict]
-    ) -> list[dict]:
-        if not commands:
-            return commands
-        if any(cmd.get("type") == "search_videos" for cmd in commands):
-            return commands
-        relation_commands = [cmd for cmd in commands if cls._is_relation_command(cmd)]
-        if not relation_commands:
-            return commands
-        if all(cmd.get("type") == "related_tokens_by_tokens" for cmd in relation_commands):
-            return commands
-
-        queries = cls._derive_relation_search_queries(commands, messages)
-        if not queries:
-            return commands
-        return list(commands) + [{"type": "search_videos", "args": {"queries": queries}}]
-
-    @classmethod
-    def _should_fallback_video_search(cls, messages: list[dict], content: str) -> bool:
-        return False
-
-    @classmethod
-    def _extract_video_search_query(cls, messages: list[dict]) -> str | None:
-        return None
-
-    def _fallback_video_search_commands(
-        self,
-        commands: list[dict],
-        messages: list[dict],
-        content: str = "",
-    ) -> list[dict]:
-        return commands
 
     @staticmethod
     def _strip_tool_commands(content: str) -> str:

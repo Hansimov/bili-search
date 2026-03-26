@@ -59,6 +59,16 @@ CASES = {
             {"role": "user", "content": "康夫UI 有什么入门教程？"},
         ],
     },
+    "he_tongxue_recent_with_yingshijufeng": {
+        "messages": [
+            {"role": "user", "content": "何同学和影视飓风最近都发了哪些视频？"},
+        ],
+    },
+    "latent_semantic_topic": {
+        "messages": [
+            {"role": "user", "content": "来点擦边女"},
+        ],
+    },
 }
 
 

@@ -12,6 +12,8 @@ configs/*
 !configs/envs.py
 !configs/secrets.json.example
 logs/
+debugs/*
+!debugs/*.py
 *.log
 *.chats
 *.lm

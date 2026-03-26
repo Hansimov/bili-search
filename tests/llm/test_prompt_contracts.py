@@ -25,6 +25,8 @@ def test_build_system_prompt_contains_core_orchestration_sections():
     for section in [
         "[OUTPUT_PROTOCOL]",
         "[TOOL_ROUTING]",
+        "[SEARCH_SCHEMA]",
+        "[SEMANTIC_RETRIEVAL]",
         "[DSL_PLANNING]",
         "[ANTI_PATTERNS]",
         "[SEARCH_SYNTAX]",
@@ -38,19 +40,25 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
 
     prompt = build_system_prompt()
 
+    assert "某工具教程" in prompt
+    assert "<search_videos queries=" "'" '["某工具 教程 q=vwr"]' "'" "/>" in prompt
     assert "这个作者有哪些关联账号" in prompt
     assert '<search_owners text="目标作者" mode="relation"/>' in prompt
     assert (
         "<search_videos queries=" "'" '[":user=目标作者 :date<=15d"]' "'" "/>" in prompt
     )
-    assert '<search_google query="Gemini 2.5 最近有哪些官方更新"/>' in prompt
-    assert '<related_tokens_by_tokens text="ComfyUI" mode="auto"/>' in prompt
-    assert '<related_tokens_by_tokens text="康夫UI" mode="auto"/>' in prompt
-    assert "Gemini 2.5 q=vwr" in prompt
-    assert "对比一下作者甲和作者乙最近一个月发布的视频，谁更高产" in prompt
-    assert "红警08最近发了什么视频" in prompt
-    assert '<search_owners text="红警08" mode="name"/>' in prompt
-    assert '<search_owners text="硬件评测" mode="topic"/>' in prompt
+    assert '<search_google query="目标产品 最近有哪些官方更新"/>' in prompt
+    assert '<search_google query="目标产品 目标能力 最近有哪些官方更新"/>' in prompt
+    assert '<related_tokens_by_tokens text="规范术语" mode="auto"/>' in prompt
+    assert '<related_tokens_by_tokens text="模糊术语" mode="auto"/>' in prompt
+    assert "用户：来点某种口语化风格内容" in prompt
+    assert '<related_tokens_by_tokens text="口语化标签" mode="associate"/>' in prompt
+    assert '"方向一 q=vwr", "方向二 q=vwr", "方向三 q=vwr"' in prompt
+    assert "目标产品 q=vwr" in prompt
+    assert "对比一下作者甲和某个简称作者最近一个月谁更高产" in prompt
+    assert "某个简称作者最近发了什么视频" in prompt
+    assert '<search_owners text="模糊作者别名" mode="name"/>' in prompt
+    assert '<search_owners text="目标主题" mode="topic"/>' in prompt
     assert (
         "<search_videos queries="
         "'"
@@ -58,7 +66,16 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
         "'"
         "/>" in prompt
     )
-    assert '<search_owners text="黑神话悟空" mode="topic"/>' in prompt
+    assert "某个外部产品最近有哪些官方更新，B站上有没有相关解读" in prompt
+    assert "某个模糊术语 有什么入门教程？" in prompt
+    assert "这个作者有哪些关联账号？那他的代表作有哪些？" in prompt
+    assert (
+        "<search_videos queries="
+        "'"
+        '[":user=目标作者 代表作 q=vwr"]'
+        "'"
+        "/>" in prompt
+    )
 
 
 def test_build_system_prompt_emphasizes_search_videos_as_primary_route():
@@ -84,6 +101,25 @@ def test_build_system_prompt_requires_entity_focused_video_queries():
     assert "如果仍像一句完整口语句子，说明你还没整理好，先不要搜索" in prompt
 
 
+def test_build_system_prompt_describes_unified_schema_and_semantic_iteration():
+    from llms.prompts.copilot import build_system_prompt
+
+    prompt = build_system_prompt()
+
+    assert "`final_target`: videos | owners | relations | external | mixed" in prompt
+    assert "`latent_intent`: 用户真正想看的风格、用途、场景、偏好、隐含主题" in prompt
+    assert "口语标签、评价词、黑话、泛化描述、噪声词" in prompt
+    assert "如果请求很短、很抽象、缺少稳定实体" in prompt
+    assert "先做 `related_tokens_by_tokens`" in prompt
+    assert "优先并行输出多条 `search_videos` queries" in prompt
+    assert "第一轮结果不理想时，换一组更具体或更收敛的 query" in prompt
+    assert "如果 `final_target=mixed`，要把每个子目标分别完成" in prompt
+    assert "“代表作”默认不是“最近视频”" in prompt
+    assert "用户：来点擦边女" not in prompt
+    assert "用户：红警08最近发了什么视频" not in prompt
+    assert "用户：和影视飓风风格接近" not in prompt
+
+
 def test_build_system_prompt_profile_tracks_new_sections():
     from llms.prompts.copilot import build_system_prompt_profile
 
@@ -92,6 +128,8 @@ def test_build_system_prompt_profile_tracks_new_sections():
 
     assert "output_protocol" in section_chars
     assert "tool_routing" in section_chars
+    assert "search_schema" in section_chars
+    assert "semantic_retrieval" in section_chars
     assert "dsl_planning" in section_chars
     assert "anti_patterns" in section_chars
     assert profile["total_chars"] >= sum(section_chars.values())
@@ -119,6 +157,11 @@ def test_tool_definitions_explain_routing_boundaries():
     assert "不是用户原话整句" in by_name["search_videos"]["function"]["description"]
     assert "账号关系问题" in by_name["search_videos"]["function"]["description"]
     assert (
+        "抽象偏好、口语标签、黑话或隐含主题"
+        in by_name["search_videos"]["function"]["description"]
+    )
+    assert "缺稳定实体" in by_name["search_videos"]["function"]["description"]
+    assert (
         "不要直接把原词写成 :user=xxx"
         in by_name["search_videos"]["function"]["description"]
     )
@@ -126,8 +169,16 @@ def test_tool_definitions_explain_routing_boundaries():
     assert "搜索作者/UP主" in by_name["search_owners"]["function"]["description"]
     assert "关联账号/矩阵号" in by_name["search_owners"]["function"]["description"]
     assert "最近发了什么视频" in by_name["search_owners"]["function"]["description"]
+    assert (
+        "抽象主题、风格偏好或模糊圈内标签"
+        in by_name["search_owners"]["function"]["description"]
+    )
     assert "辅助工具" in by_name["related_tokens_by_tokens"]["function"]["description"]
     assert (
-        "通常还应继续调用 search_videos"
+        "口语黑话、抽象标签、隐含主题的展开"
+        in by_name["related_tokens_by_tokens"]["function"]["description"]
+    )
+    assert (
+        "而不是直接发起 literal 视频搜索"
         in by_name["related_tokens_by_tokens"]["function"]["description"]
     )

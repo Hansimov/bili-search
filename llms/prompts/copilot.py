@@ -40,6 +40,7 @@ COPILOT_TOOL_COMMANDS = """[TOOL_COMMANDS]
 - 官网/公告/更新日志优先 `search_google`。
 - `search_owners` 负责作者名查找、作者候选发现、关联作者扩展。
 - `related_tokens_by_tokens` 只用于补实体、纠错、联想，不是默认第一步。
+- 但如果请求很短、很抽象、缺稳定实体，或者原词更像黑话/口语标签而不是可直接检索的内容词，先用 `related_tokens_by_tokens` 做语义展开，再回到终局工具。
 [/TOOL_COMMANDS]"""
 
 COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
@@ -60,6 +61,7 @@ COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
 
 `related_tokens_by_tokens`：
 - 仅在实体不稳、别名/错写/简称时使用。
+- 如果请求很短、抽象、缺稳定实体，或者原词更像 vibe/黑话/口语标签而不是可直接检索的主题词，也优先用它做语义展开。
 - 拿到候选后通常必须回到 `search_videos`。
 
 `search_google`：
@@ -72,6 +74,7 @@ COPILOT_INTENT_METHOD = """[INTENT_METHOD]
 2. 再判断关键实体是否已经足够确定：
     - 已确定：可以直接进入终局工具。
     - 不够确定：先做实体确认，再进入终局工具。
+    - 如果几乎没有稳定实体，只有抽象偏好、口语标签、黑话或 vibe，先做语义展开，再进入终局工具。
 3. 最后只补最少的一步：
     - 视频问题：优先 `search_videos`。
     - 作者或作者关系问题：优先 `search_owners`。
@@ -82,8 +85,39 @@ COPILOT_INTENT_METHOD = """[INTENT_METHOD]
 - 不要因为用户句子里出现“最近/推荐/解读/有没有”就机械套固定模板。
 - 只有当作者身份已经确认时，才把作者写进 `:user=` 或 `:uid=`。
 - 如果一个问题需要“先确认实体，再搜视频”，就分两步，不要跳步。
+- 如果一个问题需要“先把抽象口语翻译成更可检索的内容词，再搜视频”，也要分两步，不要拿原词直接硬搜。
 - 如果作者候选结果明显不可靠或不够支撑结论，直接说明当前无法确认，不要拿常识猜作者名单或主页链接来补答案。
 [/INTENT_METHOD]"""
+
+COPILOT_SEARCH_SCHEMA = """[SEARCH_SCHEMA]
+每个请求都先在脑中写一个最小 schema，再决定工具：
+- `final_target`: videos | owners | relations | external | mixed
+- `anchor_entities`: 已经稳定的作者、作品、产品、主题
+- `latent_intent`: 用户真正想看的风格、用途、场景、偏好、隐含主题
+- `unknowns`: 仍不稳定的简称、别名、口语、黑话、噪声词
+- `plan`: 先确认什么，再搜什么，结果回来后如何继续收束
+
+要求：
+- 不要把 schema 原样输出给用户，只把它转成最少必要的工具命令。
+- 终局工具优先，但如果实体或主题不稳，先做确认或联想扩展。
+- 如果 `anchor_entities` 很弱而 `latent_intent` 很强，优先先把 latent intent 展开成更可检索的主题词，再进入终局工具。
+- 如果 `final_target=mixed`，要把每个子目标分别完成，不要把“关系 / 作者信息 / 代表作 / 最近视频”混成同一个子任务。
+- 一旦已经拿到中间候选，就继续推进到最终结果，不要停在中间层。
+[/SEARCH_SCHEMA]"""
+
+COPILOT_SEMANTIC_RETRIEVAL = """[SEMANTIC_RETRIEVAL]
+遇到“非关键词主题识别 / 深度意图识别 / 口语化 vibe 请求 / 黑话标签”时：
+- 先提炼用户真正想看的具体内容，不要机械照抄表层词。
+- 如果请求很短、很抽象、缺少稳定实体，默认不要直接用单条 literal `search_videos` query 开搜；优先先用 `related_tokens_by_tokens` 拿语义候选，再组织多条视频搜索 query。
+- 如果原词更像口语标签、评价词、黑话、泛化描述、噪声词，优先把它翻译成 2 到 5 个更可检索的具体主题、元素、表现形式或内容线索。
+- 这些线索应尽量是视频标题、标签、主题词里更可能直接出现的内容词，而不是对现象本身的讨论词。
+- 优先并行输出多条 `search_videos` queries，扩大搜索面；必要时先用 `related_tokens_by_tokens` 补候选，再回到 `search_videos`。
+- 第一轮结果不理想时，换一组更具体或更收敛的 query，不要只重复原词。
+- 当原词本身不是稳定 query 时，不要把它作为唯一搜索词保留下来。
+
+例子：
+- 用户说“来点某种口语化风格内容”，不要只搜表层口语标签。应把它翻译成更贴近内容本体的若干搜索假设，例如更具体的表现形式、主题方向或内容元素，然后再根据结果收束。
+[/SEMANTIC_RETRIEVAL]"""
 
 COPILOT_WORKFLOW = """[WORKFLOW]
 决策顺序：
@@ -92,10 +126,14 @@ COPILOT_WORKFLOW = """[WORKFLOW]
 3. 默认先尝试终局工具，不要为了流程感滥用中间工具。
 4. 一轮能列全必要命令，就不要拆多轮。
 5. 如果上一轮只拿到中间结果，再补最后一步。
+6. 如果用户意图比较抽象，就把它拆成多个并行搜索假设，而不是执着于单个 literal query。
+7. 如果抽象意图还没有被翻译成稳定 query，就先做 `related_tokens_by_tokens`，不要跳过语义展开层。
 
 重点：
 - 多作者对比优先并行多个 `search_videos` queries。
+- 抽象主题、风格偏好、模糊口语需求也优先并行多个 `search_videos` queries。
 - relation 结果若已能直接回答“作者名单/关系”，不要机械追加视频搜索。
+- 当用户同时问“关联账号/矩阵号”和“代表作/视频”时，要分别规划 relation 与 video 两个子任务；“代表作”默认不是“最近视频”。
 [/WORKFLOW]"""
 
 COPILOT_DSL_PLANNING = """[DSL_PLANNING]
@@ -116,66 +154,80 @@ COPILOT_RULES = """[RULES]
 搜索：
 - 不要把“视频”“内容”“介绍一下”这类冗余词机械塞进 query。
 - 不要把完整口语句子直接传给 `search_videos`。
+- 对抽象主题，优先产出一组更具体的并行 query，而不是只保留原始口语标签。
+- 对很短的黑话/口语/vibe 请求，默认先做语义展开，不要只打一条 literal query 直搜。
 - “最近”默认 15 天。
 - 工具轮次尽量控制在 2 轮内。
 [/RULES]"""
 
 COPILOT_ANTI_PATTERNS = """[ANTI_PATTERNS]
 - 不要把用户原话整句塞进 `search_videos`。
+- 不要把明显是噪声的表层词强行当成唯一关键词。
+- 不要对短而抽象的口语请求只打一条 literal `search_videos`。
 - 不要输出重复内容。
 - 不要拿 relation/token 候选直接当最终答案。
 - 不要在已有足够结果后继续试探性搜索。
 [/ANTI_PATTERNS]"""
 
 COPILOT_EXAMPLES = """[EXAMPLES]
-用户：Stable Diffusion 教程
-助手：我来搜索 Stable Diffusion 教程视频。
-<search_videos queries='["Stable Diffusion 教程 q=vwr"]'/>
+用户：某工具教程
+助手：我来搜索该工具的教程视频。
+<search_videos queries='["某工具 教程 q=vwr"]'/>
 
 用户：某作者最近有什么新视频？
 助手：我来搜索该作者最近的视频。
 <search_videos queries='[":user=目标作者 :date<=15d"]'/>
 
-用户：红警08最近发了什么视频？
-助手：我先确认这个名字对应的作者。
-<search_owners text="红警08" mode="name"/>
+用户：某个简称作者最近发了什么视频？
+助手：我先确认这个简称对应的作者。
+<search_owners text="模糊作者别名" mode="name"/>
 
-用户：和影视飓风风格接近，但更偏硬件评测的作者有哪些？
+用户：和某个种子作者风格接近，但更偏某个主题的作者有哪些？
 助手：我先确认种子作者，再找偏硬件评测的作者候选。
-<search_owners text="影视飓风" mode="name"/>
-<search_owners text="硬件评测" mode="topic"/>
+<search_owners text="种子作者" mode="name"/>
+<search_owners text="目标主题" mode="topic"/>
 
-用户：Gemini 2.5 最近官方更新里，和开发者 API 最相关的点有哪些，B站有没有偏 API 侧的解读？
-助手：我先查官方更新，再搜索 B 站里的 API 向解读视频。
-<search_google query="Gemini 2.5 开发者 API 最近有哪些官方更新"/>
-<search_videos queries='["Gemini 2.5 开发者 API q=vwr"]'/>
+用户：某个外部产品最近官方更新里，和某项能力最相关的点有哪些，B站有没有偏这项能力的解读？
+助手：我先查官方更新，再搜索 B 站里的对应解读视频。
+<search_google query="目标产品 目标能力 最近有哪些官方更新"/>
+<search_videos queries='["目标产品 目标能力 q=vwr"]'/>
 
-用户：对比一下老番茄和红警08最近一个月谁更高产
+用户：对比一下作者甲和某个简称作者最近一个月谁更高产
 助手：我先确认不够稳定的作者名，再继续做视频对比。
-<search_owners text="红警08" mode="name"/>
+<search_owners text="模糊作者别名" mode="name"/>
 
-用户：推荐几个做黑神话悟空内容的UP主
+用户：推荐几个做某个主题内容的UP主
 助手：我先找相关创作者。
-<search_owners text="黑神话悟空" mode="topic"/>
+<search_owners text="目标主题" mode="topic"/>
 
-用户：Gemini 2.5 最近有哪些官方更新，B站上有没有相关解读
+用户：某个外部产品最近有哪些官方更新，B站上有没有相关解读
 助手：我先查官方更新，再搜索 B 站解读视频。
-<search_google query="Gemini 2.5 最近有哪些官方更新"/>
-<search_videos queries='["Gemini 2.5 q=vwr"]'/>
+<search_google query="目标产品 最近有哪些官方更新"/>
+<search_videos queries='["目标产品 q=vwr"]'/>
 
-用户：ComfyUI 工作流
+用户：某个规范术语 工作流
 助手：我先补一下相关术语，再搜索视频。
-<related_tokens_by_tokens text="ComfyUI" mode="auto"/>
-<search_videos queries='["ComfyUI 工作流 q=vwr"]'/>
+<related_tokens_by_tokens text="规范术语" mode="auto"/>
+<search_videos queries='["规范术语 工作流 q=vwr"]'/>
 
-用户：康夫UI 有什么入门教程？
+用户：某个模糊术语 有什么入门教程？
 助手：我先补一下术语，再搜索教程视频。
-<related_tokens_by_tokens text="康夫UI" mode="auto"/>
-<search_videos queries='["ComfyUI 入门教程 q=vwr"]'/>
+<related_tokens_by_tokens text="模糊术语" mode="auto"/>
+<search_videos queries='["规范术语 入门教程 q=vwr"]'/>
+
+用户：来点某种口语化风格内容
+助手：我先把这个偏口语化的需求拆成更具体的搜索方向，再并行搜索。
+<related_tokens_by_tokens text="口语化标签" mode="associate"/>
+<search_videos queries='["方向一 q=vwr", "方向二 q=vwr", "方向三 q=vwr"]'/>
 
 用户：这个作者有哪些关联账号？
 助手：我先搜索相关作者关系。
 <search_owners text="目标作者" mode="relation"/>
+
+用户：这个作者有哪些关联账号？那他的代表作有哪些？
+助手：我先查作者关系，再搜索代表作。
+<search_owners text="目标作者" mode="relation"/>
+<search_videos queries='[":user=目标作者 代表作 q=vwr"]'/>
 
 用户：对比一下作者甲和作者乙最近一个月发布的视频，谁更高产？
 助手：我来分别搜索两位作者最近一个月的视频。
@@ -192,6 +244,8 @@ def build_system_prompt_profile(capabilities: dict | None = None) -> dict:
         "tool_commands": COPILOT_TOOL_COMMANDS,
         "tool_routing": COPILOT_TOOL_ROUTING,
         "intent_method": COPILOT_INTENT_METHOD,
+        "search_schema": COPILOT_SEARCH_SCHEMA,
+        "semantic_retrieval": COPILOT_SEMANTIC_RETRIEVAL,
         "dsl_syntax": COPILOT_DSL_SYNTAX,
         "workflow": COPILOT_WORKFLOW,
         "dsl_planning": COPILOT_DSL_PLANNING,
@@ -245,6 +299,8 @@ def build_system_prompt(capabilities: dict | None = None) -> str:
         COPILOT_TOOL_COMMANDS,
         COPILOT_TOOL_ROUTING,
         COPILOT_INTENT_METHOD,
+        COPILOT_SEARCH_SCHEMA,
+        COPILOT_SEMANTIC_RETRIEVAL,
         COPILOT_DSL_SYNTAX,
         COPILOT_WORKFLOW,
         COPILOT_DSL_PLANNING,

@@ -47,6 +47,8 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                 "过滤器以冒号':'开头，格式为 :<字段><操作符><值>。"
                 "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
                 "如果用户最终要的是具体视频清单、时间线、代表作、热视频、教程/攻略/解读，优先使用本工具。"
+                "如果用户给的是抽象偏好、口语标签、黑话或隐含主题，应先把它翻译成更具体、更可检索的主题词，再并行构造多条 queries。"
+                "如果请求很短、很抽象、缺稳定实体，不应只保留一条 literal query 直接搜索；优先先做 related_tokens_by_tokens 语义展开，再回到本工具。"
                 "如果用户问的是作者资料/关联账号/矩阵号，这通常不是本工具的首选。"
                 "如果用户给出的作者词像简称、别名片段、混合中英数字昵称，或者你不确定它到底是不是作者名，"
                 "不要直接把原词写成 :user=xxx，先调用 search_owners 再回到本工具。"
@@ -63,6 +65,7 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                             "搜索语句列表。每个语句可包含关键词和/或DSL过滤器。"
                             "关键词用空格分隔，过滤器以冒号':'起始。"
                             "每个 query 都应是整理后的检索语句，尽量只保留关键实体和检索条件，而不是用户对话原句。"
+                            "如果原始需求比较抽象，可以把它拆成多条并行 query，分别覆盖不同的具体搜索假设。"
                             f"精确主题搜索时在末尾添加 q={rerank_mode}。"
                         ),
                     },
@@ -111,6 +114,7 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                 "若用户明确提到作者名、简称、缩写、混合中英数字昵称，优先用它。"
                 "当用户想看‘某作者最近发了什么视频’但作者词本身不够稳定时，也应先用它确认作者，再继续 search_videos。"
                 "若用户在问谁在做某个主题内容，也优先用它，而不是把作者问题硬转成视频搜索。"
+                "当用户给的是抽象主题、风格偏好或模糊圈内标签时，也可以用 mode=topic 先摸到相关创作者集合。"
                 "mode=relation 适合关联账号、矩阵号、主副号、类似作者；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
             ),
             "parameters": {
@@ -205,7 +209,7 @@ def build_tool_definitions(
         tools.append(
             build_relation_tool(
                 "related_tokens_by_tokens",
-                "辅助工具。基于给定文本寻找相关 token 补全、主题词或纠错候选。只在无法稳定抽出关键实体时使用，不是最终结果来源；拿到候选后通常还应继续调用 search_videos。",
+                "辅助工具。基于给定文本寻找相关 token 补全、主题词、语义联想或纠错候选。适用于别名、错写、简称，也适用于口语黑话、抽象标签、隐含主题的展开。对于很短、抽象、缺稳定实体的请求，通常应先调用它做语义展开，而不是直接发起 literal 视频搜索。它不是最终结果来源；拿到候选后通常还应继续调用 search_videos 或 search_owners。",
                 {
                     "text": {"type": "string", "description": "输入文本"},
                     "mode": {
