@@ -203,6 +203,8 @@ def format_related_owners(owners: list[dict], max_hits: int = 10) -> list[dict]:
             item["sample_title"] = owner.get("sample_title")
         if owner.get("sample_bvid"):
             item["sample_bvid"] = owner.get("sample_bvid")
+        if owner.get("sample_view") is not None:
+            item["sample_view"] = owner.get("sample_view")
         sample_pic = (
             owner.get("sample_pic")
             or owner.get("sample_cover")

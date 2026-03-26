@@ -18,8 +18,10 @@ class OwnerCandidate:
     name: str
     score: float
     sources: list[str]
+    face: str = ""
     sample_title: str = ""
     sample_bvid: str = ""
+    sample_pic: str = ""
     sample_view: int | None = None
 
     def to_dict(self) -> dict:
@@ -29,10 +31,14 @@ class OwnerCandidate:
             "score": round(float(self.score), 4),
             "sources": list(self.sources),
         }
+        if self.face:
+            payload["face"] = self.face
         if self.sample_title:
             payload["sample_title"] = self.sample_title
         if self.sample_bvid:
             payload["sample_bvid"] = self.sample_bvid
+        if self.sample_pic:
+            payload["sample_pic"] = self.sample_pic
         if self.sample_view is not None:
             payload["sample_view"] = self.sample_view
         return payload
@@ -145,13 +151,58 @@ class OwnerSearcher:
                     "mid": int(mid),
                     "name": name,
                     "score": score,
+                    "face": owner.get("face", ""),
                     "sample_title": source.get("title", ""),
                     "sample_bvid": source.get("bvid", ""),
+                    "sample_pic": source.get("pic", ""),
                     "sample_view": ((source.get("stat") or {}).get("view")),
                     "sources": ["name"],
                 }
             )
         return results
+
+    def _load_owner_metadata(self, mids: list[int]) -> dict[int, dict]:
+        normalized_mids = sorted({int(mid) for mid in mids if mid})
+        if not normalized_mids:
+            return {}
+
+        body = {
+            "_source": ["bvid", "title", "pic", "owner", "stat.view", "insert_at"],
+            "size": min(max(len(normalized_mids), 8), 64),
+            "query": {
+                "terms": {
+                    "owner.mid": normalized_mids,
+                }
+            },
+            "collapse": {"field": "owner.mid"},
+            "sort": [
+                {"stat.view": {"order": "desc", "missing": "_last"}},
+                {"insert_at": {"order": "desc", "missing": "_last"}},
+            ],
+        }
+
+        try:
+            response = self.es.client.search(index=self.index_name, body=body)
+            payload = response.body if hasattr(response, "body") else response
+        except Exception:
+            return {}
+
+        hits = ((payload or {}).get("hits") or {}).get("hits") or []
+        metadata: dict[int, dict] = {}
+        for hit in hits:
+            source = hit.get("_source") or {}
+            owner = source.get("owner") or {}
+            mid = owner.get("mid")
+            if not mid:
+                continue
+            metadata[int(mid)] = {
+                "face": owner.get("face", ""),
+                "sample_title": source.get("title", ""),
+                "sample_bvid": source.get("bvid", ""),
+                "sample_pic": source.get("pic", ""),
+                "sample_view": ((source.get("stat") or {}).get("view")),
+            }
+        return metadata
 
     def _prepare_query(self, query: str, mode: str) -> str:
         prepared = (query or "").strip()
@@ -369,8 +420,10 @@ class OwnerSearcher:
                         "name": candidate["name"],
                         "score": 0.0,
                         "sources": [],
+                        "face": candidate.get("face", ""),
                         "sample_title": candidate.get("sample_title", ""),
                         "sample_bvid": candidate.get("sample_bvid", ""),
+                        "sample_pic": candidate.get("sample_pic", ""),
                         "sample_view": candidate.get("sample_view"),
                     },
                 )
@@ -378,10 +431,26 @@ class OwnerSearcher:
                 for source in candidate.get("sources") or []:
                     if source not in slot["sources"]:
                         slot["sources"].append(source)
+                if not slot.get("face") and candidate.get("face"):
+                    slot["face"] = candidate["face"]
                 if not slot.get("sample_title") and candidate.get("sample_title"):
                     slot["sample_title"] = candidate["sample_title"]
                     slot["sample_bvid"] = candidate.get("sample_bvid", "")
+                    slot["sample_pic"] = candidate.get("sample_pic", "")
                     slot["sample_view"] = candidate.get("sample_view")
+
+        metadata_by_mid = self._load_owner_metadata(list(merged.keys()))
+        for mid, slot in merged.items():
+            metadata = metadata_by_mid.get(mid) or {}
+            if not slot.get("face") and metadata.get("face"):
+                slot["face"] = metadata["face"]
+            if not slot.get("sample_title") and metadata.get("sample_title"):
+                slot["sample_title"] = metadata["sample_title"]
+                slot["sample_bvid"] = metadata.get("sample_bvid", "")
+                slot["sample_pic"] = metadata.get("sample_pic", "")
+                slot["sample_view"] = metadata.get("sample_view")
+            elif not slot.get("sample_pic") and metadata.get("sample_pic"):
+                slot["sample_pic"] = metadata["sample_pic"]
 
         normalized_query = self._normalize_name(query)
         results: list[OwnerCandidate] = []
@@ -408,8 +477,10 @@ class OwnerSearcher:
                     name=candidate["name"],
                     score=candidate["score"],
                     sources=candidate["sources"],
+                    face=candidate.get("face", ""),
                     sample_title=candidate.get("sample_title", ""),
                     sample_bvid=candidate.get("sample_bvid", ""),
+                    sample_pic=candidate.get("sample_pic", ""),
                     sample_view=candidate.get("sample_view"),
                 )
             )

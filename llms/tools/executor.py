@@ -558,19 +558,25 @@ class ToolExecutor:
         text = str(args.get("text", "")).strip()
         if not text:
             return {"error": "Missing text parameter", "owners": []}
+        mode = str(args.get("mode", "auto") or "auto")
+        default_size = 20 if mode == "topic" else 8
+        size = int(args.get("size", default_size) or default_size)
+        max_owner_hits = (
+            max(self.max_results, 20) if mode == "topic" else self.max_results
+        )
         result = self.search_client.search_owners(
             text=text,
-            mode=str(args.get("mode", "auto") or "auto"),
-            size=int(args.get("size", 8) or 8),
+            mode=mode,
+            size=size,
         )
         if result.get("error"):
             return {"text": text, "error": result["error"], "owners": []}
         owners = result.get("owners", [])
         return {
             "text": text,
-            "mode": result.get("mode", args.get("mode", "auto")),
+            "mode": result.get("mode", mode),
             "total_owners": len(owners),
-            "owners": format_related_owners(owners, max_hits=self.max_results),
+            "owners": format_related_owners(owners, max_hits=max_owner_hits),
         }
 
     def _related_tokens_by_tokens(self, args: dict) -> dict:

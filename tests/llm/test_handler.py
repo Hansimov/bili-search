@@ -120,6 +120,42 @@ MOCK_RELATED_OWNERS_RESULT = {
     ],
 }
 
+
+def test_compact_result_for_context_keeps_default_owner_candidates():
+    result = {
+        "text": "红警",
+        "total_owners": 8,
+        "owners": [
+            {"name": f"作者{i}", "mid": 1000 + i, "score": 10 - i} for i in range(8)
+        ],
+    }
+
+    compact = ChatHandler._compact_result_for_context(result)
+
+    assert compact["total_owners"] == 8
+    assert len(compact["owners"]) == 8
+    assert compact["owners"][0]["name"] == "作者0"
+    assert compact["owners"][-1]["name"] == "作者7"
+
+
+def test_compact_result_for_context_keeps_topic_owner_candidates():
+    result = {
+        "text": "红警",
+        "mode": "topic",
+        "total_owners": 20,
+        "owners": [
+            {"name": f"作者{i}", "mid": 2000 + i, "score": 20 - i} for i in range(20)
+        ],
+    }
+
+    compact = ChatHandler._compact_result_for_context(result)
+
+    assert compact["total_owners"] == 20
+    assert len(compact["owners"]) == 20
+    assert compact["owners"][0]["name"] == "作者0"
+    assert compact["owners"][-1]["name"] == "作者19"
+
+
 MOCK_SEARCH_OWNERS_RESULT = {
     "text": "影视飓风",
     "mode": "relation",

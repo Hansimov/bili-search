@@ -80,6 +80,9 @@ _FORCE_CONTENT_NUDGE = (
     "如果搜索结果不完全匹配，就根据已有信息给出最佳回答。"
 )
 
+_OWNER_CONTEXT_MAX_RESULTS = 8
+_OWNER_CONTEXT_TOPIC_MAX_RESULTS = 20
+
 _DUPLICATE_TOOL_NUDGE = (
     "相同或等价的搜索已经执行过，请不要重复输出同样的工具命令。"
     "请直接基于已有搜索结果回答用户问题；只有在查询条件明显不同或补充了新信息时，才继续搜索。"
@@ -1577,6 +1580,11 @@ class ChatHandler:
                 compact["error"] = result["error"]
             return compact
         if "owners" in result:
+            owner_limit = (
+                _OWNER_CONTEXT_TOPIC_MAX_RESULTS
+                if result.get("mode") == "topic"
+                else _OWNER_CONTEXT_MAX_RESULTS
+            )
             return {
                 "text": result.get("text", ""),
                 "total_owners": result.get(
@@ -1588,7 +1596,7 @@ class ChatHandler:
                         "mid": owner.get("mid"),
                         "score": owner.get("score", 0),
                     }
-                    for owner in (result.get("owners") or [])[:4]
+                    for owner in (result.get("owners") or [])[:owner_limit]
                 ],
             }
         if "options" in result:

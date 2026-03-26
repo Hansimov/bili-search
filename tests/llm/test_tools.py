@@ -78,8 +78,11 @@ MOCK_SEARCH_OWNERS_RESULT = {
             "name": "红警HBK08",
             "score": 168.2,
             "sources": ["name"],
+            "face": "https://example.com/owner-face.jpg",
             "sample_title": "红警月亮3对战复盘",
             "sample_bvid": "BV1owner1",
+            "sample_pic": "https://example.com/sample-cover.jpg",
+            "sample_view": 234567,
         },
         {
             "mid": 946974,
@@ -220,12 +223,52 @@ def test_execute_search_owners():
     assert result_data["total_owners"] == 2
     assert result_data["owners"][0]["name"] == "红警HBK08"
     assert result_data["owners"][0]["sources"] == ["name"]
+    assert result_data["owners"][0]["face"] == "https://example.com/owner-face.jpg"
     assert result_data["owners"][0]["sample_title"] == "红警月亮3对战复盘"
+    assert (
+        result_data["owners"][0]["sample_pic"] == "https://example.com/sample-cover.jpg"
+    )
+    assert result_data["owners"][0]["sample_view"] == 234567
     mock_client.search_owners.assert_called_once_with(
         text="红警08", mode="name", size=8
     )
 
     logger.success("[PASS] execute search_owners")
+
+
+def test_execute_search_owners_topic_uses_wider_default_limit():
+    """Topic owner search should default to more candidates and keep twenty for UI/LLM consumption."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners topic default size")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.return_value = {
+        "text": "红警",
+        "mode": "topic",
+        "owners": [
+            {"mid": index, "name": f"作者{index}", "score": 100 - index}
+            for index in range(25)
+        ],
+    }
+
+    executor = ToolExecutor(search_client=mock_client, max_results=15)
+
+    tc = ToolCall(
+        id="call_test_owners_topic",
+        name="search_owners",
+        arguments=json.dumps({"text": "红警", "mode": "topic"}),
+    )
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    mock_client.search_owners.assert_called_once_with(
+        text="红警", mode="topic", size=20
+    )
+    assert result_data["mode"] == "topic"
+    assert result_data["total_owners"] == 25
+    assert len(result_data["owners"]) == 20
+
+    logger.success("[PASS] execute search_owners topic default size")
 
 
 def test_execute_unknown_tool():
