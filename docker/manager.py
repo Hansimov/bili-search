@@ -372,6 +372,29 @@ def _matches_runtime_filters(entry: dict, filters: dict | None) -> bool:
     return True
 
 
+def _format_container_ports(item: dict, env_map: dict[str, str]) -> str | None:
+    port_value = env_map.get("BILI_SEARCH_APP_PORT")
+    app_port = port_value if port_value and port_value.isdigit() else None
+    network_mode = str((item.get("HostConfig") or {}).get("NetworkMode") or "")
+    if network_mode == "host":
+        return app_port
+
+    ports = []
+    port_bindings = (item.get("NetworkSettings") or {}).get("Ports") or {}
+    for container_port, bindings in sorted(port_bindings.items()):
+        if not bindings:
+            continue
+        for binding in bindings:
+            host_port = str(binding.get("HostPort") or "").strip()
+            if not host_port:
+                continue
+            ports.append(f"{host_port}->{container_port}")
+
+    if ports:
+        return ", ".join(ports)
+    return app_port
+
+
 def list_bili_search_containers(
     *, filters: dict | None = None, include_all: bool = False
 ) -> list[dict]:
@@ -428,6 +451,7 @@ def list_bili_search_containers(
             "project_name": labels.get("com.docker.compose.project", ""),
             "service_name": labels.get("com.docker.compose.service", ""),
             "port": port,
+            "ports": _format_container_ports(item, env_map),
             "elastic_index": env_map.get("BILI_SEARCH_APP_ELASTIC_INDEX"),
             "elastic_env_name": env_map.get("BILI_SEARCH_APP_ELASTIC_ENV_NAME"),
             "llm_config": env_map.get("BILI_SEARCH_APP_LLM_CONFIG"),

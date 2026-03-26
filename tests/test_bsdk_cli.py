@@ -6,6 +6,8 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tclogger import decolored
+
 
 def make_runtime_args(**overrides):
     values = {
@@ -280,6 +282,7 @@ def test_list_bili_search_containers_reads_runtime_metadata():
                 "StartedAt": "2026-03-18T01:02:03.123456789Z",
             },
             "HostConfig": {"NetworkMode": "host"},
+            "NetworkSettings": {"Ports": {}},
         }
     ]
     inspect_result = MagicMock(returncode=0, stdout=json.dumps(inspect_payload))
@@ -294,6 +297,7 @@ def test_list_bili_search_containers_reads_runtime_metadata():
 
     assert len(containers) == 1
     assert containers[0]["port"] == 21001
+    assert containers[0]["ports"] == "21001"
     assert containers[0]["started_at"] == "2026-03-18 09:02:03"
 
 
@@ -548,7 +552,8 @@ def test_bsdk_ps_prints_container_table():
         include_all=False,
     )
     printed = mock_print.call_args.args[0]
-    assert "PORT" in printed
+    printed = decolored(printed)
+    assert "PORTS" in printed
     assert "UPTIME" in printed
     assert "21001" in printed
     assert "2h 3min 4s" in printed
@@ -556,17 +561,18 @@ def test_bsdk_ps_prints_container_table():
 
 
 def test_bsdk_status_reports_app_runtime_metadata():
-    result = MagicMock(stdout="ps\n", stderr="", returncode=0)
     health = {"status": "ok"}
     with (
-        patch("cli.bsdk.run_compose", return_value=result),
-        patch("cli.bsdk._report_compose_result"),
         patch(
             "cli.bsdk.find_bili_search_container_by_port",
             return_value={
                 "port": 21001,
                 "name": "bili-search-p21001",
                 "network_mode": "host",
+                "ports": "21001",
+                "status": "running/healthy",
+                "started_at": "2026-03-18 09:00:00",
+                "uptime": "2min 3s",
                 "project_name": "bili-search-p21001",
                 "service_name": "bili-search",
                 "image": "bili-search:p21001",
@@ -584,13 +590,53 @@ def test_bsdk_status_reports_app_runtime_metadata():
             },
         ),
         patch("cli.bsdk.fetch_health", return_value=health),
-        patch("cli.bsdk.logger.mesg") as mock_mesg,
+        patch("builtins.print") as mock_print,
     ):
         from cli.bsdk import cmd_status
 
         cmd_status(make_runtime_args())
 
-    output_lines = [call.args[0] for call in mock_mesg.call_args_list]
-    assert any("host network mode" in line for line in output_lines)
-    assert any("App Started At: 2026-03-18 09:02:03" in line for line in output_lines)
-    assert any("App Restart Count: 3" in line for line in output_lines)
+    rendered = mock_print.call_args.args[0]
+    printed = decolored(rendered)
+    lines = printed.splitlines()
+    assert len(lines[0]) == len(lines[-1])
+    assert len(lines[1]) == len(lines[2])
+    assert "\x1b[95m" in rendered
+    assert "\x1b[92m" in rendered
+    assert "Ports" in printed
+    assert "21001" in printed
+    assert "App Restart Count" in printed
+    assert "2026-03-18 09:02:03" in printed
+    assert '{"status": "ok"}' in printed
+
+
+def test_bsdk_ps_alternates_column_colors():
+    with (
+        patch(
+            "cli.bsdk.list_bili_search_containers",
+            return_value=[
+                {
+                    "port": 21001,
+                    "ports": "21001",
+                    "status": "running",
+                    "started_at": "2026-03-18 09:02:03",
+                    "uptime": "2h 3min 4s",
+                    "llm_config": "gpt",
+                    "name": "bili-search-p21001",
+                }
+            ],
+        ),
+        patch("builtins.print") as mock_print,
+    ):
+        from cli.bsdk import cmd_ps
+
+        cmd_ps(make_runtime_args())
+
+    printed = mock_print.call_args.args[0]
+    decolored_printed = decolored(printed)
+    assert printed != decolored_printed
+    assert "\x1b[95m" in printed
+    assert "\x1b[92m" in printed
+    assert "PORTS" in decolored_printed
+    assert "STATUS" in decolored_printed
+    assert "NAME" in decolored_printed

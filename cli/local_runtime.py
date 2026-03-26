@@ -7,7 +7,8 @@ from pathlib import Path
 from tclogger import decolored
 from tclogger import logger, logstr
 
-from cli.common import explicit_runtime_filters_from_args, format_table
+from cli.common import explicit_runtime_filters_from_args
+from cli.common import render_key_value_table, render_list_table
 from cli.common import resolve_runtime_envs_from_args
 from service.runtime import build_service_manager as _build_service_manager
 from service.runtime import ensure_data_dir
@@ -95,23 +96,44 @@ def cmd_status(args):
     result = service_manager.status()
     pid = result["pid"]
     if result["status"] == "not_running":
-        logger.mesg("  Search app: NOT RUNNING (no PID file)")
-        logger.mesg(f"  Expected URL: {_health_url(app_envs)}")
-        logger.mesg(f"  Expected Log: {logstr.file(service_manager.log_file)}")
+        print(
+            render_key_value_table(
+                {
+                    "Status": "not running (no PID file)",
+                    "Expected URL": _health_url(app_envs),
+                    "Expected Log": str(service_manager.log_file),
+                }
+            )
+        )
         return
     if result["status"] == "dead":
-        logger.warn(f"  Search app: DEAD (PID: {pid} not found)")
-        logger.mesg("  Cleaned up stale PID file")
+        print(
+            render_key_value_table(
+                {
+                    "Status": f"dead (PID: {pid} not found)",
+                    "Cleaned Up": "stale PID file",
+                }
+            )
+        )
         return
 
-    logger.okay(f"  Search app: RUNNING (PID: {pid})")
-    logger.mesg(f"  URL: {_health_url(app_envs)}")
-    logger.mesg(f"  Log: {logstr.file(service_manager.log_file)}")
+    health_value = "-"
     try:
         health = _fetch_health(app_envs, timeout=args.timeout)
-        logger.mesg(f"  Health: {json.dumps(health, ensure_ascii=False)}")
+        health_value = json.dumps(health, ensure_ascii=False)
     except Exception as exc:
-        logger.warn(f"  × Health check failed: {exc}")
+        health_value = f"FAILED: {exc}"
+    print(
+        render_key_value_table(
+            {
+                "Status": "running",
+                "PID": pid or "-",
+                "URL": _health_url(app_envs),
+                "Log": str(service_manager.log_file),
+                "Health": health_value,
+            }
+        )
+    )
 
 
 def cmd_logs(args):
@@ -155,9 +177,4 @@ def cmd_ps(args):
         ]
         for item in instances
     ]
-    print(
-        format_table(
-            ["PORT", "STATUS", "STARTED_AT", "LLM", "PID"],
-            rows,
-        )
-    )
+    print(render_list_table(["PORT", "STATUS", "STARTED_AT", "LLM", "PID"], rows))

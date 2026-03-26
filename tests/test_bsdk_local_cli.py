@@ -4,6 +4,8 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tclogger import decolored
+
 
 def make_runtime_args(**overrides):
     values = {
@@ -180,7 +182,31 @@ def test_local_ps_prints_service_table():
         },
         include_all=False,
     )
-    printed = mock_print.call_args.args[0]
+    printed = decolored(mock_print.call_args.args[0])
     assert "PORT" in printed
     assert "4321" in printed
     assert "2026-03-18 09:02:03" in printed
+
+
+def test_local_status_prints_key_value_table_for_running_service():
+    manager = MagicMock()
+    manager.status.return_value = {"status": "running", "pid": 7788}
+    manager.log_file = Path("/tmp/server.dev.p21099.log")
+
+    with (
+        patch("cli.local_runtime._build_service_manager", return_value=manager),
+        patch("cli.local_runtime._sanitize_log_file"),
+        patch("cli.local_runtime._fetch_health", return_value={"status": "ok"}),
+        patch("builtins.print") as mock_print,
+    ):
+        from cli.local_runtime import cmd_status
+
+        cmd_status(make_runtime_args())
+
+    printed = decolored(mock_print.call_args.args[0])
+    assert "Field" in printed
+    assert "Value" in printed
+    assert "Status" in printed
+    assert "running" in printed
+    assert "7788" in printed
+    assert '{"status": "ok"}' in printed

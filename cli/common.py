@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+from tclogger import chars_len, colored, dict_to_table_str, logstr, rows_to_table_str
+
 from service.envs import get_search_app_env_overrides_from_env, resolve_search_app_envs
 
 
@@ -33,6 +35,129 @@ def format_table(headers: list[str], rows: list[list[object]]) -> str:
     lines = [render_row(headers), render_row(separator)]
     lines.extend(render_row(row) for row in string_rows)
     return "\n".join(lines)
+
+
+def _column_widths(headers: list[str], rows: list[list[str]]) -> list[int]:
+    widths = [chars_len(header) for header in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], chars_len(cell))
+    return widths
+
+
+def _colorize_table_content_lines(
+    table_text: str,
+    *,
+    headers: list[str],
+    rows: list[list[str]],
+    column_widths: list[int],
+    column_colors: list[str],
+    col_gap_len: int = 2,
+) -> str:
+    lines = table_text.splitlines()
+    if len(lines) < 4:
+        return table_text
+
+    colored_lines = [logstr.note(lines[0])]
+    content_indexes = {1, *range(3, len(lines) - 1)}
+    gap = " " * col_gap_len
+    status_index = next(
+        (
+            idx
+            for idx, header in enumerate(headers)
+            if str(header).strip().lower() == "status"
+        ),
+        None,
+    )
+
+    def colorize_status_segment(segment: str, raw_value: str) -> str:
+        normalized = raw_value.strip().lower()
+        if normalized.startswith("running"):
+            return logstr.okay(segment)
+        if normalized.startswith(("starting", "created", "restarting", "pending")):
+            return logstr.hint(segment)
+        if normalized.startswith(
+            ("stopped", "dead", "exited", "failed", "error", "terminated")
+        ):
+            return logstr.warn(segment)
+        return segment
+
+    for idx, line in enumerate(lines[1:], start=1):
+        if idx not in content_indexes:
+            if idx == len(lines) - 1:
+                colored_lines.append(logstr.note(line))
+            else:
+                colored_lines.append(line)
+            continue
+
+        offset = 0
+        segments: list[str] = []
+        row_idx = 0 if idx == 1 else idx - 3
+        row_values = headers if idx == 1 else rows[row_idx]
+        for col_idx, width in enumerate(column_widths):
+            next_offset = offset + width
+            segment = line[offset:next_offset]
+            colored_segment = colored(segment, column_colors[col_idx])
+            if status_index is not None and col_idx == status_index:
+                colored_segment = colorize_status_segment(segment, row_values[col_idx])
+            elif (
+                headers == ["Field", "Value"]
+                and len(row_values) >= 2
+                and row_values[0].strip().lower() == "status"
+                and col_idx == 1
+            ):
+                colored_segment = colorize_status_segment(segment, row_values[1])
+            segments.append(colored_segment)
+            offset = next_offset
+            if col_idx < len(column_widths) - 1:
+                segments.append(gap)
+                offset += col_gap_len
+        colored_lines.append("".join(segments))
+    return "\n".join(colored_lines)
+
+
+def render_key_value_table(values: dict[str, object]) -> str:
+    raw_values = {str(key): str(value) for key, value in values.items()}
+    headers = ["Field", "Value"]
+    rows = [[key, value] for key, value in raw_values.items()]
+    table_text = dict_to_table_str(
+        raw_values,
+        key_headers=[headers[0]],
+        val_headers=[headers[1]],
+        header_case="raw",
+        header_wsch=" ",
+        is_colored=False,
+    )
+    column_widths = _column_widths(headers, rows)
+    return _colorize_table_content_lines(
+        table_text,
+        headers=headers,
+        rows=rows,
+        column_widths=column_widths,
+        column_colors=["light_cyan", "light_blue"],
+    )
+
+
+def render_list_table(headers: list[str], rows: list[list[object]]) -> str:
+    string_rows = [[str(cell) for cell in row] for row in rows]
+    table_text = rows_to_table_str(
+        rows=string_rows,
+        headers=headers,
+        header_case="raw",
+        header_wsch="_",
+        is_colored=False,
+    )
+    column_widths = _column_widths(headers, string_rows)
+    column_colors = [
+        "light_cyan" if idx % 2 == 0 else "light_blue" for idx in range(len(headers))
+    ]
+    return _colorize_table_content_lines(
+        table_text,
+        headers=headers,
+        rows=string_rows,
+        column_widths=column_widths,
+        column_colors=column_colors,
+    )
 
 
 def add_shared_runtime_args(

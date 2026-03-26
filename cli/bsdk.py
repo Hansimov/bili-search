@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from pathlib import Path
 from tclogger import logger
@@ -9,7 +10,8 @@ from webu.clis.helpers import root_epilog
 from cli import local_runtime as local_runtime_cli
 from cli.common import add_runtime_mode_arg, add_shared_runtime_args
 from cli.common import explicit_runtime_filters_from_args
-from cli.common import format_table, resolve_runtime_envs_from_args
+from cli.common import render_key_value_table, render_list_table
+from cli.common import resolve_runtime_envs_from_args
 from docker.manager import DEFAULT_COMPOSE_FILE
 from docker.manager import DEFAULT_DOCKERFILE
 from docker.manager import DEFAULT_ENV_FILE
@@ -305,25 +307,39 @@ def _cmd_docker_restart(args):
 
 def _cmd_docker_status(args):
     args, app_envs = _resolve_existing_instance_args(args)
-    result = run_compose(args, "status", app_envs)
-    _report_compose_result(result)
     container = find_bili_search_container_by_port(app_envs["port"], include_all=True)
-    if container.get("network_mode") == "host":
-        logger.mesg(
-            f"  App Port: {app_envs['port']} (host network mode; docker PORTS column stays empty)"
-        )
     app_state = read_container_app_state(args, app_envs)
-    if app_state:
-        logger.mesg(f"  App Started At: {app_state['started_at'] or '-'}")
-        logger.mesg(f"  App Uptime: {app_state['uptime'] or '-'}")
-        if app_state.get("restart_count") is not None:
-            logger.mesg(f"  App Restart Count: {app_state['restart_count']}")
+    health_value = "-"
     try:
         health = fetch_health(app_envs, timeout=args.timeout)
-        logger.mesg(f"  Health URL: {health_url(app_envs)}")
-        logger.mesg(f"  Health: {health}")
+        health_value = json.dumps(health, ensure_ascii=False)
     except Exception as exc:
-        logger.warn(f"  × Health check failed: {exc}")
+        health_value = f"FAILED: {exc}"
+
+    status_rows = {
+        "Container": container.get("name") or "-",
+        "Project": container.get("project_name") or "-",
+        "Service": container.get("service_name") or "-",
+        "Image": container.get("image") or "-",
+        "Status": container.get("status") or "-",
+        "Ports": container.get("ports") or str(app_envs["port"]),
+        "Network": container.get("network_mode") or "-",
+        "Container Started At": container.get("started_at") or "-",
+        "Container Uptime": container.get("uptime") or "-",
+        "Elastic Index": container.get("elastic_index") or "-",
+        "Elastic Env": container.get("elastic_env_name") or "-",
+        "LLM": container.get("llm_config") or "-",
+        "App Started At": app_state["started_at"] if app_state else "-",
+        "App Uptime": app_state["uptime"] if app_state else "-",
+        "App Restart Count": (
+            app_state.get("restart_count")
+            if app_state and app_state.get("restart_count") is not None
+            else "-"
+        ),
+        "Health URL": health_url(app_envs),
+        "Health": health_value,
+    }
+    print(render_key_value_table(status_rows))
 
 
 def _cmd_docker_logs(args):
@@ -349,7 +365,7 @@ def _cmd_docker_ps(args):
 
     rows = [
         [
-            item["port"] or "-",
+            item.get("ports") or item["port"] or "-",
             item["status"],
             item["started_at"] or "-",
             item.get("uptime") or "-",
@@ -359,9 +375,8 @@ def _cmd_docker_ps(args):
         for item in containers
     ]
     print(
-        format_table(
-            ["PORT", "STATUS", "STARTED_AT", "UPTIME", "LLM", "NAME"],
-            rows,
+        render_list_table(
+            ["PORTS", "STATUS", "STARTED_AT", "UPTIME", "LLM", "NAME"], rows
         )
     )
 
