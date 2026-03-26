@@ -30,5 +30,5 @@ services:
       - ${BSDK_LOGS_DIR:-./logs}:/app/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: ["bssv", "start", "--foreground"]
+    command: ["python3", "-m", "service.container_supervisor"]
     restart: unless-stopped

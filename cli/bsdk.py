@@ -13,9 +13,11 @@ from docker.manager import DEFAULT_DOCKERFILE
 from docker.manager import DEFAULT_ENV_FILE
 from docker.manager import DEFAULT_BASE_DOCKERFILE
 from docker.manager import run_compose
+from docker.manager import run_container_app_action
 from docker.manager import ensure_base_image
 from docker.manager import find_bili_search_container_by_port
 from docker.manager import list_bili_search_containers
+from docker.manager import read_container_app_state
 from docker.manager import run_base_build
 from service.runtime import ensure_process_timezone, fetch_health, health_url
 
@@ -149,6 +151,29 @@ def add_docker_args(parser: argparse.ArgumentParser):
     )
 
 
+def add_restart_control_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--restart-scope",
+        choices=["app", "container"],
+        default="app",
+        help="Restart only the app process inside the container, or recreate/restart the whole container",
+    )
+    parser.set_defaults(sync_code=True)
+    sync_group = parser.add_mutually_exclusive_group()
+    sync_group.add_argument(
+        "--sync-code",
+        dest="sync_code",
+        action="store_true",
+        help="Sync the latest source code before restarting the target service (default)",
+    )
+    sync_group.add_argument(
+        "--no-sync-code",
+        dest="sync_code",
+        action="store_false",
+        help="Restart without syncing the latest source code first",
+    )
+
+
 def _report_compose_result(result):
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
@@ -237,8 +262,24 @@ def cmd_down(args):
 
 def cmd_restart(args):
     args, app_envs = _resolve_existing_instance_args(args)
-    logger.note("> Restarting dockerized search service ...")
-    result = run_compose(args, "restart", app_envs)
+    scope = getattr(args, "restart_scope", "app")
+    sync_code = bool(getattr(args, "sync_code", True))
+    logger.note(
+        f"> Restarting dockerized search service (scope={scope}, sync_code={str(sync_code).lower()}) ..."
+    )
+    if scope == "app":
+        result = run_container_app_action(args, "restart", app_envs)
+        _report_compose_result(result)
+        logger.mesg("  App restarted in-place inside the container")
+        logger.mesg("  Container uptime will not change for app-scope restarts")
+        return
+
+    if sync_code and not getattr(args, "no_base_build", False):
+        base_result = ensure_base_image(args, app_envs)
+        if base_result is not None:
+            _report_compose_result(base_result)
+    action = "recreate" if sync_code else "restart"
+    result = run_compose(args, action, app_envs)
     _report_compose_result(result)
 
 
@@ -246,6 +287,17 @@ def cmd_status(args):
     args, app_envs = _resolve_existing_instance_args(args)
     result = run_compose(args, "status", app_envs)
     _report_compose_result(result)
+    container = find_bili_search_container_by_port(app_envs["port"], include_all=True)
+    if container.get("network_mode") == "host":
+        logger.mesg(
+            f"  App Port: {app_envs['port']} (host network mode; docker PORTS column stays empty)"
+        )
+    app_state = read_container_app_state(args, app_envs)
+    if app_state:
+        logger.mesg(f"  App Started At: {app_state['started_at'] or '-'}")
+        logger.mesg(f"  App Uptime: {app_state['uptime'] or '-'}")
+        if app_state.get("restart_count") is not None:
+            logger.mesg(f"  App Restart Count: {app_state['restart_count']}")
     try:
         health = fetch_health(app_envs, timeout=args.timeout)
         logger.mesg(f"  Health URL: {health_url(app_envs)}")
@@ -367,6 +419,13 @@ def build_parser() -> argparse.ArgumentParser:
     restart_parser = subparsers.add_parser("restart", help="Restart dockerized service")
     add_shared_runtime_args(restart_parser)
     add_docker_args(restart_parser)
+    add_restart_control_args(restart_parser)
+    restart_parser.add_argument(
+        "--no-base-build",
+        action="store_true",
+        default=False,
+        help="Skip building the reusable Ubuntu base image before a synced container recreate",
+    )
     restart_parser.set_defaults(func=cmd_restart)
 
     status_parser = subparsers.add_parser(

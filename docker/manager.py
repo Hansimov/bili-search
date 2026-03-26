@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from service.runtime import WORKSPACE_ROOT, format_datetime_for_output
@@ -22,6 +23,22 @@ DEFAULT_PIP_INDEX_URL = "https://mirrors.ustc.edu.cn/pypi/simple"
 DEFAULT_PIP_TRUSTED_HOST = "mirrors.ustc.edu.cn"
 DEFAULT_UBUNTU_APT_MIRROR = "https://mirrors.ustc.edu.cn/ubuntu"
 DEFAULT_EMPTY_CONTEXT_DIR = DEFAULT_STAGE_ROOT / "empty_context"
+CONTAINER_APP_ROOT = "/app"
+DEFAULT_SYNC_EXCLUDES = (
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    "*.egg-info",
+    "configs",
+    "logs",
+    "build",
+    "dist",
+    "logs/docker_sources",
+)
+APP_STATE_FILENAME_TEMPLATE = "container_app_state.p{port}.json"
 
 
 def default_project_name(app_envs: dict) -> str:
@@ -241,6 +258,93 @@ def _format_uptime(value: str | None, *, now: datetime | None = None) -> str | N
     return " ".join(parts)
 
 
+def app_state_path(settings: dict, app_envs: dict) -> Path:
+    return (
+        settings["logs_dir"]
+        / "search_app"
+        / APP_STATE_FILENAME_TEMPLATE.format(port=int(app_envs["port"]))
+    )
+
+
+def inspect_container_app_process(args, app_envs: dict) -> dict | None:
+    settings = resolve_compose_settings(args, app_envs, WORKSPACE_ROOT)
+    env = compose_env(args, app_envs, settings)
+    inspect_command = [
+        "docker",
+        "exec",
+        settings["container_name"],
+        "python3",
+        "-c",
+        (
+            "import json, subprocess; "
+            "lines = subprocess.check_output(['ps', '-eo', 'pid=,etimes=,args='], text=True).splitlines(); "
+            "result = None; "
+            "\nfor line in lines:\n"
+            "    parts = line.strip().split(None, 2)\n"
+            "    if len(parts) < 3:\n"
+            "        continue\n"
+            "    pid, elapsed, command = parts\n"
+            "    if 'bssv start --foreground' not in command:\n"
+            "        continue\n"
+            "    result = {'pid': int(pid), 'elapsed_seconds': int(elapsed)}\n"
+            "    break\n"
+            "print(json.dumps(result) if result else '')"
+        ),
+    ]
+    result = subprocess.run(
+        inspect_command,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    try:
+        process_state = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        return None
+
+    elapsed_seconds = int(process_state.get("elapsed_seconds") or 0)
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=max(elapsed_seconds, 0))
+    started_at = started_at.replace(microsecond=0)
+    started_at_value = started_at.isoformat().replace("+00:00", "Z")
+    return {
+        "pid": process_state.get("pid"),
+        "started_at": _format_started_at(started_at_value),
+        "uptime": _format_uptime(started_at_value),
+        "restart_count": None,
+    }
+
+
+def read_container_app_state(args, app_envs: dict) -> dict | None:
+    settings = resolve_compose_settings(args, app_envs, WORKSPACE_ROOT)
+    state_path = app_state_path(settings, app_envs)
+    if not state_path.exists():
+        return inspect_container_app_process(args, app_envs)
+
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return inspect_container_app_process(args, app_envs)
+
+    started_at_value = str(state.get("started_at") or "").strip()
+    return {
+        "pid": state.get("pid"),
+        "started_at": _format_started_at(started_at_value),
+        "uptime": _format_uptime(started_at_value),
+        "restart_count": state.get("restart_count"),
+    }
+
+
+def _container_sync_cleanup_command() -> str:
+    return (
+        f"find {shlex.quote(CONTAINER_APP_ROOT)} -mindepth 1 -maxdepth 1 "
+        "! -name configs ! -name logs -exec rm -rf {} +"
+    )
+
+
 def _is_bili_search_container(
     name: str, image: str, labels: dict, env_map: dict
 ) -> bool:
@@ -414,6 +518,153 @@ def compose_base_command(settings: dict) -> list[str]:
     ]
 
 
+def _completed_process(
+    command: list[str],
+    returncode: int,
+    stdout: str = "",
+    stderr: str = "",
+) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        command,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def sync_source_to_container(
+    args,
+    app_envs: dict,
+    *,
+    source_root: Path | None = None,
+) -> subprocess.CompletedProcess:
+    sync_root = (source_root or materialize_source(args)).resolve()
+    settings = resolve_compose_settings(args, app_envs, sync_root)
+    env = compose_env(args, app_envs, settings)
+
+    cleanup_command = [
+        "docker",
+        "exec",
+        settings["container_name"],
+        "sh",
+        "-lc",
+        _container_sync_cleanup_command(),
+    ]
+    cleanup_result = subprocess.run(
+        cleanup_command,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if cleanup_result.returncode != 0:
+        return _completed_process(
+            cleanup_command,
+            returncode=cleanup_result.returncode,
+            stdout=cleanup_result.stdout or "",
+            stderr=cleanup_result.stderr or "",
+        )
+
+    tar_command = ["tar", "-C", str(sync_root)]
+    for pattern in DEFAULT_SYNC_EXCLUDES:
+        tar_command += ["--exclude", pattern]
+    tar_command += ["-cf", "-", "."]
+    extract_command = [
+        "docker",
+        "exec",
+        "-i",
+        settings["container_name"],
+        "tar",
+        "--no-same-owner",
+        "-xf",
+        "-",
+        "-C",
+        CONTAINER_APP_ROOT,
+    ]
+
+    tar_process = subprocess.Popen(
+        tar_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    assert tar_process.stdout is not None
+    extract_result = subprocess.run(
+        extract_command,
+        stdin=tar_process.stdout,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    tar_process.stdout.close()
+    tar_stderr = tar_process.stderr.read().decode("utf-8", errors="replace")
+    tar_returncode = tar_process.wait()
+
+    combined_stdout = "\n".join(
+        output for output in [cleanup_result.stdout, extract_result.stdout] if output
+    )
+    combined_stderr = (extract_result.stderr or "") + tar_stderr
+    returncode = extract_result.returncode or tar_returncode
+    return _completed_process(
+        [*cleanup_command, "&&", *tar_command, "|", *extract_command],
+        returncode=returncode,
+        stdout=combined_stdout,
+        stderr=combined_stderr,
+    )
+
+
+def run_container_app_action(
+    args,
+    action: str,
+    app_envs: dict,
+) -> subprocess.CompletedProcess:
+    source_root = materialize_source(args)
+    settings = resolve_compose_settings(args, app_envs, source_root)
+    env = compose_env(args, app_envs, settings)
+    outputs: list[str] = []
+    errors: list[str] = []
+
+    if action == "restart":
+        if bool(getattr(args, "sync_code", True)):
+            sync_result = sync_source_to_container(
+                args,
+                app_envs,
+                source_root=source_root,
+            )
+            if sync_result.stdout:
+                outputs.append(sync_result.stdout)
+            if sync_result.stderr:
+                errors.append(sync_result.stderr)
+            if sync_result.returncode != 0:
+                return _completed_process(
+                    ["docker", "exec", settings["container_name"], "sync"],
+                    returncode=sync_result.returncode,
+                    stdout="\n".join(outputs),
+                    stderr="\n".join(errors),
+                )
+
+        signal_result = subprocess.run(
+            ["docker", "kill", "--signal", "HUP", settings["container_name"]],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if signal_result.stdout:
+            outputs.append(signal_result.stdout)
+        if signal_result.stderr:
+            errors.append(signal_result.stderr)
+        return _completed_process(
+            ["docker", "kill", "--signal", "HUP", settings["container_name"]],
+            returncode=signal_result.returncode,
+            stdout="\n".join(output for output in outputs if output),
+            stderr="\n".join(error for error in errors if error),
+        )
+
+    raise ValueError(f"Unsupported app action: {action}")
+
+
 def run_compose(args, action: str, app_envs: dict) -> subprocess.CompletedProcess:
     build_context = materialize_source(args)
     settings = resolve_compose_settings(args, app_envs, build_context)
@@ -433,6 +684,8 @@ def run_compose(args, action: str, app_envs: dict) -> subprocess.CompletedProces
         command += ["down", "--remove-orphans"]
     elif action == "restart":
         command += ["restart", service_name]
+    elif action == "recreate":
+        command += ["up", "-d", "--force-recreate", "--build", service_name]
     elif action == "status":
         command += ["ps", service_name]
     elif action == "logs":

@@ -37,4 +37,4 @@ COPY . /app
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python3 -m pip install --break-system-packages --no-deps -e /app
 
-CMD ["bssv", "start", "--foreground"]
+CMD ["python3", "-m", "service.container_supervisor"]
