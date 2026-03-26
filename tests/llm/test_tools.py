@@ -320,6 +320,74 @@ def test_tool_executor_merges_google_capability():
     logger.success("[PASS] tool executor merges google capability")
 
 
+def test_execute_search_google_formats_bilibili_site_results():
+    """search_google should preserve useful bilibili site metadata for downstream reasoning."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_google formats bilibili site results")
+
+    mock_client = MagicMock()
+    mock_google = MagicMock()
+    mock_google.base_url = "http://mock-google:18100"
+    mock_google.search.return_value = {
+        "backend": "mock-google",
+        "result_count": 3,
+        "results": [
+            {
+                "title": "Gemini CLI MCP 工作流实战",
+                "link": "https://www.bilibili.com/video/BV1abc123xyz",
+                "snippet": "MCP 工作流和 Gemini CLI 的实战视频。",
+                "display_link": "www.bilibili.com",
+            },
+            {
+                "title": "MCP 开发者主页",
+                "link": "https://space.bilibili.com/12345678",
+                "snippet": "长期做 MCP / Agent 内容。",
+                "display_link": "space.bilibili.com",
+            },
+            {
+                "title": "Gemini CLI 专栏",
+                "link": "https://www.bilibili.com/read/cv24680",
+                "snippet": "B 站专栏文章。",
+                "display_link": "www.bilibili.com",
+            },
+        ],
+    }
+
+    executor = ToolExecutor(search_client=mock_client, google_client=mock_google)
+
+    with patch.object(executor, "_is_google_available", return_value=True):
+        tc = ToolCall(
+            id="call_test_google",
+            name="search_google",
+            arguments=json.dumps(
+                {
+                    "query": "site:bilibili.com/video Gemini CLI MCP",
+                    "num": 3,
+                    "lang": "zh-CN",
+                }
+            ),
+        )
+        result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["query"] == "site:bilibili.com/video Gemini CLI MCP"
+    assert result_data["backend"] == "mock-google"
+    assert result_data["result_count"] == 3
+    assert result_data["results"][0]["site_kind"] == "video"
+    assert result_data["results"][0]["bvid"] == "BV1abc123xyz"
+    assert result_data["results"][1]["site_kind"] == "space"
+    assert result_data["results"][1]["mid"] == 12345678
+    assert result_data["results"][2]["site_kind"] == "read"
+    assert result_data["results"][2]["article_id"] == "cv24680"
+    mock_google.search.assert_called_once_with(
+        query="site:bilibili.com/video Gemini CLI MCP",
+        num=3,
+        lang="zh-CN",
+    )
+
+    logger.success("[PASS] execute search_google formats bilibili site results")
+
+
 def test_execute_empty_query():
     """Test search with empty query."""
     logger.note("=" * 60)

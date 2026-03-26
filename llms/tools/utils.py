@@ -1,6 +1,7 @@
 """Utility functions for processing search results for LLM consumption."""
 
 import re
+from urllib.parse import urlparse
 
 from tclogger import ts_to_str, get_now_ts, dt_to_zh_str
 
@@ -234,16 +235,53 @@ def format_related_videos(videos: list[dict], max_hits: int = 10) -> list[dict]:
 
 
 def format_google_results(results: list[dict], max_hits: int = 5) -> list[dict]:
+    def extract_google_link_metadata(link: str) -> dict:
+        parsed = urlparse(str(link or ""))
+        domain = (parsed.netloc or "").lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        path = parsed.path or ""
+
+        metadata = {"domain": domain}
+        if not domain.endswith("bilibili.com"):
+            return metadata
+
+        metadata["is_bilibili"] = True
+        if domain == "space.bilibili.com":
+            metadata["site_kind"] = "space"
+            match = re.search(r"/(\d+)(?:/|$)", path)
+            if match:
+                metadata["mid"] = int(match.group(1))
+            return metadata
+
+        if path.startswith("/video/"):
+            metadata["site_kind"] = "video"
+            match = re.search(r"/video/(BV[0-9A-Za-z]+)", path)
+            if match:
+                metadata["bvid"] = match.group(1)
+            return metadata
+
+        if path.startswith("/read/"):
+            metadata["site_kind"] = "read"
+            match = re.search(r"/read/(cv\d+|\d+)", path)
+            if match:
+                metadata["article_id"] = match.group(1)
+            return metadata
+
+        metadata["site_kind"] = "bilibili"
+        return metadata
+
     formatted = []
     for result in results[:max_hits]:
-        formatted.append(
-            {
-                "title": result.get("title", ""),
-                "link": result.get("link", result.get("url", "")),
-                "snippet": result.get("snippet", result.get("body", "")),
-                "display_link": result.get("display_link", result.get("source", "")),
-            }
-        )
+        link = result.get("link", result.get("url", ""))
+        formatted_result = {
+            "title": result.get("title", ""),
+            "link": link,
+            "snippet": result.get("snippet", result.get("body", "")),
+            "display_link": result.get("display_link", result.get("source", "")),
+        }
+        formatted_result.update(extract_google_link_metadata(link))
+        formatted.append(formatted_result)
     return formatted
 
 

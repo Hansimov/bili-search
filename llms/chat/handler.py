@@ -134,6 +134,12 @@ _IDENTITY_OWNER_QUERY_RE = re.compile(
     r"^(?:请问|想知道|想了解|麻烦问下|麻烦问一下|能说说|告诉我)?\s*(?P<name>.+?)\s*(?:是谁|是什么人|是哪个up主|是哪位up主|是哪个博主|是哪位博主|是什么账号|是做什么的)(?:[呢吗嘛呀啊?？!！]*)$"
 )
 _TOKEN_OPTION_CANONICAL_RE = re.compile(r"[^A-Za-z0-9\u4e00-\u9fff]+")
+_GOOGLE_KEYWORD_BOOTSTRAP_RE = re.compile(
+    r"怎么搜|怎么写标题|怎么写题目|搜什么关键词|摸一下关键词|摸关键词|标题写法"
+)
+_GOOGLE_CREATOR_BOOTSTRAP_RE = re.compile(
+    r"不知道作者叫什么|不知道up主叫什么|不知道UP主叫什么|先帮我摸几个up主|先帮我摸几个UP主|先帮我找几个up主|先帮我找几个UP主|先帮我摸几个作者|先帮我找几个作者|谁在做|有哪些up主|有哪些UP主|有哪些作者|做这类内容的up主|做这类内容的UP主"
+)
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -596,11 +602,66 @@ class ChatHandler:
         )
 
     @classmethod
+    def _has_close_contextual_owner_competitor(
+        cls,
+        source_text: str,
+        owner: dict | None,
+        owners: list[dict] | None,
+        hint_tokens: list[str] | None = None,
+        score_gap: float = 12.0,
+    ) -> bool:
+        if not owner or not owners:
+            return False
+
+        hint_tokens = hint_tokens or []
+        owner_name = str(owner.get("name") or "").strip()
+        if not owner_name:
+            return False
+
+        owner_mid = owner.get("mid")
+        selected_score = cls._score_owner_candidate(
+            source_text,
+            owner,
+            hint_tokens=hint_tokens,
+        )
+        selected_has_context = bool(
+            cls._extract_owner_context_tokens(source_text, owner_name)
+            or any(token and token in owner_name for token in hint_tokens)
+        )
+
+        for other in owners or []:
+            other_name = str(other.get("name") or "").strip()
+            if not other_name:
+                continue
+            if other_name == owner_name and other.get("mid") == owner_mid:
+                continue
+            if not cls._owner_name_matches_source(source_text, other_name):
+                continue
+
+            other_score = cls._score_owner_candidate(
+                source_text,
+                other,
+                hint_tokens=hint_tokens,
+            )
+            if selected_score - other_score > score_gap:
+                continue
+
+            other_has_context = bool(
+                cls._extract_owner_context_tokens(source_text, other_name)
+                or any(token and token in other_name for token in hint_tokens)
+            )
+            if other_has_context and not selected_has_context:
+                return True
+
+        return False
+
+    @classmethod
     def _is_confident_owner_candidate(
         cls,
         source_text: str,
         owner: dict | None,
         hint_tokens: list[str] | None = None,
+        owners: list[dict] | None = None,
     ) -> bool:
         if not owner:
             return False
@@ -617,6 +678,13 @@ class ChatHandler:
         if any(token and token in owner_name for token in hint_tokens):
             return True
         if short_ambiguous and not source_has_cjk:
+            return False
+        if cls._has_close_contextual_owner_competitor(
+            source_text,
+            owner,
+            owners,
+            hint_tokens=hint_tokens,
+        ):
             return False
         if context_tokens:
             return True
@@ -737,6 +805,293 @@ class ChatHandler:
             )
         return normalized_commands
 
+    @classmethod
+    def _normalize_google_keyword_bootstrap_query(cls, text: str) -> str:
+        query = str(text or "")
+        query = re.sub(r"(?:B站|b站|哔哩哔哩|bilibili)", " ", query, flags=re.IGNORECASE)
+        query = re.sub(
+            r"(?:我想找|想找|我想看|想看|先帮我|帮我|给我|顺便|再|先|有没有|有吗|讲|里|上)",
+            " ",
+            query,
+        )
+        query = re.sub(
+            r"(?:但我不确定大家会怎么写标题|我不确定大家会怎么写标题|大家会怎么写标题|大家怎么写标题|怎么写标题|怎么写题目|一般怎么搜|怎么搜|搜什么关键词|先帮我摸一下关键词|先摸一下关键词|摸一下关键词|摸关键词|标题写法|给我几条视频|给我几条|几条视频|专栏里有没有|专栏文章|文章|视频|内容)",
+            " ",
+            query,
+        )
+        query = cls._normalize_entity_focused_query_text(query)
+        query = re.sub(r"\s+", " ", query).strip()
+        return query
+
+    @classmethod
+    def _build_google_keyword_bootstrap_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not _GOOGLE_KEYWORD_BOOTSTRAP_RE.search(latest_user_text):
+            return commands
+        if any(command.get("type") == "search_google" for command in commands or []):
+            return commands
+        if any(result_item.get("type") == "search_google" for result_item in last_tool_results or []):
+            return commands
+
+        normalized_query = cls._normalize_google_keyword_bootstrap_query(latest_user_text)
+        if not normalized_query:
+            return commands
+
+        if re.search(r"专栏|文章|read", latest_user_text):
+            scope = "site:bilibili.com/read"
+        elif re.search(r"作者|UP主|up主|博主|账号|用户页|谁在做", latest_user_text):
+            scope = "site:space.bilibili.com"
+        elif cls._wants_video_results(messages, commands):
+            scope = "site:bilibili.com/video"
+        else:
+            scope = "site:bilibili.com"
+
+        google_command = {
+            "type": "search_google",
+            "args": {"query": f"{scope} {normalized_query}"},
+        }
+        return [google_command] + list(commands or [])
+
+    @classmethod
+    def _normalize_google_creator_bootstrap_query(cls, text: str) -> str:
+        query = str(text or "")
+        query = re.sub(r"(?:B站|b站|哔哩哔哩|bilibili)", " ", query, flags=re.IGNORECASE)
+        query = re.sub(
+            r"(?:我想找|想找|先帮我|帮我|给我|推荐|找一下|找找|看看|想看看|我想看|想看|有没有|有吗|哪些|几个|一些)",
+            " ",
+            query,
+        )
+        query = re.sub(
+            r"(?:不知道作者叫什么|不知道up主叫什么|不知道UP主叫什么|先帮我摸几个up主|先帮我摸几个UP主|先帮我找几个up主|先帮我找几个UP主|先帮我摸几个作者|先帮我找几个作者|谁在做|有哪些up主|有哪些UP主|有哪些作者|UP主|up主|作者|博主|账号|创作者|做这类内容的|这类内容)",
+            " ",
+            query,
+        )
+        query = cls._normalize_entity_focused_query_text(query)
+        query = re.sub(r"\s+", " ", query).strip()
+        query = re.sub(r"^(?:做)\s*", "", query)
+        query = re.sub(r"\s*(?:的)$", "", query)
+        query = re.sub(r"(?:但我|但是我|摸)$", "", query)
+        query = re.sub(r"\s+", " ", query).strip()
+        return query
+
+    @classmethod
+    def _build_google_creator_bootstrap_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not _GOOGLE_CREATOR_BOOTSTRAP_RE.search(latest_user_text):
+            return commands
+        if any(command.get("type") == "search_google" for command in commands or []):
+            return commands
+        if any(result_item.get("type") == "search_google" for result_item in last_tool_results or []):
+            return commands
+
+        normalized_query = cls._normalize_google_creator_bootstrap_query(latest_user_text)
+        if not normalized_query:
+            return commands
+
+        google_command = {
+            "type": "search_google",
+            "args": {"query": f"site:space.bilibili.com {normalized_query}"},
+        }
+        return [google_command] + list(commands or [])
+
+    @classmethod
+    def _collect_unresolved_owner_aliases(
+        cls,
+        results: list[dict] | None,
+        hint_tokens: list[str] | None = None,
+    ) -> list[str]:
+        unresolved: list[str] = []
+        for result_item in results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            candidate = cls._select_best_owner_candidate(
+                source_text,
+                owners,
+                hint_tokens=hint_tokens,
+            )
+            if cls._is_confident_owner_candidate(
+                source_text,
+                candidate,
+                hint_tokens=hint_tokens,
+                owners=owners,
+            ):
+                continue
+            if source_text and source_text not in unresolved:
+                unresolved.append(source_text)
+        return unresolved
+
+    @classmethod
+    def _should_google_owner_bootstrap_alias(cls, text: str) -> bool:
+        normalized = cls._normalize_name_key(text)
+        if not normalized:
+            return False
+        if cls._is_short_ambiguous_owner_text(text):
+            return True
+        return bool(re.search(r"\d", normalized)) and len(normalized) <= 6
+
+    @classmethod
+    def _build_google_owner_bootstrap_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text or not cls._wants_video_results(messages, commands):
+            return []
+        if any(command.get("type") == "search_google" for command in commands or []):
+            return []
+        if any(result_item.get("type") == "search_google" for result_item in last_tool_results or []):
+            return []
+
+        owner_results = [
+            result_item
+            for result_item in last_tool_results or []
+            if result_item.get("type") == "search_owners"
+        ]
+        if not owner_results:
+            return []
+
+        hint_tokens = cls._collect_owner_context_hints(owner_results)
+        unresolved_aliases = cls._collect_unresolved_owner_aliases(owner_results)
+        bootstrap_aliases: list[str] = []
+        primary_hint = hint_tokens[0] if hint_tokens else ""
+        for result_item in owner_results:
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            if not cls._should_google_owner_bootstrap_alias(source_text):
+                continue
+            if source_text in unresolved_aliases:
+                bootstrap_aliases.append(source_text)
+                continue
+            if not primary_hint or primary_hint in source_text:
+                continue
+            contextual_hints = cls._collect_near_top_owner_context_hints(source_text, owners)
+            if primary_hint in contextual_hints:
+                bootstrap_aliases.append(source_text)
+        bootstrap_aliases = list(dict.fromkeys(bootstrap_aliases))
+        if not bootstrap_aliases:
+            return []
+
+        query_terms: list[str] = []
+        for token in hint_tokens[:2]:
+            if token and token not in query_terms:
+                query_terms.append(token)
+        for alias in bootstrap_aliases:
+            if alias not in query_terms:
+                query_terms.append(alias)
+
+        normalized_query = cls._normalize_entity_focused_query_text(" ".join(query_terms))
+        if not normalized_query:
+            return []
+
+        return [
+            {
+                "type": "search_google",
+                "args": {"query": f"site:space.bilibili.com {normalized_query}"},
+            }
+        ]
+
+    @staticmethod
+    def _extract_google_space_candidate_name(title: str) -> str:
+        name = str(title or "").strip()
+        if not name:
+            return ""
+        name = re.sub(r"(?:的个人空间|个人空间|主页).*$", "", name)
+        name = re.sub(r"(?:[-|｜].*)$", "", name)
+        name = name.strip(" -_|｜·，。！？?：:[]()（）")
+        return name
+
+    @classmethod
+    def _build_google_space_owner_followup_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+    ) -> list[dict]:
+        latest_user_text = cls._get_latest_user_text(messages)
+        if not latest_user_text:
+            return commands
+        if not re.search(r"作者|UP主|up主|博主|创作者|谁在做|摸几个作者|摸几个up主|摸几个UP主", latest_user_text):
+            return commands
+        if any(
+            command.get("type") in {"search_owners", "related_owners_by_tokens"}
+            for command in commands or []
+        ):
+            return commands
+
+        candidate_names: list[str] = []
+        saw_google_probe = False
+        for result_item in last_tool_results or []:
+            if result_item.get("type") != "search_google":
+                continue
+            saw_google_probe = True
+            result = result_item.get("result") or {}
+            for google_result in result.get("results") or []:
+                if google_result.get("site_kind") != "space":
+                    continue
+                candidate_name = cls._extract_google_space_candidate_name(
+                    google_result.get("title")
+                )
+                if not candidate_name:
+                    continue
+                candidate_key = cls._normalize_name_key(candidate_name)
+                if not candidate_key:
+                    continue
+                if candidate_name not in candidate_names:
+                    candidate_names.append(candidate_name)
+
+        if not saw_google_probe:
+            return commands
+
+        if not candidate_names:
+            normalized_topic = cls._normalize_google_creator_bootstrap_query(
+                latest_user_text
+            )
+            if not normalized_topic:
+                return commands
+            owner_commands = [
+                {
+                    "type": "search_owners",
+                    "args": {"text": normalized_topic, "mode": "topic"},
+                }
+            ]
+            passthrough = [
+                command
+                for command in commands or []
+                if command.get("type") not in {"search_videos", "related_tokens_by_tokens"}
+            ]
+            return passthrough + owner_commands
+
+        owner_commands = [
+            {"type": "search_owners", "args": {"text": name, "mode": "name"}}
+            for name in candidate_names[:5]
+        ]
+        passthrough = [
+            command
+            for command in commands or []
+            if command.get("type") not in {"search_videos", "related_tokens_by_tokens"}
+        ]
+        return passthrough + owner_commands
+
     @staticmethod
     def _extract_user_filters_from_query(query: str) -> list[str]:
         text = str(query or "")
@@ -776,7 +1131,11 @@ class ChatHandler:
             if not source_text or not owners:
                 continue
             top_owner = cls._select_best_owner_candidate(source_text, owners)
-            if not cls._is_confident_owner_candidate(source_text, top_owner):
+            if not cls._is_confident_owner_candidate(
+                source_text,
+                top_owner,
+                owners=owners,
+            ):
                 continue
             key = cls._normalize_name_key(source_text)
             if not key:
@@ -854,7 +1213,11 @@ class ChatHandler:
             ).strip()
             owners = result.get("owners") or []
             candidate = cls._select_best_owner_candidate(source_text, owners)
-            if cls._is_confident_owner_candidate(source_text, candidate):
+            if cls._is_confident_owner_candidate(
+                source_text,
+                candidate,
+                owners=owners,
+            ):
                 if cls._is_short_ambiguous_owner_text(source_text):
                     continue
                 direct_tokens = cls._extract_owner_context_tokens(
@@ -951,17 +1314,23 @@ class ChatHandler:
                 owners,
                 hint_tokens=hint_tokens,
             )
-            owner_name = str((candidate or {}).get("name") or "")
             is_confident = cls._is_confident_owner_candidate(
                 source_text,
                 candidate,
                 hint_tokens=hint_tokens,
+                owners=owners,
             )
-            should_retry = False
-            if cls._is_short_ambiguous_owner_text(source_text):
-                should_retry = not is_confident
-            elif owner_name and any(token in owner_name for token in hint_tokens):
-                should_retry = not is_confident
+            should_retry = not is_confident
+            if (
+                not should_retry
+                and cls._should_google_owner_bootstrap_alias(source_text)
+                and primary_hint not in source_text
+            ):
+                contextual_hints = cls._collect_near_top_owner_context_hints(
+                    source_text,
+                    owners,
+                )
+                should_retry = primary_hint in contextual_hints
 
             if not should_retry:
                 continue
@@ -991,7 +1360,11 @@ class ChatHandler:
             ).strip()
             owners = result.get("owners") or []
             candidate = cls._select_best_owner_candidate(source_text, owners)
-            if not cls._is_confident_owner_candidate(source_text, candidate):
+            if not cls._is_confident_owner_candidate(
+                source_text,
+                candidate,
+                owners=owners,
+            ):
                 return True
         return False
 
@@ -1022,12 +1395,24 @@ class ChatHandler:
             messages,
             last_tool_results,
         )
+        google_owner_commands = cls._build_google_owner_bootstrap_commands(
+            commands,
+            messages,
+            last_tool_results,
+        )
         if contextual_owner_commands and (
             not commands
             or owner_only_commands
             or cls._has_unresolved_owner_results(last_tool_results)
         ):
-            return contextual_owner_commands
+            return google_owner_commands + contextual_owner_commands
+
+        if google_owner_commands and (
+            not commands
+            or owner_only_commands
+            or cls._has_unresolved_owner_results(last_tool_results)
+        ):
+            return google_owner_commands
 
         if commands and not owner_only_commands and not (
             owner_result_stage and recent_video_stage
@@ -1046,7 +1431,11 @@ class ChatHandler:
             ).strip()
             owners = result.get("owners") or []
             candidate = cls._select_best_owner_candidate(source_text, owners)
-            if not cls._is_confident_owner_candidate(source_text, candidate):
+            if not cls._is_confident_owner_candidate(
+                source_text,
+                candidate,
+                owners=owners,
+            ):
                 return commands
 
             owner_mid = candidate.get("mid")
@@ -1223,6 +1612,18 @@ class ChatHandler:
         recovered = cls._extract_recent_assistant_commands(messages)
         if not recovered:
             return commands
+
+        if any(
+            result_item.get("type") == "search_owners"
+            for result_item in last_tool_results or []
+        ):
+            recovered = [
+                command
+                for command in recovered
+                if command.get("type") != "related_tokens_by_tokens"
+            ]
+            if not recovered:
+                return commands
 
         recovered = cls._normalize_search_video_commands(recovered)
         recovered = cls._rewrite_search_video_commands_with_owner_results(
@@ -1531,7 +1932,31 @@ class ChatHandler:
                 ],
             }
         if "results" in result and isinstance(result.get("results"), list):
-            return {"results": result.get("results", [])[:2]}
+            compact_results = []
+            for item in (result.get("results") or [])[:3]:
+                compact_item = {
+                    "title": item.get("title", ""),
+                    "link": item.get("link", ""),
+                    "domain": item.get("domain", ""),
+                    "site_kind": item.get("site_kind", ""),
+                    "snippet": item.get("snippet", ""),
+                    "bvid": item.get("bvid"),
+                    "mid": item.get("mid"),
+                    "article_id": item.get("article_id", ""),
+                }
+                compact_results.append(
+                    {k: v for k, v in compact_item.items() if v not in (None, "")}
+                )
+            compact = {"results": compact_results}
+            if result.get("query"):
+                compact["query"] = result["query"]
+            if result.get("result_count") is not None:
+                compact["result_count"] = result["result_count"]
+            if result.get("backend"):
+                compact["backend"] = result["backend"]
+            if result.get("error"):
+                compact["error"] = result["error"]
+            return compact
         return result
 
     @staticmethod
@@ -1807,6 +2232,21 @@ class ChatHandler:
                 owner_result_scope,
             )
             commands = self._normalize_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._build_google_keyword_bootstrap_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._build_google_creator_bootstrap_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._build_google_space_owner_followup_commands(
                 commands,
                 full_messages,
                 last_tool_results,
@@ -2284,6 +2724,21 @@ class ChatHandler:
                 owner_result_scope,
             )
             commands = self._normalize_token_assisted_search_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._build_google_keyword_bootstrap_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._build_google_creator_bootstrap_commands(
+                commands,
+                full_messages,
+                last_tool_results,
+            )
+            commands = self._build_google_space_owner_followup_commands(
                 commands,
                 full_messages,
                 last_tool_results,

@@ -79,9 +79,18 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
 def build_search_google_tool(capabilities: dict | None = None) -> dict:
     caps = _merge_capabilities(capabilities)
     description = (
-        "搜索站外网页信息，用于补充B站内搜索无法直接回答的背景知识、新闻、产品信息或跨站事实。"
-        "优先在需要官网、公告、release notes、外部事实核对时使用，而不是替代 B 站视频搜索。"
-        "如果用户同时要官方更新和B站解读，通常应与 search_videos 同轮配合使用。"
+        "搜索 Google 网页结果。它有三类主要用途："
+        "1) 官网、公告、release notes、跨站事实核对；"
+        "2) 当用户需求很模糊、属于深度意图、黑话、口语标签，或者 B 站内暂时缺稳定关键词时，"
+        "先做关键词启发，"
+        "先用它摸到更像样的主题词、产品名、作者名、标题写法或搜索短语；"
+        "3) 当目标仍然是 B 站内容时，可直接在 query 中使用 Google `site:` 语法做辅助站内搜索。"
+        "最重要的 site 范围包括：`site:bilibili.com`(全 B 站)、`site:space.bilibili.com`(用户页)、"
+        "`site:bilibili.com/video`(视频)、`site:bilibili.com/read`(文章/专栏)。"
+        "如果最终目标仍是 B 站视频、作者或 B 站文章，search_google 通常只是侦察/启发层；"
+        "拿到线索后通常还应继续调用 search_videos 或 search_owners，而不是停在 Google 结果层。"
+        "query 应整理成紧凑搜索短语，可直接包含 site 过滤，不要把整句口语原样塞进去。"
+        "如果用户同时要官方更新和 B 站解读，通常应与 search_videos 同轮配合使用。"
     )
     return {
         "type": "function",
@@ -93,7 +102,20 @@ def build_search_google_tool(capabilities: dict | None = None) -> dict:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "要搜索的网页查询语句",
+                        "description": (
+                            "要搜索的 Google 查询语句。可以是官网/更新日志查询，也可以是关键词启发查询，"
+                            "还可以直接带 site 过滤，例如 `site:bilibili.com/video Gemini CLI MCP`、"
+                            "`site:space.bilibili.com ComfyUI 教程`、`site:bilibili.com/read AI coding agent`。"
+                        ),
+                    },
+                    "num": {
+                        "type": "integer",
+                        "description": "返回结果数量，默认 5",
+                        "default": 5,
+                    },
+                    "lang": {
+                        "type": "string",
+                        "description": "可选语言代码，例如 zh-CN、en",
                     },
                 },
                 "required": ["query"],

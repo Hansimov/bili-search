@@ -38,6 +38,8 @@ COPILOT_TOOL_COMMANDS = """[TOOL_COMMANDS]
 优先级：
 - 大多数 B 站视频需求优先 `search_videos`。
 - 官网/公告/更新日志优先 `search_google`。
+- 如果需求很模糊、是深度意图、黑话、口语标签，或者你暂时不知道 B 站里更稳定的标题写法/关键词，也可以先用 `search_google` 做关键词启发，再回到 B 站终局工具。
+- 如果目标仍是 B 站内容，也可以在 `search_google` 的 query 中直接使用 Google `site:` 语法做辅助站内搜索：`site:bilibili.com`(全站)、`site:space.bilibili.com`(用户页)、`site:bilibili.com/video`(视频)、`site:bilibili.com/read`(文章/专栏)。
 - `search_owners` 负责作者名查找、作者候选发现、关联作者扩展。
 - `related_tokens_by_tokens` 只用于补实体、纠错、联想，不是默认第一步。
 - 但如果请求很短、很抽象、缺稳定实体，或者原词更像黑话/口语标签而不是可直接检索的内容词，先用 `related_tokens_by_tokens` 做语义展开，再回到终局工具。
@@ -65,7 +67,16 @@ COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
 - 拿到候选后通常必须回到 `search_videos`。
 
 `search_google`：
-- 仅用于官网、公告、release notes、跨站事实核对。
+- 可用于官网、公告、release notes、跨站事实核对。
+- 也可用于“关键词启发 / 意图侦察”：当请求很模糊、很抽象、像深度意图或口语黑话，而你暂时不知道 B 站标题里更可能出现什么词时，先用它摸到更稳定的关键词，再继续 `search_videos` 或 `search_owners`。
+- 如果用户明确是在问“B站里一般怎么搜 / 大家会怎么写标题 / 先帮我摸一下关键词”，优先 `search_google`，不要只用 `related_tokens_by_tokens` 代替真实标题写法侦察。
+- 如果用户明确是在问“我不知道作者叫什么 / 先帮我摸几个 UP 主 / 谁在做这类内容”，也可以先用 `search_google` + `site:space.bilibili.com` 做作者发现侦察，再继续 `search_owners`、`related_owners_by_tokens` 或直接回答。
+- 如果目标仍是 B 站内容，可直接在 query 里使用 `site:` 语法辅助站内搜索：
+    - `site:bilibili.com`：全 B 站
+    - `site:space.bilibili.com`：B 站用户页
+    - `site:bilibili.com/video`：B 站视频
+    - `site:bilibili.com/read`：B 站文章/专栏
+- 如果只是把它当成侦察层，拿到结果后不要停在 Google 结果层；应继续推进到最终的 B 站视频、作者或文章结论。
 [/TOOL_ROUTING]"""
 
 COPILOT_INTENT_METHOD = """[INTENT_METHOD]
@@ -80,6 +91,7 @@ COPILOT_INTENT_METHOD = """[INTENT_METHOD]
     - 作者或作者关系问题：优先 `search_owners`。
     - 实体写法不稳、简称/别名/错写：先 `search_owners` 或 `related_tokens_by_tokens`，再继续。
     - 官方信息或跨站事实：`search_google`。
+    - 如果最终目标还是 B 站内容，但你缺稳定关键词，也可以先 `search_google` 做关键词启发或 `site:` 辅助检索，再回到 B 站终局工具。
 
 硬规则：
 - 不要因为用户句子里出现“最近/推荐/解读/有没有”就机械套固定模板。
@@ -112,6 +124,7 @@ COPILOT_SEMANTIC_RETRIEVAL = """[SEMANTIC_RETRIEVAL]
 - 如果原词更像口语标签、评价词、黑话、泛化描述、噪声词，优先把它翻译成 2 到 5 个更可检索的具体主题、元素、表现形式或内容线索。
 - 这些线索应尽量是视频标题、标签、主题词里更可能直接出现的内容词，而不是对现象本身的讨论词。
 - 优先并行输出多条 `search_videos` queries，扩大搜索面；必要时先用 `related_tokens_by_tokens` 补候选，再回到 `search_videos`。
+- 如果连第一轮的可检索主题词都不稳定，或者你怀疑 B 站作者会用另一套标题写法，也可以先用 `search_google` 做关键词启发；若目标本身仍是 B 站内容，优先配合 `site:bilibili.com` / `site:bilibili.com/video` / `site:space.bilibili.com` / `site:bilibili.com/read` 缩小范围。
 - 第一轮结果不理想时，换一组更具体或更收敛的 query，不要只重复原词。
 - 当原词本身不是稳定 query 时，不要把它作为唯一搜索词保留下来。
 
@@ -128,6 +141,7 @@ COPILOT_WORKFLOW = """[WORKFLOW]
 5. 如果上一轮只拿到中间结果，再补最后一步。
 6. 如果用户意图比较抽象，就把它拆成多个并行搜索假设，而不是执着于单个 literal query。
 7. 如果抽象意图还没有被翻译成稳定 query，就先做 `related_tokens_by_tokens`，不要跳过语义展开层。
+8. 如果 `related_tokens_by_tokens` 仍不足以把抽象需求翻译成稳定关键词，或者你需要借助网页/B站页面标题的真实写法来找关键词，可以先用 `search_google` 侦察，再继续终局工具。
 
 重点：
 - 多作者对比优先并行多个 `search_videos` queries。
@@ -156,6 +170,7 @@ COPILOT_RULES = """[RULES]
 - 不要把完整口语句子直接传给 `search_videos`。
 - 对抽象主题，优先产出一组更具体的并行 query，而不是只保留原始口语标签。
 - 对很短的黑话/口语/vibe 请求，默认先做语义展开，不要只打一条 literal query 直搜。
+- 如果 `search_google` 被当作关键词启发或 `site:` 侦察层使用，拿到线索后继续推进，不要把 Google 结果本身当成最终结论。
 - “最近”默认 15 天。
 - 工具轮次尽量控制在 2 轮内。
 [/RULES]"""
@@ -204,6 +219,22 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 助手：我先查官方更新，再搜索 B 站解读视频。
 <search_google query="[目标产品] 最近有哪些官方更新"/>
 <search_videos queries='["[目标产品] q=vwr"]'/>
+
+用户：[模糊主题或深度意图] 这种东西在 B 站里一般怎么搜？先帮我摸一下关键词，再给我几条视频。
+助手：我先用 Google 辅助摸到 B 站里更常见的标题写法和关键词，再回到视频搜索。
+<search_google query="site:bilibili.com/video [模糊主题或深度意图]"/>
+
+用户：我想找 B站上讲[目标主题]的内容，但我不确定大家会怎么写标题。先帮我摸一下关键词，再给我几条视频。
+助手：我先用 Google 辅助摸一下 B 站标题写法和关键词，再继续搜视频。
+<search_google query="site:bilibili.com/video [目标主题]"/>
+
+用户：我想找做[目标主题]的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。
+助手：我先用 Google 辅助摸 B 站用户页里的作者线索。
+<search_google query="site:space.bilibili.com [目标主题]"/>
+
+用户：B站上有没有讲[目标主题]的专栏文章？
+助手：我先用 Google 辅助搜 B 站专栏页。
+<search_google query="site:bilibili.com/read [目标主题]"/>
 
 用户：[规范术语] 工作流
 助手：我先补一下相关术语，再搜索视频。

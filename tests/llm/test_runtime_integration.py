@@ -98,6 +98,27 @@ LIVE_CHAT_CASES = [
         "content_not_contains": [],
     },
     {
+        "name": "double_alias_recent_videos_google_owner_bootstrap",
+        "messages": [
+            {"role": "user", "content": "08和月亮3最近都发了哪些视频？"},
+        ],
+        "expected_tools": ["search_google", "search_videos"],
+        "content_contains": ["https://www.bilibili.com/video/"],
+        "content_not_contains": [],
+    },
+    {
+        "name": "creator_google_bootstrap_agent_practice",
+        "messages": [
+            {
+                "role": "user",
+                "content": "我想找做 AI Agent 实战、多智能体开发和自动化工作流的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+            },
+        ],
+        "expected_tools": ["search_google"],
+        "content_contains": ["https://space.bilibili.com/"],
+        "content_not_contains": ["space.bilibili.com/uid", "UP主A"],
+    },
+    {
         "name": "account_query_after_capability_chat",
         "messages": [
             {"role": "user", "content": "你有什么功能？"},

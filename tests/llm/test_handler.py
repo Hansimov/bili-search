@@ -160,6 +160,206 @@ def test_compact_result_for_context_keeps_topic_owner_candidates():
     assert compact["owners"][-1]["name"] == "作者19"
 
 
+def test_compact_result_for_context_preserves_google_site_metadata():
+    result = {
+        "query": "site:bilibili.com/video Gemini CLI MCP",
+        "result_count": 3,
+        "backend": "mock-google",
+        "results": [
+            {
+                "title": "Gemini CLI MCP 工作流实战",
+                "link": "https://www.bilibili.com/video/BV1abc123xyz",
+                "domain": "bilibili.com",
+                "site_kind": "video",
+                "bvid": "BV1abc123xyz",
+                "snippet": "MCP 工作流和 Gemini CLI 的实战视频。",
+            },
+            {
+                "title": "MCP 开发者主页",
+                "link": "https://space.bilibili.com/12345678",
+                "domain": "space.bilibili.com",
+                "site_kind": "space",
+                "mid": 12345678,
+                "snippet": "长期做 MCP / Agent 内容。",
+            },
+            {
+                "title": "Gemini CLI 专栏",
+                "link": "https://www.bilibili.com/read/cv24680",
+                "domain": "bilibili.com",
+                "site_kind": "read",
+                "article_id": "cv24680",
+                "snippet": "B 站专栏文章。",
+            },
+        ],
+    }
+
+    compact = ChatHandler._compact_result_for_context(result)
+
+    assert compact["query"] == "site:bilibili.com/video Gemini CLI MCP"
+    assert compact["result_count"] == 3
+    assert compact["backend"] == "mock-google"
+    assert len(compact["results"]) == 3
+    assert compact["results"][0]["site_kind"] == "video"
+    assert compact["results"][0]["bvid"] == "BV1abc123xyz"
+    assert compact["results"][1]["site_kind"] == "space"
+    assert compact["results"][1]["mid"] == 12345678
+    assert compact["results"][2]["site_kind"] == "read"
+    assert compact["results"][2]["article_id"] == "cv24680"
+
+
+def test_google_keyword_bootstrap_is_prepended_for_title_uncertainty():
+    commands = [
+        {
+            "type": "related_tokens_by_tokens",
+            "args": {"text": "OpenAI Agents SDK", "mode": "auto"},
+        },
+        {"type": "search_videos", "args": {"queries": ["OpenAI Agents SDK q=vwr"]}},
+    ]
+    messages = [
+        {
+            "role": "user",
+            "content": "我想找 B站上讲 OpenAI Agents SDK 的内容，但我不确定大家会怎么写标题。先帮我摸一下关键词，再给我几条视频。",
+        }
+    ]
+
+    rewritten = ChatHandler._build_google_keyword_bootstrap_commands(
+        commands,
+        messages,
+        None,
+    )
+
+    assert rewritten[0]["type"] == "search_google"
+    assert rewritten[0]["args"]["query"].startswith("site:bilibili.com/video ")
+    assert "OpenAI Agents SDK" in rewritten[0]["args"]["query"]
+    assert rewritten[1:] == commands
+
+
+def test_google_creator_bootstrap_is_prepended_for_creator_uncertainty():
+    commands = [
+        {"type": "related_owners_by_tokens", "args": {"text": "MCP 工作流", "size": 8}},
+    ]
+    messages = [
+        {
+            "role": "user",
+            "content": "我想找做 MCP 工作流的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+        }
+    ]
+
+    rewritten = ChatHandler._build_google_creator_bootstrap_commands(
+        commands,
+        messages,
+        None,
+    )
+
+    assert rewritten[0]["type"] == "search_google"
+    assert rewritten[0]["args"]["query"].startswith("site:space.bilibili.com ")
+    assert "MCP 工作流" in rewritten[0]["args"]["query"]
+    assert rewritten[1:] == commands
+
+
+def test_google_owner_bootstrap_is_prepended_for_unresolved_recent_video_aliases():
+    messages = [
+        {
+            "role": "user",
+            "content": "08和月亮3最近都发了哪些视频？",
+        }
+    ]
+    last_tool_results = [
+        {"type": "search_owners", "result": {**MOCK_CONTEXTUAL_08_OWNER_RESULT}},
+        {"type": "search_owners", "result": {**MOCK_MOON_OWNER_RESULT}},
+    ]
+
+    rewritten = ChatHandler._build_google_owner_bootstrap_commands(
+        [],
+        messages,
+        last_tool_results,
+    )
+
+    assert rewritten[0]["type"] == "search_google"
+    assert rewritten[0]["args"]["query"].startswith("site:space.bilibili.com ")
+    assert "红警" in rewritten[0]["args"]["query"]
+    assert "月亮3" in rewritten[0]["args"]["query"]
+
+
+def test_google_space_creator_followup_prefers_owner_verification():
+    messages = [
+        {
+            "role": "user",
+            "content": "我想找做 AI Agent 实战的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+        }
+    ]
+    last_tool_results = [
+        {
+            "type": "search_google",
+            "result": {
+                "query": "site:space.bilibili.com AI Agent 实战",
+                "results": [
+                    {
+                        "title": "tyk233的个人空间",
+                        "link": "https://space.bilibili.com/408202968",
+                        "site_kind": "space",
+                    },
+                    {
+                        "title": "慢学AI - 个人空间",
+                        "link": "https://space.bilibili.com/28321599",
+                        "site_kind": "space",
+                    },
+                ],
+            },
+        }
+    ]
+    commands = [{"type": "search_videos", "args": {"queries": ["AI Agent 实战 q=vwr"]}}]
+
+    rewritten = ChatHandler._build_google_space_owner_followup_commands(
+        commands,
+        messages,
+        last_tool_results,
+    )
+
+    assert [command["type"] for command in rewritten] == [
+        "search_owners",
+        "search_owners",
+    ]
+    assert rewritten[0]["args"]["text"] == "tyk233"
+    assert rewritten[1]["args"]["text"] == "慢学AI"
+
+
+def test_google_space_creator_followup_falls_back_to_owner_topic_search():
+    messages = [
+        {
+            "role": "user",
+            "content": "我想找做 MCP 工作流和 AI Agent 开发的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+        }
+    ]
+    last_tool_results = [
+        {
+            "type": "search_google",
+            "result": {
+                "query": "site:space.bilibili.com MCP 工作流 AI Agent 开发",
+                "results": [
+                    {
+                        "title": "B站搜索结果页",
+                        "link": "https://www.bilibili.com/video/BV1abc123xyz",
+                        "site_kind": "video",
+                    }
+                ],
+            },
+        }
+    ]
+    commands = [{"type": "search_videos", "args": {"queries": ["MCP 工作流 q=vwr"]}}]
+
+    rewritten = ChatHandler._build_google_space_owner_followup_commands(
+        commands,
+        messages,
+        last_tool_results,
+    )
+
+    assert rewritten[0]["type"] == "search_owners"
+    assert rewritten[0]["args"]["mode"] == "topic"
+    assert "MCP 工作流" in rewritten[0]["args"]["text"]
+    assert "AI Agent 开发" in rewritten[0]["args"]["text"]
+
+
 MOCK_SEARCH_OWNERS_RESULT = {
     "text": "影视飓风",
     "mode": "relation",
@@ -545,6 +745,24 @@ def test_multi_owner_recent_videos_continue_after_contextual_owner_resolution():
     mock_search.explore.side_effect = [MOCK_EXPLORE_RESULT, MOCK_EXPLORE_RESULT]
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+    handler.tool_executor.google_client = MagicMock()
+    handler.tool_executor.google_client.search.return_value = {
+        "backend": "mock-google",
+        "result_count": 2,
+        "results": [
+            {
+                "title": "红警HBK08的个人空间",
+                "link": "https://space.bilibili.com/1629347259",
+                "snippet": "红警作者主页",
+            },
+            {
+                "title": "红警月亮3的个人空间",
+                "link": "https://space.bilibili.com/674510452",
+                "snippet": "红警作者主页",
+            },
+        ],
+    }
+    handler.tool_executor._is_google_available = lambda: True
 
     result = handler.handle(
         messages=[{"role": "user", "content": "08和月亮3最近都发了哪些视频？"}]
@@ -555,7 +773,13 @@ def test_multi_owner_recent_videos_continue_after_contextual_owner_resolution():
         call(text="08", mode="name", size=8),
         call(text="月亮3", mode="name", size=8),
         call(text="红警08", mode="name", size=8),
+        call(text="红警月亮3", mode="name", size=8),
     ]
+    handler.tool_executor.google_client.search.assert_called_once_with(
+        query="site:space.bilibili.com 红警 08 月亮3",
+        num=5,
+        lang=None,
+    )
     assert {
         call_args.kwargs["query"] for call_args in mock_search.explore.call_args_list
     } == {
@@ -563,7 +787,11 @@ def test_multi_owner_recent_videos_continue_after_contextual_owner_resolution():
         ":uid=674510452 :date<=15d",
     }
     assert result["tool_events"][0]["tools"] == ["search_owners", "search_owners"]
-    assert result["tool_events"][1]["tools"] == ["search_owners"]
+    assert result["tool_events"][1]["tools"] == [
+        "search_google",
+        "search_owners",
+        "search_owners",
+    ]
     assert result["tool_events"][2]["tools"] == ["search_videos"]
 
     logger.success(
@@ -620,6 +848,24 @@ def test_owner_only_followup_plan_is_promoted_to_video_search_once_resolved():
     mock_search.explore.side_effect = [MOCK_EXPLORE_RESULT, MOCK_EXPLORE_RESULT]
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+    handler.tool_executor.google_client = MagicMock()
+    handler.tool_executor.google_client.search.return_value = {
+        "backend": "mock-google",
+        "result_count": 2,
+        "results": [
+            {
+                "title": "红警HBK08的个人空间",
+                "link": "https://space.bilibili.com/1629347259",
+                "snippet": "红警作者主页",
+            },
+            {
+                "title": "红警月亮3的个人空间",
+                "link": "https://space.bilibili.com/674510452",
+                "snippet": "红警作者主页",
+            },
+        ],
+    }
+    handler.tool_executor._is_google_available = lambda: True
 
     result = handler.handle(
         messages=[{"role": "user", "content": "08和月亮3最近都发了哪些视频？"}]
@@ -630,7 +876,13 @@ def test_owner_only_followup_plan_is_promoted_to_video_search_once_resolved():
         call(text="08", mode="name", size=8),
         call(text="月亮3", mode="name", size=8),
         call(text="红警08", mode="name", size=8),
+        call(text="红警月亮3", mode="name", size=8),
     ]
+    handler.tool_executor.google_client.search.assert_called_once_with(
+        query="site:space.bilibili.com 红警 08 月亮3",
+        num=5,
+        lang=None,
+    )
     assert {
         call_args.kwargs["query"] for call_args in mock_search.explore.call_args_list
     } == {
@@ -689,10 +941,29 @@ def test_unresolved_owner_aliases_override_generic_topic_drift():
         },
         MOCK_MOON_OWNER_RESULT,
         MOCK_CONTEXTUAL_08_OWNER_RESULT,
+        MOCK_CONTEXTUAL_MOON_OWNER_RESULT,
     ]
     mock_search.explore.side_effect = [MOCK_EXPLORE_RESULT, MOCK_EXPLORE_RESULT]
 
     handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+    handler.tool_executor.google_client = MagicMock()
+    handler.tool_executor.google_client.search.return_value = {
+        "backend": "mock-google",
+        "result_count": 2,
+        "results": [
+            {
+                "title": "红警HBK08的个人空间",
+                "link": "https://space.bilibili.com/1629347259",
+                "snippet": "红警作者主页",
+            },
+            {
+                "title": "红警月亮3的个人空间",
+                "link": "https://space.bilibili.com/674510452",
+                "snippet": "红警作者主页",
+            },
+        ],
+    }
+    handler.tool_executor._is_google_available = lambda: True
 
     result = handler.handle(
         messages=[{"role": "user", "content": "08和月亮3最近都发了哪些视频？"}]
@@ -703,9 +974,19 @@ def test_unresolved_owner_aliases_override_generic_topic_drift():
         call(text="08", mode="name", size=8),
         call(text="月亮3", mode="name", size=8),
         call(text="红警08", mode="name", size=8),
+        call(text="红警月亮3", mode="name", size=8),
     ]
+    handler.tool_executor.google_client.search.assert_called_once_with(
+        query="site:space.bilibili.com 红警 08 月亮3",
+        num=5,
+        lang=None,
+    )
     mock_search.related_tokens_by_tokens.assert_not_called()
-    assert result["tool_events"][1]["tools"] == ["search_owners"]
+    assert result["tool_events"][1]["tools"] == [
+        "search_google",
+        "search_owners",
+        "search_owners",
+    ]
     assert result["tool_events"][-1]["tools"] == ["search_videos"]
 
     logger.success("[PASS] unresolved owner aliases override generic topic drift")

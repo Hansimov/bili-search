@@ -53,6 +53,12 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
     )
     assert '<search_google query="[目标产品] 最近有哪些官方更新"/>' in prompt
     assert '<search_google query="[目标产品] [目标能力] 最近有哪些官方更新"/>' in prompt
+    assert (
+        '<search_google query="site:bilibili.com/video [模糊主题或深度意图]"/>'
+        in prompt
+    )
+    assert '<search_google query="site:space.bilibili.com [目标主题]"/>' in prompt
+    assert '<search_google query="site:bilibili.com/read [目标主题]"/>' in prompt
     assert '<related_tokens_by_tokens text="[规范术语]" mode="auto"/>' in prompt
     assert '<related_tokens_by_tokens text="[模糊术语]" mode="auto"/>' in prompt
     assert "用户：来点[某种口语化风格内容]" in prompt
@@ -72,6 +78,12 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
     )
     assert "[目标产品]最近有哪些官方更新，B站上有没有相关解读" in prompt
     assert "[模糊术语] 有什么入门教程？" in prompt
+    assert "这种东西在 B 站里一般怎么搜？先帮我摸一下关键词，再给我几条视频" in prompt
+    assert (
+        "我想找做[目标主题]的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。"
+        in prompt
+    )
+    assert "B站上有没有讲[目标主题]的专栏文章？" in prompt
     assert "这个作者有哪些关联账号？那他的代表作有哪些？" in prompt
     assert (
         "<search_videos queries="
@@ -115,6 +127,10 @@ def test_build_system_prompt_describes_unified_schema_and_semantic_iteration():
     assert "口语标签、评价词、黑话、泛化描述、噪声词" in prompt
     assert "如果请求很短、很抽象、缺少稳定实体" in prompt
     assert "先做 `related_tokens_by_tokens`" in prompt
+    assert "也可以先 `search_google` 做关键词启发" in prompt
+    assert "site:bilibili.com/video" in prompt
+    assert "site:space.bilibili.com" in prompt
+    assert "site:bilibili.com/read" in prompt
     assert "优先并行输出多条 `search_videos` queries" in prompt
     assert "第一轮结果不理想时，换一组更具体或更收敛的 query" in prompt
     assert "如果 `final_target=mixed`，要把每个子目标分别完成" in prompt
@@ -169,7 +185,18 @@ def test_tool_definitions_explain_routing_boundaries():
         "不要直接把原词写成 :user=xxx"
         in by_name["search_videos"]["function"]["description"]
     )
-    assert "官方更新和B站解读" in by_name["search_google"]["function"]["description"]
+    assert "官方更新和 B 站解读" in by_name["search_google"]["function"]["description"]
+    assert "关键词启发" in by_name["search_google"]["function"]["description"]
+    assert "site:bilibili.com" in by_name["search_google"]["function"]["description"]
+    assert (
+        "site:space.bilibili.com" in by_name["search_google"]["function"]["description"]
+    )
+    assert (
+        "site:bilibili.com/video" in by_name["search_google"]["function"]["description"]
+    )
+    assert (
+        "site:bilibili.com/read" in by_name["search_google"]["function"]["description"]
+    )
     assert "搜索作者/UP主" in by_name["search_owners"]["function"]["description"]
     assert "关联账号/矩阵号" in by_name["search_owners"]["function"]["description"]
     assert "最近发了什么视频" in by_name["search_owners"]["function"]["description"]

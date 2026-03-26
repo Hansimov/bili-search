@@ -41,6 +41,46 @@ CASES = {
             },
         ],
     },
+    "google_keyword_bootstrap_for_bili": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "我想找 B站上讲 OpenAI Agents SDK 的内容，但我不确定大家会怎么写标题。先帮我摸一下关键词，再给我几条视频。",
+            },
+        ],
+    },
+    "google_bili_read_articles": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "B站专栏里有没有 Gemini CLI 或 MCP 工作流的文章？",
+            },
+        ],
+    },
+    "google_creator_bootstrap_for_space": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "我想找做 MCP 工作流和 AI Agent 开发的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+            },
+        ],
+    },
+    "google_creator_bootstrap_mcp_cn": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "我想找做中文 MCP 教程、工作流搭建和工具链实战的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+            },
+        ],
+    },
+    "google_creator_bootstrap_agent_practice": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "我想找做 AI Agent 实战、多智能体开发和自动化工作流的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。",
+            },
+        ],
+    },
     "productivity_compare": {
         "messages": [
             {
@@ -86,7 +126,7 @@ def post_chat(base_url: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=240) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
