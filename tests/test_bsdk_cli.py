@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 def make_runtime_args(**overrides):
     values = {
+        "runtime": "docker",
         "host": None,
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
@@ -41,6 +42,9 @@ def make_runtime_args(**overrides):
         "timeout": 3.0,
         "restart_scope": "app",
         "sync_code": True,
+        "foreground": False,
+        "reload": False,
+        "kill": False,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -63,6 +67,15 @@ def test_bsdk_start_uses_compose_runner():
     assert mock_run.call_args.args[1] == "start"
     assert mock_report.call_args_list[0].args[0] is base_result
     assert mock_report.call_args_list[1].args[0] is result
+
+
+def test_bsdk_start_dispatches_to_local_runtime():
+    with patch("cli.bsdk.local_runtime_cli.cmd_start") as mock_local_start:
+        from cli.bsdk import cmd_start
+
+        cmd_start(make_runtime_args(runtime="local"))
+
+    mock_local_start.assert_called_once()
 
 
 def test_bsdk_start_can_skip_base_build():
@@ -354,8 +367,34 @@ def test_bsdk_restart_defaults_to_app_scope_with_sync():
     parser = build_parser()
     args = parser.parse_args(["restart", "-p", "21001"])
 
+    assert args.runtime == "docker"
     assert args.restart_scope == "app"
     assert args.sync_code is True
+
+
+def test_bsdk_start_parser_accepts_local_runtime_flags():
+    from cli.bsdk import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["start", "--runtime", "local", "--foreground", "--reload", "-k", "-p", "21001"]
+    )
+
+    assert args.runtime == "local"
+    assert args.foreground is True
+    assert args.reload is True
+    assert args.kill is True
+
+
+def test_bsdk_build_rejects_local_runtime():
+    from cli.bsdk import cmd_build
+
+    try:
+        cmd_build(make_runtime_args(runtime="local"))
+    except SystemExit as exc:
+        assert str(exc) == "build only supports --runtime docker"
+    else:
+        assert False, "expected SystemExit"
 
 
 def test_bsdk_restart_app_scope_uses_container_app_action():

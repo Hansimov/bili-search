@@ -284,7 +284,7 @@ def inspect_container_app_process(args, app_envs: dict) -> dict | None:
             "    if len(parts) < 3:\n"
             "        continue\n"
             "    pid, elapsed, command = parts\n"
-            "    if 'bssv start --foreground' not in command:\n"
+            "    if 'bsdk start --runtime local --foreground' not in command:\n"
             "        continue\n"
             "    result = {'pid': int(pid), 'elapsed_seconds': int(elapsed)}\n"
             "    break\n"

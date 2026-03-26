@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-CHILD_COMMAND = ["bssv", "start", "--foreground"]
+CHILD_COMMAND = ["bsdk", "start", "--runtime", "local", "--foreground"]
 STATE_ROOT = Path("/app/logs/search_app")
 STATE_FILENAME_TEMPLATE = "container_app_state.p{port}.json"
 

@@ -6,7 +6,9 @@ from pathlib import Path
 from tclogger import logger
 from webu.clis.helpers import root_epilog
 
-from cli.common import add_shared_runtime_args, explicit_runtime_filters_from_args
+from cli import local_runtime as local_runtime_cli
+from cli.common import add_runtime_mode_arg, add_shared_runtime_args
+from cli.common import explicit_runtime_filters_from_args
 from cli.common import format_table, resolve_runtime_envs_from_args
 from docker.manager import DEFAULT_COMPOSE_FILE
 from docker.manager import DEFAULT_DOCKERFILE
@@ -174,6 +176,24 @@ def add_restart_control_args(parser: argparse.ArgumentParser):
     )
 
 
+def _runtime(args) -> str:
+    return str(getattr(args, "runtime", "docker") or "docker")
+
+
+def _ensure_docker_runtime(args, command_name: str):
+    if _runtime(args) != "docker":
+        raise SystemExit(f"{command_name} only supports --runtime docker")
+
+
+def _validate_local_only_flags(args, *flag_names: str):
+    unsupported = [
+        flag_name for flag_name in flag_names if bool(getattr(args, flag_name, False))
+    ]
+    if unsupported:
+        formatted = ", ".join(f"--{name.replace('_', '-')}" for name in unsupported)
+        raise SystemExit(f"{formatted} only supports --runtime local")
+
+
 def _report_compose_result(result):
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
@@ -211,7 +231,7 @@ def _resolve_existing_instance_args(args):
     return args, app_envs
 
 
-def cmd_start(args):
+def _cmd_docker_start(args):
     app_envs = resolve_runtime_envs_from_args(args)
     logger.note(
         f"> Starting dockerized search service on port {app_envs['port']} from source={args.source} ..."
@@ -224,7 +244,7 @@ def cmd_start(args):
     _report_compose_result(result)
 
 
-def cmd_build(args):
+def _cmd_docker_build(args):
     app_envs = resolve_runtime_envs_from_args(args)
     logger.note(
         f"> Building dockerized search service image on port {app_envs['port']} from source={args.source} ..."
@@ -237,7 +257,7 @@ def cmd_build(args):
     _report_compose_result(result)
 
 
-def cmd_build_base(args):
+def _cmd_docker_build_base(args):
     app_envs = resolve_runtime_envs_from_args(args)
     logger.note(
         "> Building reusable Ubuntu base image for bili-search docker runtime ..."
@@ -246,21 +266,21 @@ def cmd_build_base(args):
     _report_compose_result(result)
 
 
-def cmd_stop(args):
+def _cmd_docker_stop(args):
     args, app_envs = _resolve_existing_instance_args(args)
     logger.note("> Stopping dockerized search service ...")
     result = run_compose(args, "stop", app_envs)
     _report_compose_result(result)
 
 
-def cmd_down(args):
+def _cmd_docker_down(args):
     args, app_envs = _resolve_existing_instance_args(args)
     logger.note("> Removing dockerized search service containers ...")
     result = run_compose(args, "down", app_envs)
     _report_compose_result(result)
 
 
-def cmd_restart(args):
+def _cmd_docker_restart(args):
     args, app_envs = _resolve_existing_instance_args(args)
     scope = getattr(args, "restart_scope", "app")
     sync_code = bool(getattr(args, "sync_code", True))
@@ -283,7 +303,7 @@ def cmd_restart(args):
     _report_compose_result(result)
 
 
-def cmd_status(args):
+def _cmd_docker_status(args):
     args, app_envs = _resolve_existing_instance_args(args)
     result = run_compose(args, "status", app_envs)
     _report_compose_result(result)
@@ -306,19 +326,19 @@ def cmd_status(args):
         logger.warn(f"  × Health check failed: {exc}")
 
 
-def cmd_logs(args):
+def _cmd_docker_logs(args):
     args, app_envs = _resolve_existing_instance_args(args)
     result = run_compose(args, "logs", app_envs)
     _report_compose_result(result)
 
 
-def cmd_config(args):
+def _cmd_docker_config(args):
     app_envs = resolve_runtime_envs_from_args(args)
     result = run_compose(args, "config", app_envs)
     _report_compose_result(result)
 
 
-def cmd_ps(args):
+def _cmd_docker_ps(args):
     containers = list_bili_search_containers(
         filters=explicit_runtime_filters_from_args(args),
         include_all=bool(getattr(args, "all", False)),
@@ -346,28 +366,95 @@ def cmd_ps(args):
     )
 
 
+def cmd_start(args):
+    if _runtime(args) == "local":
+        return local_runtime_cli.cmd_start(args)
+    _validate_local_only_flags(args, "foreground", "reload", "kill")
+    return _cmd_docker_start(args)
+
+
+def cmd_build(args):
+    _ensure_docker_runtime(args, "build")
+    return _cmd_docker_build(args)
+
+
+def cmd_build_base(args):
+    _ensure_docker_runtime(args, "build-base")
+    return _cmd_docker_build_base(args)
+
+
+def cmd_stop(args):
+    if _runtime(args) == "local":
+        return local_runtime_cli.cmd_stop(args)
+    return _cmd_docker_stop(args)
+
+
+def cmd_down(args):
+    _ensure_docker_runtime(args, "down")
+    return _cmd_docker_down(args)
+
+
+def cmd_restart(args):
+    if _runtime(args) == "local":
+        return local_runtime_cli.cmd_restart(args)
+    _validate_local_only_flags(args, "foreground")
+    return _cmd_docker_restart(args)
+
+
+def cmd_status(args):
+    if _runtime(args) == "local":
+        return local_runtime_cli.cmd_status(args)
+    return _cmd_docker_status(args)
+
+
+def cmd_logs(args):
+    if _runtime(args) == "local":
+        return local_runtime_cli.cmd_logs(args)
+    return _cmd_docker_logs(args)
+
+
+def cmd_check(args):
+    return local_runtime_cli.cmd_check(args)
+
+
+def cmd_config(args):
+    _ensure_docker_runtime(args, "config")
+    return _cmd_docker_config(args)
+
+
+def cmd_ps(args):
+    if _runtime(args) == "local":
+        return local_runtime_cli.cmd_ps(args)
+    return _cmd_docker_ps(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bili Search docker CLI (bsdk)",
+        description="Bili Search runtime CLI (bsdk)",
         epilog=root_epilog(
             quick_start=[
-                "bsdk build-base",
+                "bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
                 "bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
             ],
             examples=[
+                "bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
                 "bsdk start --source local-git --git-ref HEAD~1 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
                 "bsdk status -p 21001",
+                "bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
                 "bsdk ps --all",
+                "bsdk ps --runtime local --all",
                 "bsdk config --source remote-git --git-url https://github.com/example/bili-search.git --git-ref main",
             ],
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    add_runtime_mode_arg(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build_base_parser = subparsers.add_parser(
         "build-base", help="Build reusable Ubuntu base image"
     )
+    add_runtime_mode_arg(build_base_parser)
     add_shared_runtime_args(build_base_parser)
     add_docker_args(build_base_parser)
     build_base_parser.set_defaults(func=cmd_build_base)
@@ -375,6 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser = subparsers.add_parser(
         "build", help="Build dockerized service image without starting it"
     )
+    add_runtime_mode_arg(build_parser)
     add_shared_runtime_args(build_parser)
     add_docker_args(build_parser)
     build_parser.add_argument(
@@ -386,9 +474,15 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser.set_defaults(func=cmd_build)
 
     start_parser = subparsers.add_parser(
-        "start", help="Build and start dockerized service"
+        "start", help="Start bili-search in local or docker runtime"
     )
-    add_shared_runtime_args(start_parser)
+    add_runtime_mode_arg(start_parser)
+    add_shared_runtime_args(
+        start_parser,
+        include_foreground=True,
+        include_reload=True,
+        include_kill=True,
+    )
     add_docker_args(start_parser)
     start_parser.add_argument(
         "--no-build",
@@ -405,6 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.set_defaults(func=cmd_start)
 
     stop_parser = subparsers.add_parser("stop", help="Stop dockerized service")
+    add_runtime_mode_arg(stop_parser)
     add_shared_runtime_args(stop_parser)
     add_docker_args(stop_parser)
     stop_parser.set_defaults(func=cmd_stop)
@@ -412,12 +507,14 @@ def build_parser() -> argparse.ArgumentParser:
     down_parser = subparsers.add_parser(
         "down", help="Remove dockerized service containers"
     )
+    add_runtime_mode_arg(down_parser)
     add_shared_runtime_args(down_parser)
     add_docker_args(down_parser)
     down_parser.set_defaults(func=cmd_down)
 
     restart_parser = subparsers.add_parser("restart", help="Restart dockerized service")
-    add_shared_runtime_args(restart_parser)
+    add_runtime_mode_arg(restart_parser)
+    add_shared_runtime_args(restart_parser, include_foreground=True)
     add_docker_args(restart_parser)
     add_restart_control_args(restart_parser)
     restart_parser.add_argument(
@@ -429,8 +526,9 @@ def build_parser() -> argparse.ArgumentParser:
     restart_parser.set_defaults(func=cmd_restart)
 
     status_parser = subparsers.add_parser(
-        "status", help="Show docker and service health status"
+        "status", help="Show local or docker runtime status"
     )
+    add_runtime_mode_arg(status_parser)
     add_shared_runtime_args(status_parser)
     add_docker_args(status_parser)
     status_parser.add_argument(
@@ -438,7 +536,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.set_defaults(func=cmd_status)
 
-    logs_parser = subparsers.add_parser("logs", help="Show container logs")
+    logs_parser = subparsers.add_parser("logs", help="Show local or docker logs")
+    add_runtime_mode_arg(logs_parser)
     add_shared_runtime_args(logs_parser)
     add_docker_args(logs_parser)
     logs_parser.add_argument(
@@ -449,7 +548,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     logs_parser.set_defaults(func=cmd_logs)
 
+    check_parser = subparsers.add_parser("check", help="Call the health endpoint")
+    add_runtime_mode_arg(check_parser)
+    add_shared_runtime_args(check_parser)
+    check_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=3.0,
+        help="Health check timeout in seconds",
+    )
+    check_parser.set_defaults(func=cmd_check)
+
     config_parser = subparsers.add_parser("config", help="Render docker compose config")
+    add_runtime_mode_arg(config_parser)
     add_shared_runtime_args(config_parser)
     add_docker_args(config_parser)
     config_parser.set_defaults(func=cmd_config)
@@ -457,8 +568,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps_parser = subparsers.add_parser(
         "ps",
         aliases=["list"],
-        help="List bili-search docker containers with port and startup time",
+        help="List local services or docker containers with runtime metadata",
     )
+    add_runtime_mode_arg(ps_parser)
     add_shared_runtime_args(ps_parser)
     ps_parser.add_argument(
         "--all",

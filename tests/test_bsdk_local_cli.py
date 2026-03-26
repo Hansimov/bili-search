@@ -1,4 +1,4 @@
-"""Tests for cli.bssv service management helpers."""
+"""Tests for bsdk local runtime helpers."""
 
 from argparse import Namespace
 from pathlib import Path
@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 def make_runtime_args(**overrides):
     values = {
+        "runtime": "local",
         "host": None,
         "port": 21099,
         "elastic_index": "bili_videos_dev6",
@@ -20,16 +21,16 @@ def make_runtime_args(**overrides):
     return Namespace(**values)
 
 
-def test_start_passes_runtime_env_to_service():
+def test_local_start_passes_runtime_env_to_service():
     manager = MagicMock()
     manager.status.return_value = {"status": "not_running", "pid": None}
     manager.start.return_value = {"status": "started", "pid": 4321}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
     with patch(
-        "cli.bssv._build_service_manager",
+        "cli.local_runtime._build_service_manager",
         return_value=manager,
     ):
-        from cli.bssv import cmd_start
+        from cli.local_runtime import cmd_start
 
         args = make_runtime_args()
         args.foreground = False
@@ -46,18 +47,18 @@ def test_start_passes_runtime_env_to_service():
     assert kwargs["extra_env"]["BILI_SEARCH_APP_LLM_CONFIG"] == "deepseek"
 
 
-def test_status_cleans_stale_pid():
+def test_local_status_cleans_stale_pid():
     manager = MagicMock()
     manager.status.return_value = {"status": "dead", "pid": 7788}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
     with (
         patch(
-            "cli.bssv._build_service_manager",
+            "cli.local_runtime._build_service_manager",
             return_value=manager,
         ),
-        patch("cli.bssv._sanitize_log_file") as mock_sanitize,
+        patch("cli.local_runtime._sanitize_log_file") as mock_sanitize,
     ):
-        from cli.bssv import cmd_status
+        from cli.local_runtime import cmd_status
 
         args = make_runtime_args(port=21001, elastic_index=None, elastic_env_name=None)
         cmd_status(args)
@@ -65,16 +66,16 @@ def test_status_cleans_stale_pid():
     mock_sanitize.assert_called_once_with(manager.log_file)
 
 
-def test_status_uses_runtime_specific_service_manager():
+def test_local_status_uses_runtime_specific_service_manager():
     manager = MagicMock()
     manager.status.return_value = {"status": "not_running", "pid": None}
     manager.log_file = Path("/tmp/server.dev.p21001.log")
 
     with patch(
-        "cli.bssv._build_service_manager",
+        "cli.local_runtime._build_service_manager",
         return_value=manager,
     ):
-        from cli.bssv import cmd_status
+        from cli.local_runtime import cmd_status
 
         args = make_runtime_args(port=21001, elastic_index=None, elastic_env_name=None)
         cmd_status(args)
@@ -82,7 +83,7 @@ def test_status_uses_runtime_specific_service_manager():
     manager.status.assert_called_once_with()
 
 
-def test_logs_reads_from_service_manager_and_decolors_output():
+def test_local_logs_reads_from_service_manager_and_decolors_output():
     manager = MagicMock()
     manager.log_file = MagicMock()
     manager.log_file.exists.return_value = True
@@ -90,13 +91,13 @@ def test_logs_reads_from_service_manager_and_decolors_output():
 
     with (
         patch(
-            "cli.bssv._build_service_manager",
+            "cli.local_runtime._build_service_manager",
             return_value=manager,
         ),
-        patch("cli.bssv._sanitize_log_file") as mock_sanitize,
+        patch("cli.local_runtime._sanitize_log_file") as mock_sanitize,
         patch("builtins.print") as mock_print,
     ):
-        from cli.bssv import cmd_logs
+        from cli.local_runtime import cmd_logs
 
         args = make_runtime_args()
         cmd_logs(args)
@@ -106,19 +107,21 @@ def test_logs_reads_from_service_manager_and_decolors_output():
     mock_print.assert_called_once_with("line1\nline2\n", end="")
 
 
-def test_restart_uses_runtime_specific_service_manager():
+def test_local_restart_uses_runtime_specific_service_manager():
     manager = MagicMock()
     manager.stop.return_value = {"status": "stopped", "pid": 7788}
     manager.start.return_value = {"status": "started", "pid": 8899}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
 
     with patch(
-        "cli.bssv._build_service_manager",
+        "cli.local_runtime._build_service_manager",
         return_value=manager,
     ):
-        from cli.bssv import cmd_restart
+        from cli.local_runtime import cmd_restart
 
-        cmd_restart(make_runtime_args())
+        args = make_runtime_args()
+        args.foreground = False
+        cmd_restart(args)
 
     manager.stop.assert_called_once_with()
     manager.start.assert_called_once()
@@ -146,10 +149,10 @@ def test_list_managed_service_instances_reads_pid_files(tmp_path):
     assert instances[0]["started_at"] == "2026-03-18 09:02:03"
 
 
-def test_bssv_ps_prints_service_table():
+def test_local_ps_prints_service_table():
     with (
         patch(
-            "cli.bssv.list_managed_service_instances",
+            "cli.local_runtime.list_managed_service_instances",
             return_value=[
                 {
                     "port": 21001,
@@ -162,7 +165,7 @@ def test_bssv_ps_prints_service_table():
         ) as mock_list,
         patch("builtins.print") as mock_print,
     ):
-        from cli.bssv import cmd_ps
+        from cli.local_runtime import cmd_ps
 
         args = make_runtime_args(port=21001, llm_config="gpt")
         args.all = False

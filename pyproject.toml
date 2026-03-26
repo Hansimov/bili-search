@@ -31,7 +31,6 @@ dependencies = [
 ]
 
 [project.scripts]
-bssv = "cli.bssv:main"
 bsdk = "cli.bsdk:main"
 
 [tool.pytest.ini_options]

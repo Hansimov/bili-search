@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import argparse
 import json
 import urllib.error
 
+from pathlib import Path
 from tclogger import decolored
 from tclogger import logger, logstr
-from webu.clis.helpers import root_epilog
 
-from cli.common import add_shared_runtime_args, explicit_runtime_filters_from_args
-from cli.common import format_table, resolve_runtime_envs_from_args
+from cli.common import explicit_runtime_filters_from_args, format_table
+from cli.common import resolve_runtime_envs_from_args
 from service.runtime import build_service_manager as _build_service_manager
-from service.runtime import ensure_process_timezone
 from service.runtime import ensure_data_dir
 from service.runtime import fetch_health as _fetch_health
 from service.runtime import health_url as _health_url
@@ -144,7 +142,7 @@ def cmd_ps(args):
         include_all=bool(getattr(args, "all", False)),
     )
     if not instances:
-        logger.mesg("  No managed bili-search background services found")
+        logger.mesg("  No managed bili-search local services found")
         return
 
     rows = [
@@ -163,98 +161,3 @@ def cmd_ps(args):
             rows,
         )
     )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Bili Search service CLI (bssv)",
-        epilog=root_epilog(
-            quick_start=[
-                "bssv start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bssv start --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-            ],
-            examples=[
-                "bssv status -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bssv logs -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bssv check -p 21001",
-                "bssv ps --all",
-            ],
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    start_parser = subparsers.add_parser("start", help="Start search service")
-    add_shared_runtime_args(
-        start_parser,
-        include_foreground=True,
-        include_reload=True,
-        include_kill=True,
-    )
-    start_parser.set_defaults(func=cmd_start)
-
-    stop_parser = subparsers.add_parser("stop", help="Stop background service")
-    add_shared_runtime_args(stop_parser)
-    stop_parser.set_defaults(func=cmd_stop)
-
-    restart_parser = subparsers.add_parser("restart", help="Restart background service")
-    add_shared_runtime_args(restart_parser, include_foreground=True)
-    restart_parser.set_defaults(func=cmd_restart)
-
-    status_parser = subparsers.add_parser(
-        "status", help="Show process and health status"
-    )
-    add_shared_runtime_args(status_parser)
-    status_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=3.0,
-        help="Health check timeout in seconds",
-    )
-    status_parser.set_defaults(func=cmd_status)
-
-    logs_parser = subparsers.add_parser("logs", help="Show service logs")
-    add_shared_runtime_args(logs_parser)
-    logs_parser.add_argument(
-        "-n", "--lines", type=int, default=50, help="Number of lines to show"
-    )
-    logs_parser.add_argument(
-        "-f", "--follow", action="store_true", default=False, help="Follow log output"
-    )
-    logs_parser.set_defaults(func=cmd_logs)
-
-    check_parser = subparsers.add_parser("check", help="Call the health endpoint")
-    add_shared_runtime_args(check_parser)
-    check_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=3.0,
-        help="Health check timeout in seconds",
-    )
-    check_parser.set_defaults(func=cmd_check)
-
-    ps_parser = subparsers.add_parser(
-        "ps",
-        aliases=["list"],
-        help="List managed background services with port and startup time",
-    )
-    add_shared_runtime_args(ps_parser)
-    ps_parser.add_argument(
-        "--all",
-        action="store_true",
-        default=False,
-        help="Include dead/stale PID records",
-    )
-    ps_parser.set_defaults(func=cmd_ps)
-    return parser
-
-
-def main(argv: list[str] | None = None):
-    ensure_process_timezone()
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    args.func(args)
-
-
-if __name__ == "__main__":
-    main()

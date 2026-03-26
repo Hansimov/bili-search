@@ -90,6 +90,19 @@ def add_shared_runtime_args(
         )
 
 
+def add_runtime_mode_arg(
+    parser: argparse.ArgumentParser,
+    *,
+    default: str = "docker",
+):
+    parser.add_argument(
+        "--runtime",
+        choices=["local", "docker"],
+        default=default,
+        help="Run against the local service manager or docker runtime",
+    )
+
+
 def resolve_runtime_envs_from_args(args, base_envs: dict | None = None) -> dict:
     env_overrides = get_search_app_env_overrides_from_env()
     explicit_overrides = {

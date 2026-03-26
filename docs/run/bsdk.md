@@ -1,6 +1,6 @@
 # bsdk 使用说明
 
-`bsdk` 用来管理 Docker 方式运行的 bili-search 服务实例。它复用 `bssv` 的运行时参数，并额外提供 compose、镜像、源码来源和宿主机挂载目录等参数。
+`bsdk` 是统一的 bili-search 运行管理 CLI，通过 `--runtime local|docker` 同时覆盖本地服务进程和 Docker 实例。
 
 ## 相关文件
 
@@ -14,7 +14,29 @@
 
 首次配置时，可以将 [docker/.env.example](/home/asimov/repos/bili-search/docker/.env.example) 的内容复制到 [docker/.env](/home/asimov/repos/bili-search/docker/.env) 再按需修改；敏感配置请单独填写到本地 `configs/secrets.json`。
 
-## 构建基础镜像
+## 运行模式
+
+- `--runtime local`：管理当前主机上的 bili-search 本地服务进程，适合开发调试。
+- `--runtime docker`：管理 Docker 里的 bili-search 实例，适合部署和隔离运行。默认值是 `docker`。
+
+本地模式示例：
+
+```bash
+bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk ps --runtime local --all
+```
+
+Docker 模式示例：
+
+```bash
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk status -p 21001
+bsdk ps --all
+```
+
+## Docker 构建
 
 ```bash
 bsdk build-base
@@ -58,12 +80,14 @@ bsdk status -p 21001
 bsdk ps
 bsdk ps --all
 bsdk logs -f -n 120 -p 21001
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk logs --runtime local -f -n 120 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 bsdk down -p 21001
 ```
 
-`bsdk ps` 会列出当前机器上的 bili-search 容器，包括端口、状态、启动时间和运行时长；`--all` 会额外显示已退出容器。对于 `stop`、`down`、`restart`、`status`、`logs` 这类面向已启动实例的命令，端口号已经足够唯一定位目标实例，其他运行参数不再需要重复输入。
+`bsdk ps` 在 `docker` 模式下列出容器，在 `local` 模式下列出本地受管服务。`docker` 模式的 `stop`、`down`、`restart`、`status`、`logs` 这类面向已启动实例的命令，端口号已经足够唯一定位目标实例，其他运行参数不再需要重复输入。
 
-`bsdk status` 额外会显示 app 级别的启动时间和运行时长。对于 `--restart-scope app` 这类容器内重启，容器本身的 `CREATED` / `Up ...` 不会变化，这是预期行为，应以 `App Started At` 和 `App Uptime` 为准。
+`bsdk status` 在 `docker` 模式下额外会显示 app 级别的启动时间和运行时长。对于 `--restart-scope app` 这类容器内重启，容器本身的 `CREATED` / `Up ...` 不会变化，这是预期行为，应以 `App Started At` 和 `App Uptime` 为准。
 
 当前实例使用 host network，因此 Docker 的 `PORTS` 列为空也是预期行为；实际监听端口会单独显示在 `App Port` 一行。
 
@@ -109,3 +133,5 @@ bsdk restart -p 21001 --restart-scope container --no-sync-code
 ```bash
 bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
+
+`build-base`、`build`、`config`、`down` 只支持 `--runtime docker`。`--foreground`、`--reload`、`--kill` 只支持 `--runtime local`。

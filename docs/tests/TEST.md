@@ -7,25 +7,25 @@
 后台启动：
 
 ```bash
-bssv start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 前台启动：
 
 ```bash
-bssv start --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 前台热重载：
 
 ```bash
-bssv start --foreground --reload -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local --foreground --reload -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 如果端口已被旧进程占用，可以在启动前加上 `-k`：
 
 ```bash
-bssv start -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 ## Docker 启动服务
@@ -64,10 +64,10 @@ curl -sS http://127.0.0.1:21001/capabilities | jq
 本地服务：
 
 ```bash
-bssv status -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bssv ps
-bssv logs -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bssv logs -n 80 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk ps --runtime local
+bsdk logs --runtime local -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk logs --runtime local -n 80 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 Docker 服务：
@@ -155,7 +155,7 @@ BILI_SEARCH_RUNTIME_URL=http://127.0.0.1:21001 BILI_SEARCH_RUNTIME_LLM=1 pytest 
 常用定向测试：
 
 ```bash
-pytest -q tests/test_search_app_cli.py tests/test_bsdk_cli.py
+pytest -q tests/test_bsdk_local_cli.py tests/test_bsdk_cli.py
 pytest -q tests/test_secret_hygiene.py
 pytest -q tests/llm/test_search_service.py tests/llm/test_app.py
 ```
@@ -181,7 +181,7 @@ conda run -n ai python debugs/profile_es_tok_exclusion_path.py
 停止本地后台实例：
 
 ```bash
-bssv stop -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk stop --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
 ```
 
 停止 Docker 实例：
@@ -201,7 +201,7 @@ lsof -i:21001
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `[Errno 98] address already in use` | 旧进程未退出，端口被占用 | 启动时加 `-k`，或 `lsof -t -i:21001 -sTCP:LISTEN \| xargs -r kill -9` |
-| `curl: (7) Failed to connect` | 服务尚未完成启动 | 先执行 `bssv status` / `bsdk status -p 21001`，再查看日志 |
+| `curl: (7) Failed to connect` | 服务尚未完成启动 | 先执行 `bsdk status --runtime local` / `bsdk status -p 21001`，再查看日志 |
 | `bsdk status -p 21001` 首次健康检查失败 | 容器已启动，但应用仍在加载 | 等待数秒后再次执行 `bsdk status -p 21001` |
 | 流式输出一次性全部到达 | 上游流式返回异常或前端未按 SSE 消费 | 用带时间戳的 `curl -N` 直接验证 |
 | `stream_id not found` | 请求已经结束或 `stream_id` 错误 | 可忽略，重新发起流式请求即可 |
