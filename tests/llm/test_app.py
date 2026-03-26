@@ -9,6 +9,7 @@ Run:
 import json
 import os
 import sys
+import asyncio
 from unittest.mock import MagicMock, patch
 from tclogger import logger
 
@@ -223,6 +224,51 @@ def test_streaming_response():
     assert "text/event-stream" in resp.headers.get("content-type", "")
 
     logger.success("[PASS] streaming response")
+
+
+def test_stream_response_cleanup_swallows_monitor_cancellation():
+    """The SSE generator should finish cleanly after cancelling its disconnect monitor."""
+    logger.note("=" * 60)
+    logger.note("[TEST] stream response cleanup")
+
+    search_app, _, _, _ = create_test_app()
+    search_app.chat_handler.handle_stream = MagicMock(
+        return_value=iter(
+            [
+                json.dumps(
+                    {
+                        "id": "chunk-1",
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": ""},
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                "[DONE]",
+            ]
+        )
+    )
+
+    async def consume_stream():
+        chunks = []
+        async for item in search_app._stream_response(
+            messages=[{"role": "user", "content": "test"}],
+            http_request=None,
+        ):
+            chunks.append(item)
+        return chunks
+
+    chunks = asyncio.run(consume_stream())
+
+    assert chunks[0]["data"]
+    assert chunks[-1]["data"] == "[DONE]"
+
+    logger.success("[PASS] stream response cleanup")
 
 
 def test_chat_completions_account_query_stays_relation_only():

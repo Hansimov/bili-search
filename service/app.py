@@ -557,6 +557,8 @@ class SearchApp:
             monitor_task.cancel()
             try:
                 await monitor_task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
             await fut

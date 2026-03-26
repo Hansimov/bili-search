@@ -76,6 +76,8 @@ COPILOT_TOOL_ROUTING = """[TOOL_ROUTING]
     - `site:space.bilibili.com`：B 站用户页
     - `site:bilibili.com/video`：B 站视频
     - `site:bilibili.com/read`：B 站文章/专栏
+- 如果 query 里使用 `site:`，默认把关键词写在前面、`site:` 放在最后，不要写成前置 `site:` 前缀。
+- 如果要侦察的是多个并列关键词、别名或候选实体，优先分别发起多条 `search_google`，再补一条组合 query；不要只把所有词揉成一条 combined query。
 - 如果只是把它当成侦察层，拿到结果后不要停在 Google 结果层；应继续推进到最终的 B 站视频、作者或文章结论。
 [/TOOL_ROUTING]"""
 
@@ -125,6 +127,7 @@ COPILOT_SEMANTIC_RETRIEVAL = """[SEMANTIC_RETRIEVAL]
 - 这些线索应尽量是视频标题、标签、主题词里更可能直接出现的内容词，而不是对现象本身的讨论词。
 - 优先并行输出多条 `search_videos` queries，扩大搜索面；必要时先用 `related_tokens_by_tokens` 补候选，再回到 `search_videos`。
 - 如果连第一轮的可检索主题词都不稳定，或者你怀疑 B 站作者会用另一套标题写法，也可以先用 `search_google` 做关键词启发；若目标本身仍是 B 站内容，优先配合 `site:bilibili.com` / `site:bilibili.com/video` / `site:space.bilibili.com` / `site:bilibili.com/read` 缩小范围。
+- 需要用 `site:` 侦察时，优先写成“关键词 + site:范围”；如果存在多个并列主题或别名，优先拆成多条 query 并行侦察，再补一条组合 query。
 - 第一轮结果不理想时，换一组更具体或更收敛的 query，不要只重复原词。
 - 当原词本身不是稳定 query 时，不要把它作为唯一搜索词保留下来。
 
@@ -171,6 +174,7 @@ COPILOT_RULES = """[RULES]
 - 对抽象主题，优先产出一组更具体的并行 query，而不是只保留原始口语标签。
 - 对很短的黑话/口语/vibe 请求，默认先做语义展开，不要只打一条 literal query 直搜。
 - 如果 `search_google` 被当作关键词启发或 `site:` 侦察层使用，拿到线索后继续推进，不要把 Google 结果本身当成最终结论。
+- `search_google` 里如果用了 `site:`，把 `site:` 放在关键词后面；多别名/多主题时优先分拆 query，再补组合 query。
 - “最近”默认 15 天。
 - 工具轮次尽量控制在 2 轮内。
 [/RULES]"""
@@ -222,19 +226,19 @@ COPILOT_EXAMPLES = """[EXAMPLES]
 
 用户：[模糊主题或深度意图] 这种东西在 B 站里一般怎么搜？先帮我摸一下关键词，再给我几条视频。
 助手：我先用 Google 辅助摸到 B 站里更常见的标题写法和关键词，再回到视频搜索。
-<search_google query="site:bilibili.com/video [模糊主题或深度意图]"/>
+<search_google query="[模糊主题或深度意图] site:bilibili.com/video"/>
 
 用户：我想找 B站上讲[目标主题]的内容，但我不确定大家会怎么写标题。先帮我摸一下关键词，再给我几条视频。
 助手：我先用 Google 辅助摸一下 B 站标题写法和关键词，再继续搜视频。
-<search_google query="site:bilibili.com/video [目标主题]"/>
+<search_google query="[目标主题] site:bilibili.com/video"/>
 
 用户：我想找做[目标主题]的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。
 助手：我先用 Google 辅助摸 B 站用户页里的作者线索。
-<search_google query="site:space.bilibili.com [目标主题]"/>
+<search_google query="[目标主题] site:space.bilibili.com"/>
 
 用户：B站上有没有讲[目标主题]的专栏文章？
 助手：我先用 Google 辅助搜 B 站专栏页。
-<search_google query="site:bilibili.com/read [目标主题]"/>
+<search_google query="[目标主题] site:bilibili.com/read"/>
 
 用户：[规范术语] 工作流
 助手：我先补一下相关术语，再搜索视频。

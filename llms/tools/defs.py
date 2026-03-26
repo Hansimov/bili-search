@@ -87,6 +87,8 @@ def build_search_google_tool(capabilities: dict | None = None) -> dict:
         "3) 当目标仍然是 B 站内容时，可直接在 query 中使用 Google `site:` 语法做辅助站内搜索。"
         "最重要的 site 范围包括：`site:bilibili.com`(全 B 站)、`site:space.bilibili.com`(用户页)、"
         "`site:bilibili.com/video`(视频)、`site:bilibili.com/read`(文章/专栏)。"
+        "使用 `site:` 时，默认把关键词写前面、`site:` 放在最后。"
+        "如果要侦察多个并列关键词、别名或候选实体，优先分别发起多条 query，再补一条组合 query。"
         "如果最终目标仍是 B 站视频、作者或 B 站文章，search_google 通常只是侦察/启发层；"
         "拿到线索后通常还应继续调用 search_videos 或 search_owners，而不是停在 Google 结果层。"
         "query 应整理成紧凑搜索短语，可直接包含 site 过滤，不要把整句口语原样塞进去。"
@@ -104,8 +106,8 @@ def build_search_google_tool(capabilities: dict | None = None) -> dict:
                         "type": "string",
                         "description": (
                             "要搜索的 Google 查询语句。可以是官网/更新日志查询，也可以是关键词启发查询，"
-                            "还可以直接带 site 过滤，例如 `site:bilibili.com/video Gemini CLI MCP`、"
-                            "`site:space.bilibili.com ComfyUI 教程`、`site:bilibili.com/read AI coding agent`。"
+                            "还可以直接带 site 过滤，例如 `Gemini CLI MCP site:bilibili.com/video`、"
+                            "`ComfyUI 教程 site:space.bilibili.com`、`AI coding agent site:bilibili.com/read`。"
                         ),
                     },
                     "num": {

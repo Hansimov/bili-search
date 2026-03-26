@@ -362,7 +362,7 @@ def test_execute_search_google_formats_bilibili_site_results():
             name="search_google",
             arguments=json.dumps(
                 {
-                    "query": "site:bilibili.com/video Gemini CLI MCP",
+                    "query": "Gemini CLI MCP site:bilibili.com/video",
                     "num": 3,
                     "lang": "zh-CN",
                 }
@@ -371,7 +371,7 @@ def test_execute_search_google_formats_bilibili_site_results():
         result_msg = executor.execute(tc)
 
     result_data = json.loads(result_msg["content"])
-    assert result_data["query"] == "site:bilibili.com/video Gemini CLI MCP"
+    assert result_data["query"] == "Gemini CLI MCP site:bilibili.com/video"
     assert result_data["backend"] == "mock-google"
     assert result_data["result_count"] == 3
     assert result_data["results"][0]["site_kind"] == "video"
@@ -381,7 +381,7 @@ def test_execute_search_google_formats_bilibili_site_results():
     assert result_data["results"][2]["site_kind"] == "read"
     assert result_data["results"][2]["article_id"] == "cv24680"
     mock_google.search.assert_called_once_with(
-        query="site:bilibili.com/video Gemini CLI MCP",
+        query="Gemini CLI MCP site:bilibili.com/video",
         num=3,
         lang="zh-CN",
     )

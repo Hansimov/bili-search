@@ -23,6 +23,62 @@ _GOOGLE_CREATOR_BOOTSTRAP_RE = re.compile(
 
 
 class ToolPlanningMixin:
+    @staticmethod
+    def _cleanup_google_probe_fragment(text: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        cleaned = re.sub(r"^(?:但我|但是我)\s*", "", cleaned)
+        cleaned = re.sub(r"\s*(?:但我|但是我)$", "", cleaned)
+        cleaned = re.sub(r"\s*的$", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+    @classmethod
+    def _split_google_bootstrap_phrases(cls, text: str) -> list[str]:
+        normalized = cls._normalize_entity_focused_query_text(text)
+        normalized = cls._cleanup_google_probe_fragment(normalized)
+        if not normalized:
+            return []
+
+        parts = re.split(r"\s*(?:和|与|以及|及|、|，|,|/|／|\+)\s*", normalized)
+        phrases = [
+            cls._cleanup_google_probe_fragment(part)
+            for part in parts
+            if cls._cleanup_google_probe_fragment(part)
+        ]
+        phrases = list(dict.fromkeys(phrases))
+        return phrases or [normalized]
+
+    @classmethod
+    def _build_site_scoped_google_commands(
+        cls,
+        scope: str,
+        *,
+        combined_query: str,
+        split_queries: list[str] | None = None,
+    ) -> list[dict]:
+        queries: list[str] = []
+
+        def add_query(text: str) -> None:
+            normalized = cls._normalize_entity_focused_query_text(text)
+            normalized = cls._cleanup_google_probe_fragment(normalized)
+            if not normalized:
+                return
+            final_query = f"{normalized} {scope}".strip()
+            if final_query not in queries:
+                queries.append(final_query)
+
+        for text in split_queries or []:
+            add_query(text)
+        add_query(combined_query)
+
+        return [
+            {
+                "type": "search_google",
+                "args": {"query": query},
+            }
+            for query in queries
+        ]
+
     @classmethod
     def _normalize_google_keyword_bootstrap_query(cls, text: str) -> str:
         query = str(text or "")
@@ -39,6 +95,7 @@ class ToolPlanningMixin:
             " ",
             query,
         )
+        query = re.sub(r"\b(?:的|但我|但是我)\b", " ", query)
         query = cls._normalize_entity_focused_query_text(query)
         query = re.sub(r"\s+", " ", query).strip()
         return query
@@ -69,6 +126,11 @@ class ToolPlanningMixin:
         if not normalized_query:
             return commands
 
+        split_queries = cls._split_google_bootstrap_phrases(normalized_query)
+        combined_query = (
+            " ".join(split_queries) if len(split_queries) > 1 else normalized_query
+        )
+
         if re.search(r"专栏|文章|read", latest_user_text):
             scope = "site:bilibili.com/read"
         elif re.search(r"作者|UP主|up主|博主|账号|用户页|谁在做", latest_user_text):
@@ -78,11 +140,12 @@ class ToolPlanningMixin:
         else:
             scope = "site:bilibili.com"
 
-        google_command = {
-            "type": "search_google",
-            "args": {"query": f"{scope} {normalized_query}"},
-        }
-        return [google_command] + list(commands or [])
+        google_commands = cls._build_site_scoped_google_commands(
+            scope,
+            combined_query=combined_query,
+            split_queries=split_queries,
+        )
+        return google_commands + list(commands or [])
 
     @classmethod
     def _normalize_google_creator_bootstrap_query(cls, text: str) -> str:
@@ -100,6 +163,7 @@ class ToolPlanningMixin:
             " ",
             query,
         )
+        query = re.sub(r"\b(?:的|但我|但是我)\b", " ", query)
         query = cls._normalize_entity_focused_query_text(query)
         query = re.sub(r"\s+", " ", query).strip()
         query = re.sub(r"^(?:做)\s*", "", query)
@@ -134,11 +198,17 @@ class ToolPlanningMixin:
         if not normalized_query:
             return commands
 
-        google_command = {
-            "type": "search_google",
-            "args": {"query": f"site:space.bilibili.com {normalized_query}"},
-        }
-        return [google_command] + list(commands or [])
+        split_queries = cls._split_google_bootstrap_phrases(normalized_query)
+        combined_query = (
+            " ".join(split_queries) if len(split_queries) > 1 else normalized_query
+        )
+
+        google_commands = cls._build_site_scoped_google_commands(
+            "site:space.bilibili.com",
+            combined_query=combined_query,
+            split_queries=split_queries,
+        )
+        return google_commands + list(commands or [])
 
     @classmethod
     def _collect_unresolved_owner_aliases(
@@ -246,12 +316,11 @@ class ToolPlanningMixin:
         if not normalized_query:
             return []
 
-        return [
-            {
-                "type": "search_google",
-                "args": {"query": f"site:space.bilibili.com {normalized_query}"},
-            }
-        ]
+        return cls._build_site_scoped_google_commands(
+            "site:space.bilibili.com",
+            combined_query=normalized_query,
+            split_queries=bootstrap_aliases,
+        )
 
     @staticmethod
     def _extract_google_space_candidate_name(title: str) -> str:
@@ -517,7 +586,7 @@ class ToolPlanningMixin:
             or owner_only_commands
             or cls._has_unresolved_owner_results(last_tool_results)
         ):
-            return google_owner_commands + contextual_owner_commands
+            return contextual_owner_commands
 
         if google_owner_commands and (
             not commands
@@ -643,8 +712,9 @@ class ToolPlanningMixin:
             )
         return rewritten
 
-    @staticmethod
+    @classmethod
     def _resolve_owner_result_scope(
+        cls,
         owner_result_context: dict[str, dict],
         last_tool_results: list[dict] | None,
     ) -> list[dict] | None:
@@ -652,7 +722,9 @@ class ToolPlanningMixin:
             result_item.get("type") == "search_owners"
             for result_item in last_tool_results
         ):
-            return list(owner_result_context.values())
+            return cls._filter_superseded_owner_results(
+                list(owner_result_context.values())
+            )
         return last_tool_results
 
     @classmethod

@@ -660,6 +660,22 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             if result.get("error"):
                 compact["error"] = result["error"]
             return compact
+        if "results" in result and isinstance(result.get("results"), list):
+            nested_results = result.get("results") or []
+            if any(
+                isinstance(item, dict)
+                and ("hits" in item or "total_hits" in item)
+                for item in nested_results
+            ):
+                compact_video_results = []
+                for item in nested_results[:4]:
+                    compact_video_results.append(
+                        ChatHandler._compact_result_for_context(item)
+                    )
+                compact = {"results": compact_video_results}
+                if result.get("error"):
+                    compact["error"] = result["error"]
+                return compact
         if "owners" in result:
             owner_limit = (
                 _OWNER_CONTEXT_TOPIC_MAX_RESULTS

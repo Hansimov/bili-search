@@ -54,11 +54,11 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
     assert '<search_google query="[目标产品] 最近有哪些官方更新"/>' in prompt
     assert '<search_google query="[目标产品] [目标能力] 最近有哪些官方更新"/>' in prompt
     assert (
-        '<search_google query="site:bilibili.com/video [模糊主题或深度意图]"/>'
+        '<search_google query="[模糊主题或深度意图] site:bilibili.com/video"/>'
         in prompt
     )
-    assert '<search_google query="site:space.bilibili.com [目标主题]"/>' in prompt
-    assert '<search_google query="site:bilibili.com/read [目标主题]"/>' in prompt
+    assert '<search_google query="[目标主题] site:space.bilibili.com"/>' in prompt
+    assert '<search_google query="[目标主题] site:bilibili.com/read"/>' in prompt
     assert '<related_tokens_by_tokens text="[规范术语]" mode="auto"/>' in prompt
     assert '<related_tokens_by_tokens text="[模糊术语]" mode="auto"/>' in prompt
     assert "用户：来点[某种口语化风格内容]" in prompt
@@ -131,6 +131,8 @@ def test_build_system_prompt_describes_unified_schema_and_semantic_iteration():
     assert "site:bilibili.com/video" in prompt
     assert "site:space.bilibili.com" in prompt
     assert "site:bilibili.com/read" in prompt
+    assert "把关键词写在前面、`site:` 放在最后" in prompt
+    assert "优先拆成多条 query 并行侦察，再补一条组合 query" in prompt
     assert "优先并行输出多条 `search_videos` queries" in prompt
     assert "第一轮结果不理想时，换一组更具体或更收敛的 query" in prompt
     assert "如果 `final_target=mixed`，要把每个子目标分别完成" in prompt
@@ -188,6 +190,14 @@ def test_tool_definitions_explain_routing_boundaries():
     assert "官方更新和 B 站解读" in by_name["search_google"]["function"]["description"]
     assert "关键词启发" in by_name["search_google"]["function"]["description"]
     assert "site:bilibili.com" in by_name["search_google"]["function"]["description"]
+    assert (
+        "关键词写前面、`site:` 放在最后"
+        in by_name["search_google"]["function"]["description"]
+    )
+    assert (
+        "分别发起多条 query，再补一条组合 query"
+        in by_name["search_google"]["function"]["description"]
+    )
     assert (
         "site:space.bilibili.com" in by_name["search_google"]["function"]["description"]
     )
