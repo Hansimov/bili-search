@@ -97,13 +97,31 @@ def add_docker_args(parser: argparse.ArgumentParser):
         "--pip-index-url",
         type=str,
         default=None,
-        help="Pip index URL used by docker builds",
+        help="Primary pip index URL used by docker builds",
+    )
+    parser.add_argument(
+        "--pip-extra-index-url",
+        type=str,
+        default=None,
+        help="Fallback pip index URL used when the primary mirror is stale or flaky",
     )
     parser.add_argument(
         "--pip-trusted-host",
         type=str,
         default=None,
         help="Trusted host paired with --pip-index-url",
+    )
+    parser.add_argument(
+        "--pip-retries",
+        type=int,
+        default=None,
+        help="Retry count for docker pip downloads before falling back",
+    )
+    parser.add_argument(
+        "--pip-timeout",
+        type=int,
+        default=None,
+        help="Per-request timeout in seconds for docker pip downloads",
     )
     parser.add_argument(
         "--ubuntu-apt-mirror",
@@ -453,7 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
             ],
             examples=[
                 "bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk restart -p 21001 --restart-scope app",
+                "bsdk restart -p 21001 --restart-scope container --no-sync-code",
                 "bsdk start --source local-git --git-ref HEAD~1 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk build -p 21001 --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple --pip-extra-index-url https://pypi.org/simple",
                 "bsdk status -p 21001",
                 "bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
                 "bsdk ps --all",

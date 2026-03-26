@@ -29,7 +29,10 @@ def make_runtime_args(**overrides):
         "image": None,
         "base_image": None,
         "pip_index_url": None,
+        "pip_extra_index_url": None,
         "pip_trusted_host": None,
+        "pip_retries": None,
+        "pip_timeout": None,
         "sedb_context": None,
         "tclogger_context": None,
         "webu_context": None,
@@ -143,6 +146,8 @@ def test_materialize_source_returns_workspace_for_default_source():
 
 def test_resolve_compose_settings_uses_defaults():
     from docker.manager import default_base_image_name, default_container_name
+    from docker.manager import DEFAULT_PIP_EXTRA_INDEX_URL, DEFAULT_PIP_INDEX_URL
+    from docker.manager import DEFAULT_PIP_RETRIES, DEFAULT_PIP_TIMEOUT
     from docker.manager import default_image_name
     from docker.manager import default_project_name, resolve_compose_settings
 
@@ -162,6 +167,10 @@ def test_resolve_compose_settings_uses_defaults():
     assert settings["container_name"] == default_container_name(app_envs)
     assert settings["image"] == default_image_name(app_envs)
     assert settings["base_image"] == default_base_image_name()
+    assert settings["pip_index_url"] == DEFAULT_PIP_INDEX_URL
+    assert settings["pip_extra_index_url"] == DEFAULT_PIP_EXTRA_INDEX_URL
+    assert settings["pip_retries"] == DEFAULT_PIP_RETRIES
+    assert settings["pip_timeout"] == DEFAULT_PIP_TIMEOUT
 
 
 def test_sync_source_to_container_cleans_before_extract_and_excludes_mounts():
@@ -198,6 +207,32 @@ def test_sync_source_to_container_cleans_before_extract_and_excludes_mounts():
     tar_command = mock_popen.call_args.args[0]
     assert "configs" in tar_command
     assert "logs" in tar_command
+    assert result.returncode == 0
+
+
+def test_run_container_app_action_syncs_before_hup():
+    app_envs = {
+        "port": 21001,
+        "elastic_index": "bili_videos_dev6",
+        "elastic_env_name": "elastic_dev",
+        "llm_config": "gpt",
+    }
+    sync_result = MagicMock(returncode=0, stdout="synced\n", stderr="")
+    signal_result = MagicMock(returncode=0, stdout="reloaded\n", stderr="")
+    with (
+        patch(
+            "docker.manager.sync_source_to_container", return_value=sync_result
+        ) as mock_sync,
+        patch("docker.manager.subprocess.run", return_value=signal_result) as mock_run,
+    ):
+        from docker.manager import run_container_app_action
+
+        result = run_container_app_action(
+            make_runtime_args(sync_code=True), "restart", app_envs
+        )
+
+    mock_sync.assert_called_once()
+    assert mock_run.call_args.args[0][:3] == ["docker", "kill", "--signal"]
     assert result.returncode == 0
 
 

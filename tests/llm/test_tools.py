@@ -7,6 +7,7 @@ Run:
 """
 
 import json
+import requests
 from unittest.mock import MagicMock, patch
 from tclogger import logger
 
@@ -386,6 +387,53 @@ def test_execute_search_google_formats_bilibili_site_results():
     )
 
     logger.success("[PASS] execute search_google formats bilibili site results")
+
+
+def test_google_search_client_retries_502_then_succeeds():
+    logger.note("=" * 60)
+    logger.note("[TEST] google search client retries transient 502")
+
+    from llms.tools.executor import GoogleSearchClient
+
+    client = GoogleSearchClient(base_url="http://mock-google:18100", timeout=3)
+    bad_response = MagicMock()
+    bad_response.status_code = 502
+    good_response = MagicMock()
+    good_response.raise_for_status.return_value = None
+    good_response.json.return_value = {
+        "backend": "mock-google",
+        "result_count": 1,
+        "results": [],
+    }
+
+    def fake_request(method, url, params=None, timeout=None):
+        if fake_request.calls == 0:
+            fake_request.calls += 1
+            raise requests.HTTPError("502 Server Error", response=bad_response)
+        return good_response
+
+    fake_request.calls = 0
+
+    with patch(
+        "llms.tools.executor.requests.request", side_effect=fake_request
+    ) as mock_request:
+        result = client.search(query="site:bilibili.com test", num=5)
+
+    assert result["backend"] == "mock-google"
+    assert mock_request.call_count == 2
+    logger.success("[PASS] google search client retries transient 502")
+
+
+def test_create_google_search_client_supports_fallback_urls():
+    from llms.tools.executor import create_google_search_client
+
+    client = create_google_search_client(
+        base_url="http://primary:18100, http://secondary:18100",
+    )
+
+    assert client is not None
+    assert client.base_url == "http://primary:18100"
+    assert client.base_urls == ["http://primary:18100", "http://secondary:18100"]
 
 
 def test_execute_empty_query():

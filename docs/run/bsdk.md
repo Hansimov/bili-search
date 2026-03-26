@@ -14,124 +14,117 @@
 
 首次配置时，可以将 [docker/.env.example](/home/asimov/repos/bili-search/docker/.env.example) 的内容复制到 [docker/.env](/home/asimov/repos/bili-search/docker/.env) 再按需修改；敏感配置请单独填写到本地 `configs/secrets.json`。
 
-## 运行模式
-
-- `--runtime local`：管理当前主机上的 bili-search 本地服务进程，适合开发调试。
-- `--runtime docker`：管理 Docker 里的 bili-search 实例，适合部署和隔离运行。默认值是 `docker`。
-
-本地模式示例：
+## 速查
 
 ```bash
-bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bsdk ps --runtime local --all
-```
+# 本地前台调试
+bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 
-Docker 模式示例：
+# Docker 启动当前工作区代码
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 
-```bash
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+# 默认重启：同步代码，只重启容器内 app
+bsdk restart -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+
+# 重建整个容器
+bsdk restart --restart-scope container -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+
+# 只做 docker restart，不同步代码、不重建镜像
+bsdk restart --restart-scope container --no-sync-code -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+
+# 查看状态 / 列表 / 日志 / 健康
 bsdk status -p 21001
 bsdk ps --all
+bsdk logs -f -n 120 -p 21001
+bsdk check -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+
+# 查看本地受管服务
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk ps --runtime local --all
 ```
 
 ## Docker 构建
 
 ```bash
+# 构建基础镜像
 bsdk build-base
+
+# 仅构建服务镜像
+bsdk build -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+
+# 使用主源 + 回退源
+bsdk build \
+  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek \
+  --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple \
+  --pip-extra-index-url https://pypi.org/simple
 ```
 
-## 仅构建服务镜像
+当前 Docker 依赖链会优先使用 `--pip-index-url`。如果 wheel 构建失败，会自动切换到 `--pip-extra-index-url` 再重试一次。
+
+## 代码来源
 
 ```bash
-bsdk build -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-```
+# 当前工作区
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 
-## 从当前工作区启动
-
-```bash
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-```
-
-## 从本地 Git 提交启动
-
-```bash
+# 本地 Git 历史版本
 bsdk start \
   --source local-git \
   --git-ref HEAD~1 \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-```
+  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 
-## 从远端 Git 启动
-
-```bash
+# 远端 Git 仓库
 bsdk start \
   --source remote-git \
   --git-url https://github.com/hansimov/bili-search.git \
   --git-ref main \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
-## 查看状态、端口和日志
+## 运行说明
+
+- `--runtime local`：管理当前主机上的 bili-search 本地服务进程，适合开发调试。
+- `--runtime docker`：管理 Docker 里的 bili-search 实例，适合部署和隔离运行。默认值是 `docker`。
+- `bsdk ps` 在 `docker` 模式下列出容器，在 `local` 模式下列出本地受管服务。
+- 对已启动的 Docker 实例，`stop`、`down`、`restart`、`status`、`logs` 这类命令通常只需要端口号就足够反查目标容器，其他运行参数无需重复输入。
+- `bsdk status` 在 `docker` 模式下会额外显示 app 级别的启动时间和运行时长。对于 `--restart-scope app`，容器本身的启动时间不会变化，应以 `App Started At` 和 `App Uptime` 为准。
+- 当前实例使用 host network，因此 Docker 原生 `docker ps` 的 `PORTS` 可能为空；`bsdk status` / `bsdk ps` 会补齐实际监听端口。
+
+## 注意事项
+
+- 当修改了容器启动链本身，例如 `service.container_supervisor`、Dockerfile、依赖安装方式或 console script，优先使用 `--restart-scope container`，不要只做 app-scope restart。
+- `--restart-scope app` 更适合纯 Python 业务代码变更；它不会替换已经在容器里运行的 supervisor 进程。
+- Docker 构建如果遇到镜像源抖动，可保留 USTC 作为主源，同时配置官方 PyPI 作为 `--pip-extra-index-url` 回退源。
+- `build-base`、`build`、`config`、`down` 只支持 `--runtime docker`。`--foreground`、`--reload`、`--kill` 只支持 `--runtime local`。
+
+## 参数参考
+
+- `--runtime local|docker`：选择管理本地服务进程还是 Docker 实例，默认 `docker`。
+- `-p/--port`：实例端口。对已启动的 Docker 实例，通常只用端口就足够定位目标容器。
+- `-ei/--elastic-index`：搜索视频索引名。
+- `-ev/--elastic-env-name`：`configs/secrets.json` 中的 Elasticsearch 环境名。
+- `-lc/--llm-config`：LLM 配置名。
+- `--source workspace|local-git|remote-git`：Docker 构建使用的代码来源。
+- `--git-repo --git-ref --git-url`：Git 源相关参数。
+- `--restart-scope app|container`：重启 app 进程还是重启/重建整个容器。
+- `--sync-code/--no-sync-code`：重启前是否同步当前代码，默认同步。
+- `--no-build`：`start` 时跳过 `docker compose up --build`。
+- `--no-base-build`：跳过基础镜像构建。
+- `--pip-index-url`：Docker 构建的主 pip 源。
+- `--pip-extra-index-url`：主源失败时的回退 pip 源。
+- `--pip-trusted-host`：主 pip 源对应的 trusted host。
+- `--pip-retries`：Docker wheel 下载重试次数。
+- `--pip-timeout`：Docker wheel 下载单次请求超时时间。
+- `--lines/-n`：`logs` 输出的尾部行数。
+- `--follow/-f`：持续跟随日志。
+- `--timeout`：`status` / `check` 健康检查超时时间。
+
+## 其他命令
 
 ```bash
-bsdk status -p 21001
-bsdk ps
-bsdk ps --all
-bsdk logs -f -n 120 -p 21001
-bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bsdk logs --runtime local -f -n 120 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+# 渲染 compose 配置
+bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+
+# 删除实例
 bsdk down -p 21001
 ```
-
-`bsdk ps` 在 `docker` 模式下列出容器，在 `local` 模式下列出本地受管服务。`docker` 模式的 `stop`、`down`、`restart`、`status`、`logs` 这类面向已启动实例的命令，端口号已经足够唯一定位目标实例，其他运行参数不再需要重复输入。
-
-`bsdk status` 在 `docker` 模式下额外会显示 app 级别的启动时间和运行时长。对于 `--restart-scope app` 这类容器内重启，容器本身的 `CREATED` / `Up ...` 不会变化，这是预期行为，应以 `App Started At` 和 `App Uptime` 为准。
-
-当前实例使用 host network，因此 Docker 的 `PORTS` 列为空也是预期行为；实际监听端口会单独显示在 `App Port` 一行。
-
-## 重启策略
-
-默认重启命令：
-
-```bash
-bsdk restart -p 21001
-```
-
-它等价于：
-
-```bash
-bsdk restart -p 21001 --restart-scope app --sync-code
-```
-
-含义：
-
-- `--restart-scope app`：只重启容器内的 bili-search app 进程，不重建整个 Docker 容器。
-- `--restart-scope container`：重启或重建整个 bili-search 容器。
-- `--sync-code`：重启前同步最新代码，默认开启。app-scope 同步会跳过宿主机挂载的 `configs/` 和 `logs/`，避免覆盖只读配置和变化中的日志文件。
-- `--no-sync-code`：重启前不做代码同步。
-
-常见组合：
-
-```bash
-# 默认：同步最新代码，然后只重启容器内 app
-bsdk restart -p 21001
-
-# 只重启容器内 app，但不同步代码
-bsdk restart -p 21001 --restart-scope app --no-sync-code
-
-# 基于最新代码重建整个容器
-bsdk restart -p 21001 --restart-scope container --sync-code
-
-# 仅对现有容器做 docker restart，不同步代码、不重建镜像
-bsdk restart -p 21001 --restart-scope container --no-sync-code
-```
-
-## 渲染 Compose 配置
-
-```bash
-bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-```
-
-`build-base`、`build`、`config`、`down` 只支持 `--runtime docker`。`--foreground`、`--reload`、`--kill` 只支持 `--runtime local`。

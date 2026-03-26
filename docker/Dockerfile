@@ -5,13 +5,25 @@ FROM ${BILI_SEARCH_BASE_IMAGE} AS runtime-base
 
 FROM runtime-base AS deps-builder
 
+ARG PIP_INDEX_URL=https://mirrors.ustc.edu.cn/pypi/simple
+ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+ARG PIP_TRUSTED_HOST=mirrors.ustc.edu.cn
+ARG PIP_RETRIES=3
+ARG PIP_TIMEOUT=60
+
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
+    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
+    PIP_RETRIES=${PIP_RETRIES} \
+    PIP_DEFAULT_TIMEOUT=${PIP_TIMEOUT}
+
 COPY pyproject.toml /tmp/pyproject.toml
 COPY --from=sedb_src . /tmp/vendor/sedb
 COPY --from=tclogger_src . /tmp/vendor/tclogger
 COPY --from=webu_src . /tmp/vendor/webu
 RUN python3 -c "import pathlib, tomllib; vendor_root = pathlib.Path('/tmp/vendor'); deps = tomllib.loads(pathlib.Path('/tmp/pyproject.toml').read_text(encoding='utf-8'))['project']['dependencies']; vendored = {name: (vendor_root / name / 'pyproject.toml').exists() for name in ('tclogger', 'webu')}; filtered = [dep for dep in deps if not ((dep.lower().startswith('tclogger') and vendored['tclogger']) or (dep.lower().startswith('webu') and vendored['webu']))]; pathlib.Path('/tmp/deps.txt').write_text('\n'.join(filtered) + ('\n' if filtered else ''), encoding='utf-8')"
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    if [ -s /tmp/deps.txt ]; then python3 -m pip wheel --wheel-dir /tmp/wheels -r /tmp/deps.txt; else mkdir -p /tmp/wheels; fi
+    bash -lc 'set -euo pipefail; mkdir -p /tmp/wheels; if [ ! -s /tmp/deps.txt ]; then exit 0; fi; if python3 -m pip wheel --wheel-dir /tmp/wheels -r /tmp/deps.txt; then exit 0; fi; if [ -z "${PIP_EXTRA_INDEX_URL:-}" ]; then exit 1; fi; echo "Primary pip index failed, retrying with fallback index ${PIP_EXTRA_INDEX_URL}" >&2; rm -rf /tmp/wheels/*; PIP_INDEX_URL="${PIP_EXTRA_INDEX_URL}" PIP_EXTRA_INDEX_URL="" PIP_TRUSTED_HOST="" python3 -m pip wheel --wheel-dir /tmp/wheels -r /tmp/deps.txt'
 
 FROM runtime-base AS app-runtime
 

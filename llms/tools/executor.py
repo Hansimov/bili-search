@@ -275,15 +275,53 @@ class GoogleSearchClient:
         base_url: str,
         timeout: float = 45.0,
         verbose: bool = False,
+        fallback_base_urls: list[str] | None = None,
+        max_retries: int = 2,
     ):
         self.base_url = str(base_url).rstrip("/")
+        self.base_urls = [self.base_url]
+        for candidate in fallback_base_urls or []:
+            normalized = str(candidate).strip().rstrip("/")
+            if normalized and normalized not in self.base_urls:
+                self.base_urls.append(normalized)
         self.timeout = timeout
         self.verbose = verbose
+        self.max_retries = max(1, int(max_retries))
+
+    def _request(
+        self, method: str, path: str, *, params: dict | None = None
+    ) -> requests.Response:
+        errors: list[str] = []
+        for base_url in self.base_urls:
+            for _attempt in range(self.max_retries):
+                try:
+                    response = requests.request(
+                        method,
+                        f"{base_url}{path}",
+                        params=params,
+                        timeout=self.timeout,
+                    )
+                    response.raise_for_status()
+                    if base_url != self.base_url:
+                        self.base_url = base_url
+                    return response
+                except requests.HTTPError as exc:
+                    status_code = (
+                        exc.response.status_code if exc.response is not None else None
+                    )
+                    errors.append(str(exc))
+                    if status_code not in (502, 503, 504):
+                        break
+                except requests.RequestException as exc:
+                    errors.append(str(exc))
+                    break
+        raise requests.RequestException(
+            errors[-1] if errors else "Google hub request failed"
+        )
 
     def health(self) -> dict:
         try:
-            response = requests.get(f"{self.base_url}/health", timeout=self.timeout)
-            response.raise_for_status()
+            response = self._request("GET", "/health")
             return response.json()
         except requests.RequestException as exc:
             return {"error": str(exc)}
@@ -293,16 +331,23 @@ class GoogleSearchClient:
         if lang:
             params["lang"] = lang
         try:
-            response = requests.get(
-                f"{self.base_url}/search",
-                params=params,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
+            response = self._request("GET", "/search", params=params)
             return response.json()
         except requests.RequestException as exc:
             logger.warn(f"× Google hub request error: {exc}")
             return {"success": False, "error": str(exc), "results": []}
+
+
+def _split_google_hub_urls(raw_value: str | None) -> list[str]:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return []
+    candidates = []
+    for part in raw_text.replace("\n", ",").split(","):
+        normalized = part.strip().rstrip("/")
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    return candidates
 
 
 def create_google_search_client(
@@ -311,16 +356,17 @@ def create_google_search_client(
     timeout: float | None = None,
     verbose: bool = False,
 ):
-    resolved_base_url = (
+    resolved_urls = _split_google_hub_urls(
         base_url or os.getenv("BILI_GOOGLE_HUB_BASE_URL", "http://127.0.0.1:18100")
-    ).strip()
+    )
     resolved_timeout = float(
         timeout if timeout is not None else os.getenv("BILI_GOOGLE_HUB_TIMEOUT", "45")
     )
-    if not resolved_base_url:
+    if not resolved_urls:
         return None
     return GoogleSearchClient(
-        base_url=resolved_base_url,
+        base_url=resolved_urls[0],
+        fallback_base_urls=resolved_urls[1:],
         timeout=resolved_timeout,
         verbose=verbose,
     )

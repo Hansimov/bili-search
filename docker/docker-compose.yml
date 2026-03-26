@@ -10,6 +10,11 @@ services:
         webu_src: ${BSDK_WEBU_CONTEXT:-.}
       args:
         BILI_SEARCH_BASE_IMAGE: ${BSDK_BASE_IMAGE:-bili-search-base:ubuntu24.04-py3}
+        PIP_INDEX_URL: ${BSDK_PIP_INDEX_URL:-https://mirrors.ustc.edu.cn/pypi/simple}
+        PIP_EXTRA_INDEX_URL: ${BSDK_PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${BSDK_PIP_TRUSTED_HOST:-mirrors.ustc.edu.cn}
+        PIP_RETRIES: ${BSDK_PIP_RETRIES:-3}
+        PIP_TIMEOUT: ${BSDK_PIP_TIMEOUT:-60}
     image: ${BSDK_IMAGE:-bili-search:p21001}
     container_name: ${BSDK_CONTAINER_NAME:-bili-search-p21001}
     working_dir: /app

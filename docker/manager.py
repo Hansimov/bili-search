@@ -20,7 +20,10 @@ DEFAULT_BASE_DOCKERFILE = DOCKER_DIR / "Dockerfile.base"
 DEFAULT_ENV_FILE = DOCKER_DIR / ".env"
 DEFAULT_STAGE_ROOT = WORKSPACE_ROOT / "logs" / "docker_sources"
 DEFAULT_PIP_INDEX_URL = "https://mirrors.ustc.edu.cn/pypi/simple"
+DEFAULT_PIP_EXTRA_INDEX_URL = "https://pypi.org/simple"
 DEFAULT_PIP_TRUSTED_HOST = "mirrors.ustc.edu.cn"
+DEFAULT_PIP_RETRIES = 3
+DEFAULT_PIP_TIMEOUT = 60
 DEFAULT_UBUNTU_APT_MIRROR = "https://mirrors.ustc.edu.cn/ubuntu"
 DEFAULT_EMPTY_CONTEXT_DIR = DEFAULT_STAGE_ROOT / "empty_context"
 CONTAINER_APP_ROOT = "/app"
@@ -139,8 +142,12 @@ def resolve_compose_settings(args, app_envs: dict, build_context: Path) -> dict:
         "image": getattr(args, "image", None) or default_image_name(app_envs),
         "base_image": getattr(args, "base_image", None) or default_base_image_name(),
         "pip_index_url": getattr(args, "pip_index_url", None) or DEFAULT_PIP_INDEX_URL,
+        "pip_extra_index_url": getattr(args, "pip_extra_index_url", None)
+        or DEFAULT_PIP_EXTRA_INDEX_URL,
         "pip_trusted_host": getattr(args, "pip_trusted_host", None)
         or DEFAULT_PIP_TRUSTED_HOST,
+        "pip_retries": int(getattr(args, "pip_retries", None) or DEFAULT_PIP_RETRIES),
+        "pip_timeout": int(getattr(args, "pip_timeout", None) or DEFAULT_PIP_TIMEOUT),
         "ubuntu_apt_mirror": getattr(args, "ubuntu_apt_mirror", None)
         or DEFAULT_UBUNTU_APT_MIRROR,
         "sedb_context": Path(
@@ -175,7 +182,10 @@ def compose_env(args, app_envs: dict, settings: dict) -> dict[str, str]:
             "BSDK_IMAGE": settings["image"],
             "BSDK_BASE_IMAGE": settings["base_image"],
             "BSDK_PIP_INDEX_URL": settings["pip_index_url"],
+            "BSDK_PIP_EXTRA_INDEX_URL": settings["pip_extra_index_url"],
             "BSDK_PIP_TRUSTED_HOST": settings["pip_trusted_host"],
+            "BSDK_PIP_RETRIES": str(settings["pip_retries"]),
+            "BSDK_PIP_TIMEOUT": str(settings["pip_timeout"]),
             "BSDK_UBUNTU_APT_MIRROR": settings["ubuntu_apt_mirror"],
             "BSDK_SEDB_CONTEXT": str(settings["sedb_context"]),
             "BSDK_TCLOGGER_CONTEXT": str(settings["tclogger_context"]),
