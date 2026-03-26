@@ -170,68 +170,68 @@ COPILOT_ANTI_PATTERNS = """[ANTI_PATTERNS]
 [/ANTI_PATTERNS]"""
 
 COPILOT_EXAMPLES = """[EXAMPLES]
-用户：某工具教程
+用户：[某工具] 教程
 助手：我来搜索该工具的教程视频。
-<search_videos queries='["某工具 教程 q=vwr"]'/>
+<search_videos queries='["[某工具] 教程 q=vwr"]'/>
 
-用户：某作者最近有什么新视频？
+用户：[目标作者] 最近有什么新视频？
 助手：我来搜索该作者最近的视频。
-<search_videos queries='[":user=目标作者 :date<=15d"]'/>
+<search_videos queries='[":user=[目标作者] :date<=15d"]'/>
 
-用户：某个简称作者最近发了什么视频？
+用户：[某个简称作者] 最近发了什么视频？
 助手：我先确认这个简称对应的作者。
-<search_owners text="模糊作者别名" mode="name"/>
+<search_owners text="[模糊作者别名]" mode="name"/>
 
-用户：和某个种子作者风格接近，但更偏某个主题的作者有哪些？
+用户：和[种子作者]风格接近，但更偏[目标主题]的作者有哪些？
 助手：我先确认种子作者，再找偏硬件评测的作者候选。
-<search_owners text="种子作者" mode="name"/>
-<search_owners text="目标主题" mode="topic"/>
+<search_owners text="[种子作者]" mode="name"/>
+<search_owners text="[目标主题]" mode="topic"/>
 
-用户：某个外部产品最近官方更新里，和某项能力最相关的点有哪些，B站有没有偏这项能力的解读？
+用户：[目标产品]最近官方更新里，和[目标能力]最相关的点有哪些，B站有没有偏这项能力的解读？
 助手：我先查官方更新，再搜索 B 站里的对应解读视频。
-<search_google query="目标产品 目标能力 最近有哪些官方更新"/>
-<search_videos queries='["目标产品 目标能力 q=vwr"]'/>
+<search_google query="[目标产品] [目标能力] 最近有哪些官方更新"/>
+<search_videos queries='["[目标产品] [目标能力] q=vwr"]'/>
 
-用户：对比一下作者甲和某个简称作者最近一个月谁更高产
+用户：对比一下[作者甲]和[某个简称作者]最近一个月谁更高产
 助手：我先确认不够稳定的作者名，再继续做视频对比。
-<search_owners text="模糊作者别名" mode="name"/>
+<search_owners text="[模糊作者别名]" mode="name"/>
 
-用户：推荐几个做某个主题内容的UP主
+用户：推荐几个做[目标主题]内容的UP主
 助手：我先找相关创作者。
-<search_owners text="目标主题" mode="topic"/>
+<search_owners text="[目标主题]" mode="topic"/>
 
-用户：某个外部产品最近有哪些官方更新，B站上有没有相关解读
+用户：[目标产品]最近有哪些官方更新，B站上有没有相关解读
 助手：我先查官方更新，再搜索 B 站解读视频。
-<search_google query="目标产品 最近有哪些官方更新"/>
-<search_videos queries='["目标产品 q=vwr"]'/>
+<search_google query="[目标产品] 最近有哪些官方更新"/>
+<search_videos queries='["[目标产品] q=vwr"]'/>
 
-用户：某个规范术语 工作流
+用户：[规范术语] 工作流
 助手：我先补一下相关术语，再搜索视频。
-<related_tokens_by_tokens text="规范术语" mode="auto"/>
-<search_videos queries='["规范术语 工作流 q=vwr"]'/>
+<related_tokens_by_tokens text="[规范术语]" mode="auto"/>
+<search_videos queries='["[规范术语] 工作流 q=vwr"]'/>
 
-用户：某个模糊术语 有什么入门教程？
+用户：[模糊术语] 有什么入门教程？
 助手：我先补一下术语，再搜索教程视频。
-<related_tokens_by_tokens text="模糊术语" mode="auto"/>
-<search_videos queries='["规范术语 入门教程 q=vwr"]'/>
+<related_tokens_by_tokens text="[模糊术语]" mode="auto"/>
+<search_videos queries='["[规范术语] 入门教程 q=vwr"]'/>
 
-用户：来点某种口语化风格内容
+用户：来点[某种口语化风格内容]
 助手：我先把这个偏口语化的需求拆成更具体的搜索方向，再并行搜索。
-<related_tokens_by_tokens text="口语化标签" mode="associate"/>
-<search_videos queries='["方向一 q=vwr", "方向二 q=vwr", "方向三 q=vwr"]'/>
+<related_tokens_by_tokens text="[口语化标签]" mode="associate"/>
+<search_videos queries='["[方向一] q=vwr", "[方向二] q=vwr", "[方向三] q=vwr"]'/>
 
 用户：这个作者有哪些关联账号？
 助手：我先搜索相关作者关系。
-<search_owners text="目标作者" mode="relation"/>
+<search_owners text="[目标作者]" mode="relation"/>
 
 用户：这个作者有哪些关联账号？那他的代表作有哪些？
 助手：我先查作者关系，再搜索代表作。
-<search_owners text="目标作者" mode="relation"/>
-<search_videos queries='[":user=目标作者 代表作 q=vwr"]'/>
+<search_owners text="[目标作者]" mode="relation"/>
+<search_videos queries='[":user=[目标作者] 代表作 q=vwr"]'/>
 
 用户：对比一下作者甲和作者乙最近一个月发布的视频，谁更高产？
 助手：我来分别搜索两位作者最近一个月的视频。
-<search_videos queries='[":user=作者甲 :date<=30d", ":user=作者乙 :date<=30d"]'/>
+<search_videos queries='[":user=[作者甲] :date<=30d", ":user=[作者乙] :date<=30d"]'/>
 [/EXAMPLES]"""
 
 

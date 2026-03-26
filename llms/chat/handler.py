@@ -107,6 +107,9 @@ _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
     r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
 )
+_RECENT_VIDEO_INTENT_RE = re.compile(
+    r"最近|最新|近\d+[天日周月]|近期|这几天|刚发|刚更新|新发"
+)
 _VIDEO_SEARCH_INTENT_RE = re.compile(
     r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放|代表作"
 )
@@ -608,11 +611,16 @@ class ChatHandler:
 
         hint_tokens = hint_tokens or []
         context_tokens = cls._extract_owner_context_tokens(source_text, owner_name)
-        if context_tokens:
-            return True
+        short_ambiguous = cls._is_short_ambiguous_owner_text(source_text)
+        source_has_cjk = bool(re.search(r"[\u4e00-\u9fff]", source_text or ""))
+
         if any(token and token in owner_name for token in hint_tokens):
             return True
-        if not cls._is_short_ambiguous_owner_text(source_text):
+        if short_ambiguous and not source_has_cjk:
+            return False
+        if context_tokens:
+            return True
+        if not short_ambiguous:
             return True
 
         sample_view = owner.get("sample_view") or 0
@@ -836,6 +844,7 @@ class ChatHandler:
     @classmethod
     def _collect_owner_context_hints(cls, results: list[dict] | None) -> list[str]:
         hints: list[str] = []
+        fallback_hints: list[str] = []
         for result_item in results or []:
             if result_item.get("type") != "search_owners":
                 continue
@@ -845,17 +854,59 @@ class ChatHandler:
             ).strip()
             owners = result.get("owners") or []
             candidate = cls._select_best_owner_candidate(source_text, owners)
-            if not cls._is_confident_owner_candidate(source_text, candidate):
+            if cls._is_confident_owner_candidate(source_text, candidate):
+                if cls._is_short_ambiguous_owner_text(source_text):
+                    continue
+                direct_tokens = cls._extract_owner_context_tokens(
+                    source_text,
+                    str((candidate or {}).get("name") or ""),
+                )
+                for token in direct_tokens:
+                    if token not in hints:
+                        hints.append(token)
+                if direct_tokens:
+                    continue
+
+            if not re.search(r"[\u4e00-\u9fff]", source_text or ""):
                 continue
-            if cls._is_short_ambiguous_owner_text(source_text):
+            for token in cls._collect_near_top_owner_context_hints(source_text, owners):
+                if token not in fallback_hints:
+                    fallback_hints.append(token)
+        return hints or fallback_hints
+
+    @classmethod
+    def _collect_near_top_owner_context_hints(
+        cls,
+        source_text: str,
+        owners: list[dict] | None,
+        score_gap: float = 12.0,
+    ) -> list[str]:
+        candidate_tokens: dict[str, float] = {}
+        scored_candidates: list[tuple[float, list[str]]] = []
+        for owner in owners or []:
+            owner_name = str(owner.get("name") or "").strip()
+            if not owner_name or not cls._owner_name_matches_source(source_text, owner_name):
                 continue
-            for token in cls._extract_owner_context_tokens(
-                source_text,
-                str(candidate.get("name") or ""),
-            ):
-                if token not in hints:
-                    hints.append(token)
-        return hints
+            context_tokens = cls._extract_owner_context_tokens(source_text, owner_name)
+            if not context_tokens:
+                continue
+            scored_candidates.append(
+                (cls._score_owner_candidate(source_text, owner), context_tokens)
+            )
+
+        if not scored_candidates:
+            return []
+
+        top_score = max(score for score, _ in scored_candidates)
+        for score, context_tokens in scored_candidates:
+            if top_score - score > score_gap:
+                continue
+            for token in context_tokens:
+                previous = candidate_tokens.get(token)
+                if previous is None or score > previous:
+                    candidate_tokens[token] = score
+
+        return sorted(candidate_tokens, key=lambda token: (-candidate_tokens[token], token))
 
     @classmethod
     def _build_contextual_owner_search_commands(
@@ -901,11 +952,16 @@ class ChatHandler:
                 hint_tokens=hint_tokens,
             )
             owner_name = str((candidate or {}).get("name") or "")
+            is_confident = cls._is_confident_owner_candidate(
+                source_text,
+                candidate,
+                hint_tokens=hint_tokens,
+            )
             should_retry = False
             if cls._is_short_ambiguous_owner_text(source_text):
-                should_retry = True
+                should_retry = not is_confident
             elif owner_name and any(token in owner_name for token in hint_tokens):
-                should_retry = True
+                should_retry = not is_confident
 
             if not should_retry:
                 continue
@@ -925,6 +981,21 @@ class ChatHandler:
         return commands
 
     @classmethod
+    def _has_unresolved_owner_results(cls, results: list[dict] | None) -> bool:
+        for result_item in results or []:
+            if result_item.get("type") != "search_owners":
+                continue
+            result = result_item.get("result") or {}
+            source_text = str(
+                result.get("text") or result_item.get("args", {}).get("text") or ""
+            ).strip()
+            owners = result.get("owners") or []
+            candidate = cls._select_best_owner_candidate(source_text, owners)
+            if not cls._is_confident_owner_candidate(source_text, candidate):
+                return True
+        return False
+
+    @classmethod
     def _build_owner_assisted_video_search_commands(
         cls,
         commands: list[dict],
@@ -937,8 +1008,11 @@ class ChatHandler:
         owner_only_commands = bool(commands) and all(
             command.get("type") == "search_owners" for command in commands
         )
-        if commands and not owner_only_commands:
-            return commands
+        owner_result_stage = bool(last_tool_results) and all(
+            result_item.get("type") == "search_owners"
+            for result_item in last_tool_results or []
+        )
+        recent_video_stage = cls._wants_recent_video_results(messages, commands)
 
         latest_user_text = cls._get_latest_user_text(messages)
         if not latest_user_text or not cls._wants_video_results(messages, commands):
@@ -948,8 +1022,17 @@ class ChatHandler:
             messages,
             last_tool_results,
         )
-        if contextual_owner_commands:
+        if contextual_owner_commands and (
+            not commands
+            or owner_only_commands
+            or cls._has_unresolved_owner_results(last_tool_results)
+        ):
             return contextual_owner_commands
+
+        if commands and not owner_only_commands and not (
+            owner_result_stage and recent_video_stage
+        ):
+            return commands
 
         window = cls._extract_recent_window(latest_user_text)
         queries: list[str] = []
@@ -1090,6 +1173,32 @@ class ChatHandler:
             return True
         latest_user_text = cls._get_latest_user_text(messages)
         return bool(latest_user_text and _VIDEO_SEARCH_INTENT_RE.search(latest_user_text))
+
+    @classmethod
+    def _wants_recent_video_results(
+        cls,
+        messages: list[dict],
+        commands: list[dict] | None = None,
+    ) -> bool:
+        def has_date_filter(tool_commands: list[dict] | None) -> bool:
+            for command in tool_commands or []:
+                if command.get("type") != "search_videos":
+                    continue
+                queries = (command.get("args") or {}).get("queries")
+                if isinstance(queries, str):
+                    queries = [queries]
+                for query in queries or []:
+                    text = str(query)
+                    if ":date<=" in text or ":date>=" in text:
+                        return True
+            return False
+
+        if has_date_filter(commands):
+            return True
+        if has_date_filter(cls._extract_recent_assistant_commands(messages)):
+            return True
+        latest_user_text = cls._get_latest_user_text(messages)
+        return bool(latest_user_text and _RECENT_VIDEO_INTENT_RE.search(latest_user_text))
 
     @classmethod
     def _continue_intermediate_plan(

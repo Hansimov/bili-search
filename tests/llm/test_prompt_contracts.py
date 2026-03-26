@@ -40,39 +40,43 @@ def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
 
     prompt = build_system_prompt()
 
-    assert "某工具教程" in prompt
-    assert "<search_videos queries=" "'" '["某工具 教程 q=vwr"]' "'" "/>" in prompt
+    assert "[某工具] 教程" in prompt
+    assert "<search_videos queries=" "'" '["[某工具] 教程 q=vwr"]' "'" "/>" in prompt
     assert "这个作者有哪些关联账号" in prompt
-    assert '<search_owners text="目标作者" mode="relation"/>' in prompt
-    assert (
-        "<search_videos queries=" "'" '[":user=目标作者 :date<=15d"]' "'" "/>" in prompt
-    )
-    assert '<search_google query="目标产品 最近有哪些官方更新"/>' in prompt
-    assert '<search_google query="目标产品 目标能力 最近有哪些官方更新"/>' in prompt
-    assert '<related_tokens_by_tokens text="规范术语" mode="auto"/>' in prompt
-    assert '<related_tokens_by_tokens text="模糊术语" mode="auto"/>' in prompt
-    assert "用户：来点某种口语化风格内容" in prompt
-    assert '<related_tokens_by_tokens text="口语化标签" mode="associate"/>' in prompt
-    assert '"方向一 q=vwr", "方向二 q=vwr", "方向三 q=vwr"' in prompt
-    assert "目标产品 q=vwr" in prompt
-    assert "对比一下作者甲和某个简称作者最近一个月谁更高产" in prompt
-    assert "某个简称作者最近发了什么视频" in prompt
-    assert '<search_owners text="模糊作者别名" mode="name"/>' in prompt
-    assert '<search_owners text="目标主题" mode="topic"/>' in prompt
+    assert '<search_owners text="[目标作者]" mode="relation"/>' in prompt
     assert (
         "<search_videos queries="
         "'"
-        '[":user=作者甲 :date<=30d", ":user=作者乙 :date<=30d"]'
+        '[":user=[目标作者] :date<=15d"]'
         "'"
         "/>" in prompt
     )
-    assert "某个外部产品最近有哪些官方更新，B站上有没有相关解读" in prompt
-    assert "某个模糊术语 有什么入门教程？" in prompt
+    assert '<search_google query="[目标产品] 最近有哪些官方更新"/>' in prompt
+    assert '<search_google query="[目标产品] [目标能力] 最近有哪些官方更新"/>' in prompt
+    assert '<related_tokens_by_tokens text="[规范术语]" mode="auto"/>' in prompt
+    assert '<related_tokens_by_tokens text="[模糊术语]" mode="auto"/>' in prompt
+    assert "用户：来点[某种口语化风格内容]" in prompt
+    assert '<related_tokens_by_tokens text="[口语化标签]" mode="associate"/>' in prompt
+    assert '"[方向一] q=vwr", "[方向二] q=vwr", "[方向三] q=vwr"' in prompt
+    assert "[目标产品] q=vwr" in prompt
+    assert "对比一下[作者甲]和[某个简称作者]最近一个月谁更高产" in prompt
+    assert "[某个简称作者] 最近发了什么视频" in prompt
+    assert '<search_owners text="[模糊作者别名]" mode="name"/>' in prompt
+    assert '<search_owners text="[目标主题]" mode="topic"/>' in prompt
+    assert (
+        "<search_videos queries="
+        "'"
+        '[":user=[作者甲] :date<=30d", ":user=[作者乙] :date<=30d"]'
+        "'"
+        "/>" in prompt
+    )
+    assert "[目标产品]最近有哪些官方更新，B站上有没有相关解读" in prompt
+    assert "[模糊术语] 有什么入门教程？" in prompt
     assert "这个作者有哪些关联账号？那他的代表作有哪些？" in prompt
     assert (
         "<search_videos queries="
         "'"
-        '[":user=目标作者 代表作 q=vwr"]'
+        '[":user=[目标作者] 代表作 q=vwr"]'
         "'"
         "/>" in prompt
     )

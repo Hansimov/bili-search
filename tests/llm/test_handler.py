@@ -211,18 +211,18 @@ MOCK_MOON_OWNER_RESULT = {
     "mode": "name",
     "owners": [
         {
-            "mid": 3706948637690233,
-            "name": "月亮377-",
-            "score": 220.5,
-            "sample_view": 11,
-            "sources": ["name"],
+            "mid": 3706946492303759,
+            "name": "月亮33222",
+            "score": 329.0,
+            "sample_view": 186532,
+            "sources": ["name", "topic"],
         },
         {
             "mid": 674510452,
             "name": "红警月亮3",
-            "score": 216.0,
+            "score": 325.0,
             "sample_view": 57686,
-            "sources": ["name"],
+            "sources": ["name", "topic"],
         },
     ],
 }
@@ -555,14 +555,15 @@ def test_multi_owner_recent_videos_continue_after_contextual_owner_resolution():
         call(text="08", mode="name", size=8),
         call(text="月亮3", mode="name", size=8),
         call(text="红警08", mode="name", size=8),
-        call(text="红警月亮3", mode="name", size=8),
     ]
-    assert mock_search.explore.call_args_list == [
-        call(query=":uid=1629347259 :date<=15d"),
-        call(query=":uid=674510452 :date<=15d"),
-    ]
+    assert {
+        call_args.kwargs["query"] for call_args in mock_search.explore.call_args_list
+    } == {
+        ":uid=1629347259 :date<=15d",
+        ":uid=674510452 :date<=15d",
+    }
     assert result["tool_events"][0]["tools"] == ["search_owners", "search_owners"]
-    assert result["tool_events"][1]["tools"] == ["search_owners", "search_owners"]
+    assert result["tool_events"][1]["tools"] == ["search_owners"]
     assert result["tool_events"][2]["tools"] == ["search_videos"]
 
     logger.success(
@@ -629,15 +630,85 @@ def test_owner_only_followup_plan_is_promoted_to_video_search_once_resolved():
         call(text="08", mode="name", size=8),
         call(text="月亮3", mode="name", size=8),
         call(text="红警08", mode="name", size=8),
-        call(text="红警月亮3", mode="name", size=8),
     ]
-    assert mock_search.explore.call_args_list == [
-        call(query=":uid=1629347259 :date<=15d"),
-        call(query=":uid=674510452 :date<=15d"),
-    ]
+    assert {
+        call_args.kwargs["query"] for call_args in mock_search.explore.call_args_list
+    } == {
+        ":uid=1629347259 :date<=15d",
+        ":uid=674510452 :date<=15d",
+    }
     assert result["tool_events"][-1]["tools"] == ["search_videos"]
 
     logger.success("[PASS] owner-only follow-up plan promoted to video search")
+
+
+def test_unresolved_owner_aliases_override_generic_topic_drift():
+    """If the model drifts into generic topic/video search before owner aliases are resolved, contextual owner resolution should take precedence."""
+    logger.note("=" * 60)
+    logger.note("[TEST] unresolved owner aliases override generic topic drift")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_tool_cmd_response(
+            "我先确认这两个名字对应的作者。",
+            '<search_owners text="08" mode="name"/>\n'
+            '<search_owners text="月亮3" mode="name"/>',
+        ),
+        make_tool_cmd_response(
+            "我先看看和他们相关的话题视频。",
+            '<related_tokens_by_tokens text="08 月亮3" mode="associate"/>\n'
+            "<search_videos queries="
+            "'"
+            '["08 月亮3 q=vwr"]'
+            "'"
+            "/>",
+        ),
+        make_content_response("我继续整理他们最近的视频。"),
+        make_content_response(
+            "最近视频：\n- [红警全油田一排排](BV1aaa)\n- [红警海盗争霸一块地](BV1bbb)"
+        ),
+        make_content_response(
+            "最近视频：\n- [红警全油田一排排](BV1aaa)\n- [红警海盗争霸一块地](BV1bbb)"
+        ),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.search_owners.side_effect = [
+        {
+            "text": "08",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 3706942411246433,
+                    "name": "08-v嫖",
+                    "score": 224.0,
+                    "sample_view": 0,
+                    "sources": ["name"],
+                }
+            ],
+        },
+        MOCK_MOON_OWNER_RESULT,
+        MOCK_CONTEXTUAL_08_OWNER_RESULT,
+    ]
+    mock_search.explore.side_effect = [MOCK_EXPLORE_RESULT, MOCK_EXPLORE_RESULT]
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "08和月亮3最近都发了哪些视频？"}]
+    )
+
+    assert assistant_content(result)
+    assert mock_search.search_owners.call_args_list == [
+        call(text="08", mode="name", size=8),
+        call(text="月亮3", mode="name", size=8),
+        call(text="红警08", mode="name", size=8),
+    ]
+    mock_search.related_tokens_by_tokens.assert_not_called()
+    assert result["tool_events"][1]["tools"] == ["search_owners"]
+    assert result["tool_events"][-1]["tools"] == ["search_videos"]
+
+    logger.success("[PASS] unresolved owner aliases override generic topic drift")
 
 
 def test_author_timeline_final_content_retains_author_name():
