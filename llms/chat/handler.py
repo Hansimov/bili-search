@@ -125,6 +125,9 @@ _REDUNDANT_QUERY_TOKENS = {
     "辅助的",
 }
 _USER_FILTER_RE = re.compile(r":user=([^\s]+)")
+_IDENTITY_OWNER_QUERY_RE = re.compile(
+    r"^(?:请问|想知道|想了解|麻烦问下|麻烦问一下|能说说|告诉我)?\s*(?P<name>.+?)\s*(?:是谁|是什么人|是哪个up主|是哪位up主|是哪个博主|是哪位博主|是什么账号|是做什么的)(?:[呢吗嘛呀啊?？!！]*)$"
+)
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -1666,7 +1669,22 @@ class ChatHandler:
             executed_signatures.add(cls._command_signature(command))
 
     def _preflight_tool_commands(self, messages: list[dict]) -> list[dict]:
-        return []
+        latest_user_text = self._get_latest_user_text(messages)
+        if not latest_user_text:
+            return []
+
+        match = _IDENTITY_OWNER_QUERY_RE.match(latest_user_text.strip())
+        if not match:
+            return []
+
+        name = (match.group("name") or "").strip(" ，。！？?：:")
+        if not name:
+            return []
+
+        if len(name) > 40:
+            return []
+
+        return [{"type": "search_owners", "args": {"text": name, "mode": "name"}}]
 
     @staticmethod
     def _summarize_context(messages: list[dict]) -> dict:
@@ -2110,6 +2128,7 @@ class ChatHandler:
         tool_events_summary: list[dict] = []
         last_tool_results: list[dict] | None = None
         owner_result_context: dict[str, dict] = {}
+        preflight_commands = self._preflight_tool_commands(full_messages)
 
         # First chunk: role + metadata
         yield self._format_stream_chunk(
@@ -2117,6 +2136,80 @@ class ChatHandler:
             delta={"role": "assistant", "content": ""},
             thinking=thinking,
         )
+
+        if preflight_commands:
+            preflight_commands, _ = self._dedupe_commands(
+                preflight_commands,
+                executed_signatures,
+            )
+            if preflight_commands:
+                tool_names = [cmd["type"] for cmd in preflight_commands]
+                tool_events_summary.append(
+                    {"iteration": 0, "tools": tool_names, "preflight": True}
+                )
+
+                pending_calls = [
+                    {
+                        "type": cmd["type"],
+                        "args": cmd.get("args", {}),
+                        "status": "pending",
+                    }
+                    for cmd in preflight_commands
+                ]
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={},
+                    tool_events=[
+                        {
+                            "iteration": 0,
+                            "tools": tool_names,
+                            "calls": pending_calls,
+                            "preflight": True,
+                        }
+                    ],
+                )
+
+                results = self._execute_tool_commands(preflight_commands)
+                last_tool_results = results
+                owner_result_context = self._merge_owner_result_context(
+                    owner_result_context,
+                    results,
+                )
+                self._record_executed_command_signatures(
+                    preflight_commands,
+                    executed_signatures,
+                )
+
+                completed_calls = [
+                    {
+                        "type": result["type"],
+                        "args": result["args"],
+                        "status": "completed",
+                        "result": result["result"],
+                    }
+                    for result in results
+                ]
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={},
+                    tool_events=[
+                        {
+                            "iteration": 0,
+                            "tools": tool_names,
+                            "calls": completed_calls,
+                            "preflight": True,
+                        }
+                    ],
+                )
+
+                full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
+                self._prune_old_results_messages(full_messages)
+                full_messages.append(
+                    {
+                        "role": "user",
+                        "content": self._format_results_message(results),
+                    }
+                )
 
         def _is_cancelled() -> bool:
             return cancelled is not None and cancelled.is_set()

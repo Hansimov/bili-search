@@ -195,12 +195,21 @@ def format_related_owners(owners: list[dict], max_hits: int = 10) -> list[dict]:
             "name": owner.get("name", ""),
             "score": owner.get("score", 0),
         }
+        if owner.get("face"):
+            item["face"] = owner.get("face")
         if owner.get("sources"):
             item["sources"] = owner.get("sources")
         if owner.get("sample_title"):
             item["sample_title"] = owner.get("sample_title")
         if owner.get("sample_bvid"):
             item["sample_bvid"] = owner.get("sample_bvid")
+        sample_pic = (
+            owner.get("sample_pic")
+            or owner.get("sample_cover")
+            or owner.get("sample_cover_url")
+        )
+        if sample_pic:
+            item["sample_pic"] = sample_pic
         formatted.append(item)
     return formatted
 
