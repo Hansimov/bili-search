@@ -83,6 +83,7 @@ _FORCE_CONTENT_NUDGE = (
 
 _OWNER_CONTEXT_MAX_RESULTS = 8
 _OWNER_CONTEXT_TOPIC_MAX_RESULTS = 20
+_VIDEO_CONTEXT_MAX_HITS = 20
 
 _DUPLICATE_TOOL_NUDGE = (
     "相同或等价的搜索已经执行过，请不要重复输出同样的工具命令。"
@@ -638,7 +639,8 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             return result
         if "hits" in result:
             compact_hits = []
-            for hit in (result.get("hits") or [])[:4]:
+            visible_hits = (result.get("hits") or [])[:_VIDEO_CONTEXT_MAX_HITS]
+            for hit in visible_hits:
                 owner = hit.get("owner") or {}
                 compact_hit = {
                     "title": hit.get("title", ""),
@@ -657,6 +659,13 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 "total_hits": result.get("total_hits", len(compact_hits)),
                 "hits": compact_hits,
             }
+            omitted_hits = max(
+                0,
+                int(result.get("total_hits", len(result.get("hits") or [])))
+                - len(compact_hits),
+            )
+            if omitted_hits:
+                compact["omitted_hits"] = omitted_hits
             if result.get("error"):
                 compact["error"] = result["error"]
             return compact

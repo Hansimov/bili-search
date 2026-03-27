@@ -255,6 +255,53 @@ def test_compact_result_for_context_preserves_multi_query_video_hits():
     assert compact["results"][1]["hits"][0]["owner"] == "月亮3"
 
 
+def test_compact_result_for_context_keeps_recent_video_hits_beyond_four_items():
+    result = {
+        "query": ":uid=1629347259 :date<=15d",
+        "total_hits": 15,
+        "hits": [
+            {
+                "title": f"08 最近更新 {idx}",
+                "bvid": f"BV08{idx:02d}",
+                "owner": {"name": "红警HBK08"},
+                "stat": {"view": 1000 + idx},
+                "pub_to_now_str": f"{idx}天前",
+                "duration_str": "10:00",
+            }
+            for idx in range(1, 16)
+        ],
+    }
+
+    compact = ChatHandler._compact_result_for_context(result)
+
+    assert compact["total_hits"] == 15
+    assert len(compact["hits"]) == 15
+    assert compact["hits"][0]["title"] == "08 最近更新 1"
+    assert compact["hits"][-1]["title"] == "08 最近更新 15"
+    assert "omitted_hits" not in compact
+
+
+def test_compact_result_for_context_marks_when_video_hits_are_truncated():
+    result = {
+        "query": ":uid=1629347259 :date<=30d",
+        "total_hits": 25,
+        "hits": [
+            {
+                "title": f"08 最近更新 {idx}",
+                "bvid": f"BV08{idx:02d}",
+                "owner": {"name": "红警HBK08"},
+            }
+            for idx in range(1, 26)
+        ],
+    }
+
+    compact = ChatHandler._compact_result_for_context(result)
+
+    assert compact["total_hits"] == 25
+    assert len(compact["hits"]) == 20
+    assert compact["omitted_hits"] == 5
+
+
 def test_google_keyword_bootstrap_is_prepended_for_title_uncertainty():
     commands = [
         {
