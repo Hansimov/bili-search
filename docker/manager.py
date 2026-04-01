@@ -514,6 +514,33 @@ def find_bili_search_container_by_port(port: int, *, include_all: bool = True) -
     raise LookupError(f"Multiple bili-search docker containers found on port {port}")
 
 
+def prune_bili_search_containers(*, filters: dict | None = None) -> list[dict]:
+    removable = [
+        item
+        for item in list_bili_search_containers(filters=filters, include_all=True)
+        if not str(item.get("status") or "").startswith("running")
+    ]
+    if not removable:
+        return []
+
+    targets = [
+        str(item.get("id") or item.get("name") or "").strip() for item in removable
+    ]
+    targets = [target for target in targets if target]
+    if not targets:
+        return []
+
+    result = subprocess.run(
+        ["docker", "rm", *targets],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "docker rm failed")
+    return removable
+
+
 def ensure_base_image(args, app_envs: dict) -> subprocess.CompletedProcess | None:
     settings = resolve_compose_settings(args, app_envs, WORKSPACE_ROOT)
     env = compose_env(args, app_envs, settings)

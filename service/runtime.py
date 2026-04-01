@@ -419,6 +419,38 @@ def list_managed_service_instances(
     return sorted(instances, key=lambda item: (item["port"], item["pid"] or 0))
 
 
+def prune_managed_service_history(*, filters: dict | None = None) -> list[dict]:
+    removed_entries: list[dict] = []
+    for snapshot in list_managed_service_instances(filters=filters, include_all=True):
+        if snapshot.get("status") != "exited":
+            continue
+
+        pid_file = Path(str(snapshot.get("pid_file") or "")).expanduser()
+        removed = False
+        error = None
+        try:
+            pid_file.unlink(missing_ok=True)
+            removed = True
+        except OSError as exc:
+            error = str(exc)
+
+        removed_entries.append(
+            {
+                "name": snapshot.get("name"),
+                "port": snapshot.get("port"),
+                "status": snapshot.get("status"),
+                "runtime": snapshot.get("runtime"),
+                "source": snapshot.get("source"),
+                "pid_file": str(pid_file),
+                "log_file": snapshot.get("log_file"),
+                "removed": removed,
+                "error": error,
+            }
+        )
+
+    return removed_entries
+
+
 def sanitize_log_file(log_file: Path):
     if not log_file.exists():
         return

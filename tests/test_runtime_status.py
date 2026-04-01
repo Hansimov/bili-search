@@ -5,7 +5,11 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from service.runtime import build_local_service_snapshot, list_managed_service_instances
+from service.runtime import (
+    build_local_service_snapshot,
+    list_managed_service_instances,
+    prune_managed_service_history,
+)
 
 
 class LocalRuntimeStatusTestCase(unittest.TestCase):
@@ -111,7 +115,7 @@ class LocalRuntimeStatusTestCase(unittest.TestCase):
             )
             (
                 temp_root
-                / "server.p21001.ei-bili-videos-dev6.ev-elastic-dev.lc-gpt.pid"
+                / "server.p21001.ei-bili-videos-dev6.ev-elastic-dev.lc-legacy.pid"
             ).write_text(
                 "3860406\n",
                 encoding="utf-8",
@@ -131,8 +135,8 @@ class LocalRuntimeStatusTestCase(unittest.TestCase):
                             "uptime": "24min",
                         },
                         {
-                            "pid_file": "gpt.pid",
-                            "log_file": "gpt.log",
+                            "pid_file": "legacy.pid",
+                            "log_file": "legacy.log",
                             "pid": 3860406,
                             "status": "dead",
                             "started_at": None,
@@ -165,3 +169,25 @@ class LocalRuntimeStatusTestCase(unittest.TestCase):
         self.assertEqual([item["status"] for item in items], ["running", "exited"])
         self.assertEqual(items[0]["source"], "workspace")
         self.assertEqual(items[1]["worker_status"], "stopped")
+
+    def test_prune_managed_service_history_removes_exited_pid_files(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            pid_file = (
+                temp_root
+                / "server.p21001.ei-bili-videos-dev6.ev-elastic-dev.lc-deepseek.pid"
+            )
+            pid_file.write_text("3860406\n", encoding="utf-8")
+
+            with (
+                patch("service.runtime.DATA_DIR", temp_root),
+                patch("service.runtime.process_is_running", return_value=False),
+                patch(
+                    "service.runtime.match_service_worker_process", return_value=None
+                ),
+            ):
+                removed_items = prune_managed_service_history()
+
+        self.assertEqual(len(removed_items), 1)
+        self.assertTrue(removed_items[0]["removed"])
+        self.assertFalse(pid_file.exists())

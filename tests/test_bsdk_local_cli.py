@@ -73,16 +73,37 @@ def test_local_status_uses_runtime_specific_service_manager():
     manager.status.return_value = {"status": "not_running", "pid": None}
     manager.log_file = Path("/tmp/server.dev.p21001.log")
 
-    with patch(
-        "cli.local_runtime._build_service_manager",
-        return_value=manager,
+    with (
+        patch(
+            "cli.local_runtime._build_service_manager",
+            return_value=manager,
+        ),
+        patch(
+            "cli.local_runtime.build_local_service_snapshot",
+            return_value={
+                "status": "exited",
+                "runtime": "local",
+                "source": "workspace",
+                "manager_status": "not_running",
+                "worker_status": "stopped",
+                "manager_pid": None,
+                "worker_pid": None,
+                "started_at": None,
+                "uptime": None,
+                "url": "http://127.0.0.1:21001/health",
+                "log_file": "/tmp/server.dev.p21001.log",
+                "health": None,
+                "health_error": None,
+                "reason": None,
+            },
+        ) as mock_build_snapshot,
     ):
         from cli.local_runtime import cmd_status
 
         args = make_runtime_args(port=21001, elastic_index=None, elastic_env_name=None)
         cmd_status(args)
 
-    manager.status.assert_called_once_with()
+    mock_build_snapshot.assert_called_once()
 
 
 def test_local_logs_reads_from_service_manager_and_decolors_output():
@@ -115,9 +136,18 @@ def test_local_restart_uses_runtime_specific_service_manager():
     manager.start.return_value = {"status": "started", "pid": 8899}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
 
-    with patch(
-        "cli.local_runtime._build_service_manager",
-        return_value=manager,
+    with (
+        patch(
+            "cli.local_runtime._build_service_manager",
+            return_value=manager,
+        ),
+        patch(
+            "cli.local_runtime.build_local_service_snapshot",
+            return_value={
+                "runtime_state": "running",
+                "worker_status": "running",
+            },
+        ),
     ):
         from cli.local_runtime import cmd_restart
 
@@ -130,7 +160,9 @@ def test_local_restart_uses_runtime_specific_service_manager():
 
 
 def test_list_managed_service_instances_reads_pid_files(tmp_path):
-    pid_file = tmp_path / "server.p21001.ei-bili-videos-dev6.ev-elastic-dev.lc-gpt.pid"
+    pid_file = (
+        tmp_path / "server.p21001.ei-bili-videos-dev6.ev-elastic-dev.lc-deepseek.pid"
+    )
     pid_file.write_text("4321\n", encoding="utf-8")
 
     with (
@@ -159,9 +191,13 @@ def test_local_ps_prints_service_table():
                 {
                     "port": 21001,
                     "status": "running",
+                    "runtime": "local",
+                    "source": "workspace",
                     "started_at": "2026-03-18 09:02:03",
-                    "llm_config": "gpt",
+                    "uptime": "2h 3min 4s",
+                    "llm_config": "deepseek",
                     "pid": 4321,
+                    "name": "bili-search-p21001",
                 }
             ],
         ) as mock_list,
@@ -169,7 +205,7 @@ def test_local_ps_prints_service_table():
     ):
         from cli.local_runtime import cmd_ps
 
-        args = make_runtime_args(port=21001, llm_config="gpt")
+        args = make_runtime_args(port=21001, llm_config="deepseek")
         args.all = False
         cmd_ps(args)
 
@@ -178,13 +214,14 @@ def test_local_ps_prints_service_table():
             "port": 21001,
             "elastic_index": "bili_videos_dev6",
             "elastic_env_name": "elastic_dev",
-            "llm_config": "gpt",
+            "llm_config": "deepseek",
         },
         include_all=False,
     )
     printed = decolored(mock_print.call_args.args[0])
     assert "PORT" in printed
-    assert "4321" in printed
+    assert "local" in printed
+    assert "workspace" in printed
     assert "2026-03-18 09:02:03" in printed
 
 
@@ -196,7 +233,25 @@ def test_local_status_prints_key_value_table_for_running_service():
     with (
         patch("cli.local_runtime._build_service_manager", return_value=manager),
         patch("cli.local_runtime._sanitize_log_file"),
-        patch("cli.local_runtime._fetch_health", return_value={"status": "ok"}),
+        patch(
+            "cli.local_runtime.build_local_service_snapshot",
+            return_value={
+                "status": "running",
+                "runtime": "local",
+                "source": "workspace",
+                "manager_status": "running",
+                "worker_status": "running",
+                "manager_pid": 7788,
+                "worker_pid": 7788,
+                "started_at": "2026-03-18 09:02:03",
+                "uptime": "12s",
+                "url": "http://127.0.0.1:21099/health",
+                "log_file": "/tmp/server.dev.p21099.log",
+                "health": {"status": "ok"},
+                "health_error": None,
+                "reason": None,
+            },
+        ),
         patch("builtins.print") as mock_print,
     ):
         from cli.local_runtime import cmd_status

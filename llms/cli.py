@@ -211,7 +211,7 @@ def main():
         "--llm-config",
         type=str,
         default=LLM_CONFIG,
-        help="LLM config name (e.g. deepseek, gpt, volcengine)",
+        help="LLM config name (default: deepseek)",
     )
     parser.add_argument(
         "--elastic-index",

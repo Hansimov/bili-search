@@ -16,7 +16,7 @@ def make_runtime_args(**overrides):
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
         "compose_file": "docker/docker-compose.yml",
         "env_file": "docker/.env",
         "dockerfile": "docker/Dockerfile",
@@ -124,7 +124,7 @@ def test_ensure_base_image_skips_existing_image():
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
 
     with (
@@ -155,7 +155,7 @@ def test_resolve_compose_settings_uses_defaults():
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
     settings = resolve_compose_settings(
         make_runtime_args(),
@@ -178,7 +178,7 @@ def test_sync_source_to_container_cleans_before_extract_and_excludes_mounts():
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
     cleanup_result = MagicMock(returncode=0, stdout="", stderr="")
     extract_result = MagicMock(returncode=0, stdout="synced\n", stderr="")
@@ -215,7 +215,7 @@ def test_run_container_app_action_syncs_before_hup():
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
     sync_result = MagicMock(returncode=0, stdout="synced\n", stderr="")
     signal_result = MagicMock(returncode=0, stdout="reloaded\n", stderr="")
@@ -243,7 +243,7 @@ def test_read_container_app_state_formats_supervisor_metadata(tmp_path: Path):
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
     state_dir = tmp_path / "logs" / "search_app"
     state_dir.mkdir(parents=True)
@@ -274,7 +274,7 @@ def test_read_container_app_state_falls_back_to_live_process(tmp_path: Path):
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
     args = make_runtime_args(logs_dir=str(tmp_path / "logs"))
     inspect_result = MagicMock(
@@ -308,7 +308,7 @@ def test_list_bili_search_containers_reads_runtime_metadata():
                     "BILI_SEARCH_APP_PORT=21001",
                     "BILI_SEARCH_APP_ELASTIC_INDEX=bili_videos_dev6",
                     "BILI_SEARCH_APP_ELASTIC_ENV_NAME=elastic_dev",
-                    "BILI_SEARCH_APP_LLM_CONFIG=gpt",
+                    "BILI_SEARCH_APP_LLM_CONFIG=deepseek",
                 ],
             },
             "State": {
@@ -375,7 +375,7 @@ def test_bsdk_stop_resolves_running_instance_by_port():
                 "port": 21001,
                 "elastic_index": "bili_videos_dev6",
                 "elastic_env_name": "elastic_dev",
-                "llm_config": "gpt",
+                "llm_config": "deepseek",
             },
         ) as mock_find,
         patch("cli.bsdk.run_compose", return_value=result) as mock_run,
@@ -449,7 +449,7 @@ def test_bsdk_restart_app_scope_uses_container_app_action():
                 "port": 21001,
                 "elastic_index": "bili_videos_dev6",
                 "elastic_env_name": "elastic_dev",
-                "llm_config": "gpt",
+                "llm_config": "deepseek",
             },
         ),
         patch(
@@ -481,7 +481,7 @@ def test_bsdk_restart_container_scope_without_sync_uses_compose_restart():
                 "port": 21001,
                 "elastic_index": "bili_videos_dev6",
                 "elastic_env_name": "elastic_dev",
-                "llm_config": "gpt",
+                "llm_config": "deepseek",
             },
         ),
         patch("cli.bsdk.run_container_app_action") as mock_app_action,
@@ -517,7 +517,7 @@ def test_bsdk_restart_container_scope_with_sync_recreates_container():
                 "port": 21001,
                 "elastic_index": "bili_videos_dev6",
                 "elastic_env_name": "elastic_dev",
-                "llm_config": "gpt",
+                "llm_config": "deepseek",
             },
         ),
         patch("cli.bsdk.run_container_app_action") as mock_app_action,
@@ -545,7 +545,7 @@ def test_run_compose_recreate_uses_force_recreate_build():
         "port": 21001,
         "elastic_index": "bili_videos_dev6",
         "elastic_env_name": "elastic_dev",
-        "llm_config": "gpt",
+        "llm_config": "deepseek",
     }
     with patch("docker.manager.subprocess.run") as mock_run:
         from docker.manager import run_compose
@@ -566,7 +566,7 @@ def test_bsdk_ps_prints_container_table():
                     "status": "running",
                     "started_at": "2026-03-18 09:02:03",
                     "uptime": "2h 3min 4s",
-                    "llm_config": "gpt",
+                    "llm_config": "deepseek",
                     "name": "bili-search-p21001",
                 }
             ],
@@ -582,7 +582,7 @@ def test_bsdk_ps_prints_container_table():
             "port": 21001,
             "elastic_index": "bili_videos_dev6",
             "elastic_env_name": "elastic_dev",
-            "llm_config": "gpt",
+            "llm_config": "deepseek",
         },
         include_all=False,
     )
@@ -613,7 +613,7 @@ def test_bsdk_status_reports_app_runtime_metadata():
                 "image": "bili-search:p21001",
                 "elastic_index": "bili_videos_dev6",
                 "elastic_env_name": "elastic_dev",
-                "llm_config": "gpt",
+                "llm_config": "deepseek",
             },
         ),
         patch(
@@ -656,7 +656,7 @@ def test_bsdk_ps_alternates_column_colors():
                     "status": "running",
                     "started_at": "2026-03-18 09:02:03",
                     "uptime": "2h 3min 4s",
-                    "llm_config": "gpt",
+                    "llm_config": "deepseek",
                     "name": "bili-search-p21001",
                 }
             ],
@@ -675,3 +675,16 @@ def test_bsdk_ps_alternates_column_colors():
     assert "PORTS" in decolored_printed
     assert "STATUS" in decolored_printed
     assert "NAME" in decolored_printed
+
+
+def test_bsdk_prune_runs_local_and_docker_cleanup_for_runtime_all():
+    with (
+        patch("cli.bsdk.local_runtime_cli.cmd_prune") as mock_local_prune,
+        patch("cli.bsdk._cmd_docker_prune") as mock_docker_prune,
+    ):
+        from cli.bsdk import cmd_prune
+
+        cmd_prune(make_runtime_args(runtime="all", port=None))
+
+    mock_local_prune.assert_called_once()
+    mock_docker_prune.assert_called_once()

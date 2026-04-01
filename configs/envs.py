@@ -25,4 +25,4 @@ MONGO_ENVS = SECRETS["mongo"]
 LLMS_ENVS = SECRETS["llms"]
 TEI_CLIENTS_ENVS = SECRETS["tei_clients"]
 TEI_CLIENTS_ENDPOINTS = TEI_CLIENTS_ENVS.get("endpoints", [])
-LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "gpt")
+LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "deepseek")

@@ -41,6 +41,7 @@ bsdk check -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 # 查看本地受管服务
 bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 bsdk ps --runtime local --all
+bsdk prune
 ```
 
 ## Docker 构建
@@ -86,6 +87,7 @@ bsdk start \
 - `--runtime local`：管理当前主机上的 bili-search 本地服务进程，适合开发调试。
 - `--runtime docker`：管理 Docker 里的 bili-search 实例，适合部署和隔离运行。默认值是 `docker`。
 - `bsdk ps` 在 `docker` 模式下列出容器，在 `local` 模式下列出本地受管服务。
+- `bsdk prune` 会清理 stale 本地 PID 记录和 exited Docker 容器，但不会停止当前运行中的实例。
 - 对已启动的 Docker 实例，`stop`、`down`、`restart`、`status`、`logs` 这类命令通常只需要端口号就足够反查目标容器，其他运行参数无需重复输入。
 - `bsdk status` 在 `docker` 模式下会额外显示 app 级别的启动时间和运行时长。对于 `--restart-scope app`，容器本身的启动时间不会变化，应以 `App Started At` 和 `App Uptime` 为准。
 - 当前实例使用 host network，因此 Docker 原生 `docker ps` 的 `PORTS` 可能为空；`bsdk status` / `bsdk ps` 会补齐实际监听端口。
@@ -127,4 +129,7 @@ bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 
 # 删除实例
 bsdk down -p 21001
+
+# 清理历史残留
+bsdk prune
 ```

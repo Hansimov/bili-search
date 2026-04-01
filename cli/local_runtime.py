@@ -17,6 +17,7 @@ from service.runtime import fetch_health as _fetch_health
 from service.runtime import health_url as _health_url
 from service.runtime import kill_processes_on_port
 from service.runtime import list_managed_service_instances
+from service.runtime import prune_managed_service_history
 from service.runtime import print_health_json as _print_json
 from service.runtime import run_foreground
 from service.runtime import runtime_env_vars
@@ -236,3 +237,23 @@ def cmd_ps(args):
             rows,
         )
     )
+
+
+def cmd_prune(args):
+    removed_entries = prune_managed_service_history(
+        filters=explicit_runtime_filters_from_args(args)
+    )
+    if not removed_entries:
+        logger.mesg("  No stale bili-search local runtime history found")
+        return
+
+    logger.note(
+        f"> Removing {len(removed_entries)} stale bili-search local runtime record(s) ..."
+    )
+    for item in removed_entries:
+        if item.get("removed"):
+            logger.okay(f"  ✓ Removed {item['name']} ({item['pid_file']})")
+            continue
+        logger.warn(
+            f"  × Failed to remove {item['name']} ({item['pid_file']}): {item.get('error') or 'unknown error'}"
+        )

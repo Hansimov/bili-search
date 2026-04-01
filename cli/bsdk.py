@@ -21,6 +21,7 @@ from docker.manager import run_container_app_action
 from docker.manager import ensure_base_image
 from docker.manager import find_bili_search_container_by_port
 from docker.manager import list_bili_search_containers
+from docker.manager import prune_bili_search_containers
 from docker.manager import read_container_app_state
 from docker.manager import run_base_build
 from service.runtime import ensure_process_timezone, fetch_health, health_url
@@ -595,24 +596,54 @@ def cmd_ps(args):
     )
 
 
+def _cmd_docker_prune(args):
+    try:
+        removed_entries = prune_bili_search_containers(
+            filters=explicit_runtime_filters_from_args(args)
+        )
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not removed_entries:
+        logger.mesg("  No exited bili-search docker containers found")
+        return
+
+    logger.note(
+        f"> Removing {len(removed_entries)} exited bili-search docker container(s) ..."
+    )
+    for item in removed_entries:
+        logger.okay(f"  ✓ Removed {item['name']} ({item['status']})")
+
+
+def cmd_prune(args):
+    runtime = _runtime(args)
+    if runtime == "local":
+        return local_runtime_cli.cmd_prune(args)
+    if runtime == "docker":
+        return _cmd_docker_prune(args)
+
+    local_runtime_cli.cmd_prune(args)
+    _cmd_docker_prune(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Bili Search runtime CLI (bsdk)",
         epilog=root_epilog(
             quick_start=[
-                "bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
-                "bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
+                "bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
             ],
             examples=[
-                "bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
                 "bsdk restart -p 21001 --restart-scope app",
                 "bsdk restart -p 21001 --restart-scope container --no-sync-code",
-                "bsdk start --source local-git --git-ref HEAD~1 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk start --source local-git --git-ref HEAD~1 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
                 "bsdk build -p 21001 --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple --pip-extra-index-url https://pypi.org/simple",
                 "bsdk status -p 21001",
-                "bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt",
+                "bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
                 "bsdk ps --all",
                 "bsdk ps --runtime local --all",
+                "bsdk prune",
                 "bsdk config --source remote-git --git-url https://github.com/example/bili-search.git --git-ref main",
             ],
         ),
@@ -761,6 +792,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Render process list as table or JSON",
     )
     ps_parser.set_defaults(func=cmd_ps)
+
+    prune_parser = subparsers.add_parser(
+        "prune",
+        help="Remove stale local pid records and exited docker containers",
+    )
+    add_runtime_mode_arg(prune_parser, default="all", allow_all=True)
+    add_shared_runtime_args(prune_parser)
+    prune_parser.set_defaults(func=cmd_prune)
     return parser
 
 

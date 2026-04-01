@@ -7,31 +7,31 @@
 后台启动：
 
 ```bash
-bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 前台启动：
 
 ```bash
-bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 前台热重载：
 
 ```bash
-bsdk start --runtime local --foreground --reload -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local --foreground --reload -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 如果端口已被旧进程占用，可以在启动前加上 `-k`：
 
 ```bash
-bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 ## Docker 启动服务
 
 ```bash
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 查看实例：
@@ -55,7 +55,7 @@ curl -sS http://127.0.0.1:21001/capabilities | jq
 {
   "status": "ok",
   "search_service": "integrated",
-  "llm_model": "gpt-5.2"
+  "llm_model": "deepseek-chat"
 }
 ```
 
@@ -64,10 +64,10 @@ curl -sS http://127.0.0.1:21001/capabilities | jq
 本地服务：
 
 ```bash
-bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 bsdk ps --runtime local
-bsdk logs --runtime local -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
-bsdk logs --runtime local -n 80 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk logs --runtime local -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk logs --runtime local -n 80 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 Docker 服务：
@@ -75,6 +75,7 @@ Docker 服务：
 ```bash
 bsdk status -p 21001
 bsdk logs -f -n 120 -p 21001
+bsdk prune
 ```
 
 ## 基础接口测试
@@ -181,13 +182,14 @@ conda run -n ai python debugs/profile_es_tok_exclusion_path.py
 停止本地后台实例：
 
 ```bash
-bsdk stop --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc gpt
+bsdk stop --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
 ```
 
 停止 Docker 实例：
 
 ```bash
 bsdk down -p 21001
+bsdk prune
 ```
 
 确认端口是否释放：

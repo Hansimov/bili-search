@@ -507,7 +507,7 @@ def test_shared_runtime_arg_resolution_allows_llm_config_override():
             "host": "0.0.0.0",
             "port": 21001,
             "elastic_index": "bili_videos_dev6",
-            "llm_config": "gpt",
+            "llm_config": "legacy",
         }
         new_envs = parser.update_app_envs(app_envs)
 
