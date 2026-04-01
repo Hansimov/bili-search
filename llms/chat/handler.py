@@ -168,6 +168,34 @@ def _has_partial_tool_prefix(text: str) -> bool:
     return False
 
 
+def _shared_prefix_len(left: str, right: str) -> int:
+    """Return the length of the shared prefix between *left* and *right*."""
+    limit = min(len(left), len(right))
+    idx = 0
+    while idx < limit and left[idx] == right[idx]:
+        idx += 1
+    return idx
+
+
+def _leading_duplicate_prefix_len(text: str, *candidates: str) -> int:
+    """Return the longest leading prefix in *text* duplicated by any candidate.
+
+    Used while streaming content alongside reasoning_content: many providers
+    start the content channel by echoing the same analysis text that is already
+    available in reasoning_content or was shown in earlier tool iterations.
+    Hiding that shared prefix lets us keep answer tokens incremental without
+    flashing duplicate analysis text into the answer area.
+    """
+    max_len = 0
+    for candidate in candidates:
+        if not candidate:
+            continue
+        prefix_len = _shared_prefix_len(text, candidate)
+        if prefix_len > max_len:
+            max_len = prefix_len
+    return max_len
+
+
 def _sanitize_content(content: str) -> str:
     """Strip leaked markup and echoed tool results from content.
 
@@ -1347,9 +1375,9 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             # Set to True once a tool command prefix is confirmed in the stream.
             tool_prefix_detected = False
             # Track whether the LLM already sent reasoning_content in this
-            # iteration.  When True, we suppress content streaming because
-            # the analysis text is already in the thinking section and will
-            # be retracted/discarded when tools are detected.
+            # iteration.  When True, we still stream answer content, but hide
+            # any leading prefix that duplicates the visible reasoning text or
+            # earlier tool-analysis text.
             has_reasoning = False
             accumulated_reasoning = ""
             iter_usage = {}
@@ -1393,17 +1421,19 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 if content_delta:
                     accumulated_content += content_delta
 
-                # When the LLM already sent reasoning_content for this
-                # iteration, suppress content streaming — the analysis
-                # text is already in the thinking section.  We still
-                # accumulate and run tool-prefix detection so we can
-                # parse tool commands after the iteration.
                 if content_delta and not tool_prefix_detected:
+                    hidden_prefix_len = _leading_duplicate_prefix_len(
+                        accumulated_content,
+                        accumulated_reasoning,
+                        *tool_analyses,
+                    )
+                    visible_start = max(content_sent_ptr, hidden_prefix_len)
+
                     # Always run tool-prefix detection on accumulated content
                     tool_start = _find_tool_command_start(accumulated_content)
                     if tool_start is not None:
-                        if not has_reasoning and tool_start > content_sent_ptr:
-                            safe_text = accumulated_content[content_sent_ptr:tool_start]
+                        if tool_start > visible_start:
+                            safe_text = accumulated_content[visible_start:tool_start]
                             if safe_text:
                                 yield self._format_stream_chunk(
                                     request_id=request_id,
@@ -1411,25 +1441,25 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                                 )
                                 content_sent_ptr = tool_start
                         tool_prefix_detected = True
-                    elif not has_reasoning:
+                    else:
                         # No full tool prefix yet.  If the tail of accumulated
                         # content could be the start of a tool tag, withhold
                         # the last _MAX_TOOL_PREFIX_LEN chars as a look-ahead
                         # guard; otherwise yield everything accumulated so far.
                         if _has_partial_tool_prefix(accumulated_content):
                             safe_end = max(
-                                content_sent_ptr,
+                                visible_start,
                                 len(accumulated_content) - _MAX_TOOL_PREFIX_LEN,
                             )
                         else:
                             safe_end = len(accumulated_content)
 
-                        if safe_end > content_sent_ptr:
+                        if safe_end > visible_start:
                             yield self._format_stream_chunk(
                                 request_id=request_id,
                                 delta={
                                     "content": accumulated_content[
-                                        content_sent_ptr:safe_end
+                                        visible_start:safe_end
                                     ]
                                 },
                             )
@@ -1593,35 +1623,16 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 # No tool commands: the final answer.
                 # Flush any content still in the look-ahead buffer, then
                 # finalize the stream with stats.
-                yielded_final_content = bool(
-                    not has_reasoning and content_sent_ptr > 0
+                hidden_prefix_len = _leading_duplicate_prefix_len(
+                    content,
+                    accumulated_reasoning,
+                    *tool_analyses,
                 )
-                if has_reasoning:
-                    # Content was buffered (reasoning was streamed instead).
-                    # Sanitize echoed results, then strip leading text that
-                    # duplicates this iteration's reasoning or a prior tool
-                    # analysis to avoid echoing thinking into the answer.
-                    final = _sanitize_content(content)
-                    # Strip leading text matching current reasoning
-                    reasoning_text = accumulated_reasoning.strip()
-                    if reasoning_text and final.startswith(reasoning_text):
-                        final = final[len(reasoning_text) :].lstrip("\n")
-                    # Strip leading text matching a prior tool analysis
-                    for ta in tool_analyses:
-                        if final.startswith(ta):
-                            final = final[len(ta) :].lstrip("\n")
-                            break
-                    if final:
-                        if _is_cancelled():
-                            yield "[DONE]"
-                            return
-                        yield self._format_stream_chunk(
-                            request_id=request_id,
-                            delta={"content": final},
-                        )
-                        yielded_final_content = True
-                elif content_sent_ptr < len(content):
-                    remaining = _sanitize_content(content[content_sent_ptr:])
+                yielded_final_content = content_sent_ptr > hidden_prefix_len
+                if content_sent_ptr < len(content):
+                    remaining = _sanitize_content(
+                        content[max(content_sent_ptr, hidden_prefix_len) :]
+                    )
                     if remaining:
                         if _is_cancelled():
                             yield "[DONE]"

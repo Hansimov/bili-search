@@ -222,6 +222,10 @@ def test_streaming_response():
     assert resp.status_code == 200
     # SSE response should have text/event-stream content type
     assert "text/event-stream" in resp.headers.get("content-type", "")
+    assert resp.headers.get("cache-control") == "no-cache, no-transform"
+    assert resp.headers.get("pragma") == "no-cache"
+    assert resp.headers.get("x-accel-buffering") == "no"
+    assert resp.headers.get("x-content-type-options") == "nosniff"
 
     logger.success("[PASS] streaming response")
 

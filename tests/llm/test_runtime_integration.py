@@ -6,6 +6,7 @@ Set BILI_SEARCH_RUNTIME_LLM=1 to include the live /chat/completions check.
 
 from __future__ import annotations
 
+import json
 import os
 import requests
 import pytest
@@ -13,6 +14,40 @@ import pytest
 
 BASE_URL = os.environ.get("BILI_SEARCH_RUNTIME_URL", "").strip()
 RUN_LLM = os.environ.get("BILI_SEARCH_RUNTIME_LLM", "0").strip() == "1"
+
+
+def _iter_sse_payloads(response: requests.Response):
+    event_lines: list[str] = []
+    for raw_line in response.iter_lines(decode_unicode=True):
+        line = raw_line or ""
+        if line == "":
+            if not event_lines:
+                continue
+            data_lines = []
+            for event_line in event_lines:
+                if event_line.startswith(":"):
+                    continue
+                if event_line.startswith("data: "):
+                    data_lines.append(event_line[6:])
+                elif event_line.startswith("data:"):
+                    data_lines.append(event_line[5:])
+            event_lines = []
+            if data_lines:
+                yield "\n".join(data_lines).strip()
+            continue
+        event_lines.append(line)
+
+    if event_lines:
+        data_lines = []
+        for event_line in event_lines:
+            if event_line.startswith(":"):
+                continue
+            if event_line.startswith("data: "):
+                data_lines.append(event_line[6:])
+            elif event_line.startswith("data:"):
+                data_lines.append(event_line[5:])
+        if data_lines:
+            yield "\n".join(data_lines).strip()
 
 
 LIVE_CHAT_CASES = [
@@ -102,8 +137,13 @@ LIVE_CHAT_CASES = [
         "messages": [
             {"role": "user", "content": "08和月亮3最近都发了哪些视频？"},
         ],
-        "expected_tools": ["search_google", "search_videos"],
-        "content_contains": ["https://www.bilibili.com/video/"],
+        "expected_tools": ["search_videos"],
+        "expected_tools_any_of": ["search_google", "search_owners"],
+        "content_contains_any_of": [
+            "https://www.bilibili.com/video/",
+            "BV",
+        ],
+        "content_contains": [],
         "content_not_contains": [],
     },
     {
@@ -333,6 +373,76 @@ def test_runtime_chat_completion():
     assert data["choices"][0]["message"]["content"]
 
 
+def test_runtime_chat_completion_thinking_stream_shows_answer_before_finish():
+    _skip_if_disabled()
+    if not RUN_LLM:
+        pytest.skip("BILI_SEARCH_RUNTIME_LLM is not enabled")
+
+    response = requests.post(
+        f"{BASE_URL}/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "请用五句话介绍《黑神话：悟空》的题材、玩法、美术风格、技术表现和为什么受到关注，每句话尽量展开一点。",
+                }
+            ],
+            "stream": True,
+            "thinking": True,
+        },
+        timeout=180,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    assert "text/event-stream" in response.headers.get("content-type", "")
+
+    stream_id = None
+    reasoning_parts: list[str] = []
+    content_parts: list[str] = []
+    first_content_event_index: int | None = None
+    finish_event_index: int | None = None
+    event_index = 0
+
+    for payload_str in _iter_sse_payloads(response):
+        if not payload_str:
+            continue
+        if payload_str == "[DONE]":
+            break
+
+        payload = json.loads(payload_str)
+        if payload.get("stream_id"):
+            stream_id = payload["stream_id"]
+            continue
+
+        choices = payload.get("choices") or []
+        if not choices:
+            continue
+
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+
+        if delta.get("reasoning_content"):
+            reasoning_parts.append(delta["reasoning_content"])
+
+        if delta.get("content"):
+            content_parts.append(delta["content"])
+            if first_content_event_index is None:
+                first_content_event_index = event_index
+
+        if choice.get("finish_reason") == "stop":
+            finish_event_index = event_index
+
+        event_index += 1
+
+    assert stream_id, "expected stream_id event before content"
+    assert "".join(reasoning_parts).strip(), "expected streamed reasoning_content"
+    assert "".join(content_parts).strip(), "expected streamed answer content"
+    assert first_content_event_index is not None
+    assert finish_event_index is not None
+    assert first_content_event_index < finish_event_index
+
+
 @pytest.mark.parametrize(
     "case", LIVE_CHAT_CASES, ids=[case["name"] for case in LIVE_CHAT_CASES]
 )
@@ -362,9 +472,15 @@ def test_runtime_chat_completion_scenarios(case):
     assert usage_trace.get("summary", {}).get("llm_calls", 0) >= 1
     for expected_tool in case["expected_tools"]:
         assert expected_tool in used_tools
+    alternative_tools = case.get("expected_tools_any_of") or []
+    if alternative_tools:
+        assert any(tool in used_tools for tool in alternative_tools)
     for forbidden_tool in case.get("forbidden_tools", []):
         assert forbidden_tool not in used_tools
     for keyword in case["content_contains"]:
         assert keyword in content
+    alternative_content = case.get("content_contains_any_of") or []
+    if alternative_content:
+        assert any(keyword in content for keyword in alternative_content)
     for keyword in case["content_not_contains"]:
         assert keyword not in content

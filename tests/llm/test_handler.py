@@ -2386,6 +2386,62 @@ def test_streaming_reasoning_content():
     logger.success("[PASS] streaming reasoning content")
 
 
+def test_streaming_reasoning_content_keeps_answer_incremental():
+    """reasoning_content should not force the answer to wait for stream end."""
+    logger.note("=" * 60)
+    logger.note("[TEST] streaming reasoning keeps answer incremental")
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat_stream.return_value = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {"reasoning_content": "让我思考一下这个问题..."},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"content": "答案"}, "finish_reason": None}]},
+            {"choices": [{"delta": {"content": "是"}, "finish_reason": None}]},
+            {"choices": [{"delta": {"content": "42。"}, "finish_reason": None}]},
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+        ]
+    )
+
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    chunks = list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "思考"}],
+            thinking=True,
+        )
+    )
+
+    reasoning_deltas = []
+    content_deltas = []
+    for chunk_str in chunks[:-1]:
+        chunk = json.loads(chunk_str)
+        delta = chunk["choices"][0]["delta"]
+        if "reasoning_content" in delta:
+            reasoning_deltas.append(delta["reasoning_content"])
+        if delta.get("content"):
+            content_deltas.append(delta["content"])
+
+    assert reasoning_deltas == ["让我思考一下这个问题..."]
+    assert content_deltas == ["答案", "是", "42。"]
+
+    logger.success("[PASS] streaming reasoning keeps answer incremental")
+
+
 def test_perf_stats_no_overlap_with_usage():
     """Test that perf_stats does not duplicate fields from usage."""
     logger.note("=" * 60)

@@ -452,6 +452,15 @@ class SearchApp:
     ):
         messages = [msg.model_dump() for msg in request.messages]
         if request.stream:
+            stream_headers = {
+                # Keep browser fetch() consumers in streaming mode and prevent
+                # intermediaries from buffering or transforming SSE chunks.
+                "Cache-Control": "no-cache, no-transform",
+                "Pragma": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Content-Type-Options": "nosniff",
+            }
             return EventSourceResponse(
                 self._stream_response(
                     messages,
@@ -461,6 +470,7 @@ class SearchApp:
                     http_request=http_request,
                 ),
                 media_type="text/event-stream",
+                headers=stream_headers,
             )
 
         return await asyncio.to_thread(
