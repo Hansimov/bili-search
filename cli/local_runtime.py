@@ -11,6 +11,7 @@ from cli.common import explicit_runtime_filters_from_args
 from cli.common import render_key_value_table, render_list_table
 from cli.common import resolve_runtime_envs_from_args
 from service.runtime import build_service_manager as _build_service_manager
+from service.runtime import build_local_service_snapshot
 from service.runtime import ensure_data_dir
 from service.runtime import fetch_health as _fetch_health
 from service.runtime import health_url as _health_url
@@ -20,6 +21,7 @@ from service.runtime import print_health_json as _print_json
 from service.runtime import run_foreground
 from service.runtime import runtime_env_vars
 from service.runtime import sanitize_log_file as _sanitize_log_file
+from service.runtime import service_files_for_envs
 
 
 def cmd_start(args):
@@ -35,15 +37,29 @@ def cmd_start(args):
         )
         return
 
-    service_manager = _build_service_manager(app_envs)
-    current = service_manager.status()
-    if current["status"] == "running":
-        logger.warn(f"  × Search app already running (PID: {current['pid']})")
+    snapshot = build_local_service_snapshot(app_envs, include_health=False)
+    if snapshot["runtime_state"] == "running":
+        logger.warn(f"  × Search app already running (PID: {snapshot['pid']})")
+        return
+    if snapshot["worker_status"] == "running" and not getattr(args, "kill", False):
+        logger.warn(
+            "  × Matching worker is still alive while manager state is stale — use --kill or stop first"
+        )
         return
 
+    service_manager = _build_service_manager(app_envs)
     ensure_data_dir()
     if getattr(args, "kill", False):
+        if snapshot["worker_status"] == "running":
+            logger.note(
+                f"> Cleaning up existing search worker on port {app_envs['port']} before startup ..."
+            )
         kill_processes_on_port(int(app_envs["port"]))
+        pid_file, _log_file = service_files_for_envs(app_envs)
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
     logger.note(f"> Starting search app on {app_envs['host']}:{app_envs['port']} ...")
     result = service_manager.start(
         host=app_envs["host"],
@@ -56,6 +72,21 @@ def cmd_start(args):
 
 def cmd_stop(args):
     app_envs = resolve_runtime_envs_from_args(args)
+    snapshot = build_local_service_snapshot(app_envs, include_health=False)
+    if (
+        snapshot["runtime_state"] == "stopped"
+        and snapshot["worker_status"] == "running"
+    ):
+        logger.note(f"> Stopping orphaned search worker on port {app_envs['port']} ...")
+        kill_processes_on_port(int(app_envs["port"]))
+        pid_file, _log_file = service_files_for_envs(app_envs)
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        logger.okay("  ✓ Orphaned search worker stopped")
+        return
+
     service_manager = _build_service_manager(app_envs)
     result = service_manager.stop()
     pid = result["pid"]
@@ -74,14 +105,33 @@ def cmd_restart(args):
     if getattr(args, "foreground", False):
         cmd_start(args)
         return
+    snapshot = build_local_service_snapshot(app_envs, include_health=False)
+
     service_manager = _build_service_manager(app_envs)
-    stop_result = service_manager.stop()
+    stop_result = None
+    if snapshot["runtime_state"] == "running":
+        stop_result = service_manager.stop()
+    elif snapshot["worker_status"] == "running":
+        logger.note(
+            f"> Cleaning up orphaned search worker on port {app_envs['port']} before restart ..."
+        )
+        kill_processes_on_port(int(app_envs["port"]))
+        pid_file, _log_file = service_files_for_envs(app_envs)
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     start_result = service_manager.start(
         host=app_envs["host"],
         port=app_envs["port"],
         extra_env=runtime_env_vars(app_envs),
     )
-    if stop_result["status"] in ("stopped", "stale_pid") and stop_result["pid"]:
+    if (
+        stop_result
+        and stop_result["status"] in ("stopped", "stale_pid")
+        and stop_result["pid"]
+    ):
         logger.note(f"> Stopping search app (PID: {stop_result['pid']}) ...")
         logger.okay("  ✓ Search app stopped")
     logger.note(f"> Starting search app on {app_envs['host']}:{app_envs['port']} ...")
@@ -93,47 +143,34 @@ def cmd_status(args):
     app_envs = resolve_runtime_envs_from_args(args)
     service_manager = _build_service_manager(app_envs)
     _sanitize_log_file(service_manager.log_file)
-    result = service_manager.status()
-    pid = result["pid"]
-    if result["status"] == "not_running":
-        print(
-            render_key_value_table(
-                {
-                    "Status": "not running (no PID file)",
-                    "Expected URL": _health_url(app_envs),
-                    "Expected Log": str(service_manager.log_file),
-                }
-            )
-        )
-        return
-    if result["status"] == "dead":
-        print(
-            render_key_value_table(
-                {
-                    "Status": f"dead (PID: {pid} not found)",
-                    "Cleaned Up": "stale PID file",
-                }
-            )
-        )
+    snapshot = build_local_service_snapshot(app_envs, health_timeout=args.timeout)
+    if getattr(args, "output", "table") == "json":
+        _print_json(snapshot)
         return
 
     health_value = "-"
-    try:
-        health = _fetch_health(app_envs, timeout=args.timeout)
-        health_value = json.dumps(health, ensure_ascii=False)
-    except Exception as exc:
-        health_value = f"FAILED: {exc}"
-    print(
-        render_key_value_table(
-            {
-                "Status": "running",
-                "PID": pid or "-",
-                "URL": _health_url(app_envs),
-                "Log": str(service_manager.log_file),
-                "Health": health_value,
-            }
-        )
-    )
+    if snapshot["health"] is not None:
+        health_value = json.dumps(snapshot["health"], ensure_ascii=False)
+    elif snapshot["health_error"]:
+        health_value = f"FAILED: {snapshot['health_error']}"
+
+    status_rows = {
+        "Status": snapshot["status"],
+        "Runtime": snapshot["runtime"],
+        "Source": snapshot["source"],
+        "Manager State": snapshot["manager_status"],
+        "Worker State": snapshot["worker_status"],
+        "Manager PID": snapshot["manager_pid"] or "-",
+        "Worker PID": snapshot["worker_pid"] or "-",
+        "Started At": snapshot["started_at"] or "-",
+        "Uptime": snapshot["uptime"] or "-",
+        "URL": snapshot["url"],
+        "Log": snapshot["log_file"],
+        "Health": health_value,
+    }
+    if snapshot["reason"]:
+        status_rows["Reason"] = snapshot["reason"]
+    print(render_key_value_table(status_rows))
 
 
 def cmd_logs(args):
@@ -167,14 +204,35 @@ def cmd_ps(args):
         logger.mesg("  No managed bili-search local services found")
         return
 
+    if getattr(args, "output", "table") == "json":
+        _print_json(instances)
+        return
+
     rows = [
         [
             item["port"],
             item["status"],
+            item["runtime"],
+            item["source"],
             item["started_at"] or "-",
+            item["uptime"] or "-",
             item["llm_config"],
-            item["pid"] or "-",
+            item["name"],
         ]
         for item in instances
     ]
-    print(render_list_table(["PORT", "STATUS", "STARTED_AT", "LLM", "PID"], rows))
+    print(
+        render_list_table(
+            [
+                "PORTS",
+                "STATUS",
+                "RUNTIME",
+                "SOURCE",
+                "STARTED_AT",
+                "UPTIME",
+                "LLM",
+                "NAME",
+            ],
+            rows,
+        )
+    )

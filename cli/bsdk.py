@@ -24,6 +24,7 @@ from docker.manager import list_bili_search_containers
 from docker.manager import read_container_app_state
 from docker.manager import run_base_build
 from service.runtime import ensure_process_timezone, fetch_health, health_url
+from service.runtime import list_managed_service_instances
 
 
 def add_docker_args(parser: argparse.ArgumentParser):
@@ -200,6 +201,14 @@ def _runtime(args) -> str:
     return str(getattr(args, "runtime", "docker") or "docker")
 
 
+def _json_output(args) -> bool:
+    return str(getattr(args, "output", "table") or "table") == "json"
+
+
+def _print_json_payload(payload):
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
 def _ensure_docker_runtime(args, command_name: str):
     if _runtime(args) != "docker":
         raise SystemExit(f"{command_name} only supports --runtime docker")
@@ -334,28 +343,61 @@ def _cmd_docker_status(args):
     except Exception as exc:
         health_value = f"FAILED: {exc}"
 
-    status_rows = {
-        "Container": container.get("name") or "-",
-        "Project": container.get("project_name") or "-",
-        "Service": container.get("service_name") or "-",
-        "Image": container.get("image") or "-",
-        "Status": container.get("status") or "-",
-        "Ports": container.get("ports") or str(app_envs["port"]),
-        "Network": container.get("network_mode") or "-",
-        "Container Started At": container.get("started_at") or "-",
-        "Container Uptime": container.get("uptime") or "-",
-        "Elastic Index": container.get("elastic_index") or "-",
-        "Elastic Env": container.get("elastic_env_name") or "-",
-        "LLM": container.get("llm_config") or "-",
-        "App Started At": app_state["started_at"] if app_state else "-",
-        "App Uptime": app_state["uptime"] if app_state else "-",
-        "App Restart Count": (
+    payload = {
+        "name": container.get("name") or "-",
+        "runtime": container.get("runtime") or "docker",
+        "source": container.get("source") or "workspace",
+        "project": container.get("project_name") or "-",
+        "service": container.get("service_name") or "-",
+        "image": container.get("image") or "-",
+        "status": container.get("status") or "-",
+        "runtime_state": (
+            "running"
+            if str(container.get("status") or "").startswith("running")
+            else "stopped"
+        ),
+        "ports": container.get("ports") or str(app_envs["port"]),
+        "port": int(app_envs["port"]),
+        "network": container.get("network_mode") or "-",
+        "started_at": container.get("started_at") or "-",
+        "uptime": container.get("uptime") or "-",
+        "elastic_index": container.get("elastic_index") or "-",
+        "elastic_env_name": container.get("elastic_env_name") or "-",
+        "llm_config": container.get("llm_config") or "-",
+        "app_started_at": app_state["started_at"] if app_state else "-",
+        "app_uptime": app_state["uptime"] if app_state else "-",
+        "app_restart_count": (
             app_state.get("restart_count")
             if app_state and app_state.get("restart_count") is not None
             else "-"
         ),
-        "Health URL": health_url(app_envs),
-        "Health": health_value,
+        "health_url": health_url(app_envs),
+        "health": health_value,
+    }
+    if _json_output(args):
+        _print_json_payload(payload)
+        return
+
+    status_rows = {
+        "Container": payload["name"],
+        "Runtime": payload["runtime"],
+        "Source": payload["source"],
+        "Project": payload["project"],
+        "Service": payload["service"],
+        "Image": payload["image"],
+        "Status": payload["status"],
+        "Ports": payload["ports"],
+        "Network": payload["network"],
+        "Container Started At": payload["started_at"],
+        "Container Uptime": payload["uptime"],
+        "Elastic Index": payload["elastic_index"],
+        "Elastic Env": payload["elastic_env_name"],
+        "LLM": payload["llm_config"],
+        "App Started At": payload["app_started_at"],
+        "App Uptime": payload["app_uptime"],
+        "App Restart Count": payload["app_restart_count"],
+        "Health URL": payload["health_url"],
+        "Health": payload["health"],
     }
     print(render_key_value_table(status_rows))
 
@@ -381,10 +423,16 @@ def _cmd_docker_ps(args):
         logger.mesg("  No bili-search docker containers found")
         return
 
+    if _json_output(args):
+        _print_json_payload(containers)
+        return
+
     rows = [
         [
             item.get("ports") or item["port"] or "-",
             item["status"],
+            item.get("runtime") or "docker",
+            item.get("source") or "workspace",
             item["started_at"] or "-",
             item.get("uptime") or "-",
             item["llm_config"] or "-",
@@ -394,7 +442,82 @@ def _cmd_docker_ps(args):
     ]
     print(
         render_list_table(
-            ["PORTS", "STATUS", "STARTED_AT", "UPTIME", "LLM", "NAME"], rows
+            [
+                "PORTS",
+                "STATUS",
+                "RUNTIME",
+                "SOURCE",
+                "STARTED_AT",
+                "UPTIME",
+                "LLM",
+                "NAME",
+            ],
+            rows,
+        )
+    )
+
+
+def _list_local_ps_entries(args):
+    return list_managed_service_instances(
+        filters=explicit_runtime_filters_from_args(args),
+        include_all=bool(getattr(args, "all", False)),
+    )
+
+
+def _list_docker_ps_entries(args):
+    return list_bili_search_containers(
+        filters=explicit_runtime_filters_from_args(args),
+        include_all=bool(getattr(args, "all", False)),
+    )
+
+
+def _sorted_ps_entries(entries: list[dict]) -> list[dict]:
+    runtime_rank = {"local": 0, "docker": 1}
+    return sorted(
+        entries,
+        key=lambda item: (
+            item.get("port") is None,
+            item.get("port") or 0,
+            runtime_rank.get(str(item.get("runtime") or ""), 99),
+            str(item.get("name") or ""),
+        ),
+    )
+
+
+def _render_ps_entries(args, entries: list[dict]):
+    if not entries:
+        logger.mesg("  No bili-search runtime instances found")
+        return
+    if _json_output(args):
+        _print_json_payload(entries)
+        return
+
+    rows = [
+        [
+            item.get("ports") or item.get("port") or "-",
+            item.get("status") or "-",
+            item.get("runtime") or "-",
+            item.get("source") or "-",
+            item.get("started_at") or "-",
+            item.get("uptime") or "-",
+            item.get("llm_config") or "-",
+            item.get("name") or "-",
+        ]
+        for item in entries
+    ]
+    print(
+        render_list_table(
+            [
+                "PORTS",
+                "STATUS",
+                "RUNTIME",
+                "SOURCE",
+                "STARTED_AT",
+                "UPTIME",
+                "LLM",
+                "NAME",
+            ],
+            rows,
         )
     )
 
@@ -456,9 +579,20 @@ def cmd_config(args):
 
 
 def cmd_ps(args):
-    if _runtime(args) == "local":
-        return local_runtime_cli.cmd_ps(args)
-    return _cmd_docker_ps(args)
+    runtime = _runtime(args)
+    if runtime == "local":
+        return _render_ps_entries(
+            args, _sorted_ps_entries(_list_local_ps_entries(args))
+        )
+    if runtime == "docker":
+        return _render_ps_entries(
+            args, _sorted_ps_entries(_list_docker_ps_entries(args))
+        )
+    local_entries = _list_local_ps_entries(args)
+    docker_entries = _list_docker_ps_entries(args)
+    return _render_ps_entries(
+        args, _sorted_ps_entries([*local_entries, *docker_entries])
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -570,6 +704,12 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument(
         "--timeout", type=float, default=3.0, help="Health check timeout"
     )
+    status_parser.add_argument(
+        "--output",
+        choices=["table", "json"],
+        default="table",
+        help="Render status output as table or JSON",
+    )
     status_parser.set_defaults(func=cmd_status)
 
     logs_parser = subparsers.add_parser("logs", help="Show local or docker logs")
@@ -606,13 +746,19 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["list"],
         help="List local services or docker containers with runtime metadata",
     )
-    add_runtime_mode_arg(ps_parser)
+    add_runtime_mode_arg(ps_parser, default="all", allow_all=True)
     add_shared_runtime_args(ps_parser)
     ps_parser.add_argument(
         "--all",
         action="store_true",
         default=False,
         help="Include stopped/exited containers",
+    )
+    ps_parser.add_argument(
+        "--output",
+        choices=["table", "json"],
+        default="table",
+        help="Render process list as table or JSON",
     )
     ps_parser.set_defaults(func=cmd_ps)
     return parser

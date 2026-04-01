@@ -172,6 +172,8 @@ def compose_env(args, app_envs: dict, settings: dict) -> dict[str, str]:
         {
             "DOCKER_BUILDKIT": "1",
             "COMPOSE_DOCKER_CLI_BUILD": "1",
+            "BSDK_RUNTIME": "docker",
+            "BSDK_SOURCE": str(getattr(args, "source", "workspace") or "workspace"),
             "BSDK_BUILD_CONTEXT": str(settings["build_context"]),
             "BSDK_DOCKERFILE": str(settings["dockerfile"]),
             "BSDK_CONFIGS_DIR": str(settings["configs_dir"]),
@@ -457,6 +459,8 @@ def list_bili_search_containers(
         container = {
             "id": (item.get("Id") or "")[:12],
             "name": name,
+            "runtime": env_map.get("BSDK_RUNTIME") or "docker",
+            "source": env_map.get("BSDK_SOURCE") or "workspace",
             "image": image,
             "project_name": labels.get("com.docker.compose.project", ""),
             "service_name": labels.get("com.docker.compose.service", ""),

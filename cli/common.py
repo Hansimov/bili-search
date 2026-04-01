@@ -74,6 +74,8 @@ def _colorize_table_content_lines(
         normalized = raw_value.strip().lower()
         if normalized.startswith("running"):
             return logstr.okay(segment)
+        if normalized.startswith(("degraded", "drifted", "orphaned", "warning")):
+            return logstr.warn(segment)
         if normalized.startswith(("starting", "created", "restarting", "pending")):
             return logstr.hint(segment)
         if normalized.startswith(
@@ -219,10 +221,14 @@ def add_runtime_mode_arg(
     parser: argparse.ArgumentParser,
     *,
     default: str = "docker",
+    allow_all: bool = False,
 ):
+    choices = ["local", "docker"]
+    if allow_all:
+        choices.append("all")
     parser.add_argument(
         "--runtime",
-        choices=["local", "docker"],
+        choices=choices,
         default=default,
         help="Run against the local service manager or docker runtime",
     )
