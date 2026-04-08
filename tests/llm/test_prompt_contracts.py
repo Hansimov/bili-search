@@ -1,10 +1,22 @@
-"""Contract tests for copilot prompts and tool definitions.
+"""Contract tests for the rewritten llms prompt/tool system."""
 
-These tests keep the prompt/tool orchestration structure stable as we iterate.
-"""
+from llms.protocol import FacetScore, IntentProfile
 
 
-def test_build_system_prompt_contains_core_orchestration_sections():
+def _video_intent() -> IntentProfile:
+    return IntentProfile(
+        raw_query="黑神话教程",
+        normalized_query="黑神话教程",
+        final_target="videos",
+        task_mode="lookup_entity",
+        motivation=[FacetScore("information", 0.9)],
+        expected_payoff=[FacetScore("clear_explanation", 0.8)],
+        explicit_entities=["黑神话"],
+        explicit_topics=["教程"],
+    )
+
+
+def test_build_system_prompt_contains_new_core_sections():
     from llms.prompts.copilot import build_system_prompt
 
     prompt = build_system_prompt(
@@ -13,151 +25,67 @@ def test_build_system_prompt_contains_core_orchestration_sections():
             "rerank_query_mode": "vwr",
             "supports_multi_query": True,
             "supports_google_search": True,
-            "relation_endpoints": [
-                "related_tokens_by_tokens",
-                "related_owners_by_tokens",
-                "related_videos_by_videos",
-            ],
-            "docs": ["search_syntax"],
-        }
+            "supports_owner_search": True,
+            "relation_endpoints": ["related_tokens_by_tokens"],
+        },
+        intent=_video_intent(),
     )
 
     for section in [
+        "[TOOL_OVERVIEW]",
+        "[INTENT_PROFILE]",
+        "[PROMPT_LOADING]",
+        "[RESULT_ISOLATION]",
         "[OUTPUT_PROTOCOL]",
-        "[TOOL_ROUTING]",
-        "[SEARCH_SCHEMA]",
-        "[SEMANTIC_RETRIEVAL]",
-        "[DSL_PLANNING]",
-        "[ANTI_PATTERNS]",
-        "[SEARCH_SYNTAX]",
-        "[EXAMPLES]",
+        "[ROUTE_VIDEOS]",
+        "[DSL_QUICKREF]",
     ]:
         assert section in prompt
 
 
-def test_build_system_prompt_examples_cover_major_tool_mix_scenarios():
+def test_build_system_prompt_mentions_internal_prompt_loading_and_result_isolation():
     from llms.prompts.copilot import build_system_prompt
 
-    prompt = build_system_prompt()
+    prompt = build_system_prompt(intent=_video_intent())
 
-    assert "[某工具] 教程" in prompt
-    assert "<search_videos queries=" "'" '["[某工具] 教程 q=vwr"]' "'" "/>" in prompt
-    assert "这个作者有哪些关联账号" in prompt
-    assert '<search_owners text="[目标作者]" mode="relation"/>' in prompt
-    assert (
-        "<search_videos queries="
-        "'"
-        '[":user=[目标作者] :date<=15d"]'
-        "'"
-        "/>" in prompt
-    )
-    assert '<search_google query="[目标产品] 最近有哪些官方更新"/>' in prompt
-    assert '<search_google query="[目标产品] [目标能力] 最近有哪些官方更新"/>' in prompt
-    assert (
-        '<search_google query="[模糊主题或深度意图] site:bilibili.com/video"/>'
-        in prompt
-    )
-    assert '<search_google query="[目标主题] site:space.bilibili.com"/>' in prompt
-    assert '<search_google query="[目标主题] site:bilibili.com/read"/>' in prompt
-    assert '<related_tokens_by_tokens text="[规范术语]" mode="auto"/>' in prompt
-    assert '<related_tokens_by_tokens text="[模糊术语]" mode="auto"/>' in prompt
-    assert "用户：来点[某种口语化风格内容]" in prompt
-    assert '<related_tokens_by_tokens text="[口语化标签]" mode="associate"/>' in prompt
-    assert '"[方向一] q=vwr", "[方向二] q=vwr", "[方向三] q=vwr"' in prompt
-    assert "[目标产品] q=vwr" in prompt
-    assert "对比一下[作者甲]和[某个简称作者]最近一个月谁更高产" in prompt
-    assert "[某个简称作者] 最近发了什么视频" in prompt
-    assert '<search_owners text="[模糊作者别名]" mode="name"/>' in prompt
-    assert '<search_owners text="[目标主题]" mode="topic"/>' in prompt
-    assert (
-        "<search_videos queries="
-        "'"
-        '[":user=[作者甲] :date<=30d", ":user=[作者乙] :date<=30d"]'
-        "'"
-        "/>" in prompt
-    )
-    assert "[目标产品]最近有哪些官方更新，B站上有没有相关解读" in prompt
-    assert "[模糊术语] 有什么入门教程？" in prompt
-    assert "这种东西在 B 站里一般怎么搜？先帮我摸一下关键词，再给我几条视频" in prompt
-    assert (
-        "我想找做[目标主题]的 B站UP主，但我不知道作者叫什么。先帮我摸几个作者。"
-        in prompt
-    )
-    assert "B站上有没有讲[目标主题]的专栏文章？" in prompt
-    assert "这个作者有哪些关联账号？那他的代表作有哪些？" in prompt
-    assert (
-        "<search_videos queries="
-        "'"
-        '[":user=[目标作者] 代表作 q=vwr"]'
-        "'"
-        "/>" in prompt
-    )
-
-
-def test_build_system_prompt_emphasizes_search_videos_as_primary_route():
-    from llms.prompts.copilot import build_system_prompt
-
-    prompt = build_system_prompt()
-
-    assert "大多数 B 站视频需求优先 `search_videos`" in prompt
-    assert (
-        "用户最终要视频、代表作、时间线、热门、教程、解读、对比时，默认先用它" in prompt
-    )
-    assert "不要直接写 `:user=原词`，先用 `search_owners` 确认作者" in prompt
-    assert "不要补写猜测的作者主页链接或空链接" in prompt
-
-
-def test_build_system_prompt_requires_entity_focused_video_queries():
-    from llms.prompts.copilot import build_system_prompt
-
-    prompt = build_system_prompt()
-
-    assert "query 是否只剩下关键实体和检索条件" in prompt
-    assert "尽量只保留关键实体和检索条件" in prompt or "只保留关键实体" in prompt
-    assert "如果仍像一句完整口语句子，说明你还没整理好，先不要搜索" in prompt
-
-
-def test_build_system_prompt_describes_unified_schema_and_semantic_iteration():
-    from llms.prompts.copilot import build_system_prompt
-
-    prompt = build_system_prompt()
-
-    assert "`final_target`: videos | owners | relations | external | mixed" in prompt
-    assert "`latent_intent`: 用户真正想看的风格、用途、场景、偏好、隐含主题" in prompt
-    assert "口语标签、评价词、黑话、泛化描述、噪声词" in prompt
-    assert "如果请求很短、很抽象、缺少稳定实体" in prompt
-    assert "先做 `related_tokens_by_tokens`" in prompt
-    assert "也可以先 `search_google` 做关键词启发" in prompt
-    assert "site:bilibili.com/video" in prompt
-    assert "site:space.bilibili.com" in prompt
-    assert "site:bilibili.com/read" in prompt
-    assert "把关键词写在前面、`site:` 放在最后" in prompt
-    assert "优先拆成多条 query 并行侦察，再补一条组合 query" in prompt
-    assert "优先并行输出多条 `search_videos` queries" in prompt
-    assert "第一轮结果不理想时，换一组更具体或更收敛的 query" in prompt
-    assert "如果 `final_target=mixed`，要把每个子目标分别完成" in prompt
-    assert "“代表作”默认不是“最近视频”" in prompt
-    assert "用户：来点擦边女" not in prompt
-    assert "用户：红警08最近发了什么视频" not in prompt
-    assert "用户：和影视飓风风格接近" not in prompt
+    assert "read_prompt_assets" in prompt
+    assert "inspect_tool_result" in prompt
+    assert "run_small_llm_task" in prompt
+    assert "原始工具结果会保留在独立结果仓库和前端工具面板中" in prompt
+    assert "默认只加载与当前任务最相关的 brief guidance" in prompt
+    assert "不要重复扩搜" in prompt
+    assert "若摘要里已有 BV、mid 或链接，就直接回答" in prompt
 
 
 def test_build_system_prompt_profile_tracks_new_sections():
     from llms.prompts.copilot import build_system_prompt_profile
 
-    profile = build_system_prompt_profile()
+    profile = build_system_prompt_profile(intent=_video_intent())
     section_chars = profile["section_chars"]
 
     assert "output_protocol" in section_chars
-    assert "tool_routing" in section_chars
-    assert "search_schema" in section_chars
-    assert "semantic_retrieval" in section_chars
-    assert "dsl_planning" in section_chars
-    assert "anti_patterns" in section_chars
+    assert "prompt_loading" in section_chars
+    assert "result_isolation" in section_chars
+    assert "tool_commands" in section_chars
+    assert "dsl_quickref" in section_chars
     assert profile["total_chars"] >= sum(section_chars.values())
 
 
-def test_tool_definitions_explain_routing_boundaries():
+def test_get_prompt_assets_payload_returns_requested_levels():
+    from llms.prompts.copilot import get_prompt_assets_payload
+
+    payload = get_prompt_assets_payload(
+        tool_names=["search_videos"],
+        levels=["detailed", "examples"],
+    )
+
+    assert payload["total_assets"] == 2
+    levels = {asset["level"] for asset in payload["assets"]}
+    assert levels == {"detailed", "examples"}
+    assert all(asset["tool_name"] == "search_videos" for asset in payload["assets"])
+
+
+def test_tool_definitions_include_internal_tools_when_requested():
     from llms.tools.defs import build_tool_definitions
 
     tools = build_tool_definitions(
@@ -167,59 +95,51 @@ def test_tool_definitions_explain_routing_boundaries():
             "supports_multi_query": True,
             "supports_owner_search": True,
             "supports_google_search": True,
-            "relation_endpoints": [
-                "related_tokens_by_tokens",
-            ],
+            "relation_endpoints": ["related_tokens_by_tokens"],
+            "docs": ["search_syntax"],
+        },
+        include_read_spec=True,
+        include_internal=True,
+    )
+    names = [tool["function"]["name"] for tool in tools]
+
+    assert "search_videos" in names
+    assert "search_google" in names
+    assert "search_owners" in names
+    assert "related_tokens_by_tokens" in names
+    assert "read_spec" in names
+    assert "read_prompt_assets" in names
+    assert "inspect_tool_result" in names
+    assert "run_small_llm_task" in names
+
+
+def test_tool_definitions_describe_new_routing_boundaries():
+    from llms.tools.defs import build_tool_definitions
+
+    tools = build_tool_definitions(
+        {
+            "default_query_mode": "wv",
+            "rerank_query_mode": "vwr",
+            "supports_multi_query": True,
+            "supports_owner_search": True,
+            "supports_google_search": True,
+            "relation_endpoints": ["related_tokens_by_tokens"],
         }
     )
     by_name = {tool["function"]["name"]: tool for tool in tools}
 
-    assert "主力工具和默认首选" in by_name["search_videos"]["function"]["description"]
-    assert "关键实体和检索条件" in by_name["search_videos"]["function"]["description"]
-    assert "不是用户原话整句" in by_name["search_videos"]["function"]["description"]
-    assert "账号关系问题" in by_name["search_videos"]["function"]["description"]
+    assert "默认终局工具" in by_name["search_videos"]["function"]["description"]
+    assert "DSL 搜索语句" in by_name["search_videos"]["function"]["description"]
     assert (
-        "抽象偏好、口语标签、黑话或隐含主题"
+        "作者名不稳时先 search_owners"
         in by_name["search_videos"]["function"]["description"]
     )
-    assert "缺稳定实体" in by_name["search_videos"]["function"]["description"]
-    assert (
-        "不要直接把原词写成 :user=xxx"
-        in by_name["search_videos"]["function"]["description"]
-    )
-    assert "官方更新和 B 站解读" in by_name["search_google"]["function"]["description"]
-    assert "关键词启发" in by_name["search_google"]["function"]["description"]
-    assert "site:bilibili.com" in by_name["search_google"]["function"]["description"]
-    assert (
-        "关键词写前面、`site:` 放在最后"
-        in by_name["search_google"]["function"]["description"]
-    )
-    assert (
-        "分别发起多条 query，再补一条组合 query"
-        in by_name["search_google"]["function"]["description"]
-    )
-    assert (
-        "site:space.bilibili.com" in by_name["search_google"]["function"]["description"]
-    )
+    assert "关键词侦察层" in by_name["search_google"]["function"]["description"]
     assert (
         "site:bilibili.com/video" in by_name["search_google"]["function"]["description"]
     )
+    assert "作者问题优先用它" in by_name["search_owners"]["function"]["description"]
     assert (
-        "site:bilibili.com/read" in by_name["search_google"]["function"]["description"]
-    )
-    assert "搜索作者/UP主" in by_name["search_owners"]["function"]["description"]
-    assert "关联账号/矩阵号" in by_name["search_owners"]["function"]["description"]
-    assert "最近发了什么视频" in by_name["search_owners"]["function"]["description"]
-    assert (
-        "抽象主题、风格偏好或模糊圈内标签"
-        in by_name["search_owners"]["function"]["description"]
-    )
-    assert "辅助工具" in by_name["related_tokens_by_tokens"]["function"]["description"]
-    assert (
-        "口语黑话、抽象标签、隐含主题的展开"
-        in by_name["related_tokens_by_tokens"]["function"]["description"]
-    )
-    assert (
-        "而不是直接发起 literal 视频搜索"
+        "抽象 query 的语义展开工具"
         in by_name["related_tokens_by_tokens"]["function"]["description"]
     )

@@ -44,7 +44,7 @@ def _create_handler(args):
     from elastics.relations import RelationsClient
     from elastics.videos.searcher_v2 import VideoSearcherV2
     from elastics.videos.explorer import VideoExplorer
-    from llms.llm_client import create_llm_client
+    from llms.config import create_model_clients
     from llms.tools.executor import create_search_service
     from llms.chat.handler import ChatHandler
 
@@ -88,13 +88,17 @@ def _create_handler(args):
             verbose=args.verbose,
         )
 
-    llm_client = create_llm_client(
-        model_config=args.llm_config,
+    model_registry, llm_clients = create_model_clients(
+        primary_large_config=args.llm_config,
         verbose=args.verbose,
     )
+    llm_client = llm_clients[model_registry.primary_large_config]
+    small_llm_client = llm_clients[model_registry.primary_small_config]
     handler = ChatHandler(
         llm_client=llm_client,
+        small_llm_client=small_llm_client,
         search_client=search_service,
+        model_registry=model_registry,
         temperature=args.temperature,
         verbose=args.verbose,
     )
@@ -107,6 +111,11 @@ def _create_handler(args):
         f"multi_query={capabilities.get('supports_multi_query', True)}, "
         f"google={capabilities.get('supports_google_search', False)}, "
         f"relations={','.join(capabilities.get('relation_endpoints', [])) or 'none'}"
+    )
+    logger.mesg(
+        "  Models: "
+        f"large={model_registry.primary_large_config} ({llm_client.model}), "
+        f"small={model_registry.primary_small_config} ({small_llm_client.model})"
     )
 
     return handler

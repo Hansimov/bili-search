@@ -11,10 +11,12 @@ Usage:
     python -m tests.llm.test_live_chat
     python -m tests.llm.test_live_chat --verbose
     python -m tests.llm.test_live_chat --test 3
+    python -m tests.llm.test_live_chat --test 3 --test 5 --test 14
     python -m tests.llm.test_live_chat --search-base-url http://127.0.0.1:21001
 """
 
 import argparse
+import json
 import re
 import sys
 import time
@@ -314,6 +316,24 @@ TEST_CASES = [
         ],
     },
     {
+        "id": 17,
+        "name": "abstract_mood_video_request",
+        "description": "抽象情绪需求，要求先语义展开或直接落成视频搜索，不应误走 Google。",
+        "messages": [
+            {"role": "user", "content": "来点让我开心的视频，别太长"},
+        ],
+        "checks": {
+            "expected_tools_any": ["related_tokens_by_tokens", "search_videos"],
+            "forbidden_tools": ["search_google"],
+            "content_pattern": r"bilibili\.com/video/BV",
+            "max_tokens": 16000,
+        },
+        "manual_review_focus": [
+            "是否把抽象需求落成更具体的视频结果",
+            "是否明显偏轻量、好进入的内容",
+        ],
+    },
+    {
         "id": 9,
         "name": "multi_hop_topic_drill",
         "description": "先找热门主题，再追到作者的其他热门视频，检验多跳链路。",
@@ -402,9 +422,20 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
         f"  Tokens: {total_tokens} (prompt={prompt_tokens}, cache_hit={cache_hit}, cache_miss={cache_miss})"
     )
     logger.mesg(f"  Tool events: {used_tools or ['<none>']}")
+    if verbose and tool_events:
+        for event in tool_events:
+            logger.mesg(f"  Iteration {event.get('iteration')}")
+            for call in event.get("calls") or []:
+                summary_preview = json.dumps(
+                    call.get("summary") or {}, ensure_ascii=False
+                )[:320]
+                logger.mesg(
+                    f"    - {call.get('type')} args={call.get('args')} summary={summary_preview}"
+                )
     if usage_trace:
         summary = usage_trace.get("summary", {})
         prompt_meta = usage_trace.get("prompt", {})
+        models = usage_trace.get("models", {})
         logger.mesg(
             "  Usage trace: "
             f"llm_calls={summary.get('llm_calls', 0)}, "
@@ -412,6 +443,13 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
             f"prompt_chars={prompt_meta.get('total_chars', 0)}, "
             f"peak_prompt_tokens={summary.get('peak_prompt_tokens', 0)}"
         )
+        if models:
+            logger.mesg(
+                "  Models: "
+                f"planner={models.get('planner', {}).get('config', '')}, "
+                f"response={models.get('response', {}).get('config', '')}, "
+                f"delegate={models.get('delegate', {}).get('config', '')}"
+            )
 
     failures = []
 
@@ -483,9 +521,16 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Live LLM Chat Tests")
     from configs.envs import LLM_CONFIG
+    from llms.config import DEFAULT_SMALL_MODEL_CONFIG
 
     parser.add_argument(
         "--llm-config", type=str, default=LLM_CONFIG, help="LLM config name"
+    )
+    parser.add_argument(
+        "--small-llm-config",
+        type=str,
+        default=DEFAULT_SMALL_MODEL_CONFIG,
+        help="Small-model config used for delegate tasks",
     )
     parser.add_argument(
         "--llm-timeout",
@@ -517,25 +562,25 @@ def main():
     parser.add_argument(
         "--test",
         type=int,
-        default=None,
-        help="Run a specific test ID",
+        action="append",
+        help="Run one or more specific test IDs",
     )
     args = parser.parse_args()
 
     from configs.envs import SEARCH_APP_ENVS
     from llms.chat.handler import ChatHandler
-    from llms.llm_client import create_llm_client
+    from llms.config import create_model_clients
     from llms.tools.executor import create_search_service
 
     elastic_index = args.elastic_index
-    elastic_env_name = args.elastic_env_name
+    elastic_env_name = args.elastic_env_name or "elastic_dev"
     if not elastic_index:
         idx = SEARCH_APP_ENVS.get("elastic_index", {})
         elastic_index = idx.get("prod", idx) if isinstance(idx, dict) else idx
 
     logger.note("> Initializing live test environment...")
     logger.mesg(
-        f"  LLM: {args.llm_config}, timeout={args.llm_timeout}s, search_base_url={args.search_base_url or '<local>'}, index={elastic_index}"
+        f"  LLM: large={args.llm_config}, small={args.small_llm_config}, timeout={args.llm_timeout}s, search_base_url={args.search_base_url or '<local>'}, index={elastic_index}, elastic_env={elastic_env_name}"
     )
 
     if args.search_base_url:
@@ -567,21 +612,30 @@ def main():
             verbose=args.verbose,
         )
 
+    model_registry, llm_clients = create_model_clients(
+        primary_large_config=args.llm_config,
+        primary_small_config=args.small_llm_config,
+        verbose=args.verbose,
+    )
+    large_client = llm_clients[model_registry.primary_large_config]
+    small_client = llm_clients[model_registry.primary_small_config]
+    large_client.timeout = args.llm_timeout
+    small_client.timeout = args.llm_timeout
+
     handler = ChatHandler(
-        llm_client=create_llm_client(
-            args.llm_config,
-            timeout=args.llm_timeout,
-            verbose=args.verbose,
-        ),
+        llm_client=large_client,
+        small_llm_client=small_client,
         search_client=search_client,
+        model_registry=model_registry,
         verbose=args.verbose,
     )
 
     cases = TEST_CASES
-    if args.test is not None:
-        cases = [case for case in TEST_CASES if case["id"] == args.test]
+    if args.test:
+        selected_ids = set(args.test)
+        cases = [case for case in TEST_CASES if case["id"] in selected_ids]
         if not cases:
-            logger.warn(f"× Unknown test ID: {args.test}")
+            logger.warn(f"× Unknown test ID(s): {args.test}")
             sys.exit(1)
 
     results = [run_test_case(handler, case, verbose=args.verbose) for case in cases]

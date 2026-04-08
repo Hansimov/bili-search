@@ -34,6 +34,10 @@ dependencies = [
 bsdk = "cli.bsdk:main"
 
 [tool.pytest.ini_options]
+norecursedirs = [
+    "logs",
+    "*.egg-info",
+]
 filterwarnings = [
     "ignore:pkg_resources is deprecated as an API\\..*:DeprecationWarning:zhconv\\.zhconv",
     "ignore:Deprecated call to `pkg_resources\\.declare_namespace\\('pyannote'\\)`.*:DeprecationWarning:pkg_resources",

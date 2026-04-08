@@ -1,13 +1,16 @@
 """Tool executor for dispatching and executing tool calls."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import re
 import requests
 import time
 
 from tclogger import logger
 
 from llms.llm_client import ToolCall
+from llms.protocol import ToolCallRequest
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
 from llms.tools.utils import (
@@ -23,6 +26,59 @@ from llms.tools.utils import (
 SPEC_REGISTRY = {
     "search_syntax": SEARCH_SYNTAX,
 }
+
+_ZERO_HIT_SOFT_TERMS = (
+    "解读",
+    "更新",
+    "最新",
+    "官方",
+    "公告",
+    "release notes",
+    "release",
+    "changelog",
+)
+
+
+def _normalize_query_spaces(query: str) -> str:
+    return re.sub(r"\s+", " ", str(query or "")).strip()
+
+
+def _strip_soft_filters(query: str) -> str:
+    stripped = re.sub(r":date[<>=!]*[^\s]+", " ", str(query or ""))
+    return _normalize_query_spaces(stripped)
+
+
+def _drop_soft_terms(query: str) -> str:
+    softened = str(query or "")
+    for term in _ZERO_HIT_SOFT_TERMS:
+        softened = re.sub(re.escape(term), " ", softened, flags=re.IGNORECASE)
+    return _normalize_query_spaces(softened)
+
+
+def _build_zero_hit_fallback_queries(query: str) -> list[str]:
+    base = _normalize_query_spaces(query)
+    candidates: list[str] = []
+
+    stripped_filters = _strip_soft_filters(base)
+    softened = _drop_soft_terms(stripped_filters)
+
+    for candidate in [stripped_filters, softened]:
+        candidate_text = _normalize_query_spaces(candidate)
+        if (
+            candidate_text
+            and candidate_text != base
+            and candidate_text not in candidates
+        ):
+            candidates.append(candidate_text)
+        if (
+            candidate_text
+            and candidate_text != base
+            and "q=" not in candidate_text
+            and f"{candidate_text} q=vwr" not in candidates
+        ):
+            candidates.append(f"{candidate_text} q=vwr")
+
+    return candidates
 
 
 class SearchService:
@@ -475,7 +531,11 @@ class ToolExecutor:
         capabilities["supports_google_search"] = self._is_google_available()
         return capabilities
 
-    def get_tool_definitions(self, include_read_spec: bool = False) -> list[dict]:
+    def get_tool_definitions(
+        self,
+        include_read_spec: bool = False,
+        include_internal: bool = False,
+    ) -> list[dict]:
         tool_def_getter = getattr(self.search_client, "tool_definitions", None)
         if callable(tool_def_getter):
             try:
@@ -487,7 +547,14 @@ class ToolExecutor:
         return build_tool_definitions(
             self.get_search_capabilities(),
             include_read_spec=include_read_spec,
+            include_internal=include_internal,
         )
+
+    def execute_request(self, request: ToolCallRequest) -> dict:
+        handler = self._handlers.get(request.name)
+        if handler is None:
+            return {"error": f"Unknown tool: {request.name}"}
+        return handler(request.arguments)
 
     def execute(self, tool_call: ToolCall) -> dict:
         """Execute a single tool call and return a tool result message.
@@ -504,12 +571,8 @@ class ToolExecutor:
         if self.verbose:
             logger.note(f"> Tool call: {name}({args})")
 
-        handler = self._handlers.get(name)
-        if handler is None:
-            logger.warn(f"× Unknown tool: {name}")
-            result = {"error": f"Unknown tool: {name}"}
-        else:
-            result = handler(args)
+        request = ToolCallRequest(id=tool_call.id, name=name, arguments=args)
+        result = self.execute_request(request)
 
         result_str = json.dumps(result, ensure_ascii=False)
 
@@ -540,10 +603,12 @@ class ToolExecutor:
         if not queries:
             return {"error": "Missing queries parameter", "results": []}
 
-        results = []
-        for query in queries:
-            result = self._search_single_query(query)
-            results.append(result)
+        max_workers = min(max(len(queries), 1), 4)
+        if max_workers == 1:
+            results = [self._search_single_query(query) for query in queries]
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(self._search_single_query, queries))
 
         # For single query, return flat result for backward compatibility
         if len(results) == 1:
@@ -556,24 +621,52 @@ class ToolExecutor:
         if not query:
             return {"query": query, "error": "Empty query", "hits": [], "total_hits": 0}
 
-        explore_result = self.search_client.explore(query=query)
+        def run_query(query_text: str) -> dict:
+            explore_result = self.search_client.explore(query=query_text)
 
-        if "error" in explore_result:
+            if "error" in explore_result:
+                return {
+                    "query": query_text,
+                    "error": explore_result["error"],
+                    "hits": [],
+                    "total_hits": 0,
+                }
+
+            hits, total_hits = extract_explore_hits(explore_result)
+            formatted_hits = format_hits_for_llm(hits, max_hits=self.max_results)
+
             return {
-                "query": query,
-                "error": explore_result["error"],
-                "hits": [],
-                "total_hits": 0,
+                "query": query_text,
+                "total_hits": total_hits,
+                "hits": formatted_hits,
             }
 
-        hits, total_hits = extract_explore_hits(explore_result)
-        formatted_hits = format_hits_for_llm(hits, max_hits=self.max_results)
+        primary_result = run_query(query)
+        if primary_result.get("error"):
+            return primary_result
+        if (
+            primary_result.get("hits")
+            or int(primary_result.get("total_hits", 0) or 0) > 0
+        ):
+            return primary_result
 
-        return {
-            "query": query,
-            "total_hits": total_hits,
-            "hits": formatted_hits,
-        }
+        for fallback_query in _build_zero_hit_fallback_queries(query):
+            fallback_result = run_query(fallback_query)
+            if fallback_result.get("error"):
+                continue
+            if (
+                fallback_result.get("hits")
+                or int(fallback_result.get("total_hits", 0) or 0) > 0
+            ):
+                return {
+                    "query": query,
+                    "resolved_query": fallback_query,
+                    "fallback_applied": True,
+                    "total_hits": fallback_result.get("total_hits", 0),
+                    "hits": fallback_result.get("hits", []),
+                }
+
+        return primary_result
 
     def _search_google(self, args: dict) -> dict:
         query = str(args.get("query", "")).strip()

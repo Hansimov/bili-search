@@ -110,11 +110,16 @@ class SearchApp:
             logger.hint("> Chat handler disabled (no llm_config)")
             return
 
+        from llms.config import create_model_clients
         from llms.chat.handler import ChatHandler
-        from llms.llm_client import create_llm_client
         from llms.tools.executor import SearchService
 
-        self.llm_client = create_llm_client(model_config=llm_config, verbose=True)
+        self.model_registry, llm_clients = create_model_clients(
+            primary_large_config=llm_config,
+            verbose=True,
+        )
+        self.llm_client = llm_clients[self.model_registry.primary_large_config]
+        self.small_llm_client = llm_clients[self.model_registry.primary_small_config]
         search_service = SearchService(
             video_searcher=self.video_searcher,
             video_explorer=self.video_explorer,
@@ -124,10 +129,16 @@ class SearchApp:
         )
         self.chat_handler = ChatHandler(
             llm_client=self.llm_client,
+            small_llm_client=self.small_llm_client,
             search_client=search_service,
+            model_registry=self.model_registry,
             verbose=True,
         )
-        logger.okay(f"  Chat: LLM={llm_config} ({self.llm_client.model})")
+        logger.okay(
+            "  Chat: "
+            f"large={self.model_registry.primary_large_config} ({self.llm_client.model}), "
+            f"small={self.model_registry.primary_small_config} ({self.small_llm_client.model})"
+        )
 
     def init_embed_client(self):
         logger.hint("> Initializing embed client with keepalive...")
@@ -580,6 +591,7 @@ class SearchApp:
         }
         if self.chat_handler is not None:
             result["llm_model"] = self.llm_client.model
+            result["llm_models"] = self.model_registry.public_dict()
         return result
 
     async def capabilities(self):
@@ -614,6 +626,7 @@ class SearchApp:
         }
         if self.chat_handler is not None:
             result["llm_model"] = self.llm_client.model
+            result["llm_models"] = self.model_registry.public_dict()
         return result
 
 

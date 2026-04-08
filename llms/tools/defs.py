@@ -38,20 +38,12 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
         "function": {
             "name": "search_videos",
             "description": (
-                "搜索B站视频。这是大多数 B 站问题的主力工具和默认首选。"
+                "搜索 B 站视频。这是默认终局工具，适合视频、代表作、时间线、热门、教程和解读。"
                 f"{multi_query_text}"
-                "搜索语句必须是规范 DSL 搜索语句，而不是用户原话整句。"
-                "queries 中优先保留关键实体和检索条件，例如作品名、人物名、作者名、产品名、主题词、时间窗、热度条件。"
-                "不要把寒暄、能力提问、纯口语追问、助词、功能词、账号关系问题直接塞进 queries。"
-                "搜索语句支持关键词和DSL过滤器。"
-                "过滤器以冒号':'开头，格式为 :<字段><操作符><值>。"
-                "常用过滤器：:view>=1w(播放量) :date<=7d(日期) :user=名字(UP主) :t>5m(时长)。"
-                "如果用户最终要的是具体视频清单、时间线、代表作、热视频、教程/攻略/解读，优先使用本工具。"
-                "如果用户给的是抽象偏好、口语标签、黑话或隐含主题，应先把它翻译成更具体、更可检索的主题词，再并行构造多条 queries。"
-                "如果请求很短、很抽象、缺稳定实体，不应只保留一条 literal query 直接搜索；优先先做 related_tokens_by_tokens 语义展开，再回到本工具。"
-                "如果用户问的是作者资料/关联账号/矩阵号，这通常不是本工具的首选。"
-                "如果用户给出的作者词像简称、别名片段、混合中英数字昵称，或者你不确定它到底是不是作者名，"
-                "不要直接把原词写成 :user=xxx，先调用 search_owners 再回到本工具。"
+                "queries 必须是整理后的 DSL 搜索语句，而不是用户原话整句。"
+                "优先保留关键实体、主题词、作者、时间窗、热度和时长条件。"
+                "作者关系问题通常不该直接用它；作者名不稳时先 search_owners。"
+                "抽象偏好、口语标签、黑话或 vibe 请求，通常先 related_tokens_by_tokens 再回到本工具。"
                 f"搜索模式：默认q={default_mode}（泛搜热门），精确主题匹配用q={rerank_mode}。"
                 f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']。"
             ),
@@ -79,18 +71,12 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
 def build_search_google_tool(capabilities: dict | None = None) -> dict:
     caps = _merge_capabilities(capabilities)
     description = (
-        "搜索 Google 网页结果。它有三类主要用途："
-        "1) 官网、公告、release notes、跨站事实核对；"
-        "2) 当用户需求很模糊、属于深度意图、黑话、口语标签，或者 B 站内暂时缺稳定关键词时，"
-        "先做关键词启发，"
-        "先用它摸到更像样的主题词、产品名、作者名、标题写法或搜索短语；"
-        "3) 当目标仍然是 B 站内容时，可直接在 query 中使用 Google `site:` 语法做辅助站内搜索。"
+        "搜索 Google 网页结果。适合官网、公告、release notes、跨站事实核对，"
+        "也适合作为 B 站内容检索前的关键词侦察层。"
         "最重要的 site 范围包括：`site:bilibili.com`(全 B 站)、`site:space.bilibili.com`(用户页)、"
         "`site:bilibili.com/video`(视频)、`site:bilibili.com/read`(文章/专栏)。"
         "使用 `site:` 时，默认把关键词写前面、`site:` 放在最后。"
-        "如果要侦察多个并列关键词、别名或候选实体，优先分别发起多条 query，再补一条组合 query。"
-        "如果最终目标仍是 B 站视频、作者或 B 站文章，search_google 通常只是侦察/启发层；"
-        "拿到线索后通常还应继续调用 search_videos 或 search_owners，而不是停在 Google 结果层。"
+        "若最终目标仍是 B 站视频、作者或专栏，search_google 通常只是侦察/启发层，拿到线索后应继续调用终局工具。"
         "query 应整理成紧凑搜索短语，可直接包含 site 过滤，不要把整句口语原样塞进去。"
         "如果用户同时要官方更新和 B 站解读，通常应与 search_videos 同轮配合使用。"
     )
@@ -133,13 +119,10 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
         "function": {
             "name": "search_owners",
             "description": (
-                "搜索作者/UP主。用于作者名查找、别名补全、作者候选发现、关联账号/矩阵号/相近作者扩展。"
-                "当用户目标是找作者本身，而不是直接列视频时，优先使用本工具。"
-                "若用户明确提到作者名、简称、缩写、混合中英数字昵称，优先用它。"
-                "当用户想看‘某作者最近发了什么视频’但作者词本身不够稳定时，也应先用它确认作者，再继续 search_videos。"
-                "若用户在问谁在做某个主题内容，也优先用它，而不是把作者问题硬转成视频搜索。"
-                "当用户给的是抽象主题、风格偏好或模糊圈内标签时，也可以用 mode=topic 先摸到相关创作者集合。"
-                "mode=relation 适合关联账号、矩阵号、主副号、类似作者；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
+                "搜索作者/UP主。适合作者名查找、别名补全、作者候选发现、关联账号、矩阵号和相近作者扩展。"
+                "作者问题优先用它，不要机械转成视频搜索。"
+                "作者最近视频这类问题，如果作者词不稳，应先用它确认作者，再继续 search_videos。"
+                "mode=relation 适合关联账号/矩阵号；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
             ),
             "parameters": {
                 "type": "object",
@@ -194,9 +177,8 @@ def build_read_spec_tool(capabilities: dict | None = None) -> dict:
         "function": {
             "name": "read_spec",
             "description": (
-                "读取搜索引擎的完整规格文档。"
-                "系统提示中已包含常用DSL语法速查，大部分查询不需要调用此工具。"
-                "仅在需要查阅完整语法细节（如范围过滤器、搜索模式等高级用法）时使用。"
+                "读取搜索引擎的完整规格文档。默认提示只给出精简 DSL 速查；"
+                "只有在需要查阅完整语法细节时才调用。"
                 f"可用文档: {', '.join(docs)}"
             ),
             "parameters": {
@@ -218,6 +200,7 @@ def build_tool_definitions(
     capabilities: dict | None = None,
     *,
     include_read_spec: bool = False,
+    include_internal: bool = False,
 ) -> list[dict]:
     tools = [
         build_search_videos_tool(capabilities),
@@ -233,7 +216,7 @@ def build_tool_definitions(
         tools.append(
             build_relation_tool(
                 "related_tokens_by_tokens",
-                "辅助工具。基于给定文本寻找相关 token 补全、主题词、语义联想或纠错候选。适用于别名、错写、简称，也适用于口语黑话、抽象标签、隐含主题的展开。对于很短、抽象、缺稳定实体的请求，通常应先调用它做语义展开，而不是直接发起 literal 视频搜索。它不是最终结果来源；拿到候选后通常还应继续调用 search_videos 或 search_owners。",
+                "抽象 query 的语义展开工具。基于给定文本寻找相关 token 补全、主题词、语义联想或纠错候选。适用于别名、错写、简称，也适用于口语黑话、抽象标签、隐含主题的展开。对于很短、抽象、缺稳定实体的请求，通常应先调用它做语义展开，而不是直接发起 literal 视频搜索。它不是最终结果来源；拿到候选后通常还应继续调用 search_videos 或 search_owners。",
                 {
                     "text": {"type": "string", "description": "输入文本"},
                     "mode": {
@@ -258,6 +241,77 @@ def build_tool_definitions(
         )
     if include_read_spec:
         tools.append(build_read_spec_tool(capabilities))
+    if include_internal:
+        tools.extend(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_prompt_assets",
+                        "description": "按 tool_name / levels 读取分级提示资产。只有 brief guidance 不够时才调用。",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "tool_names": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "levels": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": ["brief", "detailed", "examples"],
+                                    },
+                                },
+                                "asset_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "inspect_tool_result",
+                        "description": "根据 result_ids 读取更细的工具结果摘要，不直接把整批原始结果塞进上下文。",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "result_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "focus": {"type": "string"},
+                                "max_items": {"type": "integer", "default": 5},
+                            },
+                            "required": ["result_ids"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "run_small_llm_task",
+                        "description": "把窄任务委托给小模型，可并行执行，适合关键词整理、结果压缩、候选对比和证据归纳。",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "task": {"type": "string"},
+                                "context": {"type": "string"},
+                                "result_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "output_format": {"type": "string"},
+                            },
+                            "required": ["task"],
+                        },
+                    },
+                },
+            ]
+        )
     return tools
 
 

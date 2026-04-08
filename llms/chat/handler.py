@@ -1,19 +1,14 @@
-"""Chat handler with prompt-based tool orchestration.
+"""Compatibility wrapper around the new multi-model chat orchestrator.
 
-Orchestrates the conversation between user, LLM, and search tools
-using inline XML commands in the LLM's response text (no function calling).
+The current flow is:
+    1. Build an intent profile from the latest conversation turn.
+    2. Select graded prompt assets and the planner/response/delegate models.
+    3. Run function calling when supported, with XML tool commands kept as fallback.
+    4. Keep raw tool results in a result store and only expose summaries/result_ids
+         back to the model unless it explicitly asks for more detail.
 
-The flow:
-  1. Send user message + system prompt → LLM responds with analysis + tool commands
-  2. Parse tool commands from response → execute searches → inject results
-  3. Send results back → LLM generates final answer
-  4. Stream final answer to client
-
-Token optimization strategy:
-    - Each iteration re-sends the full conversation, so fewer iterations = fewer tokens
-    - Compact DSL syntax is inline in the system prompt
-    - Tool results use compact JSON (no indent)
-    - If max iterations exhausted, inject a nudge message to force content generation
+This module mainly preserves the existing API and SSE response shape while the
+real planning and tool loop lives in llms.chat.orchestrator.
 """
 
 import json
@@ -26,6 +21,7 @@ from tclogger import logger, dt_to_str
 from typing import Generator, Optional
 
 from llms.chat.owner_resolution import OwnerResolutionMixin
+from llms.chat.orchestrator import ChatOrchestrator
 from llms.chat.tool_planning import ToolPlanningMixin
 from llms.llm_client import LLMClient, ChatResponse, create_llm_client
 from llms.tools.executor import ToolExecutor
@@ -274,6 +270,8 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         self,
         llm_client: LLMClient,
         search_client,
+        small_llm_client: LLMClient | None = None,
+        model_registry=None,
         max_iterations: int = MAX_TOOL_ITERATIONS,
         max_tool_results: int = 15,
         temperature: float = None,
@@ -289,6 +287,16 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         self.temperature = temperature
         self.verbose = verbose
         self.search_capabilities = self.tool_executor.get_search_capabilities()
+        self.small_llm_client = small_llm_client or llm_client
+        self.model_registry = model_registry
+        self.orchestrator = ChatOrchestrator(
+            llm_client=llm_client,
+            small_llm_client=self.small_llm_client,
+            tool_executor=self.tool_executor,
+            model_registry=model_registry,
+            temperature=temperature,
+            verbose=verbose,
+        )
 
     def _chat_interruptible(
         self,
@@ -400,12 +408,10 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _parse_tool_commands(content: str) -> list[dict]:
-        """Parse inline tool commands from LLM response text.
+        """Parse legacy inline XML tool commands from model output.
 
-        Scans for supported XML tool tags.
-
-        Returns:
-            List of command dicts with 'type' and 'args' keys.
+        This is kept for compatibility and preflight inspection. The primary
+        path now uses function calling via the orchestrator.
         """
         commands = []
         for match in _GENERIC_TOOL_CMD_RE.finditer(content):
@@ -950,8 +956,8 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
     ) -> dict:
         """Handle a chat completion request (non-streaming).
 
-        Uses prompt-based tool commands: the LLM outputs XML tool commands
-        inline in its response text, which are parsed and executed.
+        The wrapper delegates planning/tool execution to ChatOrchestrator,
+        then formats the result into the existing OpenAI-compatible payload.
 
         Args:
             messages: User-provided conversation messages.
@@ -964,225 +970,23 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         """
         start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        temp = temperature if temperature is not None else self.temperature
-        enable_thinking_override = True if thinking else None
-
-        # Resolve max_iterations: explicit override > thinking default > normal default
-        resolved_iterations = max_iterations
-        if resolved_iterations is None:
-            resolved_iterations = (
-                MAX_TOOL_ITERATIONS_THINKING if thinking else self.max_iterations
-            )
-
-        full_messages = self._build_messages(messages, thinking=thinking)
-        prompt_profile = build_system_prompt_profile(self.search_capabilities)
-        if thinking:
-            prompt_profile = {
-                **prompt_profile,
-                "thinking_prompt_chars": len(_THINKING_PROMPT),
-                "total_chars": prompt_profile.get("total_chars", 0)
-                + len(_THINKING_PROMPT),
-            }
-        total_usage = {}
-        last_usage = {}  # Track last LLM call's usage for prompt_tokens
-        tool_events = []
-        usage_trace_entries = []
-        executed_signatures: set[str] = set()
-        final_content = None
-        last_tool_results: list[dict] | None = None
-        owner_result_context: dict[str, dict] = {}
-        duplicate_tool_nudged = False
-
-        preflight_commands = self._preflight_tool_commands(full_messages)
-        if preflight_commands:
-            preflight_commands, _ = self._dedupe_commands(preflight_commands, executed_signatures)
-            tool_names = [cmd["type"] for cmd in preflight_commands]
-            tool_events.append(
-                {"iteration": 0, "tools": tool_names, "preflight": True}
-            )
-            results = self._execute_tool_commands(preflight_commands)
-            last_tool_results = results
-            owner_result_context = self._merge_owner_result_context(
-                owner_result_context,
-                results,
-            )
-            self._record_executed_command_signatures(preflight_commands, executed_signatures)
-            full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
-            self._prune_old_results_messages(full_messages)
-            full_messages.append(
-                {
-                    "role": "user",
-                    "content": self._format_results_message(results),
-                }
-            )
-            if self.verbose:
-                logger.warn(
-                    f"> Preflight tool execution: {', '.join(tool_names)}"
-                )
-
-        for iteration in range(resolved_iterations):
-            if self.verbose:
-                logger.hint(f"> Iteration {iteration + 1}/{resolved_iterations}")
-
-            response = self.llm_client.chat(
-                messages=full_messages,
-                temperature=temp,
-            )
-            self._accumulate_usage(total_usage, response.usage)
-            last_usage = response.usage
-
-            content = response.content or ""
-            owner_result_scope = self._resolve_owner_result_scope(
-                owner_result_context,
-                last_tool_results,
-            )
-            commands = self._parse_tool_commands(content)
-            commands = self._plan_tool_commands(
-                commands,
-                full_messages,
-                last_tool_results,
-                owner_result_scope,
-            )
-            commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
-            usage_trace_entries.append(
-                self._build_usage_trace_entry(
-                    phase="tool_loop",
-                    iteration=iteration + 1,
-                    messages=full_messages,
-                    usage=response.usage,
-                    commands=commands,
-                )
-            )
-
-            if duplicate_count and not commands:
-                full_messages.append({"role": "assistant", "content": content})
-                if duplicate_tool_nudged:
-                    logger.warn(
-                        "> Duplicate tool commands repeated after nudge, forcing content generation"
-                    )
-                    full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-                    response = self.llm_client.chat(
-                        messages=full_messages,
-                        temperature=temp,
-                    )
-                    self._accumulate_usage(total_usage, response.usage)
-                    last_usage = response.usage
-                    usage_trace_entries.append(
-                        self._build_usage_trace_entry(
-                            phase="forced_content",
-                            iteration=iteration + 2,
-                            messages=full_messages,
-                            usage=response.usage,
-                            commands=[],
-                        )
-                    )
-                    final_content = response.content or final_content
-                    break
-
-                duplicate_tool_nudged = True
-                full_messages.append({"role": "user", "content": _DUPLICATE_TOOL_NUDGE})
-                if self.verbose:
-                    logger.warn(
-                        "> Suppressed duplicate tool commands and requested direct answer"
-                    )
-                continue
-
-            if commands:
-                duplicate_tool_nudged = False
-                tool_names = [cmd["type"] for cmd in commands]
-                tool_events.append({"iteration": iteration + 1, "tools": tool_names})
-                results = self._execute_tool_commands(commands)
-                last_tool_results = results
-                owner_result_context = self._merge_owner_result_context(
-                    owner_result_context,
-                    results,
-                )
-                self._record_executed_command_signatures(commands, executed_signatures)
-                full_messages.append({"role": "assistant", "content": content})
-                self._prune_old_results_messages(full_messages)
-                full_messages.append(
-                    {
-                        "role": "user",
-                        "content": self._format_results_message(results),
-                    }
-                )
-                continue
-            else:
-                final_content = content
-                break
-        else:
-            # Max iterations exhausted — nudge LLM to produce content
-            logger.warn(
-                f"× Tool loop hit {resolved_iterations} iterations, "
-                "forcing content generation"
-            )
-            full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-            response = self.llm_client.chat(
-                messages=full_messages,
-                temperature=temp,
-                enable_thinking=enable_thinking_override,
-            )
-            self._accumulate_usage(total_usage, response.usage)
-            last_usage = response.usage
-            usage_trace_entries.append(
-                self._build_usage_trace_entry(
-                    phase="forced_content",
-                    iteration=resolved_iterations + 1,
-                    messages=full_messages,
-                    usage=response.usage,
-                    commands=[],
-                )
-            )
-            final_content = (
-                response.content or final_content or "[抱歉，处理超时，请重试]"
-            )
-
-        final_content = _sanitize_content(final_content)
-        if not final_content and self._has_tool_results_context(full_messages):
-            full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-            response = self.llm_client.chat(
-                messages=full_messages,
-                temperature=temp,
-                enable_thinking=enable_thinking_override,
-            )
-            self._accumulate_usage(total_usage, response.usage)
-            last_usage = response.usage
-            usage_trace_entries.append(
-                self._build_usage_trace_entry(
-                    phase="empty_content_retry",
-                    iteration=len(usage_trace_entries) + 1,
-                    messages=full_messages,
-                    usage=response.usage,
-                    commands=[],
-                )
-            )
-            final_content = _sanitize_content(response.content or "")
-        if not final_content:
-            final_content = _EMPTY_CONTENT_FALLBACK
-        final_content = self._ensure_author_timeline_context(full_messages, final_content)
-
-        elapsed_seconds = time.perf_counter() - start_time
-        elapsed_ms = round(elapsed_seconds * 1000, 1)
-        if self.verbose:
-            logger.success(f"> Chat completed in {elapsed_ms}ms")
-
-        # Use last call's prompt_tokens + accumulated completion_tokens
-        final_usage = self._merge_final_usage(total_usage, last_usage)
-        normalized_usage = self._normalize_usage(final_usage)
-        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
-        usage_trace = self._finalize_usage_trace(
-            prompt_profile,
-            usage_trace_entries,
-            preflight_commands=preflight_commands,
+        result = self.orchestrator.run(
+            messages=messages,
+            thinking=thinking,
+            max_iterations=max_iterations,
         )
+        final_content = self._ensure_author_timeline_context(messages, result.content)
+        elapsed_seconds = time.perf_counter() - start_time
+        normalized_usage = self._normalize_usage(result.usage)
+        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
 
         return self._format_completion(
             request_id=request_id,
             content=final_content,
             usage=normalized_usage,
             perf_stats=perf_stats,
-            tool_events=tool_events,
-            usage_trace=usage_trace,
+            tool_events=result.tool_events,
+            usage_trace=result.usage_trace,
             thinking=thinking,
         )
 
@@ -1196,607 +1000,89 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        All content (reasoning + final answer) is streamed in real-time:
-
-        Phase 1: Tool loop — for each iteration, both reasoning_content AND
-        content are yielded to the client token-by-token as they arrive.
-        A look-ahead buffer detects tool command prefixes in content and stops
-        streaming content to the client when a tool call is imminent (so the
-        LLM's XML tags are never shown to the user).  When an iteration ends
-        with tool commands, a ``retract_content`` event is sent to ask the
-        frontend to clear any analysis text that was shown, because it belongs
-        in the thinking section instead.  The full analysis (tool commands
-        stripped) is then forwarded as ``reasoning_content`` so it appears in
-        the thinking section.  Tool events are emitted and the conversation
-        continues to the next iteration.
-
-        When an iteration produces no tool commands, the final answer was
-        already streamed in real-time.  Any look-ahead-buffered tail content
-        is flushed, stats are computed, and the stream finishes.
-
-        Phase 2: Reached only when max iterations are exhausted.  A nudge
-        message forces content generation via real streaming (chat_stream).
-
-        Token usage reporting: prompt_tokens reflects only the LAST LLM call
-        (= actual context size for the final answer), while completion_tokens
-        is accumulated across all iterations (= total output generated).
-
-        Args:
-            messages: User-provided conversation messages.
-            temperature: Override temperature for this request.
-            thinking: Enable thinking mode for deeper analysis.
-            max_iterations: Override max iterations for this request.
-            cancelled: Optional threading.Event for cooperative cancellation.
-                When set, the generator will stop as soon as possible.
-
-        Yields:
-            SSE data strings (JSON-encoded chunks or "[DONE]").
+        The new orchestrator computes the tool plan and final answer first,
+        then this wrapper emits SSE chunks for tool events and answer content
+        while preserving the existing OpenAI-compatible stream shape.
         """
         start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        temp = temperature if temperature is not None else self.temperature
-        enable_thinking_override = True if thinking else None
 
-        # Resolve max_iterations: explicit override > thinking default > normal default
-        resolved_iterations = max_iterations
-        if resolved_iterations is None:
-            resolved_iterations = (
-                MAX_TOOL_ITERATIONS_THINKING if thinking else self.max_iterations
-            )
-
-        full_messages = self._build_messages(messages, thinking=thinking)
-        prompt_profile = build_system_prompt_profile(self.search_capabilities)
-        if thinking:
-            prompt_profile = {
-                **prompt_profile,
-                "thinking_prompt_chars": len(_THINKING_PROMPT),
-                "total_chars": prompt_profile.get("total_chars", 0)
-                + len(_THINKING_PROMPT),
-            }
-        total_usage = {}
-        last_usage = {}  # Track last LLM call's usage for prompt_tokens
-        usage_trace_entries = []
-        executed_signatures: set[str] = set()
-        tool_events_summary: list[dict] = []
-        last_tool_results: list[dict] | None = None
-        owner_result_context: dict[str, dict] = {}
-        preflight_commands = self._preflight_tool_commands(full_messages)
-
-        # First chunk: role + metadata
         yield self._format_stream_chunk(
             request_id=request_id,
             delta={"role": "assistant", "content": ""},
             thinking=thinking,
         )
 
-        if preflight_commands:
-            preflight_commands, _ = self._dedupe_commands(
-                preflight_commands,
-                executed_signatures,
-            )
-            if preflight_commands:
-                tool_names = [cmd["type"] for cmd in preflight_commands]
-                tool_events_summary.append(
-                    {"iteration": 0, "tools": tool_names, "preflight": True}
-                )
-
-                pending_calls = [
-                    {
-                        "type": cmd["type"],
-                        "args": cmd.get("args", {}),
-                        "status": "pending",
-                    }
-                    for cmd in preflight_commands
-                ]
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={},
-                    tool_events=[
-                        {
-                            "iteration": 0,
-                            "tools": tool_names,
-                            "calls": pending_calls,
-                            "preflight": True,
-                        }
-                    ],
-                )
-
-                results = self._execute_tool_commands(preflight_commands)
-                last_tool_results = results
-                owner_result_context = self._merge_owner_result_context(
-                    owner_result_context,
-                    results,
-                )
-                self._record_executed_command_signatures(
-                    preflight_commands,
-                    executed_signatures,
-                )
-
-                completed_calls = [
-                    {
-                        "type": result["type"],
-                        "args": result["args"],
-                        "status": "completed",
-                        "result": result["result"],
-                    }
-                    for result in results
-                ]
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={},
-                    tool_events=[
-                        {
-                            "iteration": 0,
-                            "tools": tool_names,
-                            "calls": completed_calls,
-                            "preflight": True,
-                        }
-                    ],
-                )
-
-                full_messages.append({"role": "assistant", "content": "我先检索相关结果。"})
-                self._prune_old_results_messages(full_messages)
-                full_messages.append(
-                    {
-                        "role": "user",
-                        "content": self._format_results_message(results),
-                    }
-                )
-
-        def _is_cancelled() -> bool:
-            return cancelled is not None and cancelled.is_set()
-
-        # --- Phase 1: Prompt-based tool loop with real-time reasoning streaming ---
-        # Each iteration streams reasoning_content to the client in real-time
-        # while accumulating content locally for tool command parsing.
-        had_tools = False  # Track if any tool commands were executed
-        # Collect analysis texts from tool-calling iterations so we can
-        # strip duplicate leading text from the final answer.
-        tool_analyses: list[str] = []
-        duplicate_tool_nudged = False
-
-        for iteration in range(resolved_iterations):
-            if _is_cancelled():
-                logger.warn("> Chat cancelled before iteration")
-                yield "[DONE]"
-                return
-
-            if self.verbose:
-                logger.hint(f"> Stream iteration {iteration + 1}/{resolved_iterations}")
-
-            # Stream from LLM: yield reasoning_content AND content in real-time.
-            # Content is also accumulated so tool commands can be parsed after
-            # the full response.  A look-ahead buffer prevents tool command tags
-            # from being sent to the client.
-            accumulated_content = ""
-            # Pointer into accumulated_content: how many chars have already been
-            # sent to the client as content deltas.
-            content_sent_ptr = 0
-            # Set to True once a tool command prefix is confirmed in the stream.
-            tool_prefix_detected = False
-            # Track whether the LLM already sent reasoning_content in this
-            # iteration.  When True, we still stream answer content, but hide
-            # any leading prefix that duplicates the visible reasoning text or
-            # earlier tool-analysis text.
-            has_reasoning = False
-            accumulated_reasoning = ""
-            iter_usage = {}
-            llm_finish_reason = None
-
-            for chunk in self.llm_client.chat_stream(
-                messages=full_messages,
-                temperature=temp,
-                enable_thinking=enable_thinking_override,
-            ):
-                if _is_cancelled():
-                    logger.warn("> Chat cancelled during LLM streaming")
-                    yield "[DONE]"
-                    return
-
-                choices = chunk.get("choices", [])
-                if not choices:
-                    if chunk.get("usage"):
-                        iter_usage = chunk["usage"]
-                    continue
-
-                delta = choices[0].get("delta", {})
-
-                # Track the LLM provider's finish_reason (e.g. "length" for truncation)
-                chunk_finish = choices[0].get("finish_reason")
-                if chunk_finish:
-                    llm_finish_reason = chunk_finish
-
-                # Stream reasoning_content to frontend in real-time (unchanged)
-                reasoning_delta = delta.get("reasoning_content", "")
-                if reasoning_delta:
-                    has_reasoning = True
-                    accumulated_reasoning += reasoning_delta
-                    yield self._format_stream_chunk(
-                        request_id=request_id,
-                        delta={"reasoning_content": reasoning_delta},
-                    )
-
-                # Accumulate content and stream it in real-time with look-ahead.
-                content_delta = delta.get("content") or ""
-                if content_delta:
-                    accumulated_content += content_delta
-
-                if content_delta and not tool_prefix_detected:
-                    hidden_prefix_len = _leading_duplicate_prefix_len(
-                        accumulated_content,
-                        accumulated_reasoning,
-                        *tool_analyses,
-                    )
-                    visible_start = max(content_sent_ptr, hidden_prefix_len)
-
-                    # Always run tool-prefix detection on accumulated content
-                    tool_start = _find_tool_command_start(accumulated_content)
-                    if tool_start is not None:
-                        if tool_start > visible_start:
-                            safe_text = accumulated_content[visible_start:tool_start]
-                            if safe_text:
-                                yield self._format_stream_chunk(
-                                    request_id=request_id,
-                                    delta={"content": safe_text},
-                                )
-                                content_sent_ptr = tool_start
-                        tool_prefix_detected = True
-                    else:
-                        # No full tool prefix yet.  If the tail of accumulated
-                        # content could be the start of a tool tag, withhold
-                        # the last _MAX_TOOL_PREFIX_LEN chars as a look-ahead
-                        # guard; otherwise yield everything accumulated so far.
-                        if _has_partial_tool_prefix(accumulated_content):
-                            safe_end = max(
-                                visible_start,
-                                len(accumulated_content) - _MAX_TOOL_PREFIX_LEN,
-                            )
-                        else:
-                            safe_end = len(accumulated_content)
-
-                        if safe_end > visible_start:
-                            yield self._format_stream_chunk(
-                                request_id=request_id,
-                                delta={
-                                    "content": accumulated_content[
-                                        visible_start:safe_end
-                                    ]
-                                },
-                            )
-                            content_sent_ptr = safe_end
-
-                if chunk.get("usage"):
-                    iter_usage = chunk["usage"]
-
-            if _is_cancelled():
-                logger.warn("> Chat cancelled after LLM streaming")
-                yield "[DONE]"
-                return
-
-            self._accumulate_usage(total_usage, iter_usage)
-            last_usage = iter_usage
-
-            content = accumulated_content
-            owner_result_scope = self._resolve_owner_result_scope(
-                owner_result_context,
-                last_tool_results,
-            )
-            commands = self._parse_tool_commands(content)
-            commands = self._plan_tool_commands(
-                commands,
-                full_messages,
-                last_tool_results,
-                owner_result_scope,
-            )
-            commands, duplicate_count = self._dedupe_commands(commands, executed_signatures)
-            usage_trace_entries.append(
-                self._build_usage_trace_entry(
-                    phase="tool_loop",
-                    iteration=iteration + 1,
-                    messages=full_messages,
-                    usage=iter_usage,
-                    commands=commands,
-                )
-            )
-
-            if duplicate_count and not commands:
-                full_messages.append({"role": "assistant", "content": content})
-                if duplicate_tool_nudged:
-                    logger.warn(
-                        "> Duplicate tool commands repeated after nudge, forcing content generation"
-                    )
-                    full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-                    break
-
-                duplicate_tool_nudged = True
-                full_messages.append({"role": "user", "content": _DUPLICATE_TOOL_NUDGE})
-                if self.verbose:
-                    logger.warn(
-                        "> Suppressed duplicate tool commands and requested direct answer"
-                    )
-                continue
-
-            if commands:
-                duplicate_tool_nudged = False
-                had_tools = True
-
-                if _is_cancelled():
-                    logger.warn("> Chat cancelled after LLM response")
-                    yield "[DONE]"
-                    return
-
-                # Derive the analysis text (tool commands stripped) for
-                # bookkeeping regardless of whether we re-send it.
-                analysis = self._strip_tool_commands(content).strip()
-                if analysis:
-                    tool_analyses.append(analysis)
-
-                if has_reasoning:
-                    # The LLM already streamed reasoning_content for this
-                    # iteration — the analysis is already in the thinking
-                    # section.  No retract or re-send needed.
-                    pass
-                else:
-                    # No reasoning was sent; the analysis was streamed as
-                    # content.  Retract it and re-send as reasoning.
-                    if content_sent_ptr > 0:
-                        yield self._format_stream_chunk(
-                            request_id=request_id,
-                            delta={"retract_content": True},
-                        )
-                    if analysis:
-                        yield self._format_stream_chunk(
-                            request_id=request_id,
-                            delta={"reasoning_content": analysis},
-                        )
-
-                # Yield pending tool calls (before execution)
-                tool_names = [cmd["type"] for cmd in commands]
-                tool_events_summary.append(
-                    {"iteration": iteration + 1, "tools": tool_names}
-                )
-                pending_calls = [
-                    {
-                        "type": cmd["type"],
-                        "args": cmd["args"],
-                        "status": "pending",
-                    }
-                    for cmd in commands
-                ]
-                tool_event_pending = {
-                    "iteration": iteration + 1,
-                    "tools": tool_names,
-                    "calls": pending_calls,
-                }
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={},
-                    tool_events=[tool_event_pending],
-                )
-
-                if _is_cancelled():
-                    logger.warn("> Chat cancelled before tool execution")
-                    yield "[DONE]"
-                    return
-
-                # Execute commands
-                results = self._execute_tool_commands(commands)
-                last_tool_results = results
-                owner_result_context = self._merge_owner_result_context(
-                    owner_result_context,
-                    results,
-                )
-                self._record_executed_command_signatures(commands, executed_signatures)
-
-                # Yield completed tool calls (after execution)
-                completed_calls = [
-                    {
-                        "type": r["type"],
-                        "args": r["args"],
-                        "status": "completed",
-                        "result": r["result"],
-                    }
-                    for r in results
-                ]
-                tool_event_completed = {
-                    "iteration": iteration + 1,
-                    "tools": tool_names,
-                    "calls": completed_calls,
-                }
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={},
-                    tool_events=[tool_event_completed],
-                )
-
-                # Inject assistant message + results into conversation
-                full_messages.append({"role": "assistant", "content": content})
-                self._prune_old_results_messages(full_messages)
-                full_messages.append(
-                    {
-                        "role": "user",
-                        "content": self._format_results_message(results),
-                    }
-                )
-                continue
-            else:
-                # No tool commands: the final answer.
-                # Flush any content still in the look-ahead buffer, then
-                # finalize the stream with stats.
-                hidden_prefix_len = _leading_duplicate_prefix_len(
-                    content,
-                    accumulated_reasoning,
-                    *tool_analyses,
-                )
-                yielded_final_content = content_sent_ptr > hidden_prefix_len
-                if content_sent_ptr < len(content):
-                    remaining = _sanitize_content(
-                        content[max(content_sent_ptr, hidden_prefix_len) :]
-                    )
-                    if remaining:
-                        if _is_cancelled():
-                            yield "[DONE]"
-                            return
-                        yield self._format_stream_chunk(
-                            request_id=request_id,
-                            delta={"content": remaining},
-                        )
-                        yielded_final_content = True
-
-                if not yielded_final_content and self._has_tool_results_context(full_messages):
-                    if self.verbose:
-                        logger.warn(
-                            "> Final answer was empty after tool results, forcing content generation"
-                        )
-                    full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-                    break
-
-                # Finalize: compute stats and yield final chunk
-                final_usage = self._merge_final_usage(total_usage, last_usage)
-                normalized_usage = self._normalize_usage(final_usage)
-                elapsed_seconds = time.perf_counter() - start_time
-                perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
-                usage_trace = self._finalize_usage_trace(
-                    prompt_profile,
-                    usage_trace_entries,
-                    preflight_commands=[],
-                )
-                if self.verbose:
-                    elapsed_ms = round(elapsed_seconds * 1000, 1)
-                    logger.success(f"> Stream completed in {elapsed_ms}ms")
-
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={},
-                    finish_reason="stop",
-                    usage=normalized_usage,
-                    perf_stats=perf_stats,
-                    usage_trace=usage_trace,
-                )
-                yield "[DONE]"
-                return
-        else:
-            # Max iterations exhausted — force content generation
-            logger.warn(
-                f"× Tool loop hit {resolved_iterations} iterations, "
-                "forcing content generation"
-            )
-            full_messages.append({"role": "user", "content": _FORCE_CONTENT_NUDGE})
-
-        # --- Phase 2: Real streaming for forced content generation ---
-        # Only reached when max iterations exhausted. Normal tool→answer flow
-        # completes in Phase 1 above.
-
-        if _is_cancelled():
-            logger.warn("> Chat cancelled before Phase 2")
-            yield "[DONE]"
-            return
-
-        if self.verbose:
-            logger.note("> Phase 2: real streaming for forced content")
-
-        final_content = ""
-        stream_usage = {}
-        phase2_finish_reason = None
-        for chunk in self.llm_client.chat_stream(
-            messages=full_messages,
-            temperature=temp,
-            enable_thinking=enable_thinking_override,
-        ):
-            if _is_cancelled():
-                logger.warn("> Chat cancelled during Phase 2 streaming")
-                break
-
-            choices = chunk.get("choices", [])
-            if not choices:
-                if chunk.get("usage"):
-                    stream_usage = chunk["usage"]
-                continue
-            delta = choices[0].get("delta", {})
-            chunk_finish = choices[0].get("finish_reason")
-            if chunk_finish:
-                phase2_finish_reason = chunk_finish
-
-            reasoning_delta = delta.get("reasoning_content", "")
-            if reasoning_delta:
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={"reasoning_content": reasoning_delta},
-                )
-
-            content_delta = delta.get("content", "")
-            if content_delta:
-                final_content += content_delta
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={"content": content_delta},
-                )
-
-            if chunk.get("usage"):
-                stream_usage = chunk["usage"]
-
-        if stream_usage:
-            self._accumulate_usage(total_usage, stream_usage)
-            last_usage = stream_usage
-            usage_trace_entries.append(
-                self._build_usage_trace_entry(
-                    phase="forced_content",
-                    iteration=resolved_iterations + 1,
-                    messages=full_messages,
-                    usage=stream_usage,
-                    commands=[],
-                )
-            )
-
-        if not _sanitize_content(final_content):
-            final_content = _EMPTY_CONTENT_FALLBACK
-            yield self._format_stream_chunk(
-                request_id=request_id,
-                delta={"content": final_content},
-            )
-
-        final_usage = self._merge_final_usage(total_usage, last_usage)
-        normalized_usage = self._normalize_usage(final_usage)
-        elapsed_seconds = time.perf_counter() - start_time
-        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
-        usage_trace = self._finalize_usage_trace(
-            prompt_profile,
-            usage_trace_entries,
-            preflight_commands=[],
+        result = self.orchestrator.run(
+            messages=messages,
+            thinking=thinking,
+            max_iterations=max_iterations,
+            cancelled=cancelled,
         )
 
-        if self.verbose:
-            elapsed_ms = round(elapsed_seconds * 1000, 1)
-            logger.success(f"> Stream completed in {elapsed_ms}ms")
+        for tool_event in result.tool_events:
+            yield self._format_stream_chunk(
+                request_id=request_id,
+                delta={},
+                tool_events=[tool_event],
+            )
 
+        final_content = self._ensure_author_timeline_context(messages, result.content)
+        for chunk in self._chunk_text_for_stream(final_content):
+            yield self._format_stream_chunk(
+                request_id=request_id,
+                delta={"content": chunk},
+            )
+
+        normalized_usage = self._normalize_usage(result.usage)
+        elapsed_seconds = time.perf_counter() - start_time
+        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
         yield self._format_stream_chunk(
             request_id=request_id,
             delta={},
             finish_reason="stop",
             usage=normalized_usage,
             perf_stats=perf_stats,
-            usage_trace=usage_trace,
+            usage_trace=result.usage_trace,
+            thinking=thinking,
         )
-
         yield "[DONE]"
+
+    @staticmethod
+    def _chunk_text_for_stream(text: str, chunk_size: int = 96) -> list[str]:
+        content = str(text or "")
+        if not content:
+            return []
+        chunks = []
+        buffer = ""
+        for paragraph in re.split(r"(\n\n)", content):
+            if not paragraph:
+                continue
+            if len(buffer) + len(paragraph) <= chunk_size:
+                buffer += paragraph
+                continue
+            if buffer:
+                chunks.append(buffer)
+                buffer = ""
+            if len(paragraph) <= chunk_size:
+                buffer = paragraph
+                continue
+            for start in range(0, len(paragraph), chunk_size):
+                chunks.append(paragraph[start : start + chunk_size])
+        if buffer:
+            chunks.append(buffer)
+        return chunks
 
     def _build_messages(
         self, user_messages: list[dict], thinking: bool = False
     ) -> list[dict]:
-        """Prepend system prompt to user messages.
-
-        When thinking=True, prepends an additional thinking prompt
-        to encourage deeper analysis.
-        """
-        system_content = build_system_prompt(capabilities=self.search_capabilities)
+        system_content = build_system_prompt(
+            capabilities=self.search_capabilities,
+            messages=user_messages,
+        )
         if thinking:
             system_content = _THINKING_PROMPT + system_content
-
-        system_message = {
-            "role": "system",
-            "content": system_content,
-        }
-        return [system_message] + list(user_messages)
+        return [{"role": "system", "content": system_content}] + list(user_messages)
 
     @staticmethod
     def _merge_final_usage(total_usage: dict, last_usage: dict) -> dict:
