@@ -272,6 +272,217 @@ def test_thinking_mode_prefixes_prompt_and_sets_flag():
     assert "[思考模式]" in sent_messages[0]["content"]
 
 
+def test_pre_execution_nudge_replans_owner_discovery_instead_of_exiting_loop():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_function_call_response(
+            ToolCall(
+                id="call_video_wrong_1",
+                name="search_videos",
+                arguments={"queries": ["黑神话悟空 q=vwr"]},
+            )
+        ),
+        make_function_call_response(
+            ToolCall(
+                id="call_owner_1",
+                name="search_owners",
+                arguments={"text": "黑神话悟空", "mode": "topic"},
+            )
+        ),
+        make_content_response("这里是黑神话悟空相关 UP 主。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.capabilities.return_value = {
+        "service_name": "runtime-search",
+        "service_type": "remote",
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": False,
+        "relation_endpoints": ["related_owners_by_tokens"],
+        "available_endpoints": ["/explore", "/search_owners"],
+        "docs": ["search_syntax"],
+    }
+    mock_search.related_owners_by_tokens.return_value = {
+        "text": "黑神话悟空",
+        "owners": [{"mid": 1, "name": "作者1", "score": 100}],
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}]
+    )
+
+    assert assistant_content(result) == "这里是黑神话悟空相关 UP 主。"
+    assert mock_search.explore.call_count == 0
+    mock_search.related_owners_by_tokens.assert_called_once_with(
+        text="黑神话悟空", size=8
+    )
+    assert mock_llm.chat.call_count == 3
+
+
+def test_owner_request_without_text_uses_intent_topic_seed():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_function_call_response(
+            ToolCall(
+                id="call_owner_implicit_1",
+                name="search_owners",
+                arguments={"mode": "topic"},
+            )
+        ),
+        make_content_response("这里是黑神话悟空相关 UP 主。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.capabilities.return_value = {
+        "service_name": "runtime-search",
+        "service_type": "remote",
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": False,
+        "relation_endpoints": ["related_owners_by_tokens"],
+        "available_endpoints": ["/explore", "/search_owners"],
+        "docs": ["search_syntax"],
+    }
+    mock_search.related_owners_by_tokens.return_value = {
+        "text": "黑神话悟空",
+        "owners": [{"mid": 1, "name": "作者1", "score": 100}],
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}]
+    )
+
+    assert assistant_content(result) == "这里是黑神话悟空相关 UP 主。"
+    mock_search.related_owners_by_tokens.assert_called_once_with(
+        text="黑神话悟空", size=8
+    )
+
+
+def test_owner_request_with_query_alias_rewrites_to_relation_lookup():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_function_call_response(
+            ToolCall(
+                id="call_owner_query_alias_1",
+                name="search_owners",
+                arguments={"query": "黑神话悟空", "mode": "topic", "num": 5},
+            )
+        ),
+        make_content_response("这里是黑神话悟空相关 UP 主。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.capabilities.return_value = {
+        "service_name": "runtime-search",
+        "service_type": "remote",
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": False,
+        "relation_endpoints": ["related_owners_by_tokens"],
+        "available_endpoints": ["/explore", "/search_owners"],
+        "docs": ["search_syntax"],
+    }
+    mock_search.related_owners_by_tokens.return_value = {
+        "text": "黑神话悟空",
+        "owners": [{"mid": 1, "name": "作者1", "score": 100}],
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}]
+    )
+
+    assert assistant_content(result) == "这里是黑神话悟空相关 UP 主。"
+    mock_search.related_owners_by_tokens.assert_called_once_with(
+        text="黑神话悟空", size=5
+    )
+
+
+def test_alias_like_video_query_rewrites_to_known_canonical_term():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_function_call_response(
+            ToolCall(
+                id="call_alias_tokens_1",
+                name="related_tokens_by_tokens",
+                arguments={"text": "康夫UI", "mode": "correction"},
+            )
+        ),
+        make_function_call_response(
+            ToolCall(
+                id="call_alias_video_1",
+                name="search_videos",
+                arguments={"queries": ["康夫UI 教程 :date>=2024"]},
+            )
+        ),
+        make_content_response("ComfyUI 入门可看 https://www.bilibili.com/video/BV1abc"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.capabilities.return_value = {
+        "service_name": "runtime-search",
+        "service_type": "remote",
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": False,
+        "relation_endpoints": ["related_tokens_by_tokens"],
+        "available_endpoints": ["/explore", "/search_owners"],
+        "docs": ["search_syntax"],
+    }
+    mock_search.related_tokens_by_tokens.return_value = {
+        "text": "康夫UI",
+        "options": [],
+    }
+    mock_search.explore.return_value = {
+        "query": "ComfyUI 教程 :date>=2024",
+        "status": "finished",
+        "data": [
+            {
+                "step": 0,
+                "name": "most_relevant_search",
+                "output": {
+                    "hits": [
+                        {
+                            "bvid": "BV1abc",
+                            "title": "ComfyUI 入门教程",
+                            "owner": {"mid": 100, "name": "教程UP主"},
+                            "pubdate": 1708700000,
+                            "stat": {"view": 500000},
+                        }
+                    ],
+                    "total_hits": 1,
+                },
+            }
+        ],
+    }
+
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    result = handler.handle(
+        messages=[{"role": "user", "content": "康夫UI 有什么入门教程？"}]
+    )
+
+    assert (
+        assistant_content(result)
+        == "ComfyUI 入门可看 https://www.bilibili.com/video/BV1abc"
+    )
+    mock_search.explore.assert_called_once_with(query="ComfyUI 教程 :date>=2024")
+
+
 def test_handle_falls_back_to_small_model_when_final_response_errors():
     mock_large_llm = MagicMock(spec=LLMClient)
     mock_small_llm = MagicMock(spec=LLMClient)

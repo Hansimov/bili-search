@@ -66,6 +66,14 @@ PROMPT_ASSETS: list[PromptAsset] = [
         tags=("base",),
     ),
     _asset(
+        "routing_examples.brief",
+        "Routing Examples",
+        "ROUTING_EXAMPLES",
+        "brief",
+        "共享路由样例：找某类 UP 主时优先 search_owners(mode=topic) 或 relation 工具，不要先 search_videos；只问官网更新时优先 search_google 且拿到一轮官方结果后直接收口；同时要官网更新和 B 站解读时各跑一轮 search_google 与 search_videos 后直接回答；别名、错写或中英混写缩写先 related_tokens_by_tokens 再 search_videos；作者关系追问代表作时，先确认作者，再用 :user / :uid 定向 search_videos。",
+        tags=("base", "routing"),
+    ),
+    _asset(
         "route.videos.brief",
         "Video Route",
         "ROUTE_VIDEOS",

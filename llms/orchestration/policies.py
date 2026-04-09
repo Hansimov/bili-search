@@ -183,6 +183,45 @@ COVERAGE_RULES = {
 
 PRE_EXECUTION_NUDGE_RULES = (
     ToolLoopNudgeRule(
+        name="prefer_owner_discovery_before_video_search",
+        predicate=lambda store, intent, user_tool_names: (
+            intent.final_target in {"owners", "relations"}
+            and not store.order
+            and "search_videos" in user_tool_names
+            and not any(
+                tool_name
+                in {
+                    "search_owners",
+                    "related_owners_by_tokens",
+                    "related_owners_by_videos",
+                    "related_owners_by_owners",
+                }
+                for tool_name in user_tool_names
+            )
+        ),
+        message=(
+            "当前任务目标是找作者、矩阵号或关联作者。请先调用 search_owners 或 relation 类工具获取作者候选，"
+            "必要时用 mode=topic / mode=relation；不要先用 search_videos 兜圈子。"
+        ),
+    ),
+    ToolLoopNudgeRule(
+        name="prefer_owner_resolution_before_external_detour",
+        predicate=lambda store, intent, user_tool_names: (
+            intent.final_target == "videos"
+            and intent.needs_owner_resolution
+            and not store.order
+            and "search_google" in user_tool_names
+            and not any(
+                tool_name in {"search_owners", "search_videos"}
+                for tool_name in user_tool_names
+            )
+        ),
+        message=(
+            "当前请求更像基于上文作者找代表作、时间线或作者本人视频。请先 search_owners 确认作者，"
+            "或直接发起带 :user / :uid 的 search_videos；不要先绕到 search_google。"
+        ),
+    ),
+    ToolLoopNudgeRule(
         name="prefer_term_normalization_before_video_search",
         predicate=lambda store, intent, user_tool_names: (
             intent.final_target == "videos"

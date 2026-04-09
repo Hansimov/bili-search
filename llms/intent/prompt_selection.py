@@ -11,6 +11,7 @@ _BASE_ASSET_IDS = (
     "prompt_loading.brief",
     "result_isolation.brief",
     "response_style.brief",
+    "routing_examples.brief",
 )
 
 _TARGET_ASSET_IDS = {

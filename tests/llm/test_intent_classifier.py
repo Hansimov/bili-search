@@ -1,4 +1,4 @@
-from llms.intent.classifier import build_intent_profile, select_prompt_asset_ids
+from llms.intent import build_intent_profile, select_prompt_asset_ids
 
 
 def test_build_intent_profile_for_abstract_video_query():
@@ -53,3 +53,28 @@ def test_build_intent_profile_marks_alias_like_tutorial_query_for_expansion():
     assert "tool.related_tokens_by_tokens.brief" in asset_ids
     assert "tool.related_tokens_by_tokens.detailed" in asset_ids
     assert "tool.related_tokens_by_tokens.examples" in asset_ids
+
+
+def test_build_intent_profile_extracts_clean_topic_for_creator_discovery():
+    profile = build_intent_profile(
+        [{"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"}]
+    )
+
+    assert profile.final_target == "owners"
+    assert "黑神话悟空" in profile.explicit_topics
+    assert all(topic != "推荐几个做黑神话悟空" for topic in profile.explicit_topics)
+
+
+def test_build_intent_profile_carries_owner_context_for_representative_followup():
+    profile = build_intent_profile(
+        [
+            {"role": "user", "content": "何同学有哪些关联账号？"},
+            {"role": "assistant", "content": "我先帮你找相关作者线索。"},
+            {"role": "user", "content": "那他的代表作有哪些？"},
+        ]
+    )
+
+    assert profile.final_target == "videos"
+    assert profile.needs_owner_resolution is True
+    assert "何同学" in profile.explicit_entities or "何同学" in profile.explicit_topics
+    assert "那他的" not in profile.explicit_entities

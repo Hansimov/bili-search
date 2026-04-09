@@ -18,6 +18,7 @@
   - `registry.py`：模型注册表和 large/small client 初始化。
 - `llms/runtime/`
   - `cli.py`：本地调试和单次查询入口。
+  - `usage.py`：统一 usage 归一化、cache hit/miss 聚合和 perf stats 计算。
 - `llms/intent/`
   - `taxonomy.py`：定义 final target、task mode 和 facet taxonomy，以及 example-driven matcher。
   - `signals.py`：集中管理 topic/entity 抽取、ambiguity/complexity、term normalization 等 signal 规则。
@@ -35,7 +36,8 @@
 - `llms/chat/`
   - `handler.py`：保留对外 OpenAI 兼容 API 和 SSE 封装。
   - 其余旧模块逐步退化为兼容壳，不再承载核心实现。
-- 旧路径 `llms/config.py`、`llms/llm_client.py`、`llms/protocol.py`、`llms/cli.py`、`llms/routing.py`、`llms/routing_rules.py`、`llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 只保留兼容壳，不再承载核心逻辑。
+- 旧的顶层 compat 文件 `llms/config.py`、`llms/llm_client.py`、`llms/protocol.py`、`llms/cli.py`、`llms/routing.py`、`llms/routing_rules.py` 已移除；包级 public surface 固定为 `llms/contracts/`、`llms/models/`、`llms/runtime/`、`llms/intent/`。
+- `llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 继续只保留兼容壳，不再承载核心逻辑。
 
 ## 核心组件
 
@@ -71,6 +73,7 @@
   - 基础资产
   - route 级资产
   - 可选的工具级资产
+- 共享路由样例会固定出现在基础资产中，作为更稳定的跨任务前缀，用来同时提高路由一致性和 provider prompt cache 复用概率。
 - 默认只装入最小 `brief` 集合。
 - 当模型明确需要更细规则或示例时，才通过内部工具 `read_prompt_assets` 增量读取更高层级内容。
 
@@ -94,6 +97,9 @@
   - 当 `search_google + search_videos` 这一组终局工具已经完整执行过一轮后，不允许再重复同组扩搜
   - 若还缺细节，只能走 `inspect_tool_result`
   - 否则直接进入最终回答阶段
+- 对作者发现类请求增加了额外保护：
+  - 当意图目标是作者/关系，但 planner 首轮想先跑 `search_videos` 时，会被显式 nudged 回 `search_owners` / relation 工具
+  - 这样可以减少 creator discovery 场景中的无效视频扩搜和 token 浪费
 - 对 live 里常见的 0-hit 场景，编排器还会做两类兜底：
   - mixed 任务里，若站内视频连续 0 hit，会明确引导改用 `search_google + site:bilibili.com/video`
   - 显式视频任务里，若站内查询 0 hit 且用户实体明确，也会引导走同样的 B 站站点搜索兜底

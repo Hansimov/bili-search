@@ -123,13 +123,14 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                 "作者问题优先用它，不要机械转成视频搜索。"
                 "作者最近视频这类问题，如果作者词不稳，应先用它确认作者，再继续 search_videos。"
                 "mode=relation 适合关联账号/矩阵号；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
+                "参数要写在 text 字段里，不要误传成 queries。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "作者名、别名、主题词或作者线索文本",
+                        "description": "作者名、别名、主题词或作者线索文本。主题找作者时也写在 text 里，不要传 queries。",
                     },
                     "mode": {
                         "type": "string",

@@ -43,6 +43,60 @@ def _normalize_query_spaces(query: str) -> str:
     return re.sub(r"\s+", " ", str(query or "")).strip()
 
 
+def _strip_owner_search_filters(text: str) -> str:
+    stripped = re.sub(r"q=[^\s]+", " ", str(text or ""), flags=re.IGNORECASE)
+    stripped = re.sub(r":[^\s]+", " ", stripped)
+    return _normalize_query_spaces(stripped)
+
+
+def _coerce_owner_search_args(args: dict) -> dict:
+    normalized = dict(args or {})
+    text = str(normalized.get("text", "") or "").strip()
+
+    if not text:
+        alias_candidates = [
+            ("topic", "topic"),
+            ("name", "name"),
+            ("relation", "relation"),
+        ]
+        for key, inferred_mode in alias_candidates:
+            candidate = str(normalized.get(key, "") or "").strip()
+            if not candidate:
+                continue
+            text = _strip_owner_search_filters(candidate)
+            normalized["text"] = text
+            normalized.setdefault("mode", inferred_mode)
+            break
+
+    if not text:
+        query = normalized.get("query")
+        queries = normalized.get("queries")
+        candidates: list[str] = []
+        if isinstance(query, str):
+            candidates.append(query)
+        if isinstance(queries, str):
+            candidates.append(queries)
+        elif isinstance(queries, list):
+            candidates.extend(
+                str(item).strip() for item in queries if str(item or "").strip()
+            )
+        for candidate in candidates:
+            text = _strip_owner_search_filters(candidate)
+            if text:
+                normalized["text"] = text
+                break
+
+    mode = str(normalized.get("mode", "auto") or "auto")
+    if (
+        mode == "auto"
+        and text
+        and any(key in normalized for key in ("query", "queries"))
+    ):
+        normalized["mode"] = "topic"
+
+    return normalized
+
+
 def _strip_soft_filters(query: str) -> str:
     stripped = re.sub(r":date[<>=!]*[^\s]+", " ", str(query or ""))
     return _normalize_query_spaces(stripped)
@@ -694,12 +748,13 @@ class ToolExecutor:
         }
 
     def _search_owners(self, args: dict) -> dict:
-        text = str(args.get("text", "")).strip()
+        resolved_args = _coerce_owner_search_args(args)
+        text = str(resolved_args.get("text", "")).strip()
         if not text:
             return {"error": "Missing text parameter", "owners": []}
-        mode = str(args.get("mode", "auto") or "auto")
+        mode = str(resolved_args.get("mode", "auto") or "auto")
         default_size = 20 if mode == "topic" else 8
-        size = int(args.get("size", default_size) or default_size)
+        size = int(resolved_args.get("size", default_size) or default_size)
         max_owner_hits = (
             max(self.max_results, 20) if mode == "topic" else self.max_results
         )
@@ -708,15 +763,53 @@ class ToolExecutor:
             mode=mode,
             size=size,
         )
+        fallback_mode = None
+        fallback_tool = None
+        if mode == "auto" and not result.get("error") and not result.get("owners"):
+            fallback_mode = "topic"
+            topic_size = max(size, 20)
+            result = self.search_client.search_owners(
+                text=text,
+                mode=fallback_mode,
+                size=topic_size,
+            )
+            max_owner_hits = max(self.max_results, 20)
+        resolved_mode = str(
+            result.get("mode", fallback_mode or mode) or (fallback_mode or mode)
+        )
+        if (
+            not result.get("error")
+            and not result.get("owners")
+            and resolved_mode == "topic"
+            and hasattr(self.search_client, "related_owners_by_tokens")
+        ):
+            relation_size = max(size, 20)
+            relation_result = self.search_client.related_owners_by_tokens(
+                text=text,
+                size=relation_size,
+            )
+            if not relation_result.get("error") and relation_result.get("owners"):
+                result = {
+                    "text": text,
+                    "mode": "topic",
+                    "owners": relation_result.get("owners", []),
+                }
+                fallback_tool = "related_owners_by_tokens"
+                max_owner_hits = max(self.max_results, 20)
         if result.get("error"):
             return {"text": text, "error": result["error"], "owners": []}
         owners = result.get("owners", [])
-        return {
+        payload = {
             "text": text,
-            "mode": result.get("mode", mode),
+            "mode": result.get("mode", fallback_mode or mode),
             "total_owners": len(owners),
             "owners": format_related_owners(owners, max_hits=max_owner_hits),
         }
+        if fallback_mode is not None:
+            payload["fallback_mode"] = fallback_mode
+        if fallback_tool is not None:
+            payload["fallback_tool"] = fallback_tool
+        return payload
 
     def _related_tokens_by_tokens(self, args: dict) -> dict:
         text = str(args.get("text", "")).strip()

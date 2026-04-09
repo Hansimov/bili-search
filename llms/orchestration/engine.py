@@ -15,7 +15,8 @@ from llms.contracts import (
     ToolCallRequest,
     ToolExecutionRecord,
 )
-from llms.intent.classifier import build_intent_profile
+from llms.intent import build_intent_profile
+from llms.intent.signals import rewrite_known_term_aliases
 from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
 from llms.orchestration.policies import has_target_coverage
@@ -30,8 +31,8 @@ from llms.orchestration.tool_markup import parse_xml_tool_calls
 from llms.orchestration.tool_markup import sanitize_generated_content
 from llms.prompts.assets import get_prompt_assets
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
+from llms.runtime.usage import accumulate_usage, normalize_usage
 from llms.tools.defs import build_tool_definitions
-from llms.usage import accumulate_usage, normalize_usage
 
 
 _THINKING_PROMPT = (
@@ -59,6 +60,131 @@ class ChatOrchestrator:
         )
         self.temperature = temperature
         self.verbose = verbose
+
+    @staticmethod
+    def _owner_resolution_seed(intent: IntentProfile) -> str:
+        generic_tokens = {
+            "up",
+            "up主",
+            "作者",
+            "账号",
+            "关联账号",
+            "代表作",
+            "他的",
+            "那他的",
+        }
+        for candidate in [
+            *(intent.explicit_entities or []),
+            *(intent.explicit_topics or []),
+        ]:
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            if text.lower() in generic_tokens:
+                continue
+            if len(text) < 2:
+                continue
+            return text
+        return ""
+
+    @staticmethod
+    def _owner_request_text(arguments: dict) -> str:
+        for key in ("text", "topic", "name", "relation", "query"):
+            text = str(arguments.get(key, "") or "").strip()
+            if text:
+                return text
+        queries = arguments.get("queries")
+        if isinstance(queries, str):
+            return queries.strip()
+        if isinstance(queries, (list, tuple)):
+            for item in queries:
+                text = str(item or "").strip()
+                if text:
+                    return text
+        return ""
+
+    def _normalize_request(
+        self,
+        request: ToolCallRequest,
+        intent: IntentProfile,
+        search_capabilities: dict,
+    ) -> ToolCallRequest:
+        if request.visibility != "user":
+            return request
+        arguments = dict(request.arguments or {})
+        relation_endpoints = set(search_capabilities.get("relation_endpoints") or [])
+        if request.name == "search_owners":
+            owner_text = self._owner_request_text(arguments)
+            if not owner_text:
+                owner_seed = self._owner_resolution_seed(intent)
+                if owner_seed:
+                    arguments["text"] = owner_seed
+                    owner_text = owner_seed
+            elif not str(arguments.get("text", "") or "").strip():
+                arguments["text"] = owner_text
+            if (
+                arguments.get("text")
+                and str(arguments.get("mode", "auto") or "auto") == "auto"
+                and intent.final_target in {"owners", "relations"}
+                and intent.task_mode == "exploration"
+            ):
+                arguments["mode"] = "topic"
+            owner_text = self._owner_request_text(arguments)
+            owner_mode = str(arguments.get("mode", "auto") or "auto")
+            if (
+                owner_text
+                and owner_mode == "topic"
+                and intent.final_target in {"owners", "relations"}
+                and intent.task_mode == "exploration"
+                and "related_owners_by_tokens" in relation_endpoints
+            ):
+                rewritten_args = {"text": owner_text}
+                for size_key in ("size", "num", "limit"):
+                    if arguments.get(size_key) is not None:
+                        rewritten_args["size"] = arguments.get(size_key)
+                        break
+                return ToolCallRequest(
+                    id=request.id,
+                    name="related_owners_by_tokens",
+                    arguments=rewritten_args,
+                    visibility=request.visibility,
+                    source=request.source,
+                )
+        elif request.name == "search_videos" and intent.needs_term_normalization:
+            raw_queries = arguments.get("queries")
+            if isinstance(raw_queries, str):
+                raw_queries = [raw_queries]
+            elif not isinstance(raw_queries, list):
+                single_query = str(arguments.get("query", "") or "").strip()
+                raw_queries = [single_query] if single_query else []
+
+            rewritten_queries: list[str] = []
+            query_changed = False
+            for query in raw_queries:
+                original_query = str(query or "")
+                rewritten_query = rewrite_known_term_aliases(original_query)
+                if rewritten_query != original_query:
+                    query_changed = True
+                if rewritten_query and rewritten_query not in rewritten_queries:
+                    rewritten_queries.append(rewritten_query)
+
+            if query_changed and rewritten_queries:
+                arguments.pop("query", None)
+                arguments["queries"] = rewritten_queries
+        elif request.name == "related_owners_by_tokens":
+            if not str(arguments.get("text", "") or "").strip():
+                owner_seed = self._owner_resolution_seed(intent)
+                if owner_seed:
+                    arguments["text"] = owner_seed
+        if arguments == request.arguments:
+            return request
+        return ToolCallRequest(
+            id=request.id,
+            name=request.name,
+            arguments=arguments,
+            visibility=request.visibility,
+            source=request.source,
+        )
 
     def _select_model(
         self, intent: IntentProfile, stage: str, thinking: bool
@@ -465,6 +591,11 @@ class ChatOrchestrator:
             if not requests:
                 requests = parse_xml_tool_calls(response.content or "", iteration)
 
+            requests = [
+                self._normalize_request(request, intent, search_capabilities)
+                for request in requests
+            ]
+
             deduped_requests = []
             for request in requests:
                 signature = command_signature(request)
@@ -511,7 +642,7 @@ class ChatOrchestrator:
                         {"role": "assistant", "content": stripped_content}
                     )
                 conversation.append({"role": "user", "content": pre_execution_nudge[1]})
-                break
+                continue
 
             if not requests:
                 blocked_request_nudge = select_blocked_request_nudge(

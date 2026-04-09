@@ -125,6 +125,34 @@ def test_select_pre_execution_nudge_prefers_term_normalization_before_video_sear
     assert rule[0] == "prefer_term_normalization_before_video_search"
 
 
+def test_select_pre_execution_nudge_prefers_owner_discovery_before_video_search():
+    store = FakeResultStore()
+
+    rule = select_pre_execution_nudge(
+        store,
+        _intent(final_target="owners"),
+        ["search_videos"],
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "prefer_owner_discovery_before_video_search"
+
+
+def test_select_pre_execution_nudge_prefers_owner_resolution_before_external_detour():
+    store = FakeResultStore()
+
+    rule = select_pre_execution_nudge(
+        store,
+        _intent(final_target="videos", needs_owner_resolution=True),
+        ["search_google"],
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "prefer_owner_resolution_before_external_detour"
+
+
 def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
     store = FakeResultStore()
     store.add(

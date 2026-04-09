@@ -14,5 +14,8 @@ Module structure:
     - intent:          Taxonomy, classifier, and intent signal extraction
     - orchestration:   Planner/response loop and result store helpers
     - chat:            Chat handler with tool-calling loop
-    - cli:             Backward-compatible shim for llms.runtime.cli
+
+The package now uses subpackages as its public surface. New code should import
+from llms.models, llms.contracts, llms.runtime, llms.intent, or
+llms.orchestration instead of relying on top-level compatibility modules.
 """

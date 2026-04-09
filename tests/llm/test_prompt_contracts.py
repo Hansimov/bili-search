@@ -38,6 +38,7 @@ def test_build_system_prompt_contains_new_core_sections():
         "[INTENT_PROFILE]",
         "[PROMPT_LOADING]",
         "[RESULT_ISOLATION]",
+        "[ROUTING_EXAMPLES]",
         "[OUTPUT_PROTOCOL]",
         "[ROUTE_VIDEOS]",
         "[DSL_QUICKREF]",
@@ -57,6 +58,7 @@ def test_build_system_prompt_mentions_internal_prompt_loading_and_result_isolati
     assert "默认只加载与当前任务最相关的 brief guidance" in prompt
     assert "不要重复扩搜" in prompt
     assert "若摘要里已有 BV、mid 或链接，就直接回答" in prompt
+    assert "共享路由样例" in prompt
 
 
 def test_build_system_prompt_profile_tracks_new_sections():
@@ -68,6 +70,7 @@ def test_build_system_prompt_profile_tracks_new_sections():
     assert "output_protocol" in section_chars
     assert "prompt_loading" in section_chars
     assert "result_isolation" in section_chars
+    assert "routing_examples" in section_chars
     assert "tool_commands" in section_chars
     assert "dsl_quickref" in section_chars
     assert profile["total_chars"] >= sum(section_chars.values())

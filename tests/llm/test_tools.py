@@ -272,6 +272,153 @@ def test_execute_search_owners_topic_uses_wider_default_limit():
     logger.success("[PASS] execute search_owners topic default size")
 
 
+def test_execute_search_owners_accepts_queries_alias_for_topic_lookup():
+    """Creator-discovery style tool calls sometimes send queries instead of text."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners queries alias")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.return_value = {
+        "text": "黑神话悟空",
+        "mode": "topic",
+        "owners": [
+            {"mid": 1, "name": "作者1", "score": 100},
+            {"mid": 2, "name": "作者2", "score": 80},
+        ],
+    }
+
+    executor = ToolExecutor(search_client=mock_client, max_results=10)
+
+    tc = ToolCall(
+        id="call_test_owners_alias",
+        name="search_owners",
+        arguments=json.dumps({"queries": ["黑神话悟空 :view>=1w"]}),
+    )
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    mock_client.search_owners.assert_called_once_with(
+        text="黑神话悟空", mode="topic", size=20
+    )
+    assert result_data["text"] == "黑神话悟空"
+    assert result_data["mode"] == "topic"
+    assert result_data["total_owners"] == 2
+
+    logger.success("[PASS] execute search_owners queries alias")
+
+
+def test_execute_search_owners_accepts_topic_alias():
+    """Owner discovery calls may send topic instead of text."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners topic alias")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.return_value = {
+        "text": "黑神话悟空",
+        "mode": "topic",
+        "owners": [{"mid": 1, "name": "作者1", "score": 100}],
+    }
+
+    executor = ToolExecutor(search_client=mock_client, max_results=10)
+
+    tc = ToolCall(
+        id="call_test_owners_topic_alias",
+        name="search_owners",
+        arguments=json.dumps({"mode": "topic", "topic": "黑神话悟空"}),
+    )
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    mock_client.search_owners.assert_called_once_with(
+        text="黑神话悟空", mode="topic", size=20
+    )
+    assert result_data["text"] == "黑神话悟空"
+    assert result_data["mode"] == "topic"
+    assert result_data["total_owners"] == 1
+
+    logger.success("[PASS] execute search_owners topic alias")
+
+
+def test_execute_search_owners_retries_topic_mode_after_auto_zero_hit():
+    """Auto mode should fall back to topic mode when creator discovery finds no owner candidates."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners auto fallback to topic")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.side_effect = [
+        {"text": "黑神话悟空", "mode": "auto", "owners": []},
+        {
+            "text": "黑神话悟空",
+            "mode": "topic",
+            "owners": [{"mid": 1, "name": "作者1", "score": 100}],
+        },
+    ]
+
+    executor = ToolExecutor(search_client=mock_client, max_results=10)
+
+    tc = ToolCall(
+        id="call_test_owners_auto_fallback",
+        name="search_owners",
+        arguments=json.dumps({"text": "黑神话悟空", "mode": "auto"}),
+    )
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert mock_client.search_owners.call_count == 2
+    assert mock_client.search_owners.call_args_list[0].kwargs == {
+        "text": "黑神话悟空",
+        "mode": "auto",
+        "size": 8,
+    }
+    assert mock_client.search_owners.call_args_list[1].kwargs == {
+        "text": "黑神话悟空",
+        "mode": "topic",
+        "size": 20,
+    }
+    assert result_data["mode"] == "topic"
+    assert result_data["fallback_mode"] == "topic"
+    assert result_data["total_owners"] == 1
+
+    logger.success("[PASS] execute search_owners auto fallback to topic")
+
+
+def test_execute_search_owners_falls_back_to_related_owners_for_topic_discovery():
+    """Topic owner discovery should use related_owners_by_tokens when owner search stays empty."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners fallback to related owners")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.side_effect = [
+        {"text": "黑神话悟空", "mode": "auto", "owners": []},
+        {"text": "黑神话悟空", "mode": "topic", "owners": []},
+    ]
+    mock_client.related_owners_by_tokens.return_value = {
+        "text": "黑神话悟空",
+        "owners": [{"mid": 1, "name": "作者1", "score": 100}],
+    }
+
+    executor = ToolExecutor(search_client=mock_client, max_results=10)
+
+    tc = ToolCall(
+        id="call_test_owners_related_fallback",
+        name="search_owners",
+        arguments=json.dumps({"text": "黑神话悟空", "mode": "auto"}),
+    )
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert mock_client.search_owners.call_count == 2
+    mock_client.related_owners_by_tokens.assert_called_once_with(
+        text="黑神话悟空", size=20
+    )
+    assert result_data["mode"] == "topic"
+    assert result_data["fallback_mode"] == "topic"
+    assert result_data["fallback_tool"] == "related_owners_by_tokens"
+    assert result_data["total_owners"] == 1
+
+    logger.success("[PASS] execute search_owners fallback to related owners")
+
+
 def test_execute_unknown_tool():
     """Test unknown tool name handling."""
     logger.note("=" * 60)

@@ -31,7 +31,7 @@ from llms.models import LLMClient, ChatResponse, create_llm_client
 from llms.planning import OwnerResolutionMixin, ToolPlanningMixin
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
-from llms.usage import accumulate_usage, compute_perf_stats, normalize_usage
+from llms.runtime.usage import accumulate_usage, compute_perf_stats, normalize_usage
 
 # Maximum tool-calling iterations to prevent infinite loops.
 MAX_TOOL_ITERATIONS = 4

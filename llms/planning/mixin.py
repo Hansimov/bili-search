@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from llms.intent.classifier import build_intent_profile
+from llms.intent import build_intent_profile
 from llms.planning.pipeline import DEFAULT_TOOL_PLANNING_PLUGINS
 from llms.planning.pipeline import ToolPlanningContext, apply_tool_planning_plugins
 

@@ -62,6 +62,30 @@ _QUERY_BOUNDARY_MARKERS = (
 _ENTITY_LIKE_RE = re.compile(
     r"(?:bv[0-9a-z]+|[a-z][a-z0-9.+#:/_-]+|\d+(?:\.\d+)*)", re.IGNORECASE
 )
+_LEADING_TOPIC_FILLER_RE = re.compile(
+    r"^(?:请问|麻烦(?:帮我)?|帮我|给我|推荐(?:几个|一些)?|找(?:几个|一些)?|我想看|我想找|想看|想找|来点|看看|搜一下|搜搜|查一下|查查|做)+"
+)
+_TRAILING_OWNER_SUFFIX_RE = re.compile(
+    r"(?:相关)?内容(?:创作)?的?(?:up主|作者|博主|账号).*$"
+)
+_FOLLOWUP_REFERENT_TOKENS = frozenset(
+    {
+        "他",
+        "她",
+        "它",
+        "他的",
+        "她的",
+        "它的",
+        "那他",
+        "那她",
+        "那它",
+        "那他的",
+        "那她的",
+        "那它的",
+        "这个",
+        "那个",
+    }
+)
 
 _FACET_SCORE_RULES = {
     "motivation": {"weight": 0.95, "threshold": 0.16, "limit": 3},
@@ -108,6 +132,18 @@ _KEYWORD_EXPANSION_AMBIGUITY_THRESHOLD = 0.45
 _TARGET_LOW_CONFIDENCE_THRESHOLD = 0.18
 _TARGET_MARGIN_THRESHOLD = 0.06
 _ALIAS_TOKEN_MAX_LEN = 6
+_KNOWN_TERM_ALIAS_PATTERNS = ((re.compile(r"康夫\s*u\s*i", re.IGNORECASE), "ComfyUI"),)
+
+
+def _normalize_query_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def rewrite_known_term_aliases(text: str) -> str:
+    rewritten = str(text or "")
+    for pattern, canonical in _KNOWN_TERM_ALIAS_PATTERNS:
+        rewritten = pattern.sub(canonical, rewritten)
+    return rewritten
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +225,12 @@ def _cleanup_topic_candidate(token: str) -> str:
             if len(prefix) >= 2:
                 cleaned = prefix
                 break
+    cleaned = _TRAILING_OWNER_SUFFIX_RE.sub("", cleaned)
+    cleaned = _LEADING_TOPIC_FILLER_RE.sub("", cleaned)
+    cleaned = _normalize_query_spaces(cleaned)
     cleaned = cleaned.strip(" -_/:：，。！？?；;")
+    if cleaned in _FOLLOWUP_REFERENT_TOKENS:
+        return ""
     return cleaned
 
 
