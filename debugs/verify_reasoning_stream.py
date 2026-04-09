@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from llms.cli import _create_handler
+from llms.runtime import _create_handler
 
 
 def build_args() -> argparse.Namespace:

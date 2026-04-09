@@ -1,6 +1,8 @@
 """Contract tests for the rewritten llms prompt/tool system."""
 
-from llms.protocol import FacetScore, IntentProfile
+from datetime import datetime
+
+from llms.contracts import FacetScore, IntentProfile
 
 
 def _video_intent() -> IntentProfile:
@@ -69,6 +71,28 @@ def test_build_system_prompt_profile_tracks_new_sections():
     assert "tool_commands" in section_chars
     assert "dsl_quickref" in section_chars
     assert profile["total_chars"] >= sum(section_chars.values())
+
+
+def test_date_prompt_is_stable_within_same_day():
+    from llms.prompts.system import get_date_prompt
+
+    morning = datetime(2026, 4, 9, 9, 1, 3)
+    evening = datetime(2026, 4, 9, 23, 59, 59)
+
+    prompt = get_date_prompt(now=morning)
+
+    assert prompt == get_date_prompt(now=evening)
+    assert "当前日期：2026-04-09（周四）" in prompt
+    assert "昨天日期：2026-04-08" in prompt
+
+
+def test_build_system_prompt_places_dynamic_context_after_shared_guidance():
+    from llms.prompts.copilot import build_system_prompt
+
+    prompt = build_system_prompt(intent=_video_intent())
+
+    assert prompt.index("[PROMPT_LOADING]") < prompt.index("[SYSTEM_TIME]")
+    assert prompt.index("[OUTPUT_PROTOCOL]") < prompt.index("[INTENT_PROFILE]")
 
 
 def test_get_prompt_assets_payload_returns_requested_levels():

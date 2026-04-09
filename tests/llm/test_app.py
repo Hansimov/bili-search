@@ -18,7 +18,7 @@ from configs.envs import LLM_CONFIG
 
 
 def make_chat_response(content: str, usage: dict | None = None):
-    from llms.llm_client import ChatResponse
+    from llms.models import ChatResponse
 
     return ChatResponse(
         content=content,
@@ -41,7 +41,7 @@ def create_test_app():
         patch("service.app.VideoExplorer") as mock_explorer_cls,
         patch("service.app.OwnerSearcher") as mock_owner_searcher_cls,
         patch("service.app.RelationsClient") as mock_relations_cls,
-        patch("llms.llm_client.create_llm_client") as mock_create_llm,
+        patch("llms.models.client.create_llm_client") as mock_create_llm,
     ):
 
         mock_searcher = MagicMock()
@@ -122,7 +122,7 @@ def test_chat_completions_endpoint():
 
     search_app, mock_llm, _, _ = create_test_app()
 
-    from llms.llm_client import ChatResponse
+    from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
         content="Hello!",
@@ -153,7 +153,7 @@ def test_chat_completions_v1_path():
     logger.note("[TEST] /v1/chat/completions path")
 
     search_app, mock_llm, _, _ = create_test_app()
-    from llms.llm_client import ChatResponse
+    from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
         content="Test",
@@ -202,7 +202,7 @@ def test_streaming_response():
     logger.note("[TEST] streaming response")
 
     search_app, mock_llm, _, _ = create_test_app()
-    from llms.llm_client import ChatResponse
+    from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
         content="Hello world",
@@ -422,7 +422,7 @@ def test_cors_headers():
     logger.note("[TEST] CORS headers")
 
     search_app, mock_llm, _, _ = create_test_app()
-    from llms.llm_client import ChatResponse
+    from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
         content="OK", finish_reason="stop", usage={}

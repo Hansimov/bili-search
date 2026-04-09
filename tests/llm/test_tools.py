@@ -11,7 +11,7 @@ import requests
 from unittest.mock import MagicMock, patch
 from tclogger import logger
 
-from llms.llm_client import ToolCall
+from llms.models import ToolCall
 from llms.tools.defs import TOOL_DEFINITIONS
 from llms.tools.executor import ToolExecutor
 

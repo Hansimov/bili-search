@@ -6,7 +6,7 @@ import json
 
 from typing import Any
 
-from llms.protocol import ToolExecutionRecord
+from llms.contracts import ToolExecutionRecord
 
 
 def make_video_url(bvid: str) -> str:

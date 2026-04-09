@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Literal, Protocol
 
-from llms.protocol import IntentProfile
+from llms.contracts import IntentProfile
 
 
 ToolResultScope = Literal["last_tool_results", "owner_result_scope"]

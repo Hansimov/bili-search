@@ -1,6 +1,6 @@
 from llms.planning.pipeline import ToolPlanningContext
 from llms.planning.pipeline import select_tool_planning_plugins
-from llms.protocol import IntentProfile
+from llms.contracts import IntentProfile
 
 
 def _intent(**kwargs) -> IntentProfile:

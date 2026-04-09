@@ -9,8 +9,8 @@ import time
 
 from tclogger import logger
 
-from llms.llm_client import ToolCall
-from llms.protocol import ToolCallRequest
+from llms.contracts import ToolCallRequest
+from llms.models import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
 from llms.tools.utils import (

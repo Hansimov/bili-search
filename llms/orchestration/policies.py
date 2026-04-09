@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from llms.protocol import IntentProfile
+from llms.contracts import IntentProfile
 
 
 FINAL_ANSWER_NUDGE = "请直接基于现有结果回答，不要继续规划，也不要再次调用工具。"
@@ -182,6 +182,21 @@ COVERAGE_RULES = {
 
 
 PRE_EXECUTION_NUDGE_RULES = (
+    ToolLoopNudgeRule(
+        name="prefer_term_normalization_before_video_search",
+        predicate=lambda store, intent, user_tool_names: (
+            intent.final_target == "videos"
+            and intent.needs_term_normalization
+            and not store.order
+            and "search_videos" in user_tool_names
+            and "related_tokens_by_tokens" not in user_tool_names
+        ),
+        message=(
+            "当前请求更像别名、错写或中英混写缩写。请先调用 related_tokens_by_tokens "
+            "用 correction 或 associate 思路把原词归一化，再基于纠正后的规范词执行 search_videos；"
+            "不要直接把原始错写整句塞进 search_videos。"
+        ),
+    ),
     ToolLoopNudgeRule(
         name="owner_results_already_sufficient",
         predicate=lambda store, intent, user_tool_names: (

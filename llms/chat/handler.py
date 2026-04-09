@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 
-from tclogger import logger, dt_to_str
+from tclogger import logger
 from typing import Generator, Optional
 
 from llms.orchestration import ChatOrchestrator
@@ -27,10 +27,11 @@ from llms.orchestration.tool_markup import parse_tool_argument
 from llms.orchestration.tool_markup import parse_xml_commands
 from llms.orchestration.tool_markup import sanitize_generated_content
 from llms.orchestration.tool_markup import strip_tool_commands
-from llms.llm_client import LLMClient, ChatResponse, create_llm_client
+from llms.models import LLMClient, ChatResponse, create_llm_client
 from llms.planning import OwnerResolutionMixin, ToolPlanningMixin
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
+from llms.usage import accumulate_usage, compute_perf_stats, normalize_usage
 
 # Maximum tool-calling iterations to prevent infinite loops.
 MAX_TOOL_ITERATIONS = 4
@@ -336,28 +337,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _accumulate_usage(total: dict, new: dict):
-        """Accumulate all numeric usage fields dynamically.
-
-        Picks up standard fields (prompt_tokens, completion_tokens, total_tokens)
-        as well as provider-specific fields like DeepSeek's
-        prompt_cache_hit_tokens and prompt_cache_miss_tokens.
-
-        Also handles OpenAI/GPT nested usage structures:
-        - prompt_tokens_details.cached_tokens
-        - completion_tokens_details.reasoning_tokens
-        These are flattened into top-level keys for uniform access.
-        """
-        for key, value in new.items():
-            if isinstance(value, (int, float)):
-                total[key] = total.get(key, 0) + value
-            elif isinstance(value, dict):
-                # Flatten nested dicts (e.g. prompt_tokens_details, completion_tokens_details)
-                # into top-level keys like "prompt_tokens_details.cached_tokens"
-                if key not in total:
-                    total[key] = {}
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, (int, float)):
-                        total[key][sub_key] = total[key].get(sub_key, 0) + sub_value
+        accumulate_usage(total, new)
 
     @staticmethod
     def _parse_tool_argument(raw_value: str):
@@ -1071,75 +1051,11 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _normalize_usage(usage: dict) -> dict:
-        """Normalize usage dict: unify cache token formats across providers.
-
-        Handles both DeepSeek flat format (prompt_cache_hit_tokens) and
-        GPT nested format (prompt_tokens_details.cached_tokens), flattening
-        the latter to the flat format for uniform access.
-
-        Removes nested dict fields from the output to keep it clean.
-
-        Returns:
-            Normalized usage dict with flat keys only.
-        """
-        result = dict(usage)
-
-        # GPT nested → flat
-        prompt_details = result.get("prompt_tokens_details")
-        if isinstance(prompt_details, dict):
-            gpt_cached = prompt_details.get("cached_tokens", 0)
-            if gpt_cached and not result.get("prompt_cache_hit_tokens"):
-                result["prompt_cache_hit_tokens"] = gpt_cached
-                prompt_tokens = result.get("prompt_tokens", 0)
-                result["prompt_cache_miss_tokens"] = max(0, prompt_tokens - gpt_cached)
-
-        completion_details = result.get("completion_tokens_details")
-        if isinstance(completion_details, dict):
-            reasoning = completion_details.get("reasoning_tokens", 0)
-            if reasoning:
-                result["reasoning_tokens"] = reasoning
-
-        # Remove nested dicts (keep only flat numeric fields)
-        for key in list(result.keys()):
-            if isinstance(result[key], dict):
-                del result[key]
-
-        return result
+        return normalize_usage(usage)
 
     @staticmethod
     def _compute_perf_stats(usage: dict, elapsed_seconds: float) -> dict:
-        """Compute performance statistics from usage and elapsed time.
-
-        Only includes timing/rate metrics. Token counts stay in usage.
-
-        Returns:
-            Dict with tokens_per_second and elapsed timing.
-        """
-        normalized_usage = ChatHandler._normalize_usage(usage)
-        completion_tokens = normalized_usage.get("completion_tokens", 0)
-
-        tokens_per_second = (
-            int(completion_tokens / elapsed_seconds)
-            if elapsed_seconds > 0 and completion_tokens > 0
-            else 0
-        )
-
-        elapsed_str = dt_to_str(elapsed_seconds, precision=0)
-
-        result = {
-            "tokens_per_second": tokens_per_second,
-            "total_elapsed": elapsed_str,
-            "total_elapsed_ms": round(elapsed_seconds * 1000, 1),
-        }
-
-        cache_hit_tokens = normalized_usage.get("prompt_cache_hit_tokens")
-        cache_miss_tokens = normalized_usage.get("prompt_cache_miss_tokens")
-        if cache_hit_tokens is not None:
-            result["prompt_cache_hit_tokens"] = cache_hit_tokens
-        if cache_miss_tokens is not None:
-            result["prompt_cache_miss_tokens"] = cache_miss_tokens
-
-        return result
+        return compute_perf_stats(usage, elapsed_seconds)
 
     def _format_completion(
         self,

@@ -1,4 +1,4 @@
-"""Tests for llms.llm_client — LLM API client with function calling.
+"""Tests for llms.models.client — LLM API client with function calling.
 
 Includes:
 - Unit tests with mocked HTTP responses (no external deps)
@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 from tclogger import logger
 
 from configs.envs import LLM_CONFIG
-from llms.llm_client import LLMClient, ChatResponse, ToolCall, create_llm_client
+from llms.models import LLMClient, ChatResponse, ToolCall, create_llm_client
 
 
 # ============================================================

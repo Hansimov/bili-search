@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llms.protocol import PromptAsset
+from llms.contracts import PromptAsset
 
 
 def _asset(

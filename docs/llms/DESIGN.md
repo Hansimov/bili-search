@@ -11,9 +11,18 @@
 
 ## 结构重排
 
+- `llms/contracts/`
+  - 统一承载 `IntentProfile`、`ToolCallRequest`、`OrchestrationResult` 等共享数据契约。
+- `llms/models/`
+  - `client.py`：LLM API client compatibility layer。
+  - `registry.py`：模型注册表和 large/small client 初始化。
+- `llms/runtime/`
+  - `cli.py`：本地调试和单次查询入口。
 - `llms/intent/`
   - `taxonomy.py`：定义 final target、task mode 和 facet taxonomy，以及 example-driven matcher。
-  - `classifier.py`：构建 `IntentProfile`，选择 prompt assets。
+  - `signals.py`：集中管理 topic/entity 抽取、ambiguity/complexity、term normalization 等 signal 规则。
+  - `prompt_selection.py`：按 intent signals 选择 prompt assets。
+  - `classifier.py`：只负责拼装 taxonomy ranking + intent signals，构建 `IntentProfile`。
 - `llms/planning/`
   - `pipeline.py`：根据 intent 和工具执行信号选择 planning plugins。
   - `mixin.py`：保留具体的 rewrite / bootstrap 实现。
@@ -26,27 +35,30 @@
 - `llms/chat/`
   - `handler.py`：保留对外 OpenAI 兼容 API 和 SSE 封装。
   - 其余旧模块逐步退化为兼容壳，不再承载核心实现。
-- 旧路径 `llms/routing.py`、`llms/routing_rules.py`、`llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 只保留兼容壳，不再承载核心逻辑。
+- 旧路径 `llms/config.py`、`llms/llm_client.py`、`llms/protocol.py`、`llms/cli.py`、`llms/routing.py`、`llms/routing_rules.py`、`llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 只保留兼容壳，不再承载核心逻辑。
 
 ## 核心组件
 
 ### 模型注册表
 
-- `llms/config.py` 中的 `ModelRegistry` 负责声明和公开当前可用模型。
+- `llms/models/registry.py` 中的 `ModelRegistry` 负责声明和公开当前可用模型。
 - 当前固定默认值：
   - 大模型：`deepseek`
   - 小模型：`qwen3.5-4b`
+- `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` compatibility layer。
 - `create_model_clients(...)` 会一次性构造大小模型 client，并把公开能力暴露给运行时和测试脚本。
 
 ### 意图路由
 
 - `llms/intent/classifier.py` 会基于最新一轮用户输入和近两轮用户上下文构建 `IntentProfile`。
 - `llms/intent/taxonomy.py` 用 label description + examples 做 similarity matching，而不是靠 route-specific regex 命中。
+- `llms/intent/signals.py` 把 topic/entity 提取、ambiguity/complexity 估计、term normalization 和 route flags 集中成结构化 signal 规则，避免这些阈值散落在 classifier 主流程里。
+- `llms/intent/prompt_selection.py` 会根据 `needs_keyword_expansion`、`needs_term_normalization`、`needs_owner_resolution` 等 signals 装配 prompt assets。
 - 当前会识别和估计的核心字段包括：
   - 最终目标：`videos / owners / relations / external / mixed`
   - 任务模式：`exploration / lookup_entity / collect_compare / repeat / known_item`
   - 歧义度与复杂度
-  - 路由标记，例如：关键词扩展、作者名消歧、站外检索
+  - 路由标记，例如：关键词扩展、term normalization、作者名消歧、站外检索
 - 同一个 `IntentProfile` 同时驱动：
   - 提示资产选择
   - planner / response / delegate 模型选择

@@ -1,7 +1,7 @@
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
-from llms.protocol import IntentProfile, ToolCallRequest, ToolExecutionRecord
+from llms.contracts import IntentProfile, ToolCallRequest, ToolExecutionRecord
 
 
 class FakeResultStore:
@@ -105,6 +105,24 @@ def test_select_pre_execution_nudge_blocks_repeating_mixed_searches():
 
     assert rule is not None
     assert rule[0] == "mixed_results_already_sufficient"
+
+
+def test_select_pre_execution_nudge_prefers_term_normalization_before_video_search():
+    store = FakeResultStore()
+
+    rule = select_pre_execution_nudge(
+        store,
+        _intent(
+            final_target="videos",
+            needs_keyword_expansion=True,
+            needs_term_normalization=True,
+        ),
+        ["search_videos"],
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "prefer_term_normalization_before_video_search"
 
 
 def test_select_post_execution_nudge_sends_zero_hit_video_fallback():

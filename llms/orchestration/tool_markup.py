@@ -12,7 +12,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from llms.protocol import ToolCallRequest
+from llms.contracts import ToolCallRequest
 
 
 EXTERNAL_TOOL_NAMES: tuple[str, ...] = (

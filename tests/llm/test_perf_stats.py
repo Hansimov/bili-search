@@ -4,7 +4,7 @@ from llms.chat.handler import ChatHandler
 
 
 def test_accumulate_usage_gpt_nested():
-    """Test that GPT nested usage (prompt_tokens_details.cached_tokens) is accumulated."""
+    """Test that GPT nested cache info is flattened while accumulating."""
     total = {}
     gpt_usage = {
         "prompt_tokens": 1000,
@@ -21,8 +21,9 @@ def test_accumulate_usage_gpt_nested():
     ChatHandler._accumulate_usage(total, gpt_usage)
     assert total["prompt_tokens"] == 1000
     assert total["completion_tokens"] == 200
-    assert total["prompt_tokens_details"]["cached_tokens"] == 800
-    assert total["completion_tokens_details"]["reasoning_tokens"] == 50
+    assert total["prompt_cache_hit_tokens"] == 800
+    assert total["prompt_cache_miss_tokens"] == 200
+    assert total["reasoning_tokens"] == 50
 
 
 def test_accumulate_usage_deepseek_flat():
@@ -64,7 +65,37 @@ def test_accumulate_usage_multi_iteration():
     assert total["prompt_tokens"] == 1300
     assert total["completion_tokens"] == 250
     assert total["total_tokens"] == 1550
-    assert total["prompt_tokens_details"]["cached_tokens"] == 1000
+    assert total["prompt_cache_hit_tokens"] == 1000
+    assert total["prompt_cache_miss_tokens"] == 300
+
+
+def test_accumulate_usage_mixed_provider_cache_formats():
+    """Test mixed flat and nested cache formats across different model calls."""
+    total = {}
+    ChatHandler._accumulate_usage(
+        total,
+        {
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1200,
+            "prompt_tokens_details": {"cached_tokens": 800},
+        },
+    )
+    ChatHandler._accumulate_usage(
+        total,
+        {
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "total_tokens": 600,
+            "prompt_cache_hit_tokens": 300,
+            "prompt_cache_miss_tokens": 200,
+        },
+    )
+
+    assert total["prompt_tokens"] == 1500
+    assert total["completion_tokens"] == 300
+    assert total["prompt_cache_hit_tokens"] == 1100
+    assert total["prompt_cache_miss_tokens"] == 400
 
 
 def test_compute_perf_stats_gpt():
@@ -115,6 +146,7 @@ if __name__ == "__main__":
     test_accumulate_usage_gpt_nested()
     test_accumulate_usage_deepseek_flat()
     test_accumulate_usage_multi_iteration()
+    test_accumulate_usage_mixed_provider_cache_formats()
     test_compute_perf_stats_gpt()
     test_compute_perf_stats_deepseek()
     test_compute_perf_stats_no_cache()

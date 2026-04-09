@@ -7,7 +7,7 @@ import json
 from unittest.mock import MagicMock
 
 from llms.chat.handler import ChatHandler
-from llms.llm_client import ChatResponse, LLMClient, ToolCall
+from llms.models import ChatResponse, LLMClient, ToolCall
 
 
 def make_content_response(content: str, usage: dict | None = None) -> ChatResponse:

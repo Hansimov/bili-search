@@ -110,7 +110,7 @@ class SearchApp:
             logger.hint("> Chat handler disabled (no llm_config)")
             return
 
-        from llms.config import create_model_clients
+        from llms.models import create_model_clients
         from llms.chat.handler import ChatHandler
         from llms.tools.executor import SearchService
 

@@ -8,7 +8,15 @@ from typing import Any, Optional
 
 from tclogger import logger
 
+from llms.contracts import (
+    IntentProfile,
+    ModelSpec,
+    OrchestrationResult,
+    ToolCallRequest,
+    ToolExecutionRecord,
+)
 from llms.intent.classifier import build_intent_profile
+from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import select_blocked_request_nudge
@@ -20,17 +28,10 @@ from llms.orchestration.result_store import summarize_result
 from llms.orchestration.tool_markup import command_signature
 from llms.orchestration.tool_markup import parse_xml_tool_calls
 from llms.orchestration.tool_markup import sanitize_generated_content
-from llms.config import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.prompts.assets import get_prompt_assets
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
-from llms.protocol import (
-    IntentProfile,
-    ModelSpec,
-    OrchestrationResult,
-    ToolCallRequest,
-    ToolExecutionRecord,
-)
 from llms.tools.defs import build_tool_definitions
+from llms.usage import accumulate_usage, normalize_usage
 
 
 _THINKING_PROMPT = (
@@ -266,34 +267,10 @@ class ChatOrchestrator:
         return records
 
     def _accumulate_usage(self, total: dict, usage: dict):
-        for key, value in (usage or {}).items():
-            if isinstance(value, (int, float)):
-                total[key] = total.get(key, 0) + value
-            elif isinstance(value, dict):
-                total.setdefault(key, {})
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, (int, float)):
-                        total[key][sub_key] = total[key].get(sub_key, 0) + sub_value
+        accumulate_usage(total, usage)
 
     def _normalize_usage(self, usage: dict) -> dict:
-        result = dict(usage or {})
-        prompt_details = result.get("prompt_tokens_details")
-        if isinstance(prompt_details, dict):
-            cached = prompt_details.get("cached_tokens", 0)
-            if cached and not result.get("prompt_cache_hit_tokens"):
-                result["prompt_cache_hit_tokens"] = cached
-                result["prompt_cache_miss_tokens"] = max(
-                    0, result.get("prompt_tokens", 0) - cached
-                )
-        completion_details = result.get("completion_tokens_details")
-        if isinstance(completion_details, dict):
-            reasoning = completion_details.get("reasoning_tokens", 0)
-            if reasoning:
-                result["reasoning_tokens"] = reasoning
-        for key in list(result.keys()):
-            if isinstance(result[key], dict):
-                del result[key]
-        return result
+        return normalize_usage(usage)
 
     def _usage_trace_entry(
         self,
@@ -674,6 +651,7 @@ class ChatOrchestrator:
                     "task_mode": intent.task_mode,
                     "ambiguity": intent.ambiguity,
                     "complexity_score": intent.complexity_score,
+                    "needs_term_normalization": intent.needs_term_normalization,
                     "motivation": intent.top_labels("motivation"),
                     "expected_payoff": intent.top_labels("expected_payoff"),
                     "constraints": intent.top_labels("constraints"),

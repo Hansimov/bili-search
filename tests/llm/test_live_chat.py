@@ -544,7 +544,7 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
         cache_hit = prompt_details.get("cached_tokens", 0)
     cache_miss = usage.get("prompt_cache_miss_tokens", 0)
     if isinstance(prompt_details, dict) and not cache_miss:
-        cache_miss = max(0, prompt_tokens - cache_hit) if cache_hit else 0
+        cache_miss = max(0, prompt_tokens - cache_hit)
 
     logger.mesg(
         f"  Time: {perf_stats.get('total_elapsed', f'{elapsed_ms}ms')} ({elapsed_ms}ms)"
@@ -631,7 +631,7 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Live LLM Chat Tests")
     from configs.envs import LLM_CONFIG
-    from llms.config import DEFAULT_SMALL_MODEL_CONFIG
+    from llms.models import DEFAULT_SMALL_MODEL_CONFIG
 
     parser.add_argument(
         "--llm-config", type=str, default=LLM_CONFIG, help="LLM config name"
@@ -679,7 +679,7 @@ def main():
 
     from configs.envs import SEARCH_APP_ENVS
     from llms.chat.handler import ChatHandler
-    from llms.config import create_model_clients
+    from llms.models import create_model_clients
     from llms.tools.executor import create_search_service
 
     elastic_index = args.elastic_index

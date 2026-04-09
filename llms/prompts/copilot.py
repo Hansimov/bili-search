@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from llms.intent.classifier import build_intent_profile
-from llms.intent.classifier import select_prompt_asset_ids
+from llms.intent import build_intent_profile
+from llms.intent import select_prompt_asset_ids
 from llms.prompts.assets import get_prompt_assets
 from llms.prompts.system import get_date_prompt
-from llms.protocol import IntentProfile, PromptSelection
+from llms.contracts import IntentProfile, PromptSelection
 
 
 def _capabilities_block(capabilities: dict | None = None) -> str:
@@ -52,19 +52,24 @@ def build_prompt_selection(
     assets = get_prompt_assets(ids=asset_ids)
     capabilities_block = _capabilities_block(capabilities)
     intent_block = _intent_block(intent)
-    blocks = [get_date_prompt(), capabilities_block, intent_block]
+    date_block = get_date_prompt()
+    blocks = [capabilities_block]
     section_chars: dict[str, int] = {
         "tool_overview": len(capabilities_block),
     }
     if intent_block:
         section_chars["intent_profile"] = len(intent_block)
 
+    # Keep the longest shared guidance at the front so provider prompt caches
+    # can reuse it across requests that only differ in date or intent details.
     for asset in assets:
         section_key = asset.section.lower()
         section_chars[section_key] = section_chars.get(section_key, 0) + len(
             asset.content
         )
         blocks.append(f"[{asset.section}]\n{asset.content}\n[/{asset.section}]")
+
+    blocks.extend([date_block, intent_block])
 
     prompt = "\n\n".join(block for block in blocks if block)
     return PromptSelection(

@@ -1,4 +1,4 @@
-from llms.config import (
+from llms.models import (
     DEFAULT_LARGE_MODEL_CONFIG,
     DEFAULT_SMALL_MODEL_CONFIG,
     ModelRegistry,
