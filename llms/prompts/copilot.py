@@ -5,26 +5,14 @@ from llms.intent import select_prompt_asset_ids
 from llms.prompts.assets import get_prompt_assets
 from llms.prompts.system import get_date_prompt
 from llms.contracts import IntentProfile, PromptSelection
+from llms.tools.defs import build_tool_prompt_overview
 
 
 def _capabilities_block(capabilities: dict | None = None) -> str:
-    caps = capabilities or {}
-    external_tools = ["search_videos"]
-    if caps.get("supports_owner_search"):
-        external_tools.append("search_owners")
-    if caps.get("supports_google_search"):
-        external_tools.append("search_google")
-    for endpoint in caps.get("relation_endpoints") or []:
-        if endpoint not in external_tools:
-            external_tools.append(endpoint)
-    tools_text = ", ".join(external_tools)
-    return (
-        "[TOOL_OVERVIEW]\n"
-        f"外部终局工具: {tools_text}\n"
-        "内部工具: read_prompt_assets, inspect_tool_result, run_small_llm_task\n"
-        "读取高层级提示时优先 read_prompt_assets；读取结果细节时优先 inspect_tool_result；\n"
-        "需要并行压缩或归纳时优先 run_small_llm_task。\n"
-        "[/TOOL_OVERVIEW]"
+    return build_tool_prompt_overview(
+        capabilities,
+        include_read_spec=bool((capabilities or {}).get("docs")),
+        include_internal=True,
     )
 
 
@@ -109,12 +97,12 @@ def build_system_prompt_profile(
         intent=resolved_intent,
         extra_asset_ids=extra_asset_ids,
     )
+    section_chars = dict(selection.section_chars)
+    tool_overview_chars = section_chars.pop("tool_overview", 0)
+    section_chars["tool_commands"] = tool_overview_chars
     return {
         "asset_ids": [asset.asset_id for asset in selection.assets],
-        "section_chars": {
-            **selection.section_chars,
-            "tool_commands": selection.section_chars.get("tool_overview", 0),
-        },
+        "section_chars": section_chars,
         "total_chars": len(selection.prompt),
     }
 

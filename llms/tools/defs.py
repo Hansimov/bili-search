@@ -5,6 +5,18 @@ from __future__ import annotations
 from copy import deepcopy
 
 
+_PROMPT_TOOL_EXAMPLES = {
+    "search_videos": "<search_videos queries='[\"黑神话 :view>=1w q=vwr\"]'/>",
+    "search_google": "<search_google query='Gemini 2.5 更新 site:bilibili.com/video' num='5'/>",
+    "search_owners": "<search_owners text='黑神话悟空' mode='topic' size='8'/>",
+    "expand_query": "<expand_query text='康夫UI' mode='correction' size='8'/>",
+    "read_spec": "<read_spec name='search_syntax'/>",
+    "read_prompt_assets": "<read_prompt_assets tool_names='[\"search_videos\"]' levels='[\"examples\"]'/>",
+    "inspect_tool_result": "<inspect_tool_result result_ids='[\"R1\"]' focus='只看最相关 BV' max_items='5'/>",
+    "run_small_llm_task": "<run_small_llm_task task='把候选结果压成 3 条要点' result_ids='[\"R1\",\"R2\"]' output_format='短要点'/>",
+}
+
+
 _OWNER_RELATION_ENDPOINTS = {
     "related_owners_by_tokens",
     "related_owners_by_videos",
@@ -346,6 +358,64 @@ def build_tool_definitions(
             ]
         )
     return tools
+
+
+def _compact_description(text: str, limit: int = 180) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
+def _parameter_summary(parameters: dict | None) -> str:
+    schema = parameters or {}
+    properties = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+    parts = []
+    for name, prop in properties.items():
+        type_name = str(prop.get("type") or "any")
+        marker = "*" if name in required else ""
+        parts.append(f"{name}{marker}:{type_name}")
+    return ", ".join(parts) if parts else "无参数"
+
+
+def build_tool_prompt_overview(
+    capabilities: dict | None = None,
+    *,
+    include_read_spec: bool = False,
+    include_internal: bool = True,
+) -> str:
+    tools = build_tool_definitions(
+        capabilities,
+        include_read_spec=include_read_spec,
+        include_internal=include_internal,
+    )
+    lines = [
+        "[TOOL_OVERVIEW]",
+        "统一使用 XML 工具协议，不依赖 provider function calling。",
+        "如果需要工具，只输出 XML 自闭合标签；一行一个；不要放进 Markdown 代码块。",
+        "如果当前消息里输出了工具标签，就不要同时输出最终答案。",
+        "数组或对象参数必须写成 JSON，再整体放进单引号属性值里。",
+        "多个工具标签可以同轮并列输出，系统会并行执行并把摘要结果回灌给你。",
+        "参数说明中带 * 的字段是必填。",
+        "可用工具：",
+    ]
+    for tool in tools:
+        function = tool.get("function") or {}
+        name = function.get("name") or "unknown_tool"
+        description = _compact_description(function.get("description") or "")
+        params = _parameter_summary(function.get("parameters"))
+        example = _PROMPT_TOOL_EXAMPLES.get(name, f"<{name}/>")
+        lines.extend(
+            [
+                f"{name}",
+                f"- 用途: {description}",
+                f"- 参数: {params}",
+                f"- XML 示例: {example}",
+            ]
+        )
+    lines.append("[/TOOL_OVERVIEW]")
+    return "\n".join(lines)
 
 
 TOOL_DEFINITIONS = build_tool_definitions()

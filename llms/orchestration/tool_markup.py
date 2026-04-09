@@ -52,6 +52,7 @@ def build_tool_prefixes(tool_names: tuple[str, ...]) -> tuple[str, ...]:
 
 
 EXTERNAL_TOOL_PREFIXES = build_tool_prefixes(EXTERNAL_TOOL_NAMES)
+ALL_TOOL_PREFIXES = build_tool_prefixes(ALL_TOOL_NAMES)
 
 
 def parse_tool_argument(raw_value: str):
@@ -73,6 +74,32 @@ def parse_tool_argument(raw_value: str):
     if re.fullmatch(r"-?\d+\.\d+", value):
         return float(value)
     return value
+
+
+def find_tool_command_start(
+    text: str,
+    *,
+    tool_prefixes: tuple[str, ...] = ALL_TOOL_PREFIXES,
+) -> int | None:
+    pos = None
+    for prefix in tool_prefixes:
+        idx = text.find(prefix)
+        if idx >= 0 and (pos is None or idx < pos):
+            pos = idx
+    return pos
+
+
+def partial_tool_prefix_len(
+    text: str,
+    *,
+    tool_prefixes: tuple[str, ...] = ALL_TOOL_PREFIXES,
+) -> int:
+    max_len = 0
+    for prefix in tool_prefixes:
+        for length in range(1, len(prefix)):
+            if text.endswith(prefix[:length]) and length > max_len:
+                max_len = length
+    return max_len
 
 
 def parse_xml_tool_calls(
@@ -164,14 +191,17 @@ def command_signature(call: ToolCallRequest) -> str:
 
 __all__ = [
     "ALL_TOOL_NAMES",
+    "ALL_TOOL_PREFIXES",
     "EXTERNAL_TOOL_NAMES",
     "EXTERNAL_TOOL_PREFIXES",
     "INTERNAL_TOOL_NAMES",
     "build_tool_prefixes",
     "command_signature",
+    "find_tool_command_start",
     "parse_tool_argument",
     "parse_xml_commands",
     "parse_xml_tool_calls",
+    "partial_tool_prefix_len",
     "sanitize_generated_content",
     "strip_tool_commands",
 ]

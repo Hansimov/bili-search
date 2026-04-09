@@ -1066,9 +1066,9 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
     ) -> Generator[str, None, None]:
         """Handle a streaming chat completion request.
 
-        The new orchestrator computes the tool plan and final answer first,
-        then this handler emits SSE chunks for tool events and answer content
-        while preserving the outward stream shape.
+        Streams reasoning/tool/content events directly from the orchestrator
+        so the frontend can render intermediate thinking and tool execution
+        in real time.
         """
         start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -1079,26 +1079,32 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             thinking=thinking,
         )
 
-        result = self.orchestrator.run(
-            messages=messages,
-            thinking=thinking,
-            max_iterations=max_iterations,
-            cancelled=cancelled,
+        result = yield from self._relay_orchestration_stream(
+            request_id=request_id,
+            stream=self.orchestrator.run_stream(
+                messages=messages,
+                thinking=thinking,
+                max_iterations=max_iterations,
+                cancelled=cancelled,
+            ),
         )
 
-        for tool_event in result.tool_events:
-            yield self._format_stream_chunk(
-                request_id=request_id,
-                delta={},
-                tool_events=[tool_event],
-            )
-
         final_content = self._ensure_response_context(messages, result.content)
-        for chunk in self._chunk_text_for_stream(final_content):
-            yield self._format_stream_chunk(
-                request_id=request_id,
-                delta={"content": chunk},
+        if final_content:
+            should_replay_content = (
+                not result.content_streamed or final_content != result.content
             )
+            if result.content_streamed and final_content != result.content:
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta={"retract_content": True},
+                )
+            if should_replay_content:
+                for chunk in self._chunk_text_for_stream(final_content):
+                    yield self._format_stream_chunk(
+                        request_id=request_id,
+                        delta={"content": chunk},
+                    )
 
         normalized_usage = self._normalize_usage(result.usage)
         elapsed_seconds = time.perf_counter() - start_time
@@ -1113,6 +1119,23 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             thinking=thinking,
         )
         yield "[DONE]"
+
+    def _relay_orchestration_stream(
+        self,
+        *,
+        request_id: str,
+        stream,
+    ) -> Generator[str, None, object]:
+        try:
+            while True:
+                event = next(stream)
+                yield self._format_stream_chunk(
+                    request_id=request_id,
+                    delta=event.get("delta") or {},
+                    tool_events=event.get("tool_events"),
+                )
+        except StopIteration as stop:
+            return stop.value
 
     @staticmethod
     def _chunk_text_for_stream(text: str, chunk_size: int = 96) -> list[str]:

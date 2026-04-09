@@ -51,6 +51,9 @@ def test_build_system_prompt_mentions_internal_prompt_loading_and_result_isolati
 
     prompt = build_system_prompt(intent=_video_intent())
 
+    assert "统一使用 XML 工具协议" in prompt
+    assert "如果当前消息里输出了工具标签，就不要同时输出最终答案" in prompt
+    assert "<search_videos" in prompt
     assert "read_prompt_assets" in prompt
     assert "inspect_tool_result" in prompt
     assert "run_small_llm_task" in prompt
@@ -170,3 +173,27 @@ def test_tool_definitions_describe_new_routing_boundaries():
         "抽象 query 的语义展开工具"
         in by_name["expand_query"]["function"]["description"]
     )
+
+
+def test_tool_prompt_overview_lists_xml_examples_and_internal_tools():
+    from llms.tools.defs import build_tool_prompt_overview
+
+    overview = build_tool_prompt_overview(
+        {
+            "default_query_mode": "wv",
+            "rerank_query_mode": "vwr",
+            "supports_multi_query": True,
+            "supports_owner_search": True,
+            "supports_google_search": True,
+            "relation_endpoints": ["related_tokens_by_tokens"],
+            "docs": ["search_syntax"],
+        },
+        include_read_spec=True,
+        include_internal=True,
+    )
+
+    assert "统一使用 XML 工具协议" in overview
+    assert "search_videos" in overview
+    assert "read_prompt_assets" in overview
+    assert "<search_videos queries='[\"黑神话 :view>=1w q=vwr\"]'/>" in overview
+    assert "<inspect_tool_result result_ids='[\"R1\"]'" in overview

@@ -156,11 +156,13 @@ class ToolExecutionRecord:
 @dataclass(slots=True)
 class OrchestrationResult:
     content: str
+    reasoning_content: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     usage_trace: dict[str, Any] = field(default_factory=dict)
     prompt_profile: dict[str, Any] = field(default_factory=dict)
     thinking: bool = False
+    content_streamed: bool = False
 
 
 __all__ = [
