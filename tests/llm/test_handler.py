@@ -483,6 +483,24 @@ def test_alias_like_video_query_rewrites_to_known_canonical_term():
     mock_search.explore.assert_called_once_with(query="ComfyUI 教程 :date>=2024")
 
 
+def test_ensure_primary_subject_context_prefixes_missing_external_subject():
+    content = ChatHandler._ensure_primary_subject_context(
+        [{"role": "user", "content": "Gemini 2.5 最近有哪些官方更新？"}],
+        "最近有几项官方更新。",
+    )
+
+    assert content.startswith("Gemini 2.5：\n")
+
+
+def test_ensure_primary_subject_context_prefers_rewritten_alias_when_missing():
+    content = ChatHandler._ensure_primary_subject_context(
+        [{"role": "user", "content": "康夫UI 有什么入门教程？"}],
+        "入门可看 https://www.bilibili.com/video/BV1abc",
+    )
+
+    assert content.startswith("ComfyUI：\n")
+
+
 def test_handle_falls_back_to_small_model_when_final_response_errors():
     mock_large_llm = MagicMock(spec=LLMClient)
     mock_small_llm = MagicMock(spec=LLMClient)

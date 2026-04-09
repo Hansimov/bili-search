@@ -48,8 +48,14 @@ _SIGNAL_ASSET_IDS = {
     "needs_term_normalization": (
         "tool.expand_query.detailed",
         "tool.expand_query.examples",
+        "tool.search_videos.detailed",
+        "tool.search_videos.examples",
     ),
-    "needs_owner_resolution": ("tool.search_owners.brief",),
+    "needs_owner_resolution": (
+        "tool.search_owners.brief",
+        "tool.search_videos.detailed",
+        "tool.search_videos.examples",
+    ),
     "doc_signal_hints": ("facet.mapping.brief",),
 }
 

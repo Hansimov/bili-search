@@ -53,6 +53,8 @@ def test_build_intent_profile_marks_alias_like_tutorial_query_for_expansion():
     assert "tool.expand_query.brief" in asset_ids
     assert "tool.expand_query.detailed" in asset_ids
     assert "tool.expand_query.examples" in asset_ids
+    assert "tool.search_videos.detailed" in asset_ids
+    assert "tool.search_videos.examples" in asset_ids
 
 
 def test_build_intent_profile_extracts_clean_topic_for_creator_discovery():
@@ -78,3 +80,6 @@ def test_build_intent_profile_carries_owner_context_for_representative_followup(
     assert profile.needs_owner_resolution is True
     assert "何同学" in profile.explicit_entities or "何同学" in profile.explicit_topics
     assert "那他的" not in profile.explicit_entities
+    asset_ids = select_prompt_asset_ids(profile)
+    assert "tool.search_videos.detailed" in asset_ids
+    assert "tool.search_videos.examples" in asset_ids

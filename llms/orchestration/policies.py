@@ -236,6 +236,44 @@ PRE_EXECUTION_NUDGE_RULES = (
         ),
     ),
     ToolLoopNudgeRule(
+        name="prefer_video_search_after_token_expansion",
+        predicate=lambda store, intent, user_tool_names: (
+            intent.final_target == "videos"
+            and intent.needs_term_normalization
+            and has_token_expansion_result(store)
+            and not has_video_coverage(store)
+            and "search_videos" not in user_tool_names
+            and any(
+                tool_name in {"expand_query", "search_google", "search_owners"}
+                for tool_name in user_tool_names
+            )
+        ),
+        message=(
+            "你已经拿到术语归一化候选。下一步直接执行 search_videos，"
+            "把 expand_query 里最可信的 1 到 2 个规范词写进 queries；"
+            "不要重复 expand_query，也不要先绕到 search_google。"
+        ),
+    ),
+    ToolLoopNudgeRule(
+        name="prefer_owner_scoped_video_search_after_resolution",
+        predicate=lambda store, intent, user_tool_names: (
+            intent.final_target == "videos"
+            and intent.needs_owner_resolution
+            and has_owner_coverage(store)
+            and not has_video_coverage(store)
+            and "search_videos" not in user_tool_names
+            and any(
+                tool_name in {"search_owners", "search_google", "expand_query"}
+                for tool_name in user_tool_names
+            )
+        ),
+        message=(
+            "你已经拿到作者候选。下一步直接执行 search_videos，并尽量带 :user 或 :uid "
+            "把结果定向到该作者；不要重复 search_owners，也不要先绕到 search_google。"
+            "如果用户问的是代表作或经典视频，不要默认加最近时间窗；只有明确问“最近”时再加 :date。"
+        ),
+    ),
+    ToolLoopNudgeRule(
         name="owner_results_already_sufficient",
         predicate=lambda store, intent, user_tool_names: (
             intent.final_target in {"owners", "relations"}

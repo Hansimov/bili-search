@@ -62,7 +62,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Response Style",
         "RESPONSE_STYLE",
         "brief",
-        "最终回答要直接、清楚、少废话。列视频时优先用 Markdown 列表和可点击 BV 链接；列作者时优先给作者名和空间链接。拿到明确链接或 BV 后，不要只给标题描述。",
+        "最终回答要直接、清楚、少废话。列视频时优先用 Markdown 列表和可点击 BV 链接；列作者时优先给作者名和空间链接。拿到明确链接或 BV 后，不要只给标题描述。若用户问题里有明确产品名、版本号或作者名，回答首段继续保留这个主体名，不要只写“它”或“这个版本”。",
         tags=("base",),
     ),
     _asset(
@@ -78,7 +78,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Video Route",
         "ROUTE_VIDEOS",
         "brief",
-        "目标是视频时，终局工具优先 search_videos。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query（通常用 correction / associate 思路）再 search_videos；若作者名不稳，先 search_owners 再落到 :user 或 :uid。不要把疑似错写直接当作者名去 search_owners。",
+        "目标是视频时，终局工具优先 search_videos。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query（通常用 correction / associate 思路）再 search_videos；拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid。不要把疑似错写直接当作者名去 search_owners。",
         tags=("route", "videos"),
     ),
     _asset(
@@ -102,7 +102,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "External Route",
         "ROUTE_EXTERNAL",
         "brief",
-        "目标是官网、公告、release notes、跨站事实时，优先 search_google。若产品名、版本号、作者名已经明确，不要先 expand_query。若最终仍要回到 B 站内容，可把 Google 当侦察层，再继续视频或作者工具。",
+        "目标是官网、公告、release notes、跨站事实时，优先 search_google。若产品名、版本号、作者名已经明确，不要先 expand_query。若最终仍要回到 B 站内容，可把 Google 当侦察层，再继续视频或作者工具。最终回答里继续保留用户提到的产品名或版本号，不要只说“这个版本”或“它”。",
         tags=("route", "external"),
     ),
     _asset(
@@ -110,7 +110,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Mixed Route",
         "ROUTE_MIXED",
         "brief",
-        "mixed 任务要拆子目标分别完成，例如官方更新和 B 站解读、作者关系和代表作，不要把不同目标混成一轮模糊搜索。若产品名、版本号或主题实体已经明确，直接进入 search_google / search_videos，不要先做 expand_query。通常先各执行一轮终局工具，再基于现有结果回答；不要反复同时重跑 search_google 和 search_videos。",
+        "mixed 任务要拆子目标分别完成，例如官方更新和 B 站解读、作者关系和代表作，不要把不同目标混成一轮模糊搜索。若产品名、版本号或主题实体已经明确，直接进入 search_google / search_videos，不要先做 expand_query。通常先各执行一轮终局工具，再基于现有结果回答；不要反复同时重跑 search_google 和 search_videos。最终收口时显式点名用户问的产品、版本或作者主体，不要丢掉主题锚点。",
         tags=("route", "mixed"),
     ),
     _asset(
@@ -151,7 +151,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "search_videos detailed",
         "TOOL_SEARCH_VIDEOS",
         "detailed",
-        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设。能稳定用 :user / :uid 时再定向；作者名不稳时先 search_owners。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。",
+        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设。能稳定用 :user / :uid 时再定向；作者名不稳时先 search_owners。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于别名纠错后的教程/入门查询，要直接把规范词写进 queries；对于“代表作”“经典视频”这类作者作品问题，不要默认套最近时间窗，只有明确问“最近”时再加 :date。",
         tags=("tool",),
         tool_name="search_videos",
     ),

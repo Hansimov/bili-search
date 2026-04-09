@@ -125,6 +125,30 @@ def test_select_pre_execution_nudge_prefers_term_normalization_before_video_sear
     assert rule[0] == "prefer_term_normalization_before_video_search"
 
 
+def test_select_pre_execution_nudge_prefers_video_search_after_token_expansion():
+    store = FakeResultStore()
+    store.add(
+        "expand_query",
+        {
+            "text": "康夫UI",
+            "options": [{"text": "ComfyUI", "score": 0.92}],
+        },
+    )
+
+    rule = select_pre_execution_nudge(
+        store,
+        _intent(
+            final_target="videos",
+            needs_term_normalization=True,
+        ),
+        ["search_google"],
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "prefer_video_search_after_token_expansion"
+
+
 def test_select_pre_execution_nudge_prefers_owner_discovery_before_video_search():
     store = FakeResultStore()
 
@@ -151,6 +175,30 @@ def test_select_pre_execution_nudge_prefers_owner_resolution_before_external_det
 
     assert rule is not None
     assert rule[0] == "prefer_owner_resolution_before_external_detour"
+
+
+def test_select_pre_execution_nudge_prefers_scoped_video_search_after_owner_resolution():
+    store = FakeResultStore()
+    store.add(
+        "search_owners",
+        {
+            "text": "何同学",
+            "owners": [{"name": "何同学", "mid": 123, "score": 1.0}],
+        },
+    )
+
+    rule = select_pre_execution_nudge(
+        store,
+        _intent(
+            final_target="videos",
+            needs_owner_resolution=True,
+        ),
+        ["search_google"],
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "prefer_owner_scoped_video_search_after_resolution"
 
 
 def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
