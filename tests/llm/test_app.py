@@ -287,7 +287,7 @@ def test_chat_completions_account_query_stays_relation_only():
         ),
         make_chat_response("找到了何同学相关的作者候选。"),
     ]
-    search_app.owner_searcher.search.return_value = {
+    search_app.relations_client.related_owners_by_tokens.return_value = {
         "owners": [{"mid": 1, "name": "何同学小号候选"}]
     }
 
@@ -312,8 +312,8 @@ def test_chat_completions_account_query_stays_relation_only():
     ]
     assert "search_owners" in used_tools
     assert "search_videos" not in used_tools
-    search_app.owner_searcher.search.assert_called_once_with(
-        text="何同学", mode="relation", size=8
+    search_app.relations_client.related_owners_by_tokens.assert_called_once_with(
+        text="何同学", size=8
     )
     search_app.video_explorer.unified_explore.assert_not_called()
 
@@ -332,7 +332,7 @@ def test_chat_completions_account_followup_stays_relation_only():
         ),
         make_chat_response("补充找到了何同学的其他关联作者候选。"),
     ]
-    search_app.owner_searcher.search.return_value = {
+    search_app.relations_client.related_owners_by_tokens.return_value = {
         "owners": [{"mid": 2, "name": "何同学关联候选"}]
     }
 
@@ -360,8 +360,8 @@ def test_chat_completions_account_followup_stays_relation_only():
     ]
     assert "search_owners" in used_tools
     assert "search_videos" not in used_tools
-    search_app.owner_searcher.search.assert_called_once_with(
-        text="何同学", mode="relation", size=8
+    search_app.relations_client.related_owners_by_tokens.assert_called_once_with(
+        text="何同学", size=8
     )
     search_app.video_explorer.unified_explore.assert_not_called()
 

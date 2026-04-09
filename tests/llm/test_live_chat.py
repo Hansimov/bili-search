@@ -33,7 +33,7 @@ TEST_CASES = [
             {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
         ],
         "checks": {
-            "expected_tools_any": ["related_owners_by_tokens", "search_owners"],
+            "expected_tools_any": ["search_owners"],
             "content_pattern": r"space\.bilibili\.com/\d+",
             "content_not_contains": ["space.bilibili.com/uid", "UP主A", "UP主B"],
             "max_tokens": 12000,
@@ -50,7 +50,7 @@ TEST_CASES = [
             {"role": "user", "content": "更偏剧情解析和世界观考据的呢？"},
         ],
         "checks": {
-            "expected_tools_any": ["related_owners_by_tokens"],
+            "expected_tools_any": ["search_owners"],
             "content_pattern": r"space\.bilibili\.com/\d+",
             "content_not_contains": ["space.bilibili.com/uid", "UP主A", "UP主B"],
             "max_tokens": 14000,
@@ -183,7 +183,7 @@ TEST_CASES = [
             {"role": "user", "content": "何同学有哪些关联账号？"},
         ],
         "checks": {
-            "expected_tools_any": ["related_owners_by_tokens"],
+            "expected_tools_any": ["search_owners"],
             "forbidden_tools": ["search_videos"],
             "content_not_contains": ["你有什么功能 q=vwr"],
             "max_tokens": 12000,
@@ -203,7 +203,7 @@ TEST_CASES = [
             {"role": "user", "content": "他还有别的号吗？"},
         ],
         "checks": {
-            "expected_tools_any": ["related_owners_by_tokens"],
+            "expected_tools_any": ["search_owners"],
             "forbidden_tools": ["search_videos"],
             "content_not_contains": ["他还有别的号吗 q=vwr"],
             "max_tokens": 12000,
@@ -245,7 +245,7 @@ TEST_CASES = [
         ],
         "checks": {
             "expected_tools_any": [
-                "related_owners_by_tokens",
+                "search_owners",
                 "related_owners_by_owners",
             ],
             "content_pattern": r"space\.bilibili\.com/\d+",
@@ -304,7 +304,7 @@ TEST_CASES = [
             {"role": "user", "content": "康夫UI 有什么入门教程？"},
         ],
         "checks": {
-            "expected_tools_all": ["related_tokens_by_tokens", "search_videos"],
+            "expected_tools_all": ["expand_query", "search_videos"],
             "content_contains": ["ComfyUI"],
             "content_pattern": r"bilibili\.com/video/BV",
             "content_not_contains": ["康夫UI q=vwr"],
@@ -323,7 +323,7 @@ TEST_CASES = [
             {"role": "user", "content": "来点让我开心的视频，别太长"},
         ],
         "checks": {
-            "expected_tools_any": ["related_tokens_by_tokens", "search_videos"],
+            "expected_tools_any": ["expand_query", "search_videos"],
             "forbidden_tools": ["search_google"],
             "content_pattern": r"bilibili\.com/video/BV",
             "max_tokens": 16000,

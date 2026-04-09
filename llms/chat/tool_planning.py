@@ -1,4 +1,4 @@
-"""Compatibility shim for llms.planning.mixin."""
+"""Tool-planning mixin re-export."""
 
 from llms.planning.mixin import ToolPlanningMixin
 

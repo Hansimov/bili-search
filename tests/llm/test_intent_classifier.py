@@ -50,9 +50,9 @@ def test_build_intent_profile_marks_alias_like_tutorial_query_for_expansion():
     assert profile.needs_owner_resolution is False
     asset_ids = select_prompt_asset_ids(profile)
     assert "semantic.expansion.brief" in asset_ids
-    assert "tool.related_tokens_by_tokens.brief" in asset_ids
-    assert "tool.related_tokens_by_tokens.detailed" in asset_ids
-    assert "tool.related_tokens_by_tokens.examples" in asset_ids
+    assert "tool.expand_query.brief" in asset_ids
+    assert "tool.expand_query.detailed" in asset_ids
+    assert "tool.expand_query.examples" in asset_ids
 
 
 def test_build_intent_profile_extracts_clean_topic_for_creator_discovery():

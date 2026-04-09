@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from llms.contracts import IntentProfile
+from llms.tools.names import canonical_tool_name
 
 
 FINAL_ANSWER_NUDGE = "请直接基于现有结果回答，不要继续规划，也不要再次调用工具。"
@@ -50,16 +51,20 @@ def is_recent_timeline_request(intent: IntentProfile) -> bool:
 
 
 def has_successful_tool_result(result_store, tool_name: str) -> bool:
+    expected_tool_name = canonical_tool_name(tool_name)
     for result_id in reversed(result_store.order):
         record = result_store.get(result_id)
-        if record is None or record.request.name != tool_name:
+        if (
+            record is None
+            or canonical_tool_name(record.request.name) != expected_tool_name
+        ):
             continue
         result = record.result or {}
         if result.get("error"):
             continue
-        if tool_name == "search_google":
+        if expected_tool_name == "search_google":
             return bool(result.get("results")) or int(result.get("result_count", 0)) > 0
-        if tool_name == "search_videos":
+        if expected_tool_name == "search_videos":
             if result.get("hits"):
                 return True
             if int(result.get("total_hits", 0) or 0) > 0:
@@ -71,6 +76,16 @@ def has_successful_tool_result(result_store, tool_name: str) -> bool:
                 if item.get("hits") or int(item.get("total_hits", 0) or 0) > 0:
                     return True
             continue
+        if expected_tool_name == "search_owners":
+            return (
+                bool(result.get("owners"))
+                or int(result.get("total_owners", 0) or 0) > 0
+            )
+        if expected_tool_name == "expand_query":
+            return (
+                bool(result.get("options"))
+                or int(result.get("total_options", 0) or 0) > 0
+            )
         return True
     return False
 
@@ -115,18 +130,11 @@ def has_sufficient_mixed_coverage(result_store) -> bool:
 
 
 def has_owner_coverage(result_store) -> bool:
-    return has_successful_tool_result(result_store, "search_owners") or any(
-        has_successful_tool_result(result_store, tool_name)
-        for tool_name in (
-            "related_owners_by_tokens",
-            "related_owners_by_videos",
-            "related_owners_by_owners",
-        )
-    )
+    return has_successful_tool_result(result_store, "search_owners")
 
 
 def has_token_expansion_result(result_store) -> bool:
-    return has_successful_tool_result(result_store, "related_tokens_by_tokens")
+    return has_successful_tool_result(result_store, "expand_query")
 
 
 def has_video_coverage(result_store) -> bool:
@@ -188,19 +196,10 @@ PRE_EXECUTION_NUDGE_RULES = (
             intent.final_target in {"owners", "relations"}
             and not store.order
             and "search_videos" in user_tool_names
-            and not any(
-                tool_name
-                in {
-                    "search_owners",
-                    "related_owners_by_tokens",
-                    "related_owners_by_videos",
-                    "related_owners_by_owners",
-                }
-                for tool_name in user_tool_names
-            )
+            and "search_owners" not in user_tool_names
         ),
         message=(
-            "当前任务目标是找作者、矩阵号或关联作者。请先调用 search_owners 或 relation 类工具获取作者候选，"
+            "当前任务目标是找作者、矩阵号或关联作者。请先调用 search_owners 获取作者候选，"
             "必要时用 mode=topic / mode=relation；不要先用 search_videos 兜圈子。"
         ),
     ),
@@ -228,10 +227,10 @@ PRE_EXECUTION_NUDGE_RULES = (
             and intent.needs_term_normalization
             and not store.order
             and "search_videos" in user_tool_names
-            and "related_tokens_by_tokens" not in user_tool_names
+            and "expand_query" not in user_tool_names
         ),
         message=(
-            "当前请求更像别名、错写或中英混写缩写。请先调用 related_tokens_by_tokens "
+            "当前请求更像别名、错写或中英混写缩写。请先调用 expand_query "
             "用 correction 或 associate 思路把原词归一化，再基于纠正后的规范词执行 search_videos；"
             "不要直接把原始错写整句塞进 search_videos。"
         ),
@@ -241,20 +240,11 @@ PRE_EXECUTION_NUDGE_RULES = (
         predicate=lambda store, intent, user_tool_names: (
             intent.final_target in {"owners", "relations"}
             and has_owner_coverage(store)
-            and any(
-                tool_name
-                in {
-                    "search_owners",
-                    "related_owners_by_tokens",
-                    "related_owners_by_videos",
-                    "related_owners_by_owners",
-                }
-                for tool_name in user_tool_names
-            )
+            and "search_owners" in user_tool_names
         ),
         message=(
             "已经拿到一轮作者候选或关系线索。请直接基于现有 result_id 回答；"
-            "不要重复 search_owners 或 relation 类工具。若只差细节，再用 inspect_tool_result。"
+            "不要重复 search_owners。若只差细节，再用 inspect_tool_result。"
         ),
     ),
     ToolLoopNudgeRule(
@@ -299,7 +289,7 @@ POST_EXECUTION_NUDGE_RULES = (
             and count_zero_hit_search_videos(store) >= 1
         ),
         message=(
-            "你已经拿到 related_tokens_by_tokens 的候选，但第一轮 search_videos 仍然没有有效结果。"
+            "你已经拿到 expand_query 的候选，但第一轮 search_videos 仍然没有有效结果。"
             "请先用 inspect_tool_result 查看 token options，选 1 到 2 个最可信的规范词重试 search_videos；"
             "若站内仍无结果，再用 search_google + site:bilibili.com/video 侦察，避免直接返回“没找到”。"
         ),

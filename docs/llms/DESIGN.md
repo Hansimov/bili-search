@@ -14,7 +14,7 @@
 - `llms/contracts/`
   - 统一承载 `IntentProfile`、`ToolCallRequest`、`OrchestrationResult` 等共享数据契约。
 - `llms/models/`
-  - `client.py`：LLM API client compatibility layer。
+  - `client.py`：LLM API client interface。
   - `registry.py`：模型注册表和 large/small client 初始化。
 - `llms/runtime/`
   - `cli.py`：本地调试和单次查询入口。
@@ -35,9 +35,9 @@
   - `result_store.py`：统一 result store、摘要和 inspection 视图。
 - `llms/chat/`
   - `handler.py`：保留对外 OpenAI 兼容 API 和 SSE 封装。
-  - 其余旧模块逐步退化为兼容壳，不再承载核心实现。
-- 旧的顶层 compat 文件 `llms/config.py`、`llms/llm_client.py`、`llms/protocol.py`、`llms/cli.py`、`llms/routing.py`、`llms/routing_rules.py` 已移除；包级 public surface 固定为 `llms/contracts/`、`llms/models/`、`llms/runtime/`、`llms/intent/`。
-- `llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 继续只保留兼容壳，不再承载核心逻辑。
+  - 其余模块只做轻量 re-export，核心实现集中在 planning / orchestration。
+- 旧的顶层迁移文件 `llms/config.py`、`llms/llm_client.py`、`llms/protocol.py`、`llms/cli.py`、`llms/routing.py`、`llms/routing_rules.py` 已移除；包级 public surface 固定为 `llms/contracts/`、`llms/models/`、`llms/runtime/`、`llms/intent/`。
+- `llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 只保留轻量 re-export，不再承载核心逻辑。
 
 ## 核心组件
 
@@ -47,7 +47,7 @@
 - 当前固定默认值：
   - 大模型：`deepseek`
   - 小模型：`qwen3.5-4b`
-- `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` compatibility layer。
+- `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` 接口封装。
 - `create_model_clients(...)` 会一次性构造大小模型 client，并把公开能力暴露给运行时和测试脚本。
 
 ### 意图路由
@@ -79,7 +79,7 @@
 
 ### 编排器
 
-- `llms/orchestration/engine.py` 是新的执行核心，旧的 `llms/chat/orchestrator.py` 仅保留 re-export 兼容层。
+- `llms/orchestration/engine.py` 是执行核心，`llms/chat/orchestrator.py` 只保留 re-export。
 - `llms/orchestration/policies.py` 提供 coverage / nudge / fallback policy，避免把这类逻辑继续堆回 orchestrator 的 if/else 中。
 - `llms/orchestration/tool_markup.py` 负责 function-calling / XML fallback 共用的命令解析与清洗，避免 handler 和 engine 双份实现。
 - 它负责：
@@ -98,7 +98,7 @@
   - 若还缺细节，只能走 `inspect_tool_result`
   - 否则直接进入最终回答阶段
 - 对作者发现类请求增加了额外保护：
-  - 当意图目标是作者/关系，但 planner 首轮想先跑 `search_videos` 时，会被显式 nudged 回 `search_owners` / relation 工具
+  - 当意图目标是作者/关系，但 planner 首轮想先跑 `search_videos` 时，会被显式 nudged 回 `search_owners`
   - 这样可以减少 creator discovery 场景中的无效视频扩搜和 token 浪费
 - 对 live 里常见的 0-hit 场景，编排器还会做两类兜底：
   - mixed 任务里，若站内视频连续 0 hit，会明确引导改用 `search_google + site:bilibili.com/video`
@@ -198,7 +198,7 @@ conda run -n ai python -m tests.llm.test_live_chat \
 ## 当前状态
 
 - llms 核心架构已经切换到多模型编排。
-- intent / planning / orchestration 已拆成独立子包，`chat/` 正在收缩为对外 API / compat 层。
+- intent / planning / orchestration 已拆成独立子包，`chat/` 负责对外 API / SSE 封装与轻量 re-export。
 - 路由主干已经改成 taxonomy + similarity matcher，避免继续新增 route-specific regex。
 - planning plugin 不再默认全量串行执行，而是先由 `llms/planning/pipeline.py` 根据 intent 和结果信号做 selector。
 - 提示资产、结果隔离、前端 tool event 兼容层已落地。

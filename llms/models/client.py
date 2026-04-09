@@ -1,4 +1,4 @@
-"""LLM API client compatibility layer built on top of webu.llms.client.
+"""LLM API client interface built on top of webu.llms.client.
 
 Keeps the structured ToolCall / ChatResponse interface used by bili-search
 while reusing webu's request construction, timeout, and thinking-mode logic.

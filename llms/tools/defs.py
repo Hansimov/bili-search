@@ -5,6 +5,13 @@ from __future__ import annotations
 from copy import deepcopy
 
 
+_OWNER_RELATION_ENDPOINTS = {
+    "related_owners_by_tokens",
+    "related_owners_by_videos",
+    "related_owners_by_owners",
+}
+
+
 DEFAULT_SEARCH_CAPABILITIES = {
     "service_type": "unknown",
     "default_query_mode": "wv",
@@ -40,16 +47,23 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
             "description": (
                 "搜索 B 站视频。这是默认终局工具，适合视频、代表作、时间线、热门、教程和解读。"
                 f"{multi_query_text}"
+                "普通检索时用 queries；若已拿到作者 mids 或种子视频 bvids，也可直接基于种子继续发掘相关视频。"
                 "queries 必须是整理后的 DSL 搜索语句，而不是用户原话整句。"
                 "优先保留关键实体、主题词、作者、时间窗、热度和时长条件。"
                 "作者关系问题通常不该直接用它；作者名不稳时先 search_owners。"
-                "抽象偏好、口语标签、黑话或 vibe 请求，通常先 related_tokens_by_tokens 再回到本工具。"
+                "抽象偏好、口语标签、黑话或 vibe 请求，通常先 expand_query 再回到本工具。"
                 f"搜索模式：默认q={default_mode}（泛搜热门），精确主题匹配用q={rerank_mode}。"
                 f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "search", "discover"],
+                        "description": "普通检索或基于 mids/bvids 的继续发掘，默认 auto",
+                        "default": "auto",
+                    },
                     "queries": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -61,8 +75,23 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                             f"精确主题搜索时在末尾添加 q={rerank_mode}。"
                         ),
                     },
+                    "bvids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "已知种子视频 BV 号。用于从现有视频继续发掘相关视频。",
+                    },
+                    "mids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "已知作者 mid 列表。用于从作者继续发掘代表作或相关视频。",
+                    },
+                    "size": {
+                        "type": "integer",
+                        "description": "discover 模式下返回候选数量",
+                        "default": 10,
+                    },
                 },
-                "required": ["queries"],
+                "required": [],
             },
         },
     }
@@ -122,8 +151,8 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                 "搜索作者/UP主。适合作者名查找、别名补全、作者候选发现、关联账号、矩阵号和相近作者扩展。"
                 "作者问题优先用它，不要机械转成视频搜索。"
                 "作者最近视频这类问题，如果作者词不稳，应先用它确认作者，再继续 search_videos。"
+                "按主题或作者线索找作者时传 text；若已经拿到 bvids 或 mids，也可直接继续做作者关系发掘。"
                 "mode=relation 适合关联账号/矩阵号；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
-                "参数要写在 text 字段里，不要误传成 queries。"
             ),
             "parameters": {
                 "type": "object",
@@ -138,33 +167,62 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                         "description": "搜索模式，默认 auto",
                         "default": "auto",
                     },
+                    "bvids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "已知种子视频 BV 号。用于从视频继续查作者或关联作者。",
+                    },
+                    "mids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "已知作者 mid 列表。用于扩展关联账号、矩阵号或相近作者。",
+                    },
                     "size": {
                         "type": "integer",
                         "description": "返回作者数量",
                         "default": 8,
                     },
                 },
-                "required": ["text"],
+                "required": [],
             },
         },
     }
 
 
-def build_relation_tool(
-    name: str,
-    description: str,
-    properties: dict,
-    required: list[str],
-) -> dict:
+def build_expand_query_tool(capabilities: dict | None = None) -> dict:
+    _merge_capabilities(capabilities)
     return {
         "type": "function",
         "function": {
-            "name": name,
-            "description": description,
+            "name": "expand_query",
+            "description": (
+                "抽象 query 的语义展开工具。基于给定文本寻找相关 token 补全、主题词、语义联想或纠错候选。"
+                "适用于别名、错写、简称，也适用于口语黑话、抽象标签、隐含主题的展开。"
+                "对于很短、抽象、缺稳定实体的请求，通常应先调用它做语义展开，而不是直接发起 literal 视频搜索。"
+                "它不是最终结果来源；拿到候选后通常还应继续调用 search_videos 或 search_owners。"
+            ),
             "parameters": {
                 "type": "object",
-                "properties": properties,
-                "required": required,
+                "properties": {
+                    "text": {"type": "string", "description": "输入文本"},
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "prefix",
+                            "associate",
+                            "next_token",
+                            "correction",
+                        ],
+                        "description": "展开模式，默认 auto",
+                    },
+                    "size": {
+                        "type": "integer",
+                        "description": "返回候选数量",
+                        "default": 8,
+                    },
+                },
+                "required": ["text"],
             },
         },
     }
@@ -203,45 +261,19 @@ def build_tool_definitions(
     include_read_spec: bool = False,
     include_internal: bool = False,
 ) -> list[dict]:
-    tools = [
-        build_search_videos_tool(capabilities),
-    ]
-    if _merge_capabilities(capabilities).get("supports_google_search", False):
-        tools.append(build_search_google_tool(capabilities))
-    if _merge_capabilities(capabilities).get("supports_owner_search", False):
-        tools.append(build_search_owners_tool(capabilities))
-    relation_endpoints = set(
-        _merge_capabilities(capabilities).get("relation_endpoints") or []
-    )
+    caps = _merge_capabilities(capabilities)
+    relation_endpoints = set(caps.get("relation_endpoints") or [])
+    tools = [build_search_videos_tool(caps)]
+    if caps.get("supports_google_search", False):
+        tools.append(build_search_google_tool(caps))
+    if caps.get("supports_owner_search", False) or (
+        relation_endpoints & _OWNER_RELATION_ENDPOINTS
+    ):
+        tools.append(build_search_owners_tool(caps))
     if "related_tokens_by_tokens" in relation_endpoints:
-        tools.append(
-            build_relation_tool(
-                "related_tokens_by_tokens",
-                "抽象 query 的语义展开工具。基于给定文本寻找相关 token 补全、主题词、语义联想或纠错候选。适用于别名、错写、简称，也适用于口语黑话、抽象标签、隐含主题的展开。对于很短、抽象、缺稳定实体的请求，通常应先调用它做语义展开，而不是直接发起 literal 视频搜索。它不是最终结果来源；拿到候选后通常还应继续调用 search_videos 或 search_owners。",
-                {
-                    "text": {"type": "string", "description": "输入文本"},
-                    "mode": {
-                        "type": "string",
-                        "enum": [
-                            "auto",
-                            "prefix",
-                            "associate",
-                            "next_token",
-                            "correction",
-                        ],
-                        "description": "关系模式，默认 auto",
-                    },
-                    "size": {
-                        "type": "integer",
-                        "description": "返回候选数量",
-                        "default": 8,
-                    },
-                },
-                ["text"],
-            )
-        )
+        tools.append(build_expand_query_tool(caps))
     if include_read_spec:
-        tools.append(build_read_spec_tool(capabilities))
+        tools.append(build_read_spec_tool(caps))
     if include_internal:
         tools.extend(
             [

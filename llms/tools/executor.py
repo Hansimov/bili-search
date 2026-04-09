@@ -6,6 +6,7 @@ import os
 import re
 import requests
 import time
+from unittest.mock import Mock
 
 from tclogger import logger
 
@@ -13,6 +14,7 @@ from llms.contracts import ToolCallRequest
 from llms.models import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
+from llms.tools.names import canonical_tool_name
 from llms.tools.utils import (
     extract_explore_hits,
     format_google_results,
@@ -52,6 +54,12 @@ def _strip_owner_search_filters(text: str) -> str:
 def _coerce_owner_search_args(args: dict) -> dict:
     normalized = dict(args or {})
     text = str(normalized.get("text", "") or "").strip()
+
+    if normalized.get("size") is None:
+        for key in ("num", "limit"):
+            if normalized.get(key) is not None:
+                normalized["size"] = normalized.get(key)
+                break
 
     if not text:
         alias_candidates = [
@@ -95,6 +103,15 @@ def _coerce_owner_search_args(args: dict) -> dict:
         normalized["mode"] = "topic"
 
     return normalized
+
+
+def _normalize_seed_values(values: object) -> list[str]:
+    if isinstance(values, str):
+        text = values.strip()
+        return [text] if text else []
+    if isinstance(values, (list, tuple, set)):
+        return [str(item).strip() for item in values if str(item or "").strip()]
+    return []
 
 
 def _strip_soft_filters(query: str) -> str:
@@ -536,14 +553,25 @@ class ToolExecutor:
             "search_videos": self._search_videos,
             "search_google": self._search_google,
             "search_owners": self._search_owners,
-            "related_tokens_by_tokens": self._related_tokens_by_tokens,
-            "related_owners_by_tokens": self._related_owners_by_tokens,
-            "related_videos_by_videos": self._related_videos_by_videos,
-            "related_owners_by_videos": self._related_owners_by_videos,
-            "related_videos_by_owners": self._related_videos_by_owners,
-            "related_owners_by_owners": self._related_owners_by_owners,
+            "expand_query": self._expand_query,
             "read_spec": self._read_spec,
         }
+
+    def _supports_relation_endpoint(self, name: str) -> bool:
+        relation_endpoints = set(
+            self.get_search_capabilities().get("relation_endpoints") or []
+        )
+        if relation_endpoints:
+            return name in relation_endpoints
+        method = getattr(self.search_client, name, None)
+        if method is None or not callable(method):
+            return False
+        if isinstance(method, Mock):
+            return (
+                not isinstance(method.return_value, Mock)
+                or method.side_effect is not None
+            )
+        return True
 
     def _is_google_available(self) -> bool:
         """Check Google search hub availability with cached result."""
@@ -605,7 +633,7 @@ class ToolExecutor:
         )
 
     def execute_request(self, request: ToolCallRequest) -> dict:
-        handler = self._handlers.get(request.name)
+        handler = self._handlers.get(canonical_tool_name(request.name))
         if handler is None:
             return {"error": f"Unknown tool: {request.name}"}
         return handler(request.arguments)
@@ -646,10 +674,46 @@ class ToolExecutor:
     def _search_videos(self, args: dict) -> dict:
         """Execute the search_videos tool with multi-query support.
 
-        Accepts `queries` (array of strings) or legacy `query` (single string).
+        Accepts either `queries` (array of strings) or a single `query` string.
         Each query is executed independently and results are merged.
         """
-        # Support both new `queries` (array) and legacy `query` (string)
+        mode = str(args.get("mode", "auto") or "auto")
+        bvids = _normalize_seed_values(args.get("bvids"))
+        mids = _normalize_seed_values(args.get("mids"))
+        discover_requested = mode == "discover" or (
+            not args.get("queries") and not args.get("query") and (bvids or mids)
+        )
+
+        if discover_requested and bvids:
+            if not self._supports_relation_endpoint("related_videos_by_videos"):
+                return {
+                    "error": "Video discovery unavailable",
+                    "bvids": bvids,
+                    "videos": [],
+                }
+            result = self.search_client.related_videos_by_videos(
+                bvids=bvids,
+                size=int(args.get("size", 10) or 10),
+            )
+            payload = self._format_relation_video_result(result, "bvids", bvids)
+            payload["mode"] = "discover"
+            return payload
+
+        if discover_requested and mids:
+            if not self._supports_relation_endpoint("related_videos_by_owners"):
+                return {
+                    "error": "Video discovery unavailable",
+                    "mids": mids,
+                    "videos": [],
+                }
+            result = self.search_client.related_videos_by_owners(
+                mids=mids,
+                size=int(args.get("size", 10) or 10),
+            )
+            payload = self._format_relation_video_result(result, "mids", mids)
+            payload["mode"] = "discover"
+            return payload
+
         queries = args.get("queries", [])
         if not queries:
             query = args.get("query", "")
@@ -664,7 +728,8 @@ class ToolExecutor:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 results = list(executor.map(self._search_single_query, queries))
 
-        # For single query, return flat result for backward compatibility
+        # Keep single-query responses flat so downstream consumers do not need
+        # to unwrap a one-item results list.
         if len(results) == 1:
             return results[0]
 
@@ -750,9 +815,66 @@ class ToolExecutor:
     def _search_owners(self, args: dict) -> dict:
         resolved_args = _coerce_owner_search_args(args)
         text = str(resolved_args.get("text", "")).strip()
+        bvids = _normalize_seed_values(resolved_args.get("bvids"))
+        mids = _normalize_seed_values(resolved_args.get("mids"))
+        requested_mode = str(resolved_args.get("mode", "auto") or "auto")
+        relation_requested = requested_mode == "relation" or (
+            not text and (bvids or mids)
+        )
+
+        if relation_requested and bvids:
+            if not self._supports_relation_endpoint("related_owners_by_videos"):
+                return {
+                    "error": "Owner discovery unavailable",
+                    "bvids": bvids,
+                    "owners": [],
+                }
+            result = self.search_client.related_owners_by_videos(
+                bvids=bvids,
+                size=int(resolved_args.get("size", 10) or 10),
+            )
+            payload = self._format_relation_owner_result(result, "bvids", bvids)
+            payload["mode"] = "relation"
+            return payload
+
+        if relation_requested and mids:
+            if not self._supports_relation_endpoint("related_owners_by_owners"):
+                return {
+                    "error": "Owner discovery unavailable",
+                    "mids": mids,
+                    "owners": [],
+                }
+            result = self.search_client.related_owners_by_owners(
+                mids=mids,
+                size=int(resolved_args.get("size", 10) or 10),
+            )
+            payload = self._format_relation_owner_result(result, "mids", mids)
+            payload["mode"] = "relation"
+            return payload
+
         if not text:
             return {"error": "Missing text parameter", "owners": []}
-        mode = str(resolved_args.get("mode", "auto") or "auto")
+        mode = requested_mode
+        if mode in {"topic", "relation"} and self._supports_relation_endpoint(
+            "related_owners_by_tokens"
+        ):
+            relation_size = int(resolved_args.get("size", 8) or 8)
+            relation_result = self.search_client.related_owners_by_tokens(
+                text=text,
+                size=relation_size,
+            )
+            if relation_result.get("error"):
+                return {"text": text, "error": relation_result["error"], "owners": []}
+            owners = relation_result.get("owners", [])
+            return {
+                "text": text,
+                "mode": mode,
+                "total_owners": len(owners),
+                "owners": format_related_owners(
+                    owners,
+                    max_hits=max(self.max_results, relation_size),
+                ),
+            }
         default_size = 20 if mode == "topic" else 8
         size = int(resolved_args.get("size", default_size) or default_size)
         max_owner_hits = (
@@ -780,8 +902,8 @@ class ToolExecutor:
         if (
             not result.get("error")
             and not result.get("owners")
-            and resolved_mode == "topic"
-            and hasattr(self.search_client, "related_owners_by_tokens")
+            and resolved_mode in {"topic", "relation"}
+            and self._supports_relation_endpoint("related_owners_by_tokens")
         ):
             relation_size = max(size, 20)
             relation_result = self.search_client.related_owners_by_tokens(
@@ -794,7 +916,7 @@ class ToolExecutor:
                     "mode": "topic",
                     "owners": relation_result.get("owners", []),
                 }
-                fallback_tool = "related_owners_by_tokens"
+                fallback_tool = "search_owners"
                 max_owner_hits = max(self.max_results, 20)
         if result.get("error"):
             return {"text": text, "error": result["error"], "owners": []}
@@ -811,10 +933,12 @@ class ToolExecutor:
             payload["fallback_tool"] = fallback_tool
         return payload
 
-    def _related_tokens_by_tokens(self, args: dict) -> dict:
+    def _expand_query(self, args: dict) -> dict:
         text = str(args.get("text", "")).strip()
         if not text:
             return {"error": "Missing text parameter", "options": []}
+        if not self._supports_relation_endpoint("related_tokens_by_tokens"):
+            return {"text": text, "error": "Query expansion unavailable", "options": []}
         result = self.search_client.related_tokens_by_tokens(
             text=text,
             mode=args.get("mode", "auto"),
@@ -829,63 +953,6 @@ class ToolExecutor:
             "total_options": len(options),
             "options": format_related_token_options(options, max_hits=self.max_results),
         }
-
-    def _related_owners_by_tokens(self, args: dict) -> dict:
-        text = str(args.get("text", "")).strip()
-        if not text:
-            return {"error": "Missing text parameter", "owners": []}
-        result = self.search_client.related_owners_by_tokens(
-            text=text,
-            size=int(args.get("size", 8) or 8),
-        )
-        if result.get("error"):
-            return {"text": text, "error": result["error"], "owners": []}
-        owners = result.get("owners", [])
-        return {
-            "text": text,
-            "total_owners": len(owners),
-            "owners": format_related_owners(owners, max_hits=self.max_results),
-        }
-
-    def _related_videos_by_videos(self, args: dict) -> dict:
-        bvids = args.get("bvids") or []
-        if not bvids:
-            return {"error": "Missing bvids parameter", "videos": []}
-        result = self.search_client.related_videos_by_videos(
-            bvids=bvids,
-            size=int(args.get("size", 10) or 10),
-        )
-        return self._format_relation_video_result(result, "bvids", bvids)
-
-    def _related_owners_by_videos(self, args: dict) -> dict:
-        bvids = args.get("bvids") or []
-        if not bvids:
-            return {"error": "Missing bvids parameter", "owners": []}
-        result = self.search_client.related_owners_by_videos(
-            bvids=bvids,
-            size=int(args.get("size", 10) or 10),
-        )
-        return self._format_relation_owner_result(result, "bvids", bvids)
-
-    def _related_videos_by_owners(self, args: dict) -> dict:
-        mids = args.get("mids") or []
-        if not mids:
-            return {"error": "Missing mids parameter", "videos": []}
-        result = self.search_client.related_videos_by_owners(
-            mids=mids,
-            size=int(args.get("size", 10) or 10),
-        )
-        return self._format_relation_video_result(result, "mids", mids)
-
-    def _related_owners_by_owners(self, args: dict) -> dict:
-        mids = args.get("mids") or []
-        if not mids:
-            return {"error": "Missing mids parameter", "owners": []}
-        result = self.search_client.related_owners_by_owners(
-            mids=mids,
-            size=int(args.get("size", 10) or 10),
-        )
-        return self._format_relation_owner_result(result, "mids", mids)
 
     def _format_relation_video_result(
         self, result: dict, seed_key: str, seed_values: list

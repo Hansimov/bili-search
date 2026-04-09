@@ -185,7 +185,7 @@ def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
 def test_select_post_execution_nudge_prefers_token_retry_for_alias_expansion():
     store = FakeResultStore()
     store.add(
-        "related_tokens_by_tokens",
+        "expand_query",
         {
             "text": "康夫UI",
             "options": [{"text": "ComfyUI", "score": 0.92}],

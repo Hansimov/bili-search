@@ -133,7 +133,7 @@ def test_tool_definitions_include_internal_tools_when_requested():
     assert "search_videos" in names
     assert "search_google" in names
     assert "search_owners" in names
-    assert "related_tokens_by_tokens" in names
+    assert "expand_query" in names
     assert "read_spec" in names
     assert "read_prompt_assets" in names
     assert "inspect_tool_result" in names
@@ -168,5 +168,5 @@ def test_tool_definitions_describe_new_routing_boundaries():
     assert "作者问题优先用它" in by_name["search_owners"]["function"]["description"]
     assert (
         "抽象 query 的语义展开工具"
-        in by_name["related_tokens_by_tokens"]["function"]["description"]
+        in by_name["expand_query"]["function"]["description"]
     )

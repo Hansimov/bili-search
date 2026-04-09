@@ -16,7 +16,8 @@ from llms.contracts import (
     ToolExecutionRecord,
 )
 from llms.intent import build_intent_profile
-from llms.intent.signals import rewrite_known_term_aliases
+from llms.intent.focus import rewrite_known_term_aliases
+from llms.intent.focus import select_primary_focus_term
 from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
 from llms.orchestration.policies import has_target_coverage
@@ -33,6 +34,7 @@ from llms.prompts.assets import get_prompt_assets
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
 from llms.runtime.usage import accumulate_usage, normalize_usage
 from llms.tools.defs import build_tool_definitions
+from llms.tools.names import canonical_tool_name
 
 
 _THINKING_PROMPT = (
@@ -63,29 +65,12 @@ class ChatOrchestrator:
 
     @staticmethod
     def _owner_resolution_seed(intent: IntentProfile) -> str:
-        generic_tokens = {
-            "up",
-            "up主",
-            "作者",
-            "账号",
-            "关联账号",
-            "代表作",
-            "他的",
-            "那他的",
-        }
-        for candidate in [
-            *(intent.explicit_entities or []),
-            *(intent.explicit_topics or []),
-        ]:
-            text = str(candidate or "").strip()
-            if not text:
-                continue
-            if text.lower() in generic_tokens:
-                continue
-            if len(text) < 2:
-                continue
-            return text
-        return ""
+        return select_primary_focus_term(
+            [
+                *(intent.explicit_topics or []),
+                *(intent.explicit_entities or []),
+            ]
+        )
 
     @staticmethod
     def _owner_request_text(arguments: dict) -> str:
@@ -111,9 +96,9 @@ class ChatOrchestrator:
     ) -> ToolCallRequest:
         if request.visibility != "user":
             return request
+        name = canonical_tool_name(request.name)
         arguments = dict(request.arguments or {})
-        relation_endpoints = set(search_capabilities.get("relation_endpoints") or [])
-        if request.name == "search_owners":
+        if name == "search_owners":
             owner_text = self._owner_request_text(arguments)
             if not owner_text:
                 owner_seed = self._owner_resolution_seed(intent)
@@ -129,28 +114,7 @@ class ChatOrchestrator:
                 and intent.task_mode == "exploration"
             ):
                 arguments["mode"] = "topic"
-            owner_text = self._owner_request_text(arguments)
-            owner_mode = str(arguments.get("mode", "auto") or "auto")
-            if (
-                owner_text
-                and owner_mode == "topic"
-                and intent.final_target in {"owners", "relations"}
-                and intent.task_mode == "exploration"
-                and "related_owners_by_tokens" in relation_endpoints
-            ):
-                rewritten_args = {"text": owner_text}
-                for size_key in ("size", "num", "limit"):
-                    if arguments.get(size_key) is not None:
-                        rewritten_args["size"] = arguments.get(size_key)
-                        break
-                return ToolCallRequest(
-                    id=request.id,
-                    name="related_owners_by_tokens",
-                    arguments=rewritten_args,
-                    visibility=request.visibility,
-                    source=request.source,
-                )
-        elif request.name == "search_videos" and intent.needs_term_normalization:
+        elif name == "search_videos" and intent.needs_term_normalization:
             raw_queries = arguments.get("queries")
             if isinstance(raw_queries, str):
                 raw_queries = [raw_queries]
@@ -171,16 +135,15 @@ class ChatOrchestrator:
             if query_changed and rewritten_queries:
                 arguments.pop("query", None)
                 arguments["queries"] = rewritten_queries
-        elif request.name == "related_owners_by_tokens":
-            if not str(arguments.get("text", "") or "").strip():
-                owner_seed = self._owner_resolution_seed(intent)
-                if owner_seed:
-                    arguments["text"] = owner_seed
-        if arguments == request.arguments:
+        if name == "search_owners" and not str(arguments.get("text", "") or "").strip():
+            owner_seed = self._owner_resolution_seed(intent)
+            if owner_seed:
+                arguments["text"] = owner_seed
+        if arguments == request.arguments and name == request.name:
             return request
         return ToolCallRequest(
             id=request.id,
-            name=request.name,
+            name=name,
             arguments=arguments,
             visibility=request.visibility,
             source=request.source,

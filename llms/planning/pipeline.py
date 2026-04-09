@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal, Protocol
 
 from llms.contracts import IntentProfile
+from llms.tools.names import canonical_tool_name
 
 
 ToolResultScope = Literal["last_tool_results", "owner_result_scope"]
@@ -83,29 +84,40 @@ class HandlerMethodPlanningPlugin:
             if self.tool_result_scope == "owner_result_scope"
             else context.last_tool_results
         )
-        return method(context.commands, context.messages, tool_results)
+        return method(
+            context.commands,
+            context.messages,
+            tool_results,
+            context.intent,
+        )
 
 
 def _types_of(items: list[dict] | None) -> frozenset[str]:
     return frozenset(
-        str(item.get("type") or "") for item in items or [] if item.get("type")
+        canonical_tool_name(str(item.get("type") or ""))
+        for item in items or []
+        if item.get("type")
     )
 
 
 def _has_results_of_type(items: list[dict] | None, tool_name: str) -> bool:
-    return any(item.get("type") == tool_name for item in items or [])
+    expected = canonical_tool_name(tool_name)
+    return any(
+        canonical_tool_name(str(item.get("type") or "")) == expected
+        for item in items or []
+    )
 
 
 def build_planning_signals(context: ToolPlanningContext) -> PlanningSignals:
     command_types = frozenset(
-        str(command.get("type") or "")
+        canonical_tool_name(str(command.get("type") or ""))
         for command in context.commands or []
         if command.get("type")
     )
     last_result_types = _types_of(context.last_tool_results)
     owner_scope_types = _types_of(context.owner_result_scope)
     only_intermediate_results = bool(last_result_types) and last_result_types.issubset(
-        {"search_owners", "related_tokens_by_tokens"}
+        {"search_owners", "expand_query"}
     )
     return PlanningSignals(
         command_types=command_types,
@@ -121,7 +133,7 @@ def build_planning_signals(context: ToolPlanningContext) -> PlanningSignals:
             context.last_tool_results, "search_owners"
         ),
         has_token_results=_has_results_of_type(
-            context.last_tool_results, "related_tokens_by_tokens"
+            context.last_tool_results, "expand_query"
         ),
         only_intermediate_results=only_intermediate_results,
     )
@@ -144,6 +156,7 @@ DEFAULT_TOOL_PLANNING_PLUGINS: tuple[ToolPlanningPlugin, ...] = (
             bool(context.intent)
             and context.intent.final_target == "videos"
             and context.intent.needs_keyword_expansion
+            and not context.intent.needs_term_normalization
             and not signals.has_search_google_command
             and not signals.has_google_results
         ),
@@ -170,7 +183,6 @@ DEFAULT_TOOL_PLANNING_PLUGINS: tuple[ToolPlanningPlugin, ...] = (
             and signals.has_google_results
             and not signals.has_owner_results
             and "search_owners" not in signals.command_types
-            and "related_owners_by_tokens" not in signals.command_types
         ),
     ),
     HandlerMethodPlanningPlugin(

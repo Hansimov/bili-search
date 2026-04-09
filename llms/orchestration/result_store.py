@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from llms.contracts import ToolExecutionRecord
+from llms.tools.names import canonical_tool_name
 
 
 def make_video_url(bvid: str) -> str:
@@ -92,8 +93,9 @@ class ResultStore:
 
 
 def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
+    canonical_name = canonical_tool_name(tool_name)
     summary_text = ""
-    if tool_name == "search_videos":
+    if canonical_name == "search_videos":
         if result.get("results"):
             query_summaries = []
             for item in result.get("results", [])[:3]:
@@ -126,7 +128,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             )
             return {
                 "result_id": result_id,
-                "tool": tool_name,
+                "tool": canonical_name,
                 "queries": query_summaries,
                 "summary_text": summary_text,
             }
@@ -147,7 +149,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         )
         return {
             "result_id": result_id,
-            "tool": tool_name,
+            "tool": canonical_name,
             "query": result.get("query", ""),
             "resolved_query": result.get("resolved_query", ""),
             "total_hits": result.get("total_hits", len(hits)),
@@ -155,21 +157,24 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             "summary_text": summary_text,
         }
 
-    if tool_name == "search_owners":
+    if canonical_name == "search_owners":
         owners = result.get("owners") or []
         owner_rows = [compact_owner(owner) for owner in owners[:6]]
-        summary_text = f"text={result.get('text', '')}, owners=" + ", ".join(
+        seed_summary = (
+            result.get("text") or result.get("bvids") or result.get("mids") or ""
+        )
+        summary_text = f"text={seed_summary}, owners=" + ", ".join(
             owner["name"] for owner in owner_rows if owner.get("name")
         )
         return {
             "result_id": result_id,
-            "tool": tool_name,
+            "tool": canonical_name,
             "text": result.get("text", ""),
             "owners": owner_rows,
             "summary_text": summary_text,
         }
 
-    if tool_name == "search_google":
+    if canonical_name == "search_google":
         rows = result.get("results") or []
         top_results = [compact_google_row(row) for row in rows[:5]]
         summary_text = f"query={result.get('query', '')}, top_results=" + "; ".join(
@@ -177,13 +182,13 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         )
         return {
             "result_id": result_id,
-            "tool": tool_name,
+            "tool": canonical_name,
             "query": result.get("query", ""),
             "results": top_results,
             "summary_text": summary_text,
         }
 
-    if tool_name == "related_tokens_by_tokens":
+    if canonical_name == "expand_query":
         options = result.get("options") or []
         top_options = [compact_token_option(item) for item in options[:8]]
         summary_text = f"text={result.get('text', '')}, token_options=" + ", ".join(
@@ -191,7 +196,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         )
         return {
             "result_id": result_id,
-            "tool": tool_name,
+            "tool": canonical_name,
             "text": result.get("text", ""),
             "options": top_options,
             "summary_text": summary_text,
@@ -208,7 +213,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         )
         return {
             "result_id": result_id,
-            "tool": tool_name,
+            "tool": canonical_name,
             "owners": owner_rows,
             "summary_text": summary_text,
         }
@@ -224,7 +229,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         )
         return {
             "result_id": result_id,
-            "tool": tool_name,
+            "tool": canonical_name,
             "videos": video_rows,
             "summary_text": summary_text,
         }
@@ -232,7 +237,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
     summary_text = json.dumps(result, ensure_ascii=False)[:480]
     return {
         "result_id": result_id,
-        "tool": tool_name,
+        "tool": canonical_name,
         "summary_text": summary_text,
     }
 
@@ -246,7 +251,8 @@ def inspect_results(result_store: ResultStore, args: dict) -> dict:
         record = result_store.get(result_id)
         if record is None:
             continue
-        if record.request.name == "search_videos":
+        canonical_name = canonical_tool_name(record.request.name)
+        if canonical_name == "search_videos":
             payload = {"result_id": result_id, "focus": focus}
             if record.result.get("results"):
                 payload["queries"] = []
@@ -272,7 +278,7 @@ def inspect_results(result_store: ResultStore, args: dict) -> dict:
             inspected.append(payload)
             continue
 
-        if record.request.name == "search_google":
+        if canonical_name == "search_google":
             inspected.append(
                 {
                     "result_id": result_id,
@@ -286,7 +292,7 @@ def inspect_results(result_store: ResultStore, args: dict) -> dict:
             )
             continue
 
-        if record.request.name == "search_owners" or isinstance(
+        if canonical_name == "search_owners" or isinstance(
             record.result.get("owners"), list
         ):
             inspected.append(
@@ -302,7 +308,7 @@ def inspect_results(result_store: ResultStore, args: dict) -> dict:
             )
             continue
 
-        if record.request.name == "related_tokens_by_tokens":
+        if canonical_name == "expand_query":
             inspected.append(
                 {
                     "result_id": result_id,

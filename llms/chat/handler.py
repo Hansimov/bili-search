@@ -1,4 +1,4 @@
-"""Compatibility wrapper around the new multi-model chat orchestrator.
+"""OpenAI-style chat handler backed by the multi-model orchestrator.
 
 The current flow is:
     1. Build an intent profile from the latest conversation turn.
@@ -7,8 +7,8 @@ The current flow is:
     4. Keep raw tool results in a result store and only expose summaries/result_ids
          back to the model unless it explicitly asks for more detail.
 
-This module mainly preserves the existing API and SSE response shape while the
-real planning and tool loop lives in llms.orchestration.engine.
+This module owns the outward chat-completions/SSE surface while the planning
+and tool loop live in llms.orchestration.engine.
 """
 
 import json
@@ -20,6 +20,9 @@ import uuid
 from tclogger import logger
 from typing import Generator, Optional
 
+from llms.intent import build_intent_profile
+from llms.intent.focus import build_focus_query
+from llms.intent.focus import select_primary_focus_term
 from llms.orchestration import ChatOrchestrator
 from llms.orchestration.tool_markup import EXTERNAL_TOOL_NAMES
 from llms.orchestration.tool_markup import EXTERNAL_TOOL_PREFIXES
@@ -80,44 +83,6 @@ _THINKING_PROMPT = (
 # When these appear in content, it means the LLM is issuing a tool call rather than
 # producing a final answer, so we must stop streaming content to the client.
 _TOOL_PREFIXES: tuple[str, ...] = EXTERNAL_TOOL_PREFIXES
-_MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
-
-_AUTHOR_TIMELINE_NAME_RE = re.compile(
-    r"^(?:请问|麻烦问下|想看)?(?P<name>.+?)(?:最近|最新|近\d+[天日周月])"
-)
-_RECENT_VIDEO_INTENT_RE = re.compile(
-    r"最近|最新|近\d+[天日周月]|近期|这几天|刚发|刚更新|新发"
-)
-_VIDEO_SEARCH_INTENT_RE = re.compile(
-    r"视频|播放|剧情解析|解说|教程|攻略|推荐几条|找几条|热门|高播放|代表作"
-)
-_LEADING_QUERY_FILLER_RE = re.compile(
-    r"^(?:请问|麻烦(?:帮我)?|帮我|给我|我想看|我想找|想看|想找|找一下|找找|搜一下|搜搜|查一下|查查|推荐(?:一下|几个|一些)?|看看)+"
-)
-_INLINE_QUERY_FILLER_RE = re.compile(
-    r"(?:有没有|有无|有什么|有哪些|介绍一下|介绍下|讲一下|讲下|说说|来点|就行|即可|帮我|给我|我想看|我想找|相关的|相关|辅助的|辅助内容|口语化|口语的)"
-)
-_TRAILING_QUERY_FILLER_RE = re.compile(r"(?:一下|呢|吗|么|吧|呀|啊)+$")
-_REDUNDANT_QUERY_TOKENS = {
-    "视频",
-    "一下",
-    "介绍",
-    "内容",
-    "相关",
-    "辅助",
-    "辅助的",
-}
-_USER_FILTER_RE = re.compile(r":user=([^\s]+)")
-_IDENTITY_OWNER_QUERY_RE = re.compile(
-    r"^(?:请问|想知道|想了解|麻烦问下|麻烦问一下|能说说|告诉我)?\s*(?P<name>.+?)\s*(?:是谁|是什么人|是哪个up主|是哪位up主|是哪个博主|是哪位博主|是什么账号|是做什么的)(?:[呢吗嘛呀啊?？!！]*)$"
-)
-_TOKEN_OPTION_CANONICAL_RE = re.compile(r"[^A-Za-z0-9\u4e00-\u9fff]+")
-_GOOGLE_KEYWORD_BOOTSTRAP_RE = re.compile(
-    r"怎么搜|怎么写标题|怎么写题目|搜什么关键词|摸一下关键词|摸关键词|标题写法"
-)
-_GOOGLE_CREATOR_BOOTSTRAP_RE = re.compile(
-    r"不知道作者叫什么|不知道up主叫什么|不知道UP主叫什么|先帮我摸几个up主|先帮我摸几个UP主|先帮我找几个up主|先帮我找几个UP主|先帮我摸几个作者|先帮我找几个作者|谁在做|有哪些up主|有哪些UP主|有哪些作者|做这类内容的up主|做这类内容的UP主"
-)
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -345,11 +310,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _parse_tool_commands(content: str) -> list[dict]:
-        """Parse legacy inline XML tool commands from model output.
-
-        This is kept for compatibility and preflight inspection. The primary
-        path now uses function calling via the orchestrator.
-        """
+        """Parse inline XML tool commands for providers that emit markup calls."""
         return parse_xml_commands(content, tool_names=_SUPPORTED_TOOL_NAMES)
 
     @staticmethod
@@ -387,18 +348,16 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @classmethod
     def _extract_timeline_author_name(cls, messages: list[dict]) -> str | None:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
+        intent = build_intent_profile(messages)
+        if intent.final_target != "videos" or intent.task_mode != "repeat":
             return None
-
-        match = _AUTHOR_TIMELINE_NAME_RE.search(latest_user_text)
-        if not match:
-            return None
-
-        name = match.group("name").strip(" ，。！？?：:")
+        name = select_primary_focus_term(
+            [
+                *(intent.explicit_entities or []),
+                *(intent.explicit_topics or []),
+            ]
+        )
         if not name:
-            return None
-        if any(sep in name for sep in ["和", "跟", "与", "、", ",", "，"]):
             return None
         if len(name) > 24:
             return None
@@ -406,21 +365,43 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _extract_recent_window(text: str) -> str:
-        source = (text or "").strip()
-        if re.search(r"一个月|1个?月|30天|近月", source):
+        source = "".join(str(text or "").split())
+        if not source:
             return "30d"
-        if re.search(r"一周|1周|7天|近周", source):
-            return "7d"
-        day_match = re.search(r"(\d+)[天日]", source)
-        if day_match:
-            return f"{day_match.group(1)}d"
-        week_match = re.search(r"(\d+)周", source)
-        if week_match:
-            return f"{int(week_match.group(1)) * 7}d"
-        month_match = re.search(r"(\d+)个?月", source)
-        if month_match:
-            return f"{int(month_match.group(1)) * 30}d"
-        return "15d"
+
+        unit_scale = {"天": 1, "日": 1, "周": 7, "月": 30}
+        chinese_digits = {
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+        index = 0
+        while index < len(source):
+            value = None
+            if source[index].isdigit():
+                start = index
+                while index < len(source) and source[index].isdigit():
+                    index += 1
+                value = int(source[start:index])
+            elif source[index] in chinese_digits:
+                value = chinese_digits[source[index]]
+                index += 1
+            else:
+                index += 1
+                continue
+
+            if index < len(source) and source[index] == "个":
+                index += 1
+            if index < len(source) and source[index] in unit_scale:
+                return f"{value * unit_scale[source[index]]}d"
+        return "30d"
 
     @classmethod
     def _ensure_author_timeline_context(
@@ -437,21 +418,29 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _normalize_entity_focused_query_text(text: str) -> str:
-        query = (text or "").strip()
-        if not query:
-            return ""
-        query = re.sub(r"[？?！!。，“”,、；;：:]", " ", query)
-        query = re.sub(
-            r"^(请问|麻烦|帮我|给我|我想看|想看|想找|找一下|找找|推荐一下|推荐几个|推荐一些|推荐|搜一下|搜搜|看看|了解一下)",
-            "",
-            query,
-        )
-        query = re.sub(r"(有什么|有哪些|有无|有没有|怎么|是什么)", " ", query)
-        query = re.sub(r"(介绍一下|介绍下|讲一下|讲下|说说|就行|即可)", " ", query)
-        query = re.sub(r"(一下|呢|吗|么|吧|呀|啊)$", "", query)
-        query = re.sub(r"\bB站\b", " ", query)
-        query = re.sub(r"\s+", " ", query)
-        return query.strip(" ，。！？?：:")
+        return build_focus_query(text)
+
+    @staticmethod
+    def _split_search_query_tokens(text: str) -> list[str]:
+        tokens: list[str] = []
+        buffer: list[str] = []
+        in_quotes = False
+        for char in str(text or ""):
+            if char == '"':
+                buffer.append(char)
+                in_quotes = not in_quotes
+                continue
+            if char.isspace() and not in_quotes:
+                token = "".join(buffer).strip()
+                if token:
+                    tokens.append(token)
+                buffer = []
+                continue
+            buffer.append(char)
+        token = "".join(buffer).strip()
+        if token:
+            tokens.append(token)
+        return tokens
 
     @classmethod
     def _normalize_search_video_query(cls, query: str) -> str | None:
@@ -459,7 +448,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         if not text:
             return None
 
-        tokens = re.findall(r'"[^"]*"|\S+', text)
+        tokens = cls._split_search_query_tokens(text)
         cleaned_tokens: list[str] = []
         for token in tokens:
             raw = token.strip("，。！？?；;、（）()[]{}")
@@ -474,18 +463,15 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                     cleaned_tokens.append(f'"{inner}"')
                 continue
 
-            raw = _LEADING_QUERY_FILLER_RE.sub("", raw)
-            raw = _INLINE_QUERY_FILLER_RE.sub(" ", raw)
-            raw = _TRAILING_QUERY_FILLER_RE.sub("", raw)
             raw = cls._normalize_entity_focused_query_text(raw)
-            if not raw or raw in _REDUNDANT_QUERY_TOKENS:
+            if not raw:
                 continue
             cleaned_tokens.append(raw)
 
         if not cleaned_tokens:
             return None
 
-        normalized = re.sub(r"\s+", " ", " ".join(cleaned_tokens)).strip()
+        normalized = " ".join(" ".join(cleaned_tokens).split()).strip()
         if normalized in {"q=vwr", "q=wv"}:
             return None
         return normalized or None
@@ -528,24 +514,6 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 }
             )
         return normalized_commands
-
-    @staticmethod
-    def _clean_followup_refinement(text: str) -> str | None:
-        refinement = (text or "").strip()
-        if not refinement:
-            return None
-        refinement = re.sub(r"^(那|那就|那再|再|更偏|偏向|偏|更想看|想看|主要看)", "", refinement)
-        refinement = re.sub(r"(有没有|有无).*$", "", refinement)
-        refinement = refinement.strip(" ，。！？?：:")
-        refinement = re.sub(r"(这类|这种|类似的|的呢|呢|吗|么|的话|还有吗)$", "", refinement)
-        refinement = re.sub(r"\bB站\b", "", refinement)
-        refinement = refinement.strip(" ，。！？?：:")
-        refinement = re.sub(r"\s+", " ", refinement)
-        if refinement.endswith("侧"):
-            refinement = refinement[:-1].strip()
-        if len(refinement) < 2:
-            return None
-        return refinement
 
     @staticmethod
     def _strip_tool_commands(content: str) -> str:
@@ -767,24 +735,6 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         for command in commands or []:
             executed_signatures.add(cls._command_signature(command))
 
-    def _preflight_tool_commands(self, messages: list[dict]) -> list[dict]:
-        latest_user_text = self._get_latest_user_text(messages)
-        if not latest_user_text:
-            return []
-
-        match = _IDENTITY_OWNER_QUERY_RE.match(latest_user_text.strip())
-        if not match:
-            return []
-
-        name = (match.group("name") or "").strip(" ，。！？?：:")
-        if not name:
-            return []
-
-        if len(name) > 40:
-            return []
-
-        return [{"type": "search_owners", "args": {"text": name, "mode": "name"}}]
-
     @staticmethod
     def _summarize_context(messages: list[dict]) -> dict:
         summary = {
@@ -883,8 +833,8 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
     ) -> dict:
         """Handle a chat completion request (non-streaming).
 
-        The wrapper delegates planning/tool execution to ChatOrchestrator,
-        then formats the result into the existing OpenAI-compatible payload.
+        Delegates planning and tool execution to ChatOrchestrator,
+        then formats the result into the outward chat-completions payload.
 
         Args:
             messages: User-provided conversation messages.
@@ -928,8 +878,8 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         """Handle a streaming chat completion request.
 
         The new orchestrator computes the tool plan and final answer first,
-        then this wrapper emits SSE chunks for tool events and answer content
-        while preserving the existing OpenAI-compatible stream shape.
+        then this handler emits SSE chunks for tool events and answer content
+        while preserving the outward stream shape.
         """
         start_time = time.perf_counter()
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"

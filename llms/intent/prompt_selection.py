@@ -43,11 +43,11 @@ _TARGET_ASSET_IDS = {
 _SIGNAL_ASSET_IDS = {
     "needs_keyword_expansion": (
         "semantic.expansion.brief",
-        "tool.related_tokens_by_tokens.brief",
+        "tool.expand_query.brief",
     ),
     "needs_term_normalization": (
-        "tool.related_tokens_by_tokens.detailed",
-        "tool.related_tokens_by_tokens.examples",
+        "tool.expand_query.detailed",
+        "tool.expand_query.examples",
     ),
     "needs_owner_resolution": ("tool.search_owners.brief",),
     "doc_signal_hints": ("facet.mapping.brief",),

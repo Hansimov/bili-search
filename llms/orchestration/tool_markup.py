@@ -13,19 +13,10 @@ from functools import lru_cache
 from typing import Any
 
 from llms.contracts import ToolCallRequest
+from llms.tools.names import PUBLIC_EXTERNAL_TOOL_NAMES, canonical_tool_name
 
 
-EXTERNAL_TOOL_NAMES: tuple[str, ...] = (
-    "search_videos",
-    "search_google",
-    "search_owners",
-    "related_tokens_by_tokens",
-    "related_owners_by_tokens",
-    "related_videos_by_videos",
-    "related_owners_by_videos",
-    "related_videos_by_owners",
-    "related_owners_by_owners",
-)
+EXTERNAL_TOOL_NAMES: tuple[str, ...] = PUBLIC_EXTERNAL_TOOL_NAMES
 INTERNAL_TOOL_NAMES: tuple[str, ...] = (
     "read_prompt_assets",
     "inspect_tool_result",
@@ -100,7 +91,7 @@ def parse_xml_tool_calls(
         attrs = match.group("attrs") or ""
         for attr_match in _TOOL_ATTR_RE.finditer(attrs):
             args[attr_match.group(1)] = parse_tool_argument(attr_match.group(3))
-        name = match.group("name")
+        name = canonical_tool_name(match.group("name"))
         commands.append(
             ToolCallRequest(
                 id=f"xmlcall_{iteration}_{index}",

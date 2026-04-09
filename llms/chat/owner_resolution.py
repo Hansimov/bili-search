@@ -1,4 +1,4 @@
-"""Compatibility shim for llms.planning.owner_resolution."""
+"""Owner-resolution mixin re-export."""
 
 from llms.planning.owner_resolution import OwnerResolutionMixin
 

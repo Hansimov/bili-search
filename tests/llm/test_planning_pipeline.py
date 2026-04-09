@@ -49,6 +49,25 @@ def test_select_tool_planning_plugins_uses_owner_route_for_creator_bootstrap():
     assert "google_keyword_bootstrap" not in selected
 
 
+def test_select_tool_planning_plugins_skips_google_bootstrap_for_term_normalization():
+    context = ToolPlanningContext(
+        commands=[{"type": "search_videos", "args": {"queries": ["康夫UI 教程"]}}],
+        messages=[{"role": "user", "content": "康夫UI 有什么入门教程？"}],
+        last_tool_results=[],
+        owner_result_scope=None,
+        intent=_intent(
+            final_target="videos",
+            task_mode="exploration",
+            needs_keyword_expansion=True,
+            needs_term_normalization=True,
+        ),
+    )
+
+    selected = [plugin.name for plugin in select_tool_planning_plugins(context)]
+
+    assert "google_keyword_bootstrap" not in selected
+
+
 def test_select_tool_planning_plugins_continues_intermediate_results_only_when_needed():
     context = ToolPlanningContext(
         commands=[],

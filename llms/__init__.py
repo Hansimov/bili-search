@@ -17,5 +17,5 @@ Module structure:
 
 The package now uses subpackages as its public surface. New code should import
 from llms.models, llms.contracts, llms.runtime, llms.intent, or
-llms.orchestration instead of relying on top-level compatibility modules.
+llms.orchestration.
 """

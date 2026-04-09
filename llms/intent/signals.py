@@ -6,86 +6,15 @@ through llms.intent.classifier as ad hoc constants.
 
 from __future__ import annotations
 
-import re
-
 from dataclasses import dataclass
 
 from llms.contracts import FacetScore
-from llms.intent.taxonomy import iter_content_tokens
+from llms.intent.focus import compact_focus_key
+from llms.intent.focus import extract_focus_spans
 from llms.intent.taxonomy import normalize_text
 from llms.intent.taxonomy import rank_facet_matches
 from llms.intent.taxonomy import SemanticMatch
 
-
-_STOPWORDS = frozenset(
-    {
-        "我",
-        "想",
-        "想看",
-        "想找",
-        "帮我",
-        "给我",
-        "一下",
-        "有没有",
-        "有什么",
-        "有哪些",
-        "推荐",
-        "几个",
-        "一些",
-        "这个",
-        "那个",
-        "内容",
-        "结果",
-        "b站",
-    }
-)
-_QUERY_BOUNDARY_MARKERS = (
-    "有哪些关联账号",
-    "有哪些关联作者",
-    "最近有哪些官方更新",
-    "最近有什么新视频",
-    "最近一个月发布的视频",
-    "代表作有哪些",
-    "有哪些",
-    "有什么",
-    "是谁",
-    "是什么",
-    "最近",
-    "最新",
-    "视频",
-    "教程",
-    "解读",
-    "作者",
-    "账号",
-    "内容",
-)
-_ENTITY_LIKE_RE = re.compile(
-    r"(?:bv[0-9a-z]+|[a-z][a-z0-9.+#:/_-]+|\d+(?:\.\d+)*)", re.IGNORECASE
-)
-_LEADING_TOPIC_FILLER_RE = re.compile(
-    r"^(?:请问|麻烦(?:帮我)?|帮我|给我|推荐(?:几个|一些)?|找(?:几个|一些)?|我想看|我想找|想看|想找|来点|看看|搜一下|搜搜|查一下|查查|做)+"
-)
-_TRAILING_OWNER_SUFFIX_RE = re.compile(
-    r"(?:相关)?内容(?:创作)?的?(?:up主|作者|博主|账号).*$"
-)
-_FOLLOWUP_REFERENT_TOKENS = frozenset(
-    {
-        "他",
-        "她",
-        "它",
-        "他的",
-        "她的",
-        "它的",
-        "那他",
-        "那她",
-        "那它",
-        "那他的",
-        "那她的",
-        "那它的",
-        "这个",
-        "那个",
-    }
-)
 
 _FACET_SCORE_RULES = {
     "motivation": {"weight": 0.95, "threshold": 0.16, "limit": 3},
@@ -128,22 +57,10 @@ _PAYOFF_TO_MOTIVATION = {
     "cozy_companionship": "companionship",
 }
 
-_KEYWORD_EXPANSION_AMBIGUITY_THRESHOLD = 0.45
+_KEYWORD_EXPANSION_AMBIGUITY_THRESHOLD = 0.40
 _TARGET_LOW_CONFIDENCE_THRESHOLD = 0.18
 _TARGET_MARGIN_THRESHOLD = 0.06
 _ALIAS_TOKEN_MAX_LEN = 6
-_KNOWN_TERM_ALIAS_PATTERNS = ((re.compile(r"康夫\s*u\s*i", re.IGNORECASE), "ComfyUI"),)
-
-
-def _normalize_query_spaces(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()
-
-
-def rewrite_known_term_aliases(text: str) -> str:
-    rewritten = str(text or "")
-    for pattern, canonical in _KNOWN_TERM_ALIAS_PATTERNS:
-        rewritten = pattern.sub(canonical, rewritten)
-    return rewritten
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,38 +132,20 @@ def collect_facet_scores(
     return labels
 
 
-def _cleanup_topic_candidate(token: str) -> str:
-    cleaned = str(token or "").strip().lower()
-    if not cleaned:
-        return ""
-    for marker in _QUERY_BOUNDARY_MARKERS:
-        if marker in cleaned:
-            prefix = cleaned.split(marker, 1)[0].strip()
-            if len(prefix) >= 2:
-                cleaned = prefix
-                break
-    cleaned = _TRAILING_OWNER_SUFFIX_RE.sub("", cleaned)
-    cleaned = _LEADING_TOPIC_FILLER_RE.sub("", cleaned)
-    cleaned = _normalize_query_spaces(cleaned)
-    cleaned = cleaned.strip(" -_/:：，。！？?；;")
-    if cleaned in _FOLLOWUP_REFERENT_TOKENS:
-        return ""
-    return cleaned
-
-
-def extract_topic_candidates(text: str) -> list[str]:
-    candidates: list[str] = []
-    for token in iter_content_tokens(text):
-        cleaned = _cleanup_topic_candidate(token)
-        if len(cleaned) < 2:
-            continue
-        if cleaned in _STOPWORDS:
-            continue
-        if cleaned.startswith(":") or cleaned.startswith("q="):
-            continue
-        if cleaned not in candidates:
-            candidates.append(cleaned)
-    return candidates
+def extract_topic_candidates(
+    text: str,
+    *,
+    history_text: str = "",
+    final_target_matches: list[SemanticMatch] | None = None,
+    task_mode_matches: list[SemanticMatch] | None = None,
+) -> list[str]:
+    return extract_focus_spans(
+        text,
+        history_text=history_text,
+        final_target_matches=final_target_matches,
+        task_mode_matches=task_mode_matches,
+        limit=10,
+    )
 
 
 def merge_followup_candidates(messages: list[dict], candidates: list[str]) -> list[str]:
@@ -264,19 +163,81 @@ def merge_followup_candidates(messages: list[dict], candidates: list[str]) -> li
     return merged
 
 
-def extract_topics(messages: list[dict], latest_user_text: str) -> list[str]:
+def collect_history_candidates(messages: list[dict], limit: int = 5) -> list[str]:
+    history_candidates: list[str] = []
+    user_messages = [
+        message for message in messages or [] if message.get("role") == "user"
+    ]
+    for message in reversed(user_messages[:-1]):
+        for token in extract_topic_candidates(message.get("content") or ""):
+            if token not in history_candidates:
+                history_candidates.append(token)
+            if len(history_candidates) >= limit:
+                return history_candidates
+    return history_candidates
+
+
+def extract_topics(
+    messages: list[dict],
+    latest_user_text: str,
+    *,
+    history_text: str = "",
+    final_target_matches: list[SemanticMatch] | None = None,
+    task_mode_matches: list[SemanticMatch] | None = None,
+) -> list[str]:
     return merge_followup_candidates(
-        messages, extract_topic_candidates(latest_user_text)
+        messages,
+        extract_topic_candidates(
+            latest_user_text,
+            history_text=history_text,
+            final_target_matches=final_target_matches,
+            task_mode_matches=task_mode_matches,
+        ),
     )[:10]
 
 
-def extract_entities(messages: list[dict], latest_user_text: str) -> list[str]:
-    latest_topics = extract_topic_candidates(latest_user_text)
+def _looks_entity_like(
+    text: str,
+    *,
+    from_history: bool,
+    task_mode: str,
+) -> bool:
+    compact = compact_focus_key(text)
+    if not compact:
+        return False
+    if from_history:
+        return True
+    if task_mode not in {"lookup_entity", "known_item", "repeat"}:
+        return False
+    if any(char.isascii() and char.isalnum() for char in compact):
+        return True
+    return len(compact) <= 4
+
+
+def extract_entities(
+    messages: list[dict],
+    latest_user_text: str,
+    *,
+    history_text: str = "",
+    task_mode: str = "exploration",
+    final_target_matches: list[SemanticMatch] | None = None,
+    task_mode_matches: list[SemanticMatch] | None = None,
+) -> list[str]:
+    latest_topics = extract_topic_candidates(
+        latest_user_text,
+        history_text=history_text,
+        final_target_matches=final_target_matches,
+        task_mode_matches=task_mode_matches,
+    )
     topics = merge_followup_candidates(messages, latest_topics)
     entities: list[str] = []
     for topic in topics:
         from_history = topic not in latest_topics
-        if _ENTITY_LIKE_RE.search(topic) or from_history or len(topic) <= 4:
+        if _looks_entity_like(
+            topic,
+            from_history=from_history,
+            task_mode=task_mode,
+        ):
             entities.append(topic)
     return entities[:8]
 
@@ -286,19 +247,28 @@ def is_ascii_like(token: str) -> bool:
     return bool(token_text) and all(ord(char) < 128 for char in token_text)
 
 
+def _has_mixed_script(token: str) -> bool:
+    token_text = str(token or "")
+    has_ascii_alnum = any(char.isascii() and char.isalnum() for char in token_text)
+    has_non_ascii = any(not char.isascii() for char in token_text)
+    return has_ascii_alnum and has_non_ascii
+
+
 def needs_term_normalization(
     explicit_entities: list[str],
     explicit_topics: list[str],
 ) -> bool:
     candidates = [
         token
-        for token in (explicit_entities or explicit_topics)
-        if 1 < len(token) <= _ALIAS_TOKEN_MAX_LEN
+        for token in [*(explicit_entities or []), *(explicit_topics or [])]
+        if 1 < len(compact_focus_key(token)) <= _ALIAS_TOKEN_MAX_LEN
     ]
-    return (
-        bool(candidates)
-        and any(is_ascii_like(token) for token in candidates)
-        and any(not is_ascii_like(token) for token in candidates)
+    return bool(candidates) and (
+        any(_has_mixed_script(token) for token in candidates)
+        or (
+            any(is_ascii_like(token) for token in candidates)
+            and any(not is_ascii_like(token) for token in candidates)
+        )
     )
 
 
@@ -442,8 +412,29 @@ def derive_intent_signals(
         "visual_intent_hints",
         history_text=window.history_text,
     )
-    explicit_entities = extract_entities(messages, window.latest_user_text)
-    explicit_topics = extract_topics(messages, window.latest_user_text)
+    explicit_entities = extract_entities(
+        messages,
+        window.latest_user_text,
+        history_text=window.history_text,
+        task_mode=task_mode,
+        final_target_matches=final_target_matches,
+        task_mode_matches=task_mode_matches,
+    )
+    explicit_topics = extract_topics(
+        messages,
+        window.latest_user_text,
+        history_text=window.history_text,
+        final_target_matches=final_target_matches,
+        task_mode_matches=task_mode_matches,
+    )
+    if window.is_followup and not explicit_entities:
+        for topic in collect_history_candidates(messages):
+            if topic not in explicit_topics:
+                explicit_topics.append(topic)
+            if topic not in explicit_entities:
+                explicit_entities.append(topic)
+            if len(explicit_entities) >= 8:
+                break
 
     top_target_score = final_target_matches[0].score if final_target_matches else 0.0
     target_margin = (

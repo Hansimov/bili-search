@@ -166,20 +166,23 @@ def test_execute_search_videos():
     logger.success("[PASS] execute search_videos")
 
 
-def test_execute_related_owners_by_tokens():
-    """Test related_owners_by_tokens tool execution."""
+def test_execute_search_owners_relation_discovery():
+    """Test search_owners relation discovery via owner seeds."""
     logger.note("=" * 60)
-    logger.note("[TEST] execute related_owners_by_tokens")
+    logger.note("[TEST] execute search_owners relation discovery")
 
     mock_client = MagicMock()
-    mock_client.related_owners_by_tokens.return_value = MOCK_RELATED_OWNERS_RESULT
+    mock_client.related_owners_by_owners.return_value = {
+        "relation": "related_owners_by_owners",
+        "owners": MOCK_RELATED_OWNERS_RESULT["owners"],
+    }
 
     executor = ToolExecutor(search_client=mock_client)
 
     tc = ToolCall(
         id="call_test_2",
-        name="related_owners_by_tokens",
-        arguments=json.dumps({"text": "影视飓风"}),
+        name="search_owners",
+        arguments=json.dumps({"mids": [946974], "mode": "relation"}),
     )
     result_msg = executor.execute(tc)
 
@@ -187,7 +190,7 @@ def test_execute_related_owners_by_tokens():
     assert result_msg["tool_call_id"] == "call_test_2"
 
     result_data = json.loads(result_msg["content"])
-    assert result_data["text"] == "影视飓风"
+    assert result_data["mids"] == ["946974"]
     assert result_data["total_owners"] == 2
     owner = result_data["owners"][0]
     assert owner["mid"] == 946974
@@ -195,7 +198,7 @@ def test_execute_related_owners_by_tokens():
     assert "link" not in owner
     assert "doc_freq" not in owner
 
-    logger.success("[PASS] execute related_owners_by_tokens")
+    logger.success("[PASS] execute search_owners relation discovery")
 
 
 def test_execute_search_owners():
@@ -413,7 +416,7 @@ def test_execute_search_owners_falls_back_to_related_owners_for_topic_discovery(
     )
     assert result_data["mode"] == "topic"
     assert result_data["fallback_mode"] == "topic"
-    assert result_data["fallback_tool"] == "related_owners_by_tokens"
+    assert result_data["fallback_tool"] == "search_owners"
     assert result_data["total_owners"] == 1
 
     logger.success("[PASS] execute search_owners fallback to related owners")
@@ -780,7 +783,10 @@ if __name__ == "__main__":
         ("tool_definitions_format", test_tool_definitions_format),
         ("execute_search_videos", test_execute_search_videos),
         ("execute_search_owners", test_execute_search_owners),
-        ("execute_related_owners_by_tokens", test_execute_related_owners_by_tokens),
+        (
+            "execute_search_owners_relation_discovery",
+            test_execute_search_owners_relation_discovery,
+        ),
         (
             "tool_executor_merges_google_capability",
             test_tool_executor_merges_google_capability,

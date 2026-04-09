@@ -416,7 +416,7 @@ def test_alias_like_video_query_rewrites_to_known_canonical_term():
         make_function_call_response(
             ToolCall(
                 id="call_alias_tokens_1",
-                name="related_tokens_by_tokens",
+                name="expand_query",
                 arguments={"text": "康夫UI", "mode": "correction"},
             )
         ),

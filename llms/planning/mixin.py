@@ -1,47 +1,33 @@
 from __future__ import annotations
 
-import re
-
 from llms.intent import build_intent_profile
+from llms.intent.focus import build_focus_query
+from llms.intent.focus import compact_focus_key
+from llms.intent.focus import extract_focus_spans
+from llms.intent.focus import select_primary_focus_term
 from llms.planning.pipeline import DEFAULT_TOOL_PLANNING_PLUGINS
 from llms.planning.pipeline import ToolPlanningContext, apply_tool_planning_plugins
+from llms.tools.names import canonical_tool_name
 
 
-_USER_FILTER_RE = re.compile(r":user=([^\s]+)")
-_TOKEN_OPTION_CANONICAL_RE = re.compile(r"[^A-Za-z0-9\u4e00-\u9fff]+")
-_GOOGLE_KEYWORD_BOOTSTRAP_RE = re.compile(
-    r"怎么搜|怎么写标题|怎么写题目|搜什么关键词|摸一下关键词|摸关键词|标题写法"
-)
-_GOOGLE_CREATOR_BOOTSTRAP_RE = re.compile(
-    r"不知道作者叫什么|不知道up主叫什么|不知道UP主叫什么|先帮我摸几个up主|先帮我摸几个UP主|先帮我找几个up主|先帮我找几个UP主|先帮我摸几个作者|先帮我找几个作者|谁在做|有哪些up主|有哪些UP主|有哪些作者|做这类内容的up主|做这类内容的UP主"
-)
+def _tool_type(item: dict) -> str:
+    return canonical_tool_name(str(item.get("type") or ""))
 
 
 class ToolPlanningMixin:
     @staticmethod
     def _cleanup_google_probe_fragment(text: str) -> str:
-        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
-        cleaned = re.sub(r"^(?:但我|但是我)\s*", "", cleaned)
-        cleaned = re.sub(r"\s*(?:但我|但是我)$", "", cleaned)
-        cleaned = re.sub(r"\s*的$", "", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned
+        return build_focus_query(text).strip()
 
     @classmethod
     def _split_google_bootstrap_phrases(cls, text: str) -> list[str]:
-        normalized = cls._normalize_entity_focused_query_text(text)
-        normalized = cls._cleanup_google_probe_fragment(normalized)
-        if not normalized:
-            return []
-
-        parts = re.split(r"\s*(?:和|与|以及|及|、|，|,|/|／|\+)\s*", normalized)
-        phrases = [
-            cls._cleanup_google_probe_fragment(part)
-            for part in parts
-            if cls._cleanup_google_probe_fragment(part)
-        ]
-        phrases = list(dict.fromkeys(phrases))
-        return phrases or [normalized]
+        phrases: list[str] = []
+        for candidate in extract_focus_spans(text, limit=6):
+            normalized = cls._cleanup_google_probe_fragment(candidate)
+            if normalized and normalized not in phrases:
+                phrases.append(normalized)
+        normalized = cls._cleanup_google_probe_fragment(text)
+        return phrases or ([normalized] if normalized else [])
 
     @classmethod
     def _build_site_scoped_google_commands(
@@ -54,8 +40,7 @@ class ToolPlanningMixin:
         queries: list[str] = []
 
         def add_query(text: str) -> None:
-            normalized = cls._normalize_entity_focused_query_text(text)
-            normalized = cls._cleanup_google_probe_fragment(normalized)
+            normalized = cls._cleanup_google_probe_fragment(text)
             if not normalized:
                 return
             final_query = f"{normalized} {scope}".strip()
@@ -75,25 +60,32 @@ class ToolPlanningMixin:
         ]
 
     @classmethod
-    def _normalize_google_keyword_bootstrap_query(cls, text: str) -> str:
-        query = str(text or "")
-        query = re.sub(
-            r"(?:B站|b站|哔哩哔哩|bilibili)", " ", query, flags=re.IGNORECASE
-        )
-        query = re.sub(
-            r"(?:我想找|想找|我想看|想看|先帮我|帮我|给我|顺便|再|先|有没有|有吗|讲|里|上)",
-            " ",
-            query,
-        )
-        query = re.sub(
-            r"(?:但我不确定大家会怎么写标题|我不确定大家会怎么写标题|大家会怎么写标题|大家怎么写标题|怎么写标题|怎么写题目|一般怎么搜|怎么搜|搜什么关键词|先帮我摸一下关键词|先摸一下关键词|摸一下关键词|摸关键词|标题写法|给我几条视频|给我几条|几条视频|专栏里有没有|专栏文章|文章|视频|内容)",
-            " ",
-            query,
-        )
-        query = re.sub(r"\b(?:的|但我|但是我)\b", " ", query)
-        query = cls._normalize_entity_focused_query_text(query)
-        query = re.sub(r"\s+", " ", query).strip()
-        return query
+    def _collect_bootstrap_terms(
+        cls,
+        messages: list[dict],
+        intent=None,
+        *,
+        limit: int = 6,
+    ) -> list[str]:
+        resolved_intent = intent or build_intent_profile(messages)
+        terms: list[str] = []
+        for candidate in [
+            *(resolved_intent.explicit_topics or []),
+            *(resolved_intent.explicit_entities or []),
+        ]:
+            normalized = cls._cleanup_google_probe_fragment(candidate)
+            if normalized and normalized not in terms:
+                terms.append(normalized)
+            if len(terms) >= limit:
+                return terms
+
+        latest_user_text = cls._get_latest_user_text(messages)
+        for candidate in cls._split_google_bootstrap_phrases(latest_user_text):
+            if candidate and candidate not in terms:
+                terms.append(candidate)
+            if len(terms) >= limit:
+                return terms
+        return terms
 
     @classmethod
     def _build_google_keyword_bootstrap_commands(
@@ -101,12 +93,8 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text or not _GOOGLE_KEYWORD_BOOTSTRAP_RE.search(
-            latest_user_text
-        ):
-            return commands
         if any(command.get("type") == "search_google" for command in commands or []):
             return commands
         if any(
@@ -115,57 +103,16 @@ class ToolPlanningMixin:
         ):
             return commands
 
-        normalized_query = cls._normalize_google_keyword_bootstrap_query(
-            latest_user_text
-        )
-        if not normalized_query:
+        bootstrap_terms = cls._collect_bootstrap_terms(messages, intent, limit=4)
+        if not bootstrap_terms:
             return commands
 
-        split_queries = cls._split_google_bootstrap_phrases(normalized_query)
-        combined_query = (
-            " ".join(split_queries) if len(split_queries) > 1 else normalized_query
-        )
-
-        if re.search(r"专栏|文章|read", latest_user_text):
-            scope = "site:bilibili.com/read"
-        elif re.search(r"作者|UP主|up主|博主|账号|用户页|谁在做", latest_user_text):
-            scope = "site:space.bilibili.com"
-        elif cls._wants_video_results(messages, commands):
-            scope = "site:bilibili.com/video"
-        else:
-            scope = "site:bilibili.com"
-
         google_commands = cls._build_site_scoped_google_commands(
-            scope,
-            combined_query=combined_query,
-            split_queries=split_queries,
+            "site:bilibili.com/video",
+            combined_query=" ".join(bootstrap_terms),
+            split_queries=bootstrap_terms,
         )
         return google_commands + list(commands or [])
-
-    @classmethod
-    def _normalize_google_creator_bootstrap_query(cls, text: str) -> str:
-        query = str(text or "")
-        query = re.sub(
-            r"(?:B站|b站|哔哩哔哩|bilibili)", " ", query, flags=re.IGNORECASE
-        )
-        query = re.sub(
-            r"(?:我想找|想找|先帮我|帮我|给我|推荐|找一下|找找|看看|想看看|我想看|想看|有没有|有吗|哪些|几个|一些)",
-            " ",
-            query,
-        )
-        query = re.sub(
-            r"(?:不知道作者叫什么|不知道up主叫什么|不知道UP主叫什么|先帮我摸几个up主|先帮我摸几个UP主|先帮我找几个up主|先帮我找几个UP主|先帮我摸几个作者|先帮我找几个作者|谁在做|有哪些up主|有哪些UP主|有哪些作者|UP主|up主|作者|博主|账号|创作者|做这类内容的|这类内容)",
-            " ",
-            query,
-        )
-        query = re.sub(r"\b(?:的|但我|但是我)\b", " ", query)
-        query = cls._normalize_entity_focused_query_text(query)
-        query = re.sub(r"\s+", " ", query).strip()
-        query = re.sub(r"^(?:做)\s*", "", query)
-        query = re.sub(r"\s*(?:的)$", "", query)
-        query = re.sub(r"(?:但我|但是我|摸)$", "", query)
-        query = re.sub(r"\s+", " ", query).strip()
-        return query
 
     @classmethod
     def _build_google_creator_bootstrap_commands(
@@ -173,12 +120,8 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text or not _GOOGLE_CREATOR_BOOTSTRAP_RE.search(
-            latest_user_text
-        ):
-            return commands
         if any(command.get("type") == "search_google" for command in commands or []):
             return commands
         if any(
@@ -187,21 +130,14 @@ class ToolPlanningMixin:
         ):
             return commands
 
-        normalized_query = cls._normalize_google_creator_bootstrap_query(
-            latest_user_text
-        )
-        if not normalized_query:
+        bootstrap_terms = cls._collect_bootstrap_terms(messages, intent, limit=4)
+        if not bootstrap_terms:
             return commands
-
-        split_queries = cls._split_google_bootstrap_phrases(normalized_query)
-        combined_query = (
-            " ".join(split_queries) if len(split_queries) > 1 else normalized_query
-        )
 
         google_commands = cls._build_site_scoped_google_commands(
             "site:space.bilibili.com",
-            combined_query=combined_query,
-            split_queries=split_queries,
+            combined_query=" ".join(bootstrap_terms),
+            split_queries=bootstrap_terms,
         )
         return google_commands + list(commands or [])
 
@@ -243,7 +179,7 @@ class ToolPlanningMixin:
             return False
         if cls._is_short_ambiguous_owner_text(text):
             return True
-        return bool(re.search(r"\d", normalized)) and len(normalized) <= 6
+        return any(char.isdigit() for char in normalized) and len(normalized) <= 6
 
     @classmethod
     def _build_google_owner_bootstrap_commands(
@@ -251,6 +187,7 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
         latest_user_text = cls._get_latest_user_text(messages)
         if not latest_user_text or not cls._wants_video_results(messages, commands):
@@ -322,8 +259,12 @@ class ToolPlanningMixin:
         name = str(title or "").strip()
         if not name:
             return ""
-        name = re.sub(r"(?:的个人空间|个人空间|主页).*$", "", name)
-        name = re.sub(r"(?:[-|｜].*)$", "", name)
+        for marker in ("的个人空间", "个人空间", "主页"):
+            if marker in name:
+                name = name.split(marker, 1)[0]
+        for separator in (" - ", " -", "-", "|", "｜"):
+            if separator in name:
+                name = name.split(separator, 1)[0]
         name = name.strip(" -_|｜·，。！？?：:[]()（）")
         return name
 
@@ -333,19 +274,9 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
-        latest_user_text = cls._get_latest_user_text(messages)
-        if not latest_user_text:
-            return commands
-        if not re.search(
-            r"作者|UP主|up主|博主|创作者|谁在做|摸几个作者|摸几个up主|摸几个UP主",
-            latest_user_text,
-        ):
-            return commands
-        if any(
-            command.get("type") in {"search_owners", "related_owners_by_tokens"}
-            for command in commands or []
-        ):
+        if any(_tool_type(command) == "search_owners" for command in commands or []):
             return commands
 
         candidate_names: list[str] = []
@@ -373,8 +304,13 @@ class ToolPlanningMixin:
             return commands
 
         if not candidate_names:
-            normalized_topic = cls._normalize_google_creator_bootstrap_query(
-                latest_user_text
+            resolved_intent = intent or build_intent_profile(messages)
+            normalized_topic = select_primary_focus_term(
+                [
+                    *(resolved_intent.explicit_topics or []),
+                    *(resolved_intent.explicit_entities or []),
+                    build_focus_query(cls._get_latest_user_text(messages)),
+                ]
             )
             if not normalized_topic:
                 return commands
@@ -387,8 +323,7 @@ class ToolPlanningMixin:
             passthrough = [
                 command
                 for command in commands or []
-                if command.get("type")
-                not in {"search_videos", "related_tokens_by_tokens"}
+                if _tool_type(command) not in {"search_videos", "expand_query"}
             ]
             return passthrough + owner_commands
 
@@ -399,7 +334,7 @@ class ToolPlanningMixin:
         passthrough = [
             command
             for command in commands or []
-            if command.get("type") not in {"search_videos", "related_tokens_by_tokens"}
+            if _tool_type(command) not in {"search_videos", "expand_query"}
         ]
         return passthrough + owner_commands
 
@@ -408,7 +343,14 @@ class ToolPlanningMixin:
         text = str(query or "")
         if ":uid=" in text:
             return []
-        return [name.strip() for name in _USER_FILTER_RE.findall(text) if name.strip()]
+        names: list[str] = []
+        for token in text.split():
+            if not token.startswith(":user="):
+                continue
+            name = token.split("=", 1)[1].strip()
+            if name and name not in names:
+                names.append(name)
+        return names
 
     @classmethod
     def _extract_owner_candidates_from_commands(cls, commands: list[dict]) -> list[str]:
@@ -550,6 +492,7 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
         if not last_tool_results:
             return commands
@@ -575,6 +518,7 @@ class ToolPlanningMixin:
             commands,
             messages,
             last_tool_results,
+            intent,
         )
         if contextual_owner_commands and (
             not commands
@@ -796,8 +740,7 @@ class ToolPlanningMixin:
         if cls._commands_target_videos(recent_commands):
             return True
         if recent_commands and all(
-            command.get("type") == "related_tokens_by_tokens"
-            for command in recent_commands
+            _tool_type(command) == "expand_query" for command in recent_commands
         ):
             return True
         intent = build_intent_profile(messages)
@@ -838,6 +781,7 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
         if commands or not last_tool_results:
             return commands
@@ -847,9 +791,7 @@ class ToolPlanningMixin:
             for result_item in last_tool_results
             if result_item.get("type")
         }
-        if not intermediate_tool_types.intersection(
-            {"search_owners", "related_tokens_by_tokens"}
-        ):
+        if not intermediate_tool_types.intersection({"search_owners", "expand_query"}):
             return commands
 
         recovered = cls._extract_recent_assistant_commands(messages)
@@ -863,7 +805,7 @@ class ToolPlanningMixin:
             recovered = [
                 command
                 for command in recovered
-                if command.get("type") != "related_tokens_by_tokens"
+                if _tool_type(command) != "expand_query"
             ]
             if not recovered:
                 return commands
@@ -877,6 +819,7 @@ class ToolPlanningMixin:
             recovered,
             messages,
             last_tool_results,
+            intent,
         )
         if not any(command.get("type") == "search_videos" for command in recovered):
             return commands
@@ -887,7 +830,7 @@ class ToolPlanningMixin:
         cls, results: list[dict] | None
     ) -> dict | None:
         for result_item in results or []:
-            if result_item.get("type") != "related_tokens_by_tokens":
+            if _tool_type(result_item) != "expand_query":
                 continue
             result = result_item.get("result") or {}
             source_text = str(
@@ -913,7 +856,7 @@ class ToolPlanningMixin:
 
     @staticmethod
     def _canonicalize_token_option_key(text: str) -> str:
-        return _TOKEN_OPTION_CANONICAL_RE.sub("", (text or "").strip()).lower()
+        return compact_focus_key(text)
 
     @classmethod
     def _select_distinct_token_candidates(
@@ -978,7 +921,7 @@ class ToolPlanningMixin:
                 if residual_is_weak
                 else f"{candidate_text} {residual_text}".strip()
             )
-            query = re.sub(r"\s+", " ", query).strip()
+            query = " ".join(query.split()).strip()
             if not query:
                 continue
             if "q=" not in query and ":user=" not in query and ":uid=" not in query:
@@ -993,6 +936,7 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
         token_rewrite = cls._extract_token_rewrite_from_results(last_tool_results)
         if not token_rewrite:
@@ -1048,6 +992,7 @@ class ToolPlanningMixin:
         commands: list[dict],
         messages: list[dict],
         last_tool_results: list[dict] | None,
+        intent=None,
     ) -> list[dict]:
         if commands or not last_tool_results:
             return commands

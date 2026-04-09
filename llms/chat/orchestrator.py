@@ -1,7 +1,4 @@
-"""Compatibility shim for the orchestration engine.
-
-New code should import ChatOrchestrator from llms.orchestration.engine.
-"""
+"""ChatOrchestrator re-export."""
 
 from llms.orchestration.engine import ChatOrchestrator
 
