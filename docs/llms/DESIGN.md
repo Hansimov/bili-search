@@ -7,6 +7,26 @@
 - 默认只加载当前任务最需要的提示资产，避免把整套长提示无差别塞进上下文。
 - 避免把大块原始工具结果直接回灌给大模型，只提供必要摘要、链接标识和 `result_id`。
 - 保持现有后端 OpenAI 兼容接口和前端 `tool_events` 契约基本不变。
+- 明确禁止回到“写几个关键词 / 正则就决定路由”的实现方式。意图与 planning 的决策必须优先落在 taxonomy、examples、intent signals 和 execution signals 上。
+
+## 结构重排
+
+- `llms/intent/`
+  - `taxonomy.py`：定义 final target、task mode 和 facet taxonomy，以及 example-driven matcher。
+  - `classifier.py`：构建 `IntentProfile`，选择 prompt assets。
+- `llms/planning/`
+  - `pipeline.py`：根据 intent 和工具执行信号选择 planning plugins。
+  - `mixin.py`：保留具体的 rewrite / bootstrap 实现。
+  - `owner_resolution.py`：承载作者名消歧和 owner resolution mixin，不再挂在 `chat/` 下。
+- `llms/orchestration/`
+  - `policies.py`：coverage、nudge、final answer 收口策略。
+  - `engine.py`：`ChatOrchestrator` 的真实执行核心。
+  - `tool_markup.py`：统一 XML / DSML 工具命令解析与内容清洗。
+  - `result_store.py`：统一 result store、摘要和 inspection 视图。
+- `llms/chat/`
+  - `handler.py`：保留对外 OpenAI 兼容 API 和 SSE 封装。
+  - 其余旧模块逐步退化为兼容壳，不再承载核心实现。
+- 旧路径 `llms/routing.py`、`llms/routing_rules.py`、`llms/chat/policies.py`、`llms/chat/tool_planning.py`、`llms/chat/orchestrator.py`、`llms/chat/owner_resolution.py` 只保留兼容壳，不再承载核心逻辑。
 
 ## 核心组件
 
@@ -20,7 +40,8 @@
 
 ### 意图路由
 
-- `llms/routing.py` 会基于最新一轮用户输入构建 `IntentProfile`。
+- `llms/intent/classifier.py` 会基于最新一轮用户输入和近两轮用户上下文构建 `IntentProfile`。
+- `llms/intent/taxonomy.py` 用 label description + examples 做 similarity matching，而不是靠 route-specific regex 命中。
 - 当前会识别和估计的核心字段包括：
   - 最终目标：`videos / owners / relations / external / mixed`
   - 任务模式：`exploration / lookup_entity / collect_compare / repeat / known_item`
@@ -43,7 +64,9 @@
 
 ### 编排器
 
-- `llms/chat/orchestrator.py` 是新的执行核心。
+- `llms/orchestration/engine.py` 是新的执行核心，旧的 `llms/chat/orchestrator.py` 仅保留 re-export 兼容层。
+- `llms/orchestration/policies.py` 提供 coverage / nudge / fallback policy，避免把这类逻辑继续堆回 orchestrator 的 if/else 中。
+- `llms/orchestration/tool_markup.py` 负责 function-calling / XML fallback 共用的命令解析与清洗，避免 handler 和 engine 双份实现。
 - 它负责：
   - 选择 planner / response / delegate 模型
   - 优先走 OpenAI 风格 function calling
@@ -69,6 +92,7 @@
 ### 结果隔离
 
 - 每次工具执行都会保存成一个 `ToolExecutionRecord`，并分配稳定的 `result_id`。
+- `llms/orchestration/result_store.py` 统一维护 result store、摘要拼装和 `inspect_tool_result` 视图，避免这些逻辑继续堆在 orchestrator 大文件里。
 - 默认不会把完整原始结果再塞回模型上下文，而是只提供：
   - 摘要
   - 链接标识，例如 `BV`、`space` 链接、官方来源链接
@@ -81,7 +105,7 @@
 ## 端到端流程
 
 1. `ChatHandler` 接收 OpenAI 兼容 `messages`。
-2. `build_intent_profile(...)` 识别当前请求意图。
+2. `llms/intent/classifier.py` 中的 `build_intent_profile(...)` 基于 taxonomy 识别当前请求意图。
 3. `build_prompt_selection(...)` 选择最合适的提示资产集合。
 4. `ChatOrchestrator` 按阶段选择模型：
    - planner
@@ -156,6 +180,9 @@ conda run -n ai python -m tests.llm.test_live_chat \
 ## 当前状态
 
 - llms 核心架构已经切换到多模型编排。
+- intent / planning / orchestration 已拆成独立子包，`chat/` 正在收缩为对外 API / compat 层。
+- 路由主干已经改成 taxonomy + similarity matcher，避免继续新增 route-specific regex。
+- planning plugin 不再默认全量串行执行，而是先由 `llms/planning/pipeline.py` 根据 intent 和结果信号做 selector。
 - 提示资产、结果隔离、前端 tool event 兼容层已落地。
 - live 回归入口已经改成真正使用大小模型 client，而不是旧的单模型入口。
 - 已验证通过的 live 类型至少包括：

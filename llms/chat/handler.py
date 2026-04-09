@@ -8,7 +8,7 @@ The current flow is:
          back to the model unless it explicitly asks for more detail.
 
 This module mainly preserves the existing API and SSE response shape while the
-real planning and tool loop lives in llms.chat.orchestrator.
+real planning and tool loop lives in llms.orchestration.engine.
 """
 
 import json
@@ -20,10 +20,15 @@ import uuid
 from tclogger import logger, dt_to_str
 from typing import Generator, Optional
 
-from llms.chat.owner_resolution import OwnerResolutionMixin
-from llms.chat.orchestrator import ChatOrchestrator
-from llms.chat.tool_planning import ToolPlanningMixin
+from llms.orchestration import ChatOrchestrator
+from llms.orchestration.tool_markup import EXTERNAL_TOOL_NAMES
+from llms.orchestration.tool_markup import EXTERNAL_TOOL_PREFIXES
+from llms.orchestration.tool_markup import parse_tool_argument
+from llms.orchestration.tool_markup import parse_xml_commands
+from llms.orchestration.tool_markup import sanitize_generated_content
+from llms.orchestration.tool_markup import strip_tool_commands
 from llms.llm_client import LLMClient, ChatResponse, create_llm_client
+from llms.planning import OwnerResolutionMixin, ToolPlanningMixin
 from llms.tools.executor import ToolExecutor
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
 
@@ -33,34 +38,8 @@ MAX_TOOL_ITERATIONS = 4
 # Thinking mode keeps a little more headroom, but still avoids long loops.
 MAX_TOOL_ITERATIONS_THINKING = 7
 
-# Regex to strip leaked DeepSeek DSML function-calling markup from content
-_DSML_PATTERN = re.compile(r"<｜.*?｜>")
-_DSML_BLOCK_PATTERN = re.compile(
-    r"<｜DSML｜function_calls>.*?</｜DSML｜function_calls>", re.DOTALL
-)
-
-_SUPPORTED_TOOL_NAMES: tuple[str, ...] = (
-    "search_videos",
-    "search_google",
-    "search_owners",
-    "related_tokens_by_tokens",
-    "related_owners_by_tokens",
-    "related_videos_by_videos",
-    "related_owners_by_videos",
-    "related_videos_by_owners",
-    "related_owners_by_owners",
-)
+_SUPPORTED_TOOL_NAMES: tuple[str, ...] = EXTERNAL_TOOL_NAMES
 _SUPPORTED_TOOL_NAME_PATTERN = "|".join(_SUPPORTED_TOOL_NAMES)
-_TOOL_ATTRS_PATTERN = r"(?:[^\"'/>]|\"[^\"]*\"|'[^']*')*"
-_GENERIC_TOOL_CMD_RE = re.compile(
-    rf"""<(?P<name>{_SUPPORTED_TOOL_NAME_PATTERN})\s*(?P<attrs>{_TOOL_ATTRS_PATTERN})/>""",
-    re.DOTALL,
-)
-_TOOL_ATTR_RE = re.compile(r"""(\w+)=(['\"])(.*?)\2""", re.DOTALL)
-_TOOL_CMD_PATTERN = re.compile(
-    rf"""<(?:{_SUPPORTED_TOOL_NAME_PATTERN})\s{_TOOL_ATTRS_PATTERN}/>""",
-    re.DOTALL,
-)
 
 # Patterns to strip echoed tool results that the LLM may copy from the
 # conversation context into its content.  The format comes from
@@ -99,7 +78,7 @@ _THINKING_PROMPT = (
 # Inline tool command prefixes used for look-ahead detection during content streaming.
 # When these appear in content, it means the LLM is issuing a tool call rather than
 # producing a final answer, so we must stop streaming content to the client.
-_TOOL_PREFIXES: tuple[str, ...] = tuple(f"<{name}" for name in _SUPPORTED_TOOL_NAMES)
+_TOOL_PREFIXES: tuple[str, ...] = EXTERNAL_TOOL_PREFIXES
 _MAX_TOOL_PREFIX_LEN: int = max(len(p) for p in _TOOL_PREFIXES)  # 14
 
 _AUTHOR_TIMELINE_NAME_RE = re.compile(
@@ -200,12 +179,7 @@ def _sanitize_content(content: str) -> str:
     - Inline XML tool commands (<search_videos/>, <search_owners/>, ...)
     - Echoed tool results in _format_results_message format
     """
-    # Remove full DSML blocks first
-    content = _DSML_BLOCK_PATTERN.sub("", content)
-    # Remove any remaining DSML tags
-    content = _DSML_PATTERN.sub("", content)
-    # Remove any leaked tool commands
-    content = _TOOL_CMD_PATTERN.sub("", content)
+    content = sanitize_generated_content(content, tool_names=_SUPPORTED_TOOL_NAMES)
     # Remove echoed tool results (e.g. search_videos(queries=[...]):\n{...})
     content = _RESULTS_HEADER_RE.sub("", content)
     content = _RESULTS_ECHO_RE.sub("", content)
@@ -387,24 +361,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _parse_tool_argument(raw_value: str):
-        value = (raw_value or "").strip()
-        if not value:
-            return ""
-        lowered = value.lower()
-        if lowered == "true":
-            return True
-        if lowered == "false":
-            return False
-        try:
-            if value[0] in ['[', '{', '"']:
-                return json.loads(value)
-        except Exception:
-            pass
-        if re.fullmatch(r"-?(?:0|[1-9]\d*)", value):
-            return int(value)
-        if re.fullmatch(r"-?\d+\.\d+", value):
-            return float(value)
-        return value
+        return parse_tool_argument(raw_value)
 
     @staticmethod
     def _parse_tool_commands(content: str) -> list[dict]:
@@ -413,17 +370,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         This is kept for compatibility and preflight inspection. The primary
         path now uses function calling via the orchestrator.
         """
-        commands = []
-        for match in _GENERIC_TOOL_CMD_RE.finditer(content):
-            name = match.group("name")
-            attrs = match.group("attrs") or ""
-            args = {}
-            for attr_match in _TOOL_ATTR_RE.finditer(attrs):
-                key = attr_match.group(1)
-                value = attr_match.group(3)
-                args[key] = ChatHandler._parse_tool_argument(value)
-            commands.append({"type": name, "args": args})
-        return commands
+        return parse_xml_commands(content, tool_names=_SUPPORTED_TOOL_NAMES)
 
     @staticmethod
     def _get_latest_user_text(messages: list[dict]) -> str:
@@ -623,7 +570,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
     @staticmethod
     def _strip_tool_commands(content: str) -> str:
         """Remove inline tool commands from content, keeping analysis text."""
-        return _TOOL_CMD_PATTERN.sub("", content).strip()
+        return strip_tool_commands(content, tool_names=_SUPPORTED_TOOL_NAMES).strip()
 
     def _execute_tool_commands(self, commands: list[dict]) -> list[dict]:
         """Execute parsed tool commands and return results.

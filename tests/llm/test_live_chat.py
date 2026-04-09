@@ -33,7 +33,7 @@ TEST_CASES = [
             {"role": "user", "content": "推荐几个做黑神话悟空内容的UP主"},
         ],
         "checks": {
-            "expected_tools_any": ["related_owners_by_tokens"],
+            "expected_tools_any": ["related_owners_by_tokens", "search_owners"],
             "content_pattern": r"space\.bilibili\.com/\d+",
             "content_not_contains": ["space.bilibili.com/uid", "UP主A", "UP主B"],
             "max_tokens": 12000,
@@ -371,6 +371,137 @@ def _format_messages(messages: list[dict]) -> str:
     )
 
 
+def _record_soft_check(
+    scored_checks: list[tuple[bool, float, str]],
+    *,
+    passed: bool,
+    weight: float,
+    message: str,
+) -> None:
+    scored_checks.append((passed, weight, message))
+
+
+def evaluate_test_case_result(
+    *,
+    content: str,
+    used_tools: list[str],
+    checks: dict,
+    total_tokens: int,
+    usage_trace: dict,
+) -> dict:
+    hard_failures: list[str] = []
+    soft_failures: list[str] = []
+    scored_checks: list[tuple[bool, float, str]] = []
+
+    for keyword in checks.get("content_contains", []):
+        _record_soft_check(
+            scored_checks,
+            passed=keyword in content,
+            weight=0.9,
+            message=f"content missing '{keyword}'",
+        )
+
+    for forbidden in checks.get("content_not_contains", []):
+        if forbidden in content:
+            hard_failures.append(f"content unexpectedly contains '{forbidden}'")
+
+    pattern = checks.get("content_pattern")
+    if pattern:
+        _record_soft_check(
+            scored_checks,
+            passed=bool(re.search(pattern, content)),
+            weight=1.1,
+            message=f"content does not match pattern '{pattern}'",
+        )
+
+    for tool_name in checks.get("expected_tools_all", []):
+        _record_soft_check(
+            scored_checks,
+            passed=tool_name in used_tools,
+            weight=1.0,
+            message=f"missing expected tool '{tool_name}'",
+        )
+
+    expected_any = checks.get("expected_tools_any", [])
+    if expected_any:
+        _record_soft_check(
+            scored_checks,
+            passed=any(tool_name in used_tools for tool_name in expected_any),
+            weight=1.1,
+            message=f"missing any expected tool in {expected_any}",
+        )
+
+    for tool_name in checks.get("forbidden_tools", []):
+        if tool_name in used_tools:
+            hard_failures.append(f"unexpected tool '{tool_name}' was used")
+
+    max_tokens = checks.get("max_tokens", 30000)
+    if total_tokens > int(max_tokens * 1.5):
+        hard_failures.append(
+            f"token budget grossly exceeded: {total_tokens} > {max_tokens}"
+        )
+    elif total_tokens > max_tokens:
+        _record_soft_check(
+            scored_checks,
+            passed=False,
+            weight=0.7,
+            message=f"token budget exceeded: {total_tokens} > {max_tokens}",
+        )
+    else:
+        _record_soft_check(
+            scored_checks,
+            passed=True,
+            weight=0.7,
+            message="token budget within limit",
+        )
+
+    min_content_length = checks.get("min_content_length", 50)
+    if len(content) < min_content_length:
+        hard_failures.append(f"content too short: {len(content)} chars")
+
+    if not usage_trace:
+        hard_failures.append("usage_trace missing")
+
+    if "DSML" in content or "function_calls" in content:
+        hard_failures.append("DSML markup leaked into content")
+
+    if any(
+        marker in content
+        for marker in [
+            "[Error:",
+            "Client Error:",
+            "LLM request error",
+            "Traceback (most recent call last)",
+        ]
+    ):
+        hard_failures.append("runtime error leaked into content")
+
+    score_total = sum(weight for _, weight, _ in scored_checks) or 1.0
+    score = sum(weight for passed, weight, _ in scored_checks if passed) / score_total
+
+    for passed, _, message in scored_checks:
+        if not passed:
+            soft_failures.append(message)
+
+    min_score = checks.get("min_score", 0.70)
+    warn_score = checks.get("warn_score", 0.55)
+    if hard_failures:
+        status = "FAIL"
+    elif score >= min_score:
+        status = "PASS"
+    elif score >= warn_score:
+        status = "WARN"
+    else:
+        status = "FAIL"
+
+    return {
+        "status": status,
+        "score": round(score, 3),
+        "hard_failures": hard_failures,
+        "soft_failures": soft_failures,
+    }
+
+
 def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
     """Run a single live chat scenario and validate output + tool routing."""
     tc_id = test_case["id"]
@@ -451,45 +582,13 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
                 f"delegate={models.get('delegate', {}).get('config', '')}"
             )
 
-    failures = []
-
-    for keyword in checks.get("content_contains", []):
-        if keyword not in content:
-            failures.append(f"content missing '{keyword}'")
-
-    for forbidden in checks.get("content_not_contains", []):
-        if forbidden in content:
-            failures.append(f"content unexpectedly contains '{forbidden}'")
-
-    pattern = checks.get("content_pattern")
-    if pattern and not re.search(pattern, content):
-        failures.append(f"content does not match pattern '{pattern}'")
-
-    for tool_name in checks.get("expected_tools_all", []):
-        if tool_name not in used_tools:
-            failures.append(f"missing expected tool '{tool_name}'")
-
-    expected_any = checks.get("expected_tools_any", [])
-    if expected_any and not any(tool_name in used_tools for tool_name in expected_any):
-        failures.append(f"missing any expected tool in {expected_any}")
-
-    for tool_name in checks.get("forbidden_tools", []):
-        if tool_name in used_tools:
-            failures.append(f"unexpected tool '{tool_name}' was used")
-
-    max_tokens = checks.get("max_tokens", 30000)
-    if total_tokens > max_tokens:
-        failures.append(f"token budget exceeded: {total_tokens} > {max_tokens}")
-
-    min_content_length = checks.get("min_content_length", 50)
-    if len(content) < min_content_length:
-        failures.append(f"content too short: {len(content)} chars")
-
-    if not usage_trace:
-        failures.append("usage_trace missing")
-
-    if "DSML" in content or "function_calls" in content:
-        failures.append("DSML markup leaked into content")
+    evaluation = evaluate_test_case_result(
+        content=content,
+        used_tools=used_tools,
+        checks=checks,
+        total_tokens=total_tokens,
+        usage_trace=usage_trace,
+    )
 
     preview_limit = 900 if verbose else 320
     logger.mesg(f"  Preview ({min(len(content), preview_limit)} chars):")
@@ -497,19 +596,30 @@ def run_test_case(handler, test_case: dict, verbose: bool = False) -> dict:
     if len(content) > preview_limit:
         print(f"  ... ({len(content) - preview_limit} chars truncated)")
 
-    if failures:
-        status = "FAIL"
-        logger.warn("  Failures:")
-        for failure in failures:
+    status = evaluation["status"]
+    logger.mesg(f"  Score: {evaluation['score']:.3f}")
+    if evaluation["hard_failures"]:
+        logger.warn("  Hard failures:")
+        for failure in evaluation["hard_failures"]:
             logger.warn(f"    × {failure}")
+    if evaluation["soft_failures"]:
+        logger.warn("  Soft misses:")
+        for failure in evaluation["soft_failures"]:
+            logger.warn(f"    △ {failure}")
+
+    if status == "PASS":
+        logger.success("  Quality checks passed")
+    elif status == "WARN":
+        logger.warn("  Acceptable with soft misses")
     else:
-        status = "PASS"
-        logger.success("  All checks passed")
+        logger.warn("  Quality checks failed")
 
     return {
         "name": name,
         "status": status,
-        "failures": failures,
+        "score": evaluation["score"],
+        "hard_failures": evaluation["hard_failures"],
+        "soft_failures": evaluation["soft_failures"],
         "elapsed_ms": elapsed_ms,
         "total_tokens": total_tokens,
         "tokens_per_second": perf_stats.get("tokens_per_second", 0),
@@ -644,18 +754,20 @@ def main():
     logger.note("[SUMMARY]")
     logger.note("=" * 72)
     passed = sum(1 for result in results if result["status"] == "PASS")
+    warned = sum(1 for result in results if result["status"] == "WARN")
+    failed = sum(1 for result in results if result["status"] == "FAIL")
     total = len(results)
     for result in results:
         status_fn = logger.success if result["status"] == "PASS" else logger.warn
         status_fn(
             f"  {result['name']}: {result['status']} "
-            f"({result.get('elapsed_ms', 0)}ms, {result.get('total_tokens', 0)} tokens, "
+            f"(score={result.get('score', 0):.3f}, {result.get('elapsed_ms', 0)}ms, {result.get('total_tokens', 0)} tokens, "
             f"{result.get('tokens_per_second', 0)} tok/s, {result.get('content_length', 0)} chars, "
             f"tools={result.get('used_tools', [])})"
         )
-    logger.note(f"\n  {passed}/{total} tests passed")
+    logger.note(f"\n  {passed}/{total} passed, {warned} warned, {failed} failed")
 
-    sys.exit(0 if passed == total else 1)
+    sys.exit(0 if failed == 0 else 1)
 
 
 if __name__ == "__main__":

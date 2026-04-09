@@ -272,6 +272,38 @@ def test_thinking_mode_prefixes_prompt_and_sets_flag():
     assert "[思考模式]" in sent_messages[0]["content"]
 
 
+def test_handle_falls_back_to_small_model_when_final_response_errors():
+    mock_large_llm = MagicMock(spec=LLMClient)
+    mock_small_llm = MagicMock(spec=LLMClient)
+    mock_large_llm.chat.side_effect = [
+        make_function_call_response(
+            ToolCall(
+                id="call_search_1",
+                name="search_videos",
+                arguments={"queries": ["黑神话 q=vwr"]},
+            )
+        ),
+        ChatResponse(content="[Error: 400 Client Error]", finish_reason="error"),
+    ]
+    mock_small_llm.chat.return_value = make_content_response(
+        "这里是黑神话的最终整理结果。"
+    )
+
+    mock_search = MagicMock()
+    mock_search.explore.return_value = MOCK_EXPLORE_RESULT
+
+    handler = ChatHandler(
+        llm_client=mock_large_llm,
+        small_llm_client=mock_small_llm,
+        search_client=mock_search,
+    )
+
+    result = handler.handle(messages=[{"role": "user", "content": "黑神话教程"}])
+
+    assert assistant_content(result) == "这里是黑神话的最终整理结果。"
+    assert mock_small_llm.chat.call_count == 1
+
+
 def test_handle_respects_max_iterations_before_final_answer_nudge():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [

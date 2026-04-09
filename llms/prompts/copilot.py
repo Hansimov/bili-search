@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from llms.intent.classifier import build_intent_profile
+from llms.intent.classifier import select_prompt_asset_ids
 from llms.prompts.assets import get_prompt_assets
 from llms.prompts.system import get_date_prompt
 from llms.protocol import IntentProfile, PromptSelection
-from llms.routing import build_intent_profile, select_prompt_asset_ids
 
 
 def _capabilities_block(capabilities: dict | None = None) -> str:

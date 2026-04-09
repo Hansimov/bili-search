@@ -70,7 +70,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Video Route",
         "ROUTE_VIDEOS",
         "brief",
-        "目标是视频时，终局工具优先 search_videos。若 query 抽象、缺稳定实体，先 related_tokens_by_tokens 再 search_videos；若作者名不稳，先 search_owners 再落到 :user 或 :uid。",
+        "目标是视频时，终局工具优先 search_videos。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 related_tokens_by_tokens（通常用 correction / associate 思路）再 search_videos；若作者名不稳，先 search_owners 再落到 :user 或 :uid。不要把疑似错写直接当作者名去 search_owners。",
         tags=("route", "videos"),
     ),
     _asset(
@@ -78,7 +78,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Owner Route",
         "ROUTE_OWNERS",
         "brief",
-        "目标是作者时，优先 search_owners。名字/别名查找走 mode=name，主题找作者走 mode=topic，作者关系走 mode=relation。",
+        "目标是作者时，优先 search_owners。名字/别名查找走 mode=name，主题找作者走 mode=topic，作者关系走 mode=relation。若已经拿到一轮可信作者候选，就直接回答，不要为了凑流程继续 relation/owner 工具连跳。",
         tags=("route", "owners"),
     ),
     _asset(

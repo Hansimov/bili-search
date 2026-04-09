@@ -10,10 +10,10 @@ import argparse
 
 from tclogger import logger
 
-from llms.chat.orchestrator import ChatOrchestrator
+from llms.orchestration import ChatOrchestrator
 from llms.config import ModelRegistry
 from llms.prompts.copilot import build_prompt_selection
-from llms.routing import build_intent_profile
+from llms.intent.classifier import build_intent_profile
 
 
 class _DummyClient:

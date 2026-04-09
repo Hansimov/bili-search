@@ -12,7 +12,7 @@ import argparse
 from tclogger import logger
 
 from llms.prompts.copilot import build_prompt_selection
-from llms.routing import build_intent_profile
+from llms.intent.classifier import build_intent_profile
 
 
 def build_parser() -> argparse.ArgumentParser:
