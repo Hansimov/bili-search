@@ -33,7 +33,7 @@ def make_chat_response(content: str, usage: dict | None = None):
 # ============================================================
 
 
-def create_test_app():
+def create_test_app(transcript_configured: bool = True):
     """Create a SearchApp with mocked search and chat internals for testing."""
     with (
         patch("service.app.init_embed_client_with_keepalive") as mock_embed,
@@ -41,6 +41,7 @@ def create_test_app():
         patch("service.app.VideoExplorer") as mock_explorer_cls,
         patch("service.app.OwnerSearcher") as mock_owner_searcher_cls,
         patch("service.app.RelationsClient") as mock_relations_cls,
+        patch("service.app.BiliStoreTranscriptClient") as mock_transcript_cls,
         patch("llms.models.client.create_llm_client") as mock_create_llm,
     ):
 
@@ -52,6 +53,10 @@ def create_test_app():
         mock_explorer_cls.return_value = mock_explorer
         mock_owner_searcher_cls.return_value = mock_owner_searcher
         mock_relations_cls.return_value = mock_relations
+
+        mock_transcript_client = MagicMock()
+        mock_transcript_client.is_configured = transcript_configured
+        mock_transcript_cls.return_value = mock_transcript_client
 
         mock_llm = MagicMock()
         mock_llm.model = "test-model"
@@ -66,7 +71,13 @@ def create_test_app():
             "llm_config": LLM_CONFIG,
         }
         search_app = SearchApp(app_envs)
-        return search_app, mock_llm, mock_searcher, mock_explorer
+        return (
+            search_app,
+            mock_llm,
+            mock_searcher,
+            mock_explorer,
+            mock_transcript_client,
+        )
 
 
 # ============================================================
@@ -79,7 +90,7 @@ def test_health_endpoint():
     logger.note("=" * 60)
     logger.note("[TEST] /health endpoint")
 
-    search_app, _, _, _ = create_test_app()
+    search_app, _, _, _, _ = create_test_app()
     client = TestClient(search_app.app)
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -97,7 +108,7 @@ def test_capabilities_endpoint():
     logger.note("=" * 60)
     logger.note("[TEST] /capabilities endpoint")
 
-    search_app, _, _, _ = create_test_app()
+    search_app, _, _, _, _ = create_test_app()
     client = TestClient(search_app.app)
     resp = client.get("/capabilities")
 
@@ -107,12 +118,31 @@ def test_capabilities_endpoint():
     assert data["supports_multi_query"] is True
     assert data["supports_author_check"] is False
     assert data["supports_owner_search"] is True
+    assert data["supports_transcript_lookup"] is True
     assert "related_owners_by_tokens" in data["relation_endpoints"]
     assert "/explore" in data["available_endpoints"]
     assert "/search_owners" in data["available_endpoints"]
+    assert "/video_transcript" in data["available_endpoints"]
     assert "/related_owners_by_tokens" in data["available_endpoints"]
 
     logger.success("[PASS] /capabilities endpoint")
+
+
+def test_capabilities_endpoint_disables_transcript_when_unconfigured():
+    """Transcript capability should turn off when the endpoint is not configured."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /capabilities transcript disabled when unconfigured")
+
+    search_app, _, _, _, _ = create_test_app(transcript_configured=False)
+    client = TestClient(search_app.app)
+    resp = client.get("/capabilities")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["supports_transcript_lookup"] is False
+    assert "/video_transcript" in data["available_endpoints"]
+
+    logger.success("[PASS] /capabilities transcript disabled when unconfigured")
 
 
 def test_chat_completions_endpoint():
@@ -120,7 +150,7 @@ def test_chat_completions_endpoint():
     logger.note("=" * 60)
     logger.note("[TEST] /chat/completions endpoint")
 
-    search_app, mock_llm, _, _ = create_test_app()
+    search_app, mock_llm, _, _, _ = create_test_app()
 
     from llms.models import ChatResponse
 
@@ -147,12 +177,102 @@ def test_chat_completions_endpoint():
     logger.success("[PASS] /chat/completions endpoint")
 
 
+def test_chat_completions_accepts_multimodal_message_content():
+    """The API should accept OpenAI-style content arrays and still complete normally."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /chat/completions accepts multimodal content")
+
+    search_app, mock_llm, _, _, _ = create_test_app()
+    mock_llm.chat.return_value = make_chat_response("已收到图文输入")
+
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请总结这个视频截图"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.com/test.png"},
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["choices"][0]["message"]["content"] == "已收到图文输入"
+
+    logger.success("[PASS] /chat/completions accepts multimodal content")
+
+
+def test_video_transcript_endpoint():
+    """Test /video_transcript forwards to the transcript client."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /video_transcript endpoint")
+
+    search_app, _, _, _, _ = create_test_app()
+    mock_transcript_client = MagicMock()
+    mock_transcript_client.get_video_transcript.return_value = {
+        "ok": True,
+        "bvid": "BV1YXZPB1Erc",
+        "transcript": {"text": "示例转写"},
+    }
+    search_app.transcript_client = mock_transcript_client
+
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/video_transcript",
+        json={
+            "video_id": "BV1YXZPB1Erc",
+            "head_chars": 500,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["bvid"] == "BV1YXZPB1Erc"
+    mock_transcript_client.get_video_transcript.assert_called_once_with(
+        "BV1YXZPB1Erc",
+        request={"head_chars": 500},
+    )
+
+    logger.success("[PASS] /video_transcript endpoint")
+
+
+def test_video_transcript_endpoint_reports_unavailable_when_unconfigured():
+    """The endpoint should return a stable unavailable error when transcript config is missing."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /video_transcript unavailable when transcript client disabled")
+
+    search_app, _, _, _, _ = create_test_app(transcript_configured=False)
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/video_transcript",
+        json={
+            "video_id": "BV1YXZPB1Erc",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"error": "Transcript lookup unavailable"}
+
+    logger.success(
+        "[PASS] /video_transcript unavailable when transcript client disabled"
+    )
+
+
 def test_chat_completions_v1_path():
     """Test /v1/chat/completions path works."""
     logger.note("=" * 60)
     logger.note("[TEST] /v1/chat/completions path")
 
-    search_app, mock_llm, _, _ = create_test_app()
+    search_app, mock_llm, _, _, _ = create_test_app()
     from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
@@ -179,7 +299,7 @@ def test_chat_request_validation():
     logger.note("=" * 60)
     logger.note("[TEST] request validation")
 
-    search_app, _, _, _ = create_test_app()
+    search_app, _, _, _, _ = create_test_app()
     client = TestClient(search_app.app)
 
     # Missing messages
@@ -201,7 +321,7 @@ def test_streaming_response():
     logger.note("=" * 60)
     logger.note("[TEST] streaming response")
 
-    search_app, mock_llm, _, _ = create_test_app()
+    search_app, mock_llm, _, _, _ = create_test_app()
     from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(
@@ -235,7 +355,7 @@ def test_stream_response_cleanup_swallows_monitor_cancellation():
     logger.note("=" * 60)
     logger.note("[TEST] stream response cleanup")
 
-    search_app, _, _, _ = create_test_app()
+    search_app, _, _, _, _ = create_test_app()
     search_app.chat_handler.handle_stream = MagicMock(
         return_value=iter(
             [
@@ -280,7 +400,7 @@ def test_chat_completions_account_query_stays_relation_only():
     logger.note("=" * 60)
     logger.note("[TEST] /chat/completions account query stays relation-only")
 
-    search_app, mock_llm, _, _ = create_test_app()
+    search_app, mock_llm, _, _, _ = create_test_app()
     mock_llm.chat.side_effect = [
         make_chat_response(
             '我先找一下何同学相关作者线索。\n<search_owners text="何同学" mode="relation"/>'
@@ -325,7 +445,7 @@ def test_chat_completions_account_followup_stays_relation_only():
     logger.note("=" * 60)
     logger.note("[TEST] /chat/completions account follow-up stays relation-only")
 
-    search_app, mock_llm, _, _ = create_test_app()
+    search_app, mock_llm, _, _, _ = create_test_app()
     mock_llm.chat.side_effect = [
         make_chat_response(
             '我先继续找这个作者相关账号。\n<search_owners text="何同学" mode="relation"/>'
@@ -373,7 +493,7 @@ def test_search_and_suggest_endpoints_match_searcher_v2_signature():
     logger.note("=" * 60)
     logger.note("[TEST] search/suggest endpoint compatibility")
 
-    search_app, _, mock_searcher, _ = create_test_app()
+    search_app, _, mock_searcher, _, _ = create_test_app()
 
     def search_side_effect(
         query,
@@ -421,7 +541,7 @@ def test_cors_headers():
     logger.note("=" * 60)
     logger.note("[TEST] CORS headers")
 
-    search_app, mock_llm, _, _ = create_test_app()
+    search_app, mock_llm, _, _, _ = create_test_app()
     from llms.models import ChatResponse
 
     mock_llm.chat.return_value = ChatResponse(

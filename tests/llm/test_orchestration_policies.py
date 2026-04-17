@@ -1,3 +1,7 @@
+from unittest.mock import MagicMock
+
+from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
+from llms.orchestration.engine import ChatOrchestrator
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
@@ -265,3 +269,35 @@ def test_select_post_execution_nudge_prefers_token_retry_for_alias_expansion():
 
     assert rule is not None
     assert rule[0] == "token_expansion_retry"
+
+
+def test_select_model_prefers_small_for_known_video_transcript():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    intent = _intent(
+        final_target="videos",
+        task_mode="known_item",
+        ambiguity=0.12,
+        complexity_score=0.28,
+    )
+    messages = [{"role": "user", "content": "BV1YXZPB1Erc 这个视频主要讲了什么"}]
+
+    prefer_small = orchestrator._wants_transcript_lookup(
+        messages,
+        intent,
+        {"supports_transcript_lookup": True},
+    )
+    decision = orchestrator._select_model(
+        intent,
+        stage="planner",
+        thinking=False,
+        prefer_small=prefer_small,
+    )
+
+    assert prefer_small is True
+    assert decision.spec.config_name == DEFAULT_SMALL_MODEL_CONFIG
+    assert "转写" in decision.reason

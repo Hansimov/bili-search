@@ -7,7 +7,7 @@ from configs.envs import LLMS_ENVS
 from llms.contracts import ModelSpec
 
 
-DEFAULT_SMALL_MODEL_CONFIG = "qwen3.5-4b"
+DEFAULT_SMALL_MODEL_CONFIG = "doubao-seed-2-0-mini"
 DEFAULT_LARGE_MODEL_CONFIG = "deepseek"
 
 

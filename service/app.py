@@ -34,6 +34,7 @@ from service.envs import SEARCH_APP_ENV_KEYS
 from service.envs import apply_search_app_envs_to_environment
 from service.envs import get_search_app_env_overrides_from_env
 from service.envs import resolve_search_app_envs
+from llms.tools.transcripts import BiliStoreTranscriptClient
 
 
 logger = TCLogger()
@@ -41,7 +42,7 @@ logger = TCLogger()
 
 class ChatMessage(BaseModel):
     role: str = Field(..., description="Message role: system/user/assistant")
-    content: str = Field(..., description="Message content")
+    content: Union[str, list[dict]] = Field(..., description="Message content")
 
 
 class ChatCompletionRequest(BaseModel):
@@ -102,6 +103,15 @@ class SearchApp:
             elastic_env_name=self.elastic_env_name,
             relations_client=self.relations_client,
         )
+        transcript_client = BiliStoreTranscriptClient(verbose=True)
+        if transcript_client.is_configured:
+            self.transcript_client = transcript_client
+        else:
+            self.transcript_client = None
+            logger.hint(
+                "> Transcript client disabled "
+                "(missing bili_store.endpoint in configs/secrets.json)"
+            )
 
     def init_chat_handler(self):
         llm_config = self.app_envs.get("llm_config", "")
@@ -125,6 +135,7 @@ class SearchApp:
             video_explorer=self.video_explorer,
             owner_searcher=self.owner_searcher,
             relations_client=self.relations_client,
+            transcript_client=self.transcript_client,
             verbose=True,
         )
         self.chat_handler = ChatHandler(
@@ -317,6 +328,23 @@ class SearchApp:
             size=size,
         )
 
+    def video_transcript(
+        self,
+        request_payload: dict = Body(default_factory=dict),
+    ):
+        if self.transcript_client is None:
+            return {"error": "Transcript lookup unavailable"}
+        payload = dict(request_payload or {})
+        video_id = str(
+            payload.pop("video_id", None)
+            or payload.pop("bvid", None)
+            or payload.pop("aid", None)
+            or ""
+        ).strip()
+        if not video_id:
+            return {"error": "Missing video_id"}
+        return self.transcript_client.get_video_transcript(video_id, request=payload)
+
     def related_owners_by_tokens(
         self,
         text: str = Body(...),
@@ -412,6 +440,10 @@ class SearchApp:
             "/search_owners",
             summary="Search owners by name, topic, or relation",
         )(self.search_owners)
+        self.app.post(
+            "/video_transcript",
+            summary="Get transcript text for a specific video",
+        )(self.video_transcript)
         self.app.post(
             "/related_owners_by_tokens",
             summary="Find related owners by topic tokens",
@@ -606,6 +638,7 @@ class SearchApp:
             "supports_author_check": False,
             "supports_owner_search": True,
             "supports_google_search": False,
+            "supports_transcript_lookup": self.transcript_client is not None,
             "relation_endpoints": list(RELATED_ENDPOINTS),
             "available_endpoints": [
                 "/health",
@@ -619,6 +652,7 @@ class SearchApp:
                 "/knn_search",
                 "/hybrid_search",
                 "/search_owners",
+                "/video_transcript",
                 *[f"/{endpoint}" for endpoint in RELATED_ENDPOINTS],
             ],
             "docs": ["search_syntax"],

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 PUBLIC_EXTERNAL_TOOL_NAMES: tuple[str, ...] = (
     "search_videos",
+    "get_video_transcript",
     "search_google",
     "search_owners",
     "expand_query",

@@ -94,6 +94,23 @@ MOCK_SEARCH_OWNERS_RESULT = {
     ],
 }
 
+MOCK_TRANSCRIPT_RESULT = {
+    "ok": True,
+    "requested_video_id": "BV1YXZPB1Erc",
+    "bvid": "BV1YXZPB1Erc",
+    "title": "示例视频",
+    "page_index": 1,
+    "selection": {
+        "selected_text_length": 128,
+        "full_text_length": 512,
+    },
+    "transcript": {
+        "text": "这是一个示例转写，用来验证 transcript tool 的执行链路。",
+        "text_length": 128,
+        "segment_count": 3,
+    },
+}
+
 # ============================================================
 # Tests
 # ============================================================
@@ -238,6 +255,44 @@ def test_execute_search_owners():
     )
 
     logger.success("[PASS] execute search_owners")
+
+
+def test_execute_get_video_transcript():
+    """Test get_video_transcript tool execution."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute get_video_transcript")
+
+    mock_client = MagicMock()
+    mock_client.get_video_transcript.return_value = MOCK_TRANSCRIPT_RESULT
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_test_transcript",
+        name="get_video_transcript",
+        arguments=json.dumps(
+            {
+                "video_id": "BV1YXZPB1Erc",
+                "head_chars": 6000,
+                "include_segments": True,
+            }
+        ),
+    )
+    result_msg = executor.execute(tc)
+
+    assert result_msg["role"] == "tool"
+    assert result_msg["tool_call_id"] == "call_test_transcript"
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["bvid"] == "BV1YXZPB1Erc"
+    assert result_data["transcript"]["text"].startswith("这是一个示例转写")
+    mock_client.get_video_transcript.assert_called_once_with(
+        video_id="BV1YXZPB1Erc",
+        head_chars=6000,
+        include_segments=True,
+    )
+
+    logger.success("[PASS] execute get_video_transcript")
 
 
 def test_execute_search_owners_topic_uses_wider_default_limit():

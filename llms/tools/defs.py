@@ -7,6 +7,7 @@ from copy import deepcopy
 
 _PROMPT_TOOL_EXAMPLES = {
     "search_videos": "<search_videos queries='[\"黑神话 :view>=1w q=vwr\"]'/>",
+    "get_video_transcript": "<get_video_transcript video_id='BV1YXZPB1Erc' head_chars='6000' include_segments='true'/>",
     "search_google": "<search_google query='Gemini 2.5 更新 site:bilibili.com/video' num='5'/>",
     "search_owners": "<search_owners text='黑神话悟空' mode='topic' size='8'/>",
     "expand_query": "<expand_query text='康夫UI' mode='correction' size='8'/>",
@@ -32,6 +33,7 @@ DEFAULT_SEARCH_CAPABILITIES = {
     "supports_author_check": False,
     "supports_owner_search": False,
     "supports_google_search": False,
+    "supports_transcript_lookup": False,
     "relation_endpoints": [],
     "docs": ["search_syntax"],
 }
@@ -148,6 +150,73 @@ def build_search_google_tool(capabilities: dict | None = None) -> dict:
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    }
+
+
+def build_get_video_transcript_tool(capabilities: dict | None = None) -> dict:
+    _merge_capabilities(capabilities)
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_video_transcript",
+            "description": (
+                "获取某个具体 B 站视频的音频转写文本。"
+                "适合已知 BV 号/具体视频后，回答“这个视频讲了什么”“帮我总结重点”“视频里说了啥”“给我字幕/转写”之类的问题。"
+                "长转写通常先取 head_chars/head_segments，再配合 run_small_llm_task 做归纳。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_id": {
+                        "type": "string",
+                        "description": "视频标识，通常传 BV 号。也可传 bvid 的别名字段。",
+                    },
+                    "page_index": {
+                        "type": "integer",
+                        "description": "分 P 页码，默认 1",
+                        "default": 1,
+                    },
+                    "head_chars": {
+                        "type": "integer",
+                        "description": "只截取前 N 个字符，适合先做快速阅读或摘要。",
+                    },
+                    "head_segments": {
+                        "type": "integer",
+                        "description": "只截取前 N 个分段。",
+                    },
+                    "max_segments": {
+                        "type": "integer",
+                        "description": "最多返回多少个分段。",
+                    },
+                    "include_segments": {
+                        "type": "boolean",
+                        "description": "是否返回分段信息。",
+                        "default": False,
+                    },
+                    "ranges": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选时间范围列表，例如 ['00:30-01:20', '120-180']。",
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "是否强制刷新转写缓存。",
+                        "default": False,
+                    },
+                    "force_audio_refresh": {
+                        "type": "boolean",
+                        "description": "是否强制刷新音频缓存。",
+                        "default": False,
+                    },
+                    "long_audio": {
+                        "type": "string",
+                        "enum": ["auto", "always", "never"],
+                        "description": "长音频处理策略，默认 auto。",
+                    },
+                },
+                "required": ["video_id"],
             },
         },
     }
@@ -276,6 +345,8 @@ def build_tool_definitions(
     caps = _merge_capabilities(capabilities)
     relation_endpoints = set(caps.get("relation_endpoints") or [])
     tools = [build_search_videos_tool(caps)]
+    if caps.get("supports_transcript_lookup", False):
+        tools.append(build_get_video_transcript_tool(caps))
     if caps.get("supports_google_search", False):
         tools.append(build_search_google_tool(caps))
     if caps.get("supports_owner_search", False) or (

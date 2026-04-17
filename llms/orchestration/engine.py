@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Generator, Optional
 
 from tclogger import logger
@@ -18,6 +20,7 @@ from llms.contracts import (
 from llms.intent import build_intent_profile
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
+from llms.messages import extract_bvids, extract_message_text
 from llms.models import ChatResponse
 from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
@@ -51,6 +54,12 @@ _INTERNAL_TOOL_NAMES = {
     "run_small_llm_task",
 }
 
+_TRANSCRIPT_HINT_RE = re.compile(
+    r"(讲了什么|讲啥|说了什么|说啥|主要讲|主要内容|总结|摘要|概括|梗概|重点|字幕|转写|音频)",
+    re.IGNORECASE,
+)
+_TRANSCRIPT_CONTEXT_CHAR_LIMIT = 24000
+
 
 def _shared_prefix_len(left: str, right: str) -> int:
     limit = min(len(left), len(right))
@@ -58,6 +67,14 @@ def _shared_prefix_len(left: str, right: str) -> int:
     while idx < limit and left[idx] == right[idx]:
         idx += 1
     return idx
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDecision:
+    client: object
+    spec: ModelSpec
+    reason: str
+    factors: tuple[str, ...]
 
 
 class ChatOrchestrator:
@@ -195,30 +212,6 @@ class ChatOrchestrator:
             seen_signatures.add(signature)
         return requests
 
-    def _select_model(
-        self, intent: IntentProfile, stage: str, thinking: bool
-    ) -> tuple[object, ModelSpec]:
-        needs_tool_orchestration = (
-            stage in {"planner", "response"} and intent.final_target != "answer"
-        )
-        use_large = bool(
-            thinking
-            or needs_tool_orchestration
-            or intent.final_target == "mixed"
-            or intent.complexity_score >= 0.55
-            or (stage == "planner" and intent.needs_external_search)
-            or (stage == "planner" and intent.needs_keyword_expansion)
-            or (stage == "response" and intent.task_mode == "collect_compare")
-        )
-        if stage == "delegate":
-            spec = self.model_registry.primary("small")
-            return self.small_llm_client, spec
-        if use_large:
-            spec = self.model_registry.primary("large")
-            return self.large_llm_client, spec
-        spec = self.model_registry.primary("small")
-        return self.small_llm_client, spec
-
     def _build_internal_tool_defs(self) -> list[dict]:
         return [
             {
@@ -307,9 +300,41 @@ class ChatOrchestrator:
         for result_id in list(args.get("result_ids") or []):
             record = result_store.get(result_id)
             if record is not None:
+                if canonical_tool_name(record.request.name) == "get_video_transcript":
+                    transcript = (record.result.get("transcript") or {}).get(
+                        "text"
+                    ) or ""
+                    transcript_text = str(transcript or "")
+                    trimmed_transcript = transcript_text[
+                        :_TRANSCRIPT_CONTEXT_CHAR_LIMIT
+                    ]
+                    context_parts.append(
+                        json.dumps(
+                            {
+                                "result_id": record.result_id,
+                                "tool": record.request.name,
+                                "video_id": record.result.get("bvid")
+                                or record.result.get("requested_video_id"),
+                                "title": record.result.get("title", ""),
+                                "text_length": len(transcript_text),
+                                "truncated": len(transcript_text)
+                                > _TRANSCRIPT_CONTEXT_CHAR_LIMIT,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    if trimmed_transcript:
+                        context_parts.append(f"[转写正文]\n{trimmed_transcript}")
+                    continue
                 context_parts.append(json.dumps(record.summary, ensure_ascii=False))
         context = "\n".join(context_parts).strip()
-        client, spec = self._select_model(intent, stage="delegate", thinking=False)
+        decision = self._select_model(intent, stage="delegate", thinking=False)
+        self._log_model_decision(
+            phase="delegate",
+            iteration=max(len(result_store.order), 1),
+            decision=decision,
+            intent=intent,
+        )
         messages = [
             {
                 "role": "system",
@@ -325,11 +350,12 @@ class ChatOrchestrator:
                 ),
             },
         ]
-        response = client.chat(messages=messages, temperature=0.2)
+        response = decision.client.chat(messages=messages, temperature=0.2)
         return {
             "task": task,
-            "model": spec.config_name,
-            "model_name": spec.model_name,
+            "model": decision.spec.config_name,
+            "model_name": decision.spec.model_name,
+            "model_reason": decision.reason,
             "result": sanitize_generated_content(response.content or ""),
         }
 
@@ -407,12 +433,150 @@ class ChatOrchestrator:
     def _normalize_usage(self, usage: dict) -> dict:
         return normalize_usage(usage)
 
+    def _wants_transcript_lookup(
+        self,
+        messages: list[dict],
+        intent: IntentProfile,
+        search_capabilities: dict,
+    ) -> bool:
+        if not search_capabilities.get("supports_transcript_lookup", False):
+            return False
+        if intent.final_target != "videos":
+            return False
+        latest_user_text = next(
+            (
+                extract_message_text(message)
+                for message in reversed(messages or [])
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        if not latest_user_text or not _TRANSCRIPT_HINT_RE.search(latest_user_text):
+            return False
+        seen_bvids: set[str] = set()
+        for message in messages or []:
+            seen_bvids.update(extract_bvids(message))
+        return bool(seen_bvids)
+
+    def _extra_prompt_assets(
+        self,
+        messages: list[dict],
+        intent: IntentProfile,
+        search_capabilities: dict,
+    ) -> list[str]:
+        if not self._wants_transcript_lookup(messages, intent, search_capabilities):
+            return []
+        return [
+            "tool.get_video_transcript.brief",
+            "tool.get_video_transcript.detailed",
+            "tool.get_video_transcript.examples",
+        ]
+
+    def _select_model(
+        self,
+        intent: IntentProfile,
+        stage: str,
+        thinking: bool,
+        *,
+        prefer_small: bool = False,
+    ) -> ModelDecision:
+        small_spec = self.model_registry.primary("small")
+        large_spec = self.model_registry.primary("large")
+
+        if stage == "delegate":
+            return ModelDecision(
+                client=self.small_llm_client,
+                spec=small_spec,
+                reason="窄任务统一下放给小模型执行。",
+                factors=("delegate", "small_model"),
+            )
+
+        if thinking:
+            return ModelDecision(
+                client=self.large_llm_client,
+                spec=large_spec,
+                reason="思考模式开启时，规划与收口都优先使用大模型。",
+                factors=("thinking", f"stage={stage}"),
+            )
+
+        if prefer_small and stage in {"planner", "response"}:
+            return ModelDecision(
+                client=self.small_llm_client,
+                spec=small_spec,
+                reason="已识别为具体视频的内容理解/转写任务，优先让小模型读取和总结。",
+                factors=("known_video", "transcript_lookup", f"stage={stage}"),
+            )
+
+        large_factors: list[str] = []
+        if intent.final_target == "mixed":
+            large_factors.append("mixed_target")
+        if intent.task_mode == "collect_compare":
+            large_factors.append("collect_compare")
+        if stage == "planner" and intent.needs_keyword_expansion:
+            large_factors.append("needs_keyword_expansion")
+        if stage == "planner" and intent.needs_term_normalization:
+            large_factors.append("needs_term_normalization")
+        if (
+            stage == "planner"
+            and intent.final_target == "relations"
+            and intent.ambiguity >= 0.38
+        ):
+            large_factors.append("relation_ambiguity")
+        if stage == "planner" and intent.complexity_score >= 0.58:
+            large_factors.append("planner_complexity")
+        if (
+            stage == "response"
+            and intent.final_target == "relations"
+            and intent.ambiguity >= 0.42
+        ):
+            large_factors.append("relation_synthesis")
+        if stage == "response" and intent.complexity_score >= 0.72:
+            large_factors.append("response_complexity")
+
+        if large_factors:
+            return ModelDecision(
+                client=self.large_llm_client,
+                spec=large_spec,
+                reason="任务复杂度或编排风险较高，使用大模型更稳妥。",
+                factors=tuple(large_factors),
+            )
+
+        return ModelDecision(
+            client=self.small_llm_client,
+            spec=small_spec,
+            reason="当前阶段是单目标、低复杂度任务，小模型足够完成。",
+            factors=(
+                f"stage={stage}",
+                f"target={intent.final_target}",
+                f"task={intent.task_mode}",
+            ),
+        )
+
+    def _log_model_decision(
+        self,
+        *,
+        phase: str,
+        iteration: int,
+        decision: ModelDecision,
+        intent: IntentProfile,
+    ) -> None:
+        if not self.verbose:
+            return
+        factors = ", ".join(decision.factors) if decision.factors else "-"
+        logger.note(
+            "> LLM route"
+            f"[{phase}#{iteration}]: "
+            f"config={decision.spec.config_name}, model={decision.spec.model_name}, "
+            f"reason={decision.reason}, factors={factors}, "
+            f"intent={intent.final_target}/{intent.task_mode}"
+        )
+
     def _usage_trace_entry(
         self,
         *,
         phase: str,
         iteration: int,
-        model_spec: ModelSpec,
+        decision: ModelDecision,
         usage: dict,
         tool_calls: list[ToolCallRequest] | None = None,
     ) -> dict:
@@ -420,8 +584,10 @@ class ChatOrchestrator:
         return {
             "phase": phase,
             "iteration": iteration,
-            "model_config": model_spec.config_name,
-            "model_name": model_spec.model_name,
+            "model_config": decision.spec.config_name,
+            "model_name": decision.spec.model_name,
+            "model_reason": decision.reason,
+            "model_factors": list(decision.factors),
             "prompt_tokens": normalized_usage.get("prompt_tokens", 0),
             "completion_tokens": normalized_usage.get("completion_tokens", 0),
             "total_tokens": normalized_usage.get("total_tokens", 0),
@@ -632,6 +798,72 @@ class ChatOrchestrator:
             usage=usage,
         )
 
+    def _prepare_orchestration_context(
+        self,
+        *,
+        messages: list[dict],
+        thinking: bool,
+    ) -> tuple[
+        dict, IntentProfile, list[str], str, dict, ModelDecision, ModelDecision, str
+    ]:
+        search_capabilities = self.tool_executor.get_search_capabilities()
+        intent = build_intent_profile(messages)
+        extra_asset_ids = self._extra_prompt_assets(
+            messages,
+            intent,
+            search_capabilities,
+        )
+        prompt = build_system_prompt(
+            capabilities=search_capabilities,
+            intent=intent,
+            extra_asset_ids=extra_asset_ids,
+        )
+        if thinking:
+            prompt = _THINKING_PROMPT + "\n\n" + prompt
+        prompt_profile = build_system_prompt_profile(
+            capabilities=search_capabilities,
+            intent=intent,
+            extra_asset_ids=extra_asset_ids,
+        )
+        if thinking:
+            prompt_profile = {
+                **prompt_profile,
+                "thinking_prompt_chars": len(_THINKING_PROMPT),
+                "total_chars": prompt_profile.get("total_chars", 0)
+                + len(_THINKING_PROMPT),
+            }
+        prefer_small = bool(extra_asset_ids)
+        planner_decision = self._select_model(
+            intent,
+            stage="planner",
+            thinking=thinking,
+            prefer_small=prefer_small,
+        )
+        response_decision = self._select_model(
+            intent,
+            stage="response",
+            thinking=thinking,
+            prefer_small=prefer_small,
+        )
+        latest_user_message = next(
+            (
+                extract_message_text(message)
+                for message in reversed(messages)
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+        return (
+            search_capabilities,
+            intent,
+            extra_asset_ids,
+            prompt,
+            prompt_profile,
+            planner_decision,
+            response_decision,
+            latest_user_message,
+        )
+
     def run(
         self,
         *,
@@ -641,46 +873,22 @@ class ChatOrchestrator:
         cancelled: Optional[object] = None,
     ) -> OrchestrationResult:
         start_time = time.perf_counter()
-        search_capabilities = self.tool_executor.get_search_capabilities()
-        intent = build_intent_profile(messages)
-        prompt = build_system_prompt(
-            capabilities=search_capabilities,
-            intent=intent,
-        )
-        if thinking:
-            prompt = _THINKING_PROMPT + "\n\n" + prompt
-        prompt_profile = build_system_prompt_profile(
-            capabilities=search_capabilities,
-            intent=intent,
-        )
-        if thinking:
-            prompt_profile = {
-                **prompt_profile,
-                "thinking_prompt_chars": len(_THINKING_PROMPT),
-                "total_chars": prompt_profile.get("total_chars", 0)
-                + len(_THINKING_PROMPT),
-            }
-
-        planner_client, planner_spec = self._select_model(
+        (
+            search_capabilities,
             intent,
-            stage="planner",
-            thinking=thinking,
-        )
-        response_client, response_spec = self._select_model(
-            intent,
-            stage="response",
-            thinking=thinking,
-        )
+            extra_asset_ids,
+            prompt,
+            prompt_profile,
+            planner_decision,
+            response_decision,
+            latest_user_message,
+        ) = self._prepare_orchestration_context(messages=messages, thinking=thinking)
 
+        planner_client = planner_decision.client
+        planner_spec = planner_decision.spec
+        response_client = response_decision.client
+        response_spec = response_decision.spec
         conversation = [{"role": "system", "content": prompt}] + list(messages)
-        latest_user_message = next(
-            (
-                str(message.get("content") or "")
-                for message in reversed(messages)
-                if message.get("role") == "user"
-            ),
-            "",
-        )
         total_usage: dict[str, Any] = {}
         usage_trace: list[dict[str, Any]] = []
         tool_events: list[dict[str, Any]] = []
@@ -695,6 +903,12 @@ class ChatOrchestrator:
             if cancelled is not None and getattr(cancelled, "is_set", lambda: False)():
                 break
 
+            self._log_model_decision(
+                phase="planner",
+                iteration=iteration,
+                decision=planner_decision,
+                intent=intent,
+            )
             response = planner_client.chat(
                 messages=conversation,
                 temperature=self.temperature,
@@ -732,7 +946,7 @@ class ChatOrchestrator:
                 self._usage_trace_entry(
                     phase="planner",
                     iteration=iteration,
-                    model_spec=planner_spec,
+                    decision=planner_decision,
                     usage=response.usage,
                     tool_calls=requests,
                 )
@@ -831,6 +1045,12 @@ class ChatOrchestrator:
 
         if not final_content:
             conversation.append({"role": "user", "content": FINAL_ANSWER_NUDGE})
+            self._log_model_decision(
+                phase="response",
+                iteration=len(usage_trace) + 1,
+                decision=response_decision,
+                intent=intent,
+            )
             response = response_client.chat(
                 messages=conversation,
                 temperature=self.temperature,
@@ -841,18 +1061,24 @@ class ChatOrchestrator:
                 self._usage_trace_entry(
                     phase="response",
                     iteration=len(usage_trace) + 1,
-                    model_spec=response_spec,
+                    decision=response_decision,
                     usage=response.usage,
                     tool_calls=[],
                 )
             )
             if self._is_error_response(response):
-                fallback_client, fallback_spec = self._select_model(
+                fallback_decision = self._select_model(
                     intent,
                     stage="delegate",
                     thinking=False,
                 )
-                fallback_response = fallback_client.chat(
+                self._log_model_decision(
+                    phase="response_fallback",
+                    iteration=len(usage_trace) + 1,
+                    decision=fallback_decision,
+                    intent=intent,
+                )
+                fallback_response = fallback_decision.client.chat(
                     messages=self._build_fallback_response_messages(
                         intent=intent,
                         result_store=self.result_store,
@@ -864,7 +1090,7 @@ class ChatOrchestrator:
                     self._usage_trace_entry(
                         phase="response_fallback",
                         iteration=len(usage_trace) + 1,
-                        model_spec=fallback_spec,
+                        decision=fallback_decision,
                         usage=fallback_response.usage,
                         tool_calls=[],
                     )
@@ -906,19 +1132,26 @@ class ChatOrchestrator:
                     "explicit_entities": intent.explicit_entities,
                     "explicit_topics": intent.explicit_topics,
                     "route_reason": intent.route_reason,
+                    "prefers_transcript_lookup": bool(extra_asset_ids),
                 },
                 "models": {
                     "planner": {
                         "config": planner_spec.config_name,
                         "model": planner_spec.model_name,
+                        "reason": planner_decision.reason,
+                        "factors": list(planner_decision.factors),
                     },
                     "response": {
                         "config": response_spec.config_name,
                         "model": response_spec.model_name,
+                        "reason": response_decision.reason,
+                        "factors": list(response_decision.factors),
                     },
                     "delegate": {
                         "config": self.model_registry.primary("small").config_name,
                         "model": self.model_registry.primary("small").model_name,
+                        "reason": "窄任务统一下放给小模型执行。",
+                        "factors": ["delegate", "small_model"],
                     },
                 },
                 "iterations": usage_trace,
@@ -950,46 +1183,22 @@ class ChatOrchestrator:
         cancelled: Optional[object] = None,
     ) -> Generator[dict[str, Any], None, OrchestrationResult]:
         start_time = time.perf_counter()
-        search_capabilities = self.tool_executor.get_search_capabilities()
-        intent = build_intent_profile(messages)
-        prompt = build_system_prompt(
-            capabilities=search_capabilities,
-            intent=intent,
-        )
-        if thinking:
-            prompt = _THINKING_PROMPT + "\n\n" + prompt
-        prompt_profile = build_system_prompt_profile(
-            capabilities=search_capabilities,
-            intent=intent,
-        )
-        if thinking:
-            prompt_profile = {
-                **prompt_profile,
-                "thinking_prompt_chars": len(_THINKING_PROMPT),
-                "total_chars": prompt_profile.get("total_chars", 0)
-                + len(_THINKING_PROMPT),
-            }
-
-        planner_client, planner_spec = self._select_model(
+        (
+            search_capabilities,
             intent,
-            stage="planner",
-            thinking=thinking,
-        )
-        response_client, response_spec = self._select_model(
-            intent,
-            stage="response",
-            thinking=thinking,
-        )
+            extra_asset_ids,
+            prompt,
+            prompt_profile,
+            planner_decision,
+            response_decision,
+            latest_user_message,
+        ) = self._prepare_orchestration_context(messages=messages, thinking=thinking)
 
+        planner_client = planner_decision.client
+        planner_spec = planner_decision.spec
+        response_client = response_decision.client
+        response_spec = response_decision.spec
         conversation = [{"role": "system", "content": prompt}] + list(messages)
-        latest_user_message = next(
-            (
-                str(message.get("content") or "")
-                for message in reversed(messages)
-                if message.get("role") == "user"
-            ),
-            "",
-        )
         total_usage: dict[str, Any] = {}
         usage_trace: list[dict[str, Any]] = []
         tool_events: list[dict[str, Any]] = []
@@ -1005,6 +1214,12 @@ class ChatOrchestrator:
             if cancelled is not None and getattr(cancelled, "is_set", lambda: False)():
                 break
 
+            self._log_model_decision(
+                phase="planner",
+                iteration=iteration,
+                decision=planner_decision,
+                intent=intent,
+            )
             response = yield from self._stream_chat_response(
                 client=planner_client,
                 messages=conversation,
@@ -1042,7 +1257,7 @@ class ChatOrchestrator:
                 self._usage_trace_entry(
                     phase="planner",
                     iteration=iteration,
-                    model_spec=planner_spec,
+                    decision=planner_decision,
                     usage=response.usage,
                     tool_calls=requests,
                 )
@@ -1145,6 +1360,12 @@ class ChatOrchestrator:
 
         if not final_content:
             conversation.append({"role": "user", "content": FINAL_ANSWER_NUDGE})
+            self._log_model_decision(
+                phase="response",
+                iteration=len(usage_trace) + 1,
+                decision=response_decision,
+                intent=intent,
+            )
             response = yield from self._stream_chat_response(
                 client=response_client,
                 messages=conversation,
@@ -1156,18 +1377,24 @@ class ChatOrchestrator:
                 self._usage_trace_entry(
                     phase="response",
                     iteration=len(usage_trace) + 1,
-                    model_spec=response_spec,
+                    decision=response_decision,
                     usage=response.usage,
                     tool_calls=[],
                 )
             )
             if self._is_error_response(response):
-                fallback_client, fallback_spec = self._select_model(
+                fallback_decision = self._select_model(
                     intent,
                     stage="delegate",
                     thinking=False,
                 )
-                fallback_response = fallback_client.chat(
+                self._log_model_decision(
+                    phase="response_fallback",
+                    iteration=len(usage_trace) + 1,
+                    decision=fallback_decision,
+                    intent=intent,
+                )
+                fallback_response = fallback_decision.client.chat(
                     messages=self._build_fallback_response_messages(
                         intent=intent,
                         result_store=self.result_store,
@@ -1179,7 +1406,7 @@ class ChatOrchestrator:
                     self._usage_trace_entry(
                         phase="response_fallback",
                         iteration=len(usage_trace) + 1,
-                        model_spec=fallback_spec,
+                        decision=fallback_decision,
                         usage=fallback_response.usage,
                         tool_calls=[],
                     )
@@ -1222,19 +1449,26 @@ class ChatOrchestrator:
                     "explicit_entities": intent.explicit_entities,
                     "explicit_topics": intent.explicit_topics,
                     "route_reason": intent.route_reason,
+                    "prefers_transcript_lookup": bool(extra_asset_ids),
                 },
                 "models": {
                     "planner": {
                         "config": planner_spec.config_name,
                         "model": planner_spec.model_name,
+                        "reason": planner_decision.reason,
+                        "factors": list(planner_decision.factors),
                     },
                     "response": {
                         "config": response_spec.config_name,
                         "model": response_spec.model_name,
+                        "reason": response_decision.reason,
+                        "factors": list(response_decision.factors),
                     },
                     "delegate": {
                         "config": self.model_registry.primary("small").config_name,
                         "model": self.model_registry.primary("small").model_name,
+                        "reason": "窄任务统一下放给小模型执行。",
+                        "factors": ["delegate", "small_model"],
                     },
                 },
                 "iterations": usage_trace,

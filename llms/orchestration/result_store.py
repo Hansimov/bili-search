@@ -61,6 +61,23 @@ def compact_token_option(option: dict) -> dict:
     }
 
 
+def compact_transcript_result(result: dict) -> dict:
+    transcript = result.get("transcript") or {}
+    selection = result.get("selection") or {}
+    text = str(transcript.get("text") or "")
+    return {
+        "video_id": result.get("bvid") or result.get("requested_video_id") or "",
+        "title": result.get("title", ""),
+        "page_index": result.get("page_index", 1),
+        "selected_text_length": selection.get("selected_text_length", len(text)),
+        "full_text_length": selection.get(
+            "full_text_length", transcript.get("text_length", len(text))
+        ),
+        "segment_count": transcript.get("segment_count", 0),
+        "text": text,
+    }
+
+
 class ResultStore:
     def __init__(self):
         self.records: dict[str, ToolExecutionRecord] = {}
@@ -188,6 +205,27 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             "summary_text": summary_text,
         }
 
+    if canonical_name == "get_video_transcript":
+        transcript_info = compact_transcript_result(result)
+        preview = transcript_info["text"][:120].replace("\n", " ")
+        summary_text = (
+            f"video_id={transcript_info['video_id']}, title={transcript_info['title']}, "
+            f"chars={transcript_info['selected_text_length']}/{transcript_info['full_text_length']}, "
+            f"segments={transcript_info['segment_count']}, preview={preview}"
+        )
+        return {
+            "result_id": result_id,
+            "tool": canonical_name,
+            "video_id": transcript_info["video_id"],
+            "title": transcript_info["title"],
+            "page_index": transcript_info["page_index"],
+            "selected_text_length": transcript_info["selected_text_length"],
+            "full_text_length": transcript_info["full_text_length"],
+            "segment_count": transcript_info["segment_count"],
+            "preview": preview,
+            "summary_text": summary_text,
+        }
+
     if canonical_name == "expand_query":
         options = result.get("options") or []
         top_options = [compact_token_option(item) for item in options[:8]]
@@ -288,6 +326,23 @@ def inspect_results(result_store: ResultStore, args: dict) -> dict:
                         compact_google_row(row)
                         for row in (record.result.get("results") or [])[:max_items]
                     ],
+                }
+            )
+            continue
+
+        if canonical_name == "get_video_transcript":
+            transcript_info = compact_transcript_result(record.result)
+            inspected.append(
+                {
+                    "result_id": result_id,
+                    "focus": focus,
+                    "video_id": transcript_info["video_id"],
+                    "title": transcript_info["title"],
+                    "page_index": transcript_info["page_index"],
+                    "selected_text_length": transcript_info["selected_text_length"],
+                    "full_text_length": transcript_info["full_text_length"],
+                    "segment_count": transcript_info["segment_count"],
+                    "text": transcript_info["text"],
                 }
             )
             continue

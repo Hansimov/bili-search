@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from llms.contracts import FacetScore
+from llms.messages import extract_message_text
 from llms.intent.focus import compact_focus_key
 from llms.intent.focus import extract_focus_spans
 from llms.intent.taxonomy import normalize_text
@@ -96,7 +97,7 @@ class IntentSignalProfile:
 
 def build_conversation_window(messages: list[dict]) -> ConversationWindow:
     user_messages = [
-        normalize_text(message.get("content") or "")
+        normalize_text(extract_message_text(message))
         for message in messages or []
         if message.get("role") == "user"
     ]
@@ -155,7 +156,7 @@ def merge_followup_candidates(messages: list[dict], candidates: list[str]) -> li
     for message in reversed(messages or []):
         if message.get("role") != "user":
             continue
-        for token in extract_topic_candidates(message.get("content") or ""):
+        for token in extract_topic_candidates(extract_message_text(message)):
             if token not in merged:
                 merged.append(token)
             if len(merged) >= 5:
@@ -169,7 +170,7 @@ def collect_history_candidates(messages: list[dict], limit: int = 5) -> list[str
         message for message in messages or [] if message.get("role") == "user"
     ]
     for message in reversed(user_messages[:-1]):
-        for token in extract_topic_candidates(message.get("content") or ""):
+        for token in extract_topic_candidates(extract_message_text(message)):
             if token not in history_candidates:
                 history_candidates.append(token)
             if len(history_candidates) >= limit:

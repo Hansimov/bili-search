@@ -25,6 +25,7 @@ from llms.intent.focus import build_focus_query
 from llms.intent.focus import compact_focus_key
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
+from llms.messages import extract_message_text
 from llms.orchestration import ChatOrchestrator
 from llms.orchestration.tool_markup import EXTERNAL_TOOL_NAMES
 from llms.orchestration.tool_markup import EXTERNAL_TOOL_PREFIXES
@@ -330,7 +331,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         for message in reversed(messages or []):
             if message.get("role") != "user":
                 continue
-            content = (message.get("content") or "").strip()
+            content = extract_message_text(message)
             if content.startswith("[搜索结果]"):
                 continue
             if content in (_FORCE_CONTENT_NUDGE, _DUPLICATE_TOOL_NUDGE):
@@ -347,7 +348,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         for message in messages or []:
             if message.get("role") != "user":
                 continue
-            content = (message.get("content") or "").strip()
+            content = extract_message_text(message)
             if content.startswith("[搜索结果]"):
                 return True
         return False
@@ -871,7 +872,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             idx
             for idx, message in enumerate(messages)
             if message.get("role") == "user"
-            and str(message.get("content") or "").startswith("[搜索结果]")
+            and extract_message_text(message).startswith("[搜索结果]")
         ]
         for idx in reversed(result_indexes[:-1]):
             del messages[idx]
@@ -937,7 +938,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         }
         for message in messages or []:
             role = message.get("role") or ""
-            content = str(message.get("content") or "")
+            content = extract_message_text(message)
             summary["context_chars"] += len(content)
             if role == "user":
                 summary["user_message_count"] += 1

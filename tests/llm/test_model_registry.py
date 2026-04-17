@@ -24,3 +24,7 @@ def test_model_registry_public_dict_exposes_available_models():
     assert DEFAULT_SMALL_MODEL_CONFIG in payload["available"]
     assert payload["available"][DEFAULT_LARGE_MODEL_CONFIG]["role"] == "large"
     assert payload["available"][DEFAULT_SMALL_MODEL_CONFIG]["role"] == "small"
+
+
+def test_default_small_model_is_doubao_seed_2_0_mini():
+    assert DEFAULT_SMALL_MODEL_CONFIG == "doubao-seed-2-0-mini"

@@ -531,7 +531,7 @@ python -m pytest recalls/tests/ -v
 
 - 开发环境：`ELASTIC_DEV` → `bili_videos_dev6`（约 5000 万文档）
 - 生产环境：`ELASTIC_PRO` → `bili_videos_pro1`
-- TEI 嵌入服务需在线运行（`http://ai122:28800`）
+- TEI 嵌入服务需在线运行，具体 endpoint 请在 `configs/secrets.json` 中配置
 
 ### JSON 序列化
 

@@ -170,12 +170,14 @@ class SearchService:
         video_explorer,
         owner_searcher=None,
         relations_client=None,
+        transcript_client=None,
         verbose: bool = False,
     ):
         self.video_searcher = video_searcher
         self.video_explorer = video_explorer
         self.owner_searcher = owner_searcher
         self.relations_client = relations_client
+        self.transcript_client = transcript_client
         self.verbose = verbose
         self._capabilities = self._build_capabilities()
 
@@ -188,6 +190,7 @@ class SearchService:
             "supports_owner_search": self.owner_searcher is not None,
             "supports_multi_query": True,
             "supports_google_search": False,
+            "supports_transcript_lookup": self.transcript_client is not None,
             "relation_endpoints": (
                 [
                     "related_tokens_by_tokens",
@@ -210,6 +213,7 @@ class SearchService:
                 "/knn_search",
                 "/hybrid_search",
                 "/search_owners",
+                "/video_transcript",
                 "/related_tokens_by_tokens",
                 "/related_owners_by_tokens",
                 "/related_videos_by_videos",
@@ -251,6 +255,11 @@ class SearchService:
         if self.owner_searcher is None:
             return {"error": "Owner search unavailable", "owners": []}
         return self.owner_searcher.search(**kwargs)
+
+    def get_video_transcript(self, video_id: str, **kwargs) -> dict:
+        if self.transcript_client is None:
+            return {"error": "Transcript lookup unavailable", "video_id": video_id}
+        return self.transcript_client.get_video_transcript(video_id, request=kwargs)
 
     def _relation_method(self, name: str):
         if self.relations_client is None:
@@ -335,7 +344,13 @@ class SearchServiceClient:
             "service_type": "remote",
             "service_name": self.base_url,
             "base_url": self.base_url,
-            "available_endpoints": ["/explore", "/suggest", "/health", "/capabilities"],
+            "available_endpoints": [
+                "/explore",
+                "/suggest",
+                "/health",
+                "/capabilities",
+                "/video_transcript",
+            ],
             "docs": list(SPEC_REGISTRY.keys()),
         }
         try:
@@ -376,6 +391,9 @@ class SearchServiceClient:
 
     def search_owners(self, **kwargs) -> dict:
         return self._post("/search_owners", kwargs)
+
+    def get_video_transcript(self, **kwargs) -> dict:
+        return self._post("/video_transcript", kwargs)
 
     def related_tokens_by_tokens(self, **kwargs) -> dict:
         return self._post("/related_tokens_by_tokens", kwargs)
@@ -505,6 +523,7 @@ def create_search_service(
     video_explorer=None,
     owner_searcher=None,
     relations_client=None,
+    transcript_client=None,
     base_url: str | None = None,
     timeout: float = 30.0,
     verbose: bool = False,
@@ -516,6 +535,7 @@ def create_search_service(
         video_explorer=video_explorer,
         owner_searcher=owner_searcher,
         relations_client=relations_client,
+        transcript_client=transcript_client,
         verbose=verbose,
     )
 
@@ -536,12 +556,18 @@ class ToolExecutor:
         search_client,
         max_results: int = 15,
         google_client=None,
+        transcript_client=None,
         verbose: bool = False,
     ):
         self.search_client = search_client
         self.google_client = google_client or create_google_search_client(
             verbose=verbose
         )
+        self.transcript_client = transcript_client
+        if self.transcript_client is None:
+            candidate = getattr(search_client, "transcript_client", None)
+            if candidate is not None and not isinstance(candidate, Mock):
+                self.transcript_client = candidate
         self.max_results = max_results
         self.verbose = verbose
         # Cached Google availability: (is_available, timestamp)
@@ -551,6 +577,7 @@ class ToolExecutor:
         self._GOOGLE_HEALTH_TIMEOUT = 3.0  # fast health check timeout
         self._handlers = {
             "search_videos": self._search_videos,
+            "get_video_transcript": self._get_video_transcript,
             "search_google": self._search_google,
             "search_owners": self._search_owners,
             "expand_query": self._expand_query,
@@ -734,6 +761,32 @@ class ToolExecutor:
             return results[0]
 
         return {"results": results}
+
+    def _get_video_transcript(self, args: dict) -> dict:
+        video_id = str(
+            args.get("video_id") or args.get("bvid") or args.get("aid") or ""
+        ).strip()
+        if not video_id:
+            return {"error": "Missing video_id parameter"}
+        payload = {
+            key: value
+            for key, value in dict(args or {}).items()
+            if key not in {"video_id", "bvid", "aid"} and value not in (None, "")
+        }
+        if self.transcript_client is not None:
+            result = self.transcript_client.get_video_transcript(
+                video_id,
+                request=payload,
+            )
+        elif hasattr(self.search_client, "get_video_transcript"):
+            result = self.search_client.get_video_transcript(
+                video_id=video_id, **payload
+            )
+        else:
+            result = {"error": "Transcript lookup unavailable"}
+        if isinstance(result, dict) and not result.get("requested_video_id"):
+            result = {"requested_video_id": video_id, **result}
+        return result
 
     def _search_single_query(self, query: str) -> dict:
         """Execute a single search query via explore endpoint."""

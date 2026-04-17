@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import re
 import subprocess
 
 from pathlib import Path
+from urllib.parse import urlparse
 from tclogger import logger
 
 
@@ -17,12 +19,16 @@ ALLOWED_TRACKED_CONFIG_FILES = {
 }
 TEXT_SUFFIXES = {
     "",
+    ".cer",
     ".cfg",
+    ".crt",
     ".env",
     ".gitignore",
     ".ini",
     ".json",
+    ".key",
     ".md",
+    ".pem",
     ".py",
     ".sh",
     ".toml",
@@ -33,14 +39,73 @@ TEXT_SUFFIXES = {
 HIGH_CONFIDENCE_PATTERNS = {
     "private-key": re.compile(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----"),
     "openai-key": re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9]{16,}"),
+    "stripe-live-key": re.compile(r"(?<![A-Za-z0-9])sk_live_[A-Za-z0-9]{16,}"),
     "github-token": re.compile(
         r"(?<![A-Za-z0-9])(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"
     ),
+    "gitlab-token": re.compile(r"(?<![A-Za-z0-9])glpat-[A-Za-z0-9\-_]{20,}"),
     "google-api-key": re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z\-_]{20,}"),
+    "aws-access-key": re.compile(r"(?<![A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}"),
+    "slack-token": re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}"),
+    "huggingface-token": re.compile(r"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{20,}"),
+    "jwt-token": re.compile(
+        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}"
+    ),
 }
 ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|token|secret|password)\s*[\"']?\s*[:=]\s*[\"']([^\"'\n]{8,})[\"']"
+    r"(?i)(api[_-]?key|access[_-]?key|token|secret|client[_-]?secret|password|passwd|authorization)\s*[\"']?\s*[:=]\s*[\"']([^\"'\n]{8,})[\"']"
 )
+URI_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:https?|mongodb|postgres(?:ql)?|mysql|redis|amqp)://[^\s\"'`<>()]+"
+)
+HOST_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])[\"']?(?:host|hostname)[\"']?\s*[:=]\s*[\"']([^\"'\n]{2,})[\"']"
+)
+
+SAFE_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "host.docker.internal",
+}
+SAFE_SINGLE_LABEL_HOST_TOKENS = {
+    "mock",
+    "test",
+    "example",
+    "dummy",
+    "fake",
+    "primary",
+    "secondary",
+}
+SAFE_DOMAIN_SUFFIXES = (
+    ".example",
+    ".example.com",
+    ".test",
+    ".invalid",
+)
+
+
+def is_placeholder_literal(value: str) -> bool:
+    stripped = value.strip()
+    lowered = stripped.lower()
+    if not stripped:
+        return True
+    if stripped.startswith("${{") or stripped.startswith("$"):
+        return True
+    if "<" in stripped and ">" in stripped:
+        return True
+    if re.search(r"\bYOUR_[A-Z0-9_]+\b", stripped):
+        return True
+    if lowered.startswith(("test-", "dummy-", "fake-", "mock-", "example-")):
+        return True
+    if lowered.startswith(("your-", "your_", "set-", "replace-")):
+        return True
+    if lowered in {"test-key", "dummy-key", "fake-key", "mock-key"}:
+        return True
+    if "example" in lowered or "placeholder" in lowered or "replace-me" in lowered:
+        return True
+    return False
 
 
 def tracked_files(root: Path = WORKSPACE_ROOT) -> list[Path]:
@@ -108,30 +173,46 @@ def read_staged_text_file(path: Path, root: Path = WORKSPACE_ROOT) -> str | None
 
 def is_placeholder_secret(value: str) -> bool:
     stripped = value.strip()
-    lowered = stripped.lower()
-    if not stripped:
+    if is_placeholder_literal(stripped):
         return True
     if "*" in stripped:
-        return True
-    if stripped.startswith("${{") or stripped.startswith("$"):
-        return True
-    if stripped.startswith("<") and stripped.endswith(">"):
         return True
     if re.fullmatch(r"[A-Z][A-Z0-9_]{5,}", stripped):
         return True
     if all(ch in "*._-" for ch in stripped):
         return True
-    if lowered.startswith(("test-", "dummy-", "fake-", "mock-", "example-")):
-        return True
-    if lowered.startswith(("your-", "your_", "set-", "replace-")):
-        return True
-    if lowered in {"test-key", "dummy-key", "fake-key", "mock-key"}:
-        return True
-    if "example" in lowered or "placeholder" in lowered or "replace-me" in lowered:
-        return True
     if stripped.startswith("http://") or stripped.startswith("https://"):
         return True
     return False
+
+
+def is_sensitive_host_literal(value: str) -> bool:
+    raw_value = str(value or "").strip()
+    if is_placeholder_literal(raw_value):
+        return False
+
+    candidate = raw_value if "://" in raw_value else f"scheme://{raw_value}"
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in SAFE_HOSTS:
+        return False
+    if host.endswith(SAFE_DOMAIN_SUFFIXES):
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        if host.endswith((".local", ".lan", ".internal")):
+            return True
+        if "." not in host:
+            return not any(token in host for token in SAFE_SINGLE_LABEL_HOST_TOKENS)
+        return False
+
+    if ip.is_loopback or ip.is_unspecified:
+        return False
+    return ip.is_private or ip.is_link_local
 
 
 def find_forbidden_tracked_paths(tracked_relpaths: set[str]) -> list[str]:
@@ -158,6 +239,18 @@ def scan_text(path: Path, text: str, *, root: Path = WORKSPACE_ROOT) -> list[str
         if pattern.search(text):
             violations.append(f"{display_path(path, root)}: matched {label}")
 
+    for uri in URI_PATTERN.findall(text):
+        if is_sensitive_host_literal(uri):
+            violations.append(
+                f"{display_path(path, root)}: contains internal service URI"
+            )
+
+    for match in HOST_ASSIGNMENT_PATTERN.finditer(text):
+        if is_sensitive_host_literal(match.group(1)):
+            violations.append(
+                f"{display_path(path, root)}: contains internal hostname assignment"
+            )
+
     for match in ASSIGNMENT_PATTERN.finditer(text):
         key_name = match.group(1)
         value = match.group(2)
@@ -165,7 +258,7 @@ def scan_text(path: Path, text: str, *, root: Path = WORKSPACE_ROOT) -> list[str
             violations.append(
                 f"{display_path(path, root)}: {key_name} appears to contain a live secret"
             )
-    return violations
+    return list(dict.fromkeys(violations))
 
 
 def scan_tracked_files(root: Path = WORKSPACE_ROOT) -> list[str]:
