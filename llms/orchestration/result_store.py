@@ -10,6 +10,9 @@ from llms.contracts import ToolExecutionRecord
 from llms.tools.names import canonical_tool_name
 
 
+_INTERNAL_RESULT_TEXT_LIMIT = 6000
+
+
 def make_video_url(bvid: str) -> str:
     bvid_text = str(bvid or "").strip()
     return f"https://www.bilibili.com/video/{bvid_text}" if bvid_text else ""
@@ -99,9 +102,10 @@ class ResultStore:
             record = self.records.get(result_id)
             if record is None:
                 continue
-            lines.append(
-                f"- {result_id} {record.request.name}: {record.summary.get('summary_text', '')}"
-            )
+            summary_text = str(record.summary.get("summary_text", "") or "")
+            if "\n" in summary_text:
+                summary_text = summary_text.replace("\n", "\n  ")
+            lines.append(f"- {result_id} {record.request.name}: {summary_text}")
         lines.append(
             "如需更细结果，可调用 inspect_tool_result(result_ids=[...])；如需压缩/对比，可调用 run_small_llm_task。"
         )
@@ -237,6 +241,22 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             "tool": canonical_name,
             "text": result.get("text", ""),
             "options": top_options,
+            "summary_text": summary_text,
+        }
+
+    if canonical_name == "run_small_llm_task":
+        task = str(result.get("task", "") or "")
+        result_text = str(result.get("result", "") or "").strip()
+        summary_text = result_text[:_INTERNAL_RESULT_TEXT_LIMIT]
+        if len(result_text) > _INTERNAL_RESULT_TEXT_LIMIT:
+            summary_text = summary_text.rstrip() + "\n[结果过长，已截断展示]"
+        return {
+            "result_id": result_id,
+            "tool": canonical_name,
+            "task": task,
+            "model": result.get("model", ""),
+            "model_name": result.get("model_name", ""),
+            "result_text": result_text,
             "summary_text": summary_text,
         }
 

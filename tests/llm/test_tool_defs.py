@@ -76,3 +76,23 @@ def test_build_tool_definitions_includes_transcript_when_supported():
     assert transcript_params["required"] == ["video_id"]
     assert "head_chars" in transcript_params["properties"]
     assert "include_segments" in transcript_params["properties"]
+
+
+def test_build_search_videos_tool_marks_bvids_as_discover_only():
+    from llms.tools.defs import build_search_videos_tool
+
+    tool = build_search_videos_tool(
+        {
+            "default_query_mode": "wv",
+            "rerank_query_mode": "vwr",
+            "supports_multi_query": True,
+        }
+    )
+
+    description = tool["function"]["description"]
+    bvids_description = tool["function"]["parameters"]["properties"]["bvids"][
+        "description"
+    ]
+
+    assert "不是单个 BV 的详情或字幕读取接口" in description
+    assert "不用于直接读取该 BV 的详情或转写" in bvids_description

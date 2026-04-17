@@ -5,6 +5,10 @@ import json
 import sys
 import time
 
+from pathlib import Path
+
+from tclogger import logger
+
 from llms.models import DEFAULT_LARGE_MODEL_CONFIG, DEFAULT_SMALL_MODEL_CONFIG
 from llms.models import create_model_clients
 from llms.orchestration.engine import ChatOrchestrator
@@ -22,9 +26,37 @@ class NoopVideoExplorer:
         return {"error": "unexpected search_videos invocation", "data": []}
 
 
+class FileTranscriptClient:
+    def __init__(self, transcript_file: str, video_id: str):
+        self.transcript_file = Path(transcript_file)
+        self.video_id = video_id
+        self.is_configured = True
+
+    def get_video_transcript(self, video_id: str, request: dict | None = None) -> dict:
+        text = self.transcript_file.read_text(encoding="utf-8")
+        return {
+            "ok": True,
+            "requested_video_id": video_id,
+            "bvid": video_id,
+            "title": f"本地回放转写 {video_id}",
+            "page_index": 1,
+            "selection": {
+                "selected_text_length": len(text),
+                "full_text_length": len(text),
+            },
+            "transcript": {
+                "text": text,
+                "text_length": len(text),
+                "segment_count": max(text.count("。"), 1),
+            },
+            "request": request or {},
+        }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--video-id", default="BV1YXZPB1Erc")
+    parser.add_argument("--transcript-file", default="")
     parser.add_argument(
         "--query",
         default="请总结 {video_id} 这个视频主要讲了什么，给我 5 条中文要点。",
@@ -35,7 +67,17 @@ def main() -> int:
         primary_large_config=DEFAULT_LARGE_MODEL_CONFIG,
         verbose=True,
     )
-    transcript_client = BiliStoreTranscriptClient(verbose=True)
+    if args.transcript_file:
+        transcript_client = FileTranscriptClient(args.transcript_file, args.video_id)
+    else:
+        live_transcript_client = BiliStoreTranscriptClient(verbose=True)
+        transcript_client = (
+            live_transcript_client if live_transcript_client.is_configured else None
+        )
+        if transcript_client is None:
+            logger.warn(
+                "× Transcript client is not configured; running with transcript capability disabled."
+            )
     search_service = SearchService(
         video_searcher=NoopVideoSearcher(),
         video_explorer=NoopVideoExplorer(),
@@ -78,11 +120,14 @@ def main() -> int:
         "response_model": (result.usage_trace.get("models") or {})
         .get("response", {})
         .get("config"),
+        "transcript_capability_enabled": transcript_client is not None,
         "transcript_tool_used": "get_video_transcript" in tool_calls,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
     planner_model = payload["planner_model"]
+    if not payload["transcript_capability_enabled"]:
+        return int(not (payload["answer"] and not payload["transcript_tool_used"]))
     return int(
         not (
             payload["answer"]

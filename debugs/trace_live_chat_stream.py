@@ -118,6 +118,12 @@ def main() -> int:
 
         choices = payload.get("choices") or []
         delta = (choices[0].get("delta") or {}) if choices else {}
+        if delta.get("reset_reasoning"):
+            print(
+                "reasoning_reset="
+                f"{delta.get('reasoning_phase', 'unknown')}#"
+                f"{delta.get('reasoning_iteration', '?')}"
+            )
         if delta.get("reasoning_content"):
             reasoning_parts.append(delta["reasoning_content"])
             print(f"reasoning+= {preview(delta['reasoning_content'])}")

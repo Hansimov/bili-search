@@ -143,6 +143,10 @@ def has_video_coverage(result_store) -> bool:
     ) or has_google_video_result(result_store)
 
 
+def has_internal_answer_ready_result(result_store) -> bool:
+    return has_successful_tool_result(result_store, "run_small_llm_task")
+
+
 def count_zero_hit_search_videos(result_store) -> int:
     count = 0
     for result_id in result_store.order:
@@ -176,7 +180,8 @@ COVERAGE_RULES = {
     ),
     "videos": CoverageRule(
         final_target="videos",
-        predicate=has_video_coverage,
+        predicate=lambda store: has_video_coverage(store)
+        or has_internal_answer_ready_result(store),
     ),
     "owners": CoverageRule(
         final_target="owners",

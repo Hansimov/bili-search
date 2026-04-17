@@ -14,6 +14,27 @@
 
 首次配置时，可以将 [docker/.env.example](/home/asimov/repos/bili-search/docker/.env.example) 的内容复制到 [docker/.env](/home/asimov/repos/bili-search/docker/.env) 再按需修改；敏感配置请单独填写到本地 `configs/secrets.json`。
 
+## 转写服务配置
+
+如果当前环境需要使用视频音频转写，请在本地 `configs/secrets.json` 中确保存在如下配置：
+
+```json
+"bili_store": {
+  "endpoint": "http://YOUR_BILI_STORE_HOST:21501",
+  "timeout": 60
+}
+```
+
+修改 `configs/secrets.json` 后，必须重启当前受管后端进程；否则运行中的 `21001` 不会重新加载 transcript 配置。
+
+重启完成后，用下面命令确认 transcript 能力已开启：
+
+```bash
+curl -sS http://127.0.0.1:21001/capabilities | jq '.supports_transcript_lookup'
+```
+
+期望返回 `true`。
+
 ## 速查
 
 ```bash
@@ -43,6 +64,97 @@ bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc de
 bsdk ps --runtime local --all
 bsdk prune
 ```
+
+## 通过 blbl-dash 管理 local-dev 后端
+
+如果 `21001` 已经纳入 `blbl-dash` 管控，优先通过 `bldash` 执行动作，不要手工起 `uvicorn`。这样可以保留统一的状态、wait probe、operation 记录和日志定位。
+
+当前 `search.backend-local` 的受管重启底层实际调用的是：
+
+```bash
+bsdk restart --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+```
+
+但日常操作推荐始终从 `blbl-dash` 入口执行。
+
+### 后端单服务重启
+
+适用场景：
+
+- 只改了 `bili-search` 后端 Python 代码或本地配置。
+- 只需要让 `21001` 重新加载 `configs/secrets.json`、LLM 配置或 transcript 配置。
+- 不希望顺带重启 `21002` 前端。
+
+推荐流程：
+
+```bash
+cd /home/asimov/repos/blbl-dash
+
+# 先看当前状态
+/home/asimov/miniconda3/envs/ai/bin/bldash service status search.backend-local --output json
+
+# 先 dry-run，确认会走受管 backend restart
+/home/asimov/miniconda3/envs/ai/bin/bldash service restart search.backend-local \
+  --db var/blbl-dash.sqlite3 \
+  --dry-run \
+  --output json
+
+# 再执行真实重启
+/home/asimov/miniconda3/envs/ai/bin/bldash service restart search.backend-local \
+  --db var/blbl-dash.sqlite3 \
+  --output json
+```
+
+重启后验证：
+
+```bash
+curl -sS http://127.0.0.1:21001/health | jq
+curl -sS http://127.0.0.1:21001/capabilities | jq
+```
+
+### local-dev 整链重启
+
+适用场景：
+
+- 后端和前端都需要一起重启。
+- 需要按 `local-dev` 链的标准顺序执行依赖检查、backend restart、frontend restart。
+
+```bash
+cd /home/asimov/repos/blbl-dash
+
+/home/asimov/miniconda3/envs/ai/bin/bldash chain restart search.local-dev \
+  --db var/blbl-dash.sqlite3 \
+  --dry-run \
+  --output json
+
+/home/asimov/miniconda3/envs/ai/bin/bldash chain restart search.local-dev \
+  --db var/blbl-dash.sqlite3 \
+  --output json
+```
+
+`chain restart` 当前会先检查 dev Elasticsearch，再重启 `search.backend-local`，最后重启 `search.ui-dev`。
+
+### local-dev 更新到当前工作区代码
+
+适用场景：
+
+- 需要让 `local-dev` 链按当前工作区代码重新刷新受管服务。
+- 希望使用 `blbl-dash` 的标准 update helper，而不是自己逐个 stop/start。
+
+```bash
+cd /home/asimov/repos/blbl-dash
+
+/home/asimov/miniconda3/envs/ai/bin/bldash chain update search.local-dev \
+  --db var/blbl-dash.sqlite3 \
+  --dry-run \
+  --output json
+
+/home/asimov/miniconda3/envs/ai/bin/bldash chain update search.local-dev \
+  --db var/blbl-dash.sqlite3 \
+  --output json
+```
+
+当前 `chain update search.local-dev` 会先检查 dev Elasticsearch，再按 helper 顺序刷新 backend 和 frontend 到当前工作区代码。
 
 ## Docker 构建
 
@@ -94,6 +206,10 @@ bsdk start \
 
 ## 注意事项
 
+- 如果 `21001` 已经由 `blbl-dash` 管理，不要再手工执行 `python -m uvicorn ... --port 21001`。这样容易产生 orphan 进程，导致控制面状态和真实运行态不一致。
+- 改完 `configs/secrets.json` 这类本地配置后，优先使用 `bldash service restart search.backend-local`；不要只做 capability 推断，不重启进程。
+- 只改后端时优先做 backend 单服务重启；只有前端也需要刷新时，才使用 `bldash chain restart search.local-dev`。
+- 计划刷新整条 local-dev 开发链到当前工作区代码时，优先使用 `bldash chain update search.local-dev`，不要手工分别 stop/start backend 和 frontend。
 - 当修改了容器启动链本身，例如 `service.container_supervisor`、Dockerfile、依赖安装方式或 console script，优先使用 `--restart-scope container`，不要只做 app-scope restart。
 - `--restart-scope app` 更适合纯 Python 业务代码变更；它不会替换已经在容器里运行的 supervisor 进程。
 - Docker 构建如果遇到镜像源抖动，可保留 USTC 作为主源，同时配置官方 PyPI 作为 `--pip-extra-index-url` 回退源。

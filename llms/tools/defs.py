@@ -62,6 +62,9 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                 "搜索 B 站视频。这是默认终局工具，适合视频、代表作、时间线、热门、教程和解读。"
                 f"{multi_query_text}"
                 "普通检索时用 queries；若已拿到作者 mids 或种子视频 bvids，也可直接基于种子继续发掘相关视频。"
+                "bvids 只用于 discover 模式下从种子继续找相关视频，不是单个 BV 的详情或字幕读取接口。"
+                "若用户已给出具体 BV 并要求总结视频内容、字幕或转写，应优先使用 get_video_transcript；"
+                "若当前没有该工具，就应直接说明无法读取转写，而不是把 bvids 当成转写接口。"
                 "queries 必须是整理后的 DSL 搜索语句，而不是用户原话整句。"
                 "优先保留关键实体、主题词、作者、时间窗、热度和时长条件。"
                 "作者关系问题通常不该直接用它；作者名不稳时先 search_owners。"
@@ -92,7 +95,7 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                     "bvids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "已知种子视频 BV 号。用于从现有视频继续发掘相关视频。",
+                        "description": "已知种子视频 BV 号。仅用于从现有视频继续发掘相关视频，不用于直接读取该 BV 的详情或转写。",
                     },
                     "mids": {
                         "type": "array",

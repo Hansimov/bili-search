@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
+from llms.models import ChatResponse, DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.engine import ChatOrchestrator
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import select_post_execution_nudge
@@ -70,6 +70,19 @@ def test_has_target_coverage_for_mixed_route_requires_external_and_video_signals
     )
 
     assert has_target_coverage(store, _intent(final_target="mixed")) is True
+
+
+def test_has_target_coverage_for_videos_accepts_internal_small_task_results():
+    store = FakeResultStore()
+    store.add(
+        "run_small_llm_task",
+        {
+            "task": "把视频转写压成 5 条要点",
+            "result": "- 主题\n- 要点1\n- 要点2",
+        },
+    )
+
+    assert has_target_coverage(store, _intent(final_target="videos")) is True
 
 
 def test_select_pre_execution_nudge_blocks_repeating_mixed_searches():
@@ -301,3 +314,87 @@ def test_select_model_prefers_small_for_known_video_transcript():
     assert prefer_small is True
     assert decision.spec.config_name == DEFAULT_SMALL_MODEL_CONFIG
     assert "转写" in decision.reason
+
+
+def test_normalize_request_rewrites_known_bv_video_search_to_transcript():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    request = ToolCallRequest(
+        id="call_1",
+        name="search_videos",
+        arguments={"bvids": ["BV1R2XZBQEio"]},
+    )
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            final_target="videos",
+            task_mode="known_item",
+            explicit_entities=["BV1R2XZBQEio"],
+            explicit_topics=["BV1R2XZBQEio", "讲了什么"],
+        ),
+        {"supports_transcript_lookup": True},
+        prefer_transcript_lookup=True,
+    )
+
+    assert normalized.name == "get_video_transcript"
+    assert normalized.arguments == {"video_id": "BV1R2XZBQEIO"}
+
+
+def test_run_blocks_search_detour_when_transcript_is_unavailable():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="<search_videos bvids='[\"BV1R2XZBQEio\"]' size='1'/>",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 8,
+                "total_tokens": 28,
+            },
+        ),
+        ChatResponse(
+            content="当前环境未提供 get_video_transcript 工具，无法读取该视频的音频转写文本。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 18,
+                "completion_tokens": 12,
+                "total_tokens": 30,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": False,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "请获取 BV1R2XZBQEio 的音频转写文本，然后阅读后再回答。",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "无法读取该视频的音频转写文本" in result.content
+    tool_executor.execute_request.assert_not_called()

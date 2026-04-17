@@ -897,3 +897,87 @@ def test_handle_stream_retracts_planning_content_into_thinking():
         effective_content += delta.get("content", "")
     assert "我先查一下黑神话相关结果。" not in effective_content
     assert effective_content.endswith("找到了相关视频，可以先看 BV1abc。")
+
+
+def test_handle_stream_emits_reasoning_reset_between_orchestration_phases():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat_stream.side_effect = [
+        iter(
+            [
+                make_stream_chunk(delta={"reasoning_content": "先读取转写。"}),
+                make_stream_chunk(
+                    delta={
+                        "content": "<get_video_transcript video_id='BV1R2XZBQEio'/>"
+                    },
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 20,
+                        "completion_tokens": 10,
+                        "total_tokens": 30,
+                    },
+                ),
+            ]
+        ),
+        iter(
+            [
+                make_stream_chunk(
+                    delta={"reasoning_content": "根据压缩结果整理回答。"}
+                ),
+                make_stream_chunk(
+                    delta={"content": "这是最终回答。"},
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 12,
+                        "completion_tokens": 6,
+                        "total_tokens": 18,
+                    },
+                ),
+            ]
+        ),
+    ]
+    mock_search = MagicMock()
+    mock_search.capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": False,
+        "supports_google_search": False,
+        "supports_transcript_lookup": True,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    mock_search.get_video_transcript.return_value = {
+        "bvid": "BV1R2XZBQEio",
+        "title": "示例视频",
+        "selection": {
+            "selected_text_length": 24,
+            "full_text_length": 24,
+        },
+        "transcript": {
+            "text": "这是完整转写。",
+            "text_length": 24,
+            "segment_count": 1,
+        },
+    }
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    chunks = list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "BV1R2XZBQEio 这期视频讲了什么"}]
+        )
+    )
+    parsed_chunks = [json.loads(chunk) for chunk in chunks[:-1]]
+
+    reset_events = [
+        chunk["choices"][0]["delta"]
+        for chunk in parsed_chunks
+        if chunk["choices"][0]["delta"].get("reset_reasoning")
+    ]
+
+    assert [
+        (event["reasoning_phase"], event["reasoning_iteration"])
+        for event in reset_events
+    ] == [
+        ("planner", 1),
+        ("planner", 2),
+    ]

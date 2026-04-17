@@ -24,6 +24,7 @@ from llms.messages import extract_bvids, extract_message_text
 from llms.models import ChatResponse
 from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
+from llms.orchestration.policies import has_successful_tool_result
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
@@ -56,6 +57,10 @@ _INTERNAL_TOOL_NAMES = {
 
 _TRANSCRIPT_HINT_RE = re.compile(
     r"(讲了什么|讲啥|说了什么|说啥|主要讲|主要内容|总结|摘要|概括|梗概|重点|字幕|转写|音频)",
+    re.IGNORECASE,
+)
+_EXPLICIT_TRANSCRIPT_REQUEST_RE = re.compile(
+    r"(音频转写文本|音频转写|转写文本|完整转写|完整字幕|字幕原文|逐字稿|transcript|subtitles?)",
     re.IGNORECASE,
 )
 _TRANSCRIPT_CONTEXT_CHAR_LIMIT = 24000
@@ -127,11 +132,27 @@ class ChatOrchestrator:
         request: ToolCallRequest,
         intent: IntentProfile,
         search_capabilities: dict,
+        *,
+        prefer_transcript_lookup: bool = False,
     ) -> ToolCallRequest:
         if request.visibility != "user":
             return request
         name = canonical_tool_name(request.name)
         arguments = dict(request.arguments or {})
+        if name == "search_videos" and prefer_transcript_lookup:
+            video_id = self._extract_transcript_video_id(arguments, intent)
+            if video_id:
+                transcript_args = {"video_id": video_id}
+                page_index = arguments.get("page_index")
+                if page_index not in (None, ""):
+                    transcript_args["page_index"] = page_index
+                return ToolCallRequest(
+                    id=request.id,
+                    name="get_video_transcript",
+                    arguments=transcript_args,
+                    visibility=request.visibility,
+                    source=request.source,
+                )
         if name == "search_owners":
             owner_text = self._owner_request_text(arguments)
             if not owner_text:
@@ -182,6 +203,40 @@ class ChatOrchestrator:
             visibility=request.visibility,
             source=request.source,
         )
+
+    @staticmethod
+    def _extract_transcript_video_id(
+        arguments: dict,
+        intent: IntentProfile,
+    ) -> str:
+        direct_keys = ("video_id", "bvid", "aid")
+        for key in direct_keys:
+            value = str(arguments.get(key, "") or "").strip()
+            if value:
+                matches = extract_bvids({"content": value})
+                if matches:
+                    return matches[0]
+                return value
+
+        bvids = arguments.get("bvids")
+        if isinstance(bvids, str):
+            bvid_matches = extract_bvids({"content": bvids})
+            if bvid_matches:
+                return bvid_matches[0]
+        elif isinstance(bvids, (list, tuple)):
+            for item in bvids:
+                bvid_matches = extract_bvids({"content": str(item or "")})
+                if bvid_matches:
+                    return bvid_matches[0]
+
+        for token in [
+            *(intent.explicit_entities or []),
+            *(intent.explicit_topics or []),
+        ]:
+            matches = extract_bvids({"content": str(token or "")})
+            if matches:
+                return matches[0]
+        return ""
 
     def _collect_requests(
         self,
@@ -295,12 +350,15 @@ class ChatOrchestrator:
         if not task:
             return {"error": "Missing task"}
         context_parts = []
+        transcript_context_present = False
+        transcript_context_truncated = False
         if args.get("context"):
             context_parts.append(str(args.get("context")))
         for result_id in list(args.get("result_ids") or []):
             record = result_store.get(result_id)
             if record is not None:
                 if canonical_tool_name(record.request.name) == "get_video_transcript":
+                    transcript_context_present = True
                     transcript = (record.result.get("transcript") or {}).get(
                         "text"
                     ) or ""
@@ -308,6 +366,9 @@ class ChatOrchestrator:
                     trimmed_transcript = transcript_text[
                         :_TRANSCRIPT_CONTEXT_CHAR_LIMIT
                     ]
+                    transcript_context_truncated = (
+                        len(transcript_text) > _TRANSCRIPT_CONTEXT_CHAR_LIMIT
+                    )
                     context_parts.append(
                         json.dumps(
                             {
@@ -317,8 +378,7 @@ class ChatOrchestrator:
                                 or record.result.get("requested_video_id"),
                                 "title": record.result.get("title", ""),
                                 "text_length": len(transcript_text),
-                                "truncated": len(transcript_text)
-                                > _TRANSCRIPT_CONTEXT_CHAR_LIMIT,
+                                "truncated": transcript_context_truncated,
                             },
                             ensure_ascii=False,
                         )
@@ -335,10 +395,25 @@ class ChatOrchestrator:
             decision=decision,
             intent=intent,
         )
+        system_content = "你是搜索编排系统的小模型执行器。只完成窄任务，输出紧凑、结构化、可直接复用的结果。"
+        extra_requirements = ""
+        if transcript_context_present:
+            system_content += (
+                " 当前上下文来自单个视频的音频转写。"
+                "请提炼覆盖全片的中文要点，而不是只复述开头。"
+            )
+            extra_requirements = (
+                "\n额外要求:\n"
+                "- 先用 1 句话说明这期视频的主题或主线。\n"
+                "- 再给 4 到 8 条中文要点，尽量覆盖前中后段。\n"
+                "- 如果视频是多人/多环节展示，优先按人物或环节分组。\n"
+                "- 不要只重复转写开头，也不要输出自我讨论。\n"
+                "- 只有在转写确实被截断时，才说明信息可能不完整。\n"
+            )
         messages = [
             {
                 "role": "system",
-                "content": "你是搜索编排系统的小模型执行器。只完成窄任务，输出紧凑、结构化、可直接复用的结果。",
+                "content": system_content,
             },
             {
                 "role": "user",
@@ -347,6 +422,7 @@ class ChatOrchestrator:
                     f"输出格式: {args.get('output_format', '简洁中文要点')}\n"
                     f"当前意图: {intent.final_target} / {intent.task_mode}\n"
                     f"上下文:\n{context or '[无补充上下文]'}"
+                    f"{extra_requirements}"
                 ),
             },
         ]
@@ -357,6 +433,36 @@ class ChatOrchestrator:
             "model_name": decision.spec.model_name,
             "model_reason": decision.reason,
             "result": sanitize_generated_content(response.content or ""),
+        }
+
+    @staticmethod
+    def _select_transcript_post_execution_nudge(
+        result_store: ResultStore,
+        *,
+        prefer_transcript_lookup: bool,
+        prompted_nudges: set[str],
+    ) -> tuple[str, str] | None:
+        if not prefer_transcript_lookup:
+            return None
+        if "transcript_result_should_be_compressed" in prompted_nudges:
+            return None
+        if not has_successful_tool_result(result_store, "get_video_transcript"):
+            return None
+        if has_successful_tool_result(result_store, "run_small_llm_task"):
+            return None
+        return (
+            "transcript_result_should_be_compressed",
+            "你已经拿到 get_video_transcript 的结果。下一步请直接基于刚拿到的 result_id 调用 "
+            "run_small_llm_task，把转写压成覆盖全片的 4 到 8 条中文要点，然后直接回答；"
+            "不要改去 search_videos，也不要只复述 preview。",
+        )
+
+    @staticmethod
+    def _reasoning_reset_delta(phase: str, iteration: int) -> dict[str, Any]:
+        return {
+            "reset_reasoning": True,
+            "reasoning_phase": phase,
+            "reasoning_iteration": iteration,
         }
 
     def _execute_internal_call(
@@ -433,6 +539,17 @@ class ChatOrchestrator:
     def _normalize_usage(self, usage: dict) -> dict:
         return normalize_usage(usage)
 
+    @staticmethod
+    def _latest_user_text(messages: list[dict]) -> str:
+        return next(
+            (
+                extract_message_text(message)
+                for message in reversed(messages or [])
+                if message.get("role") == "user"
+            ),
+            "",
+        )
+
     def _wants_transcript_lookup(
         self,
         messages: list[dict],
@@ -443,20 +560,53 @@ class ChatOrchestrator:
             return False
         if intent.final_target != "videos":
             return False
-        latest_user_text = next(
-            (
-                extract_message_text(message)
-                for message in reversed(messages or [])
-                if message.get("role") == "user"
-            ),
-            "",
-        )
+        latest_user_text = self._latest_user_text(messages)
         if not latest_user_text or not _TRANSCRIPT_HINT_RE.search(latest_user_text):
             return False
         seen_bvids: set[str] = set()
         for message in messages or []:
             seen_bvids.update(extract_bvids(message))
         return bool(seen_bvids)
+
+    def _is_explicit_transcript_request(
+        self,
+        messages: list[dict],
+        intent: IntentProfile,
+    ) -> bool:
+        if intent.final_target != "videos":
+            return False
+        latest_user_text = self._latest_user_text(messages)
+        if not latest_user_text or not _EXPLICIT_TRANSCRIPT_REQUEST_RE.search(
+            latest_user_text
+        ):
+            return False
+        seen_bvids: set[str] = set()
+        for message in messages or []:
+            seen_bvids.update(extract_bvids(message))
+        return bool(seen_bvids)
+
+    @staticmethod
+    def _select_transcript_unavailable_nudge(
+        *,
+        transcript_requested_but_unavailable: bool,
+        user_tool_names: list[str],
+        prompted_nudges: set[str],
+    ) -> tuple[str, str] | None:
+        if not transcript_requested_but_unavailable:
+            return None
+        if "transcript_lookup_unavailable" in prompted_nudges:
+            return None
+        if user_tool_names and not any(
+            tool_name in {"search_videos", "search_google"}
+            for tool_name in user_tool_names
+        ):
+            return None
+        return (
+            "transcript_lookup_unavailable",
+            "当前环境没有 get_video_transcript 工具，无法直接获取该视频的音频转写或字幕。"
+            "不要改用 search_videos 的 bvids 或 search_google 充当转写读取；"
+            "请直接明确告诉用户当前无法读取转写文本，并说明需要先配置 transcript 服务。",
+        )
 
     def _extra_prompt_assets(
         self,
@@ -883,6 +1033,11 @@ class ChatOrchestrator:
             response_decision,
             latest_user_message,
         ) = self._prepare_orchestration_context(messages=messages, thinking=thinking)
+        prefer_transcript_lookup = bool(extra_asset_ids)
+        transcript_requested_but_unavailable = self._is_explicit_transcript_request(
+            messages,
+            intent,
+        ) and not search_capabilities.get("supports_transcript_lookup", False)
 
         planner_client = planner_decision.client
         planner_spec = planner_decision.spec
@@ -919,7 +1074,12 @@ class ChatOrchestrator:
             requests = self._collect_requests(response, iteration)
 
             requests = [
-                self._normalize_request(request, intent, search_capabilities)
+                self._normalize_request(
+                    request,
+                    intent,
+                    search_capabilities,
+                    prefer_transcript_lookup=prefer_transcript_lookup,
+                )
                 for request in requests
             ]
 
@@ -955,6 +1115,23 @@ class ChatOrchestrator:
             user_tool_names = [
                 request.name for request in requests if request.visibility == "user"
             ]
+            transcript_unavailable_nudge = self._select_transcript_unavailable_nudge(
+                transcript_requested_but_unavailable=transcript_requested_but_unavailable,
+                user_tool_names=user_tool_names,
+                prompted_nudges=prompted_nudges,
+            )
+            if transcript_unavailable_nudge:
+                prompted_nudges.add(transcript_unavailable_nudge[0])
+                stripped_content = sanitize_generated_content(response.content or "")
+                if stripped_content:
+                    conversation.append(
+                        {"role": "assistant", "content": stripped_content}
+                    )
+                conversation.append(
+                    {"role": "user", "content": transcript_unavailable_nudge[1]}
+                )
+                continue
+
             pre_execution_nudge = select_pre_execution_nudge(
                 self.result_store,
                 intent,
@@ -1030,6 +1207,20 @@ class ChatOrchestrator:
 
             if has_target_coverage(self.result_store, intent):
                 break
+
+            transcript_post_execution_nudge = (
+                self._select_transcript_post_execution_nudge(
+                    self.result_store,
+                    prefer_transcript_lookup=prefer_transcript_lookup,
+                    prompted_nudges=prompted_nudges,
+                )
+            )
+            if transcript_post_execution_nudge:
+                prompted_nudges.add(transcript_post_execution_nudge[0])
+                conversation.append(
+                    {"role": "user", "content": transcript_post_execution_nudge[1]}
+                )
+                continue
 
             post_execution_nudge = select_post_execution_nudge(
                 self.result_store,
@@ -1132,7 +1323,7 @@ class ChatOrchestrator:
                     "explicit_entities": intent.explicit_entities,
                     "explicit_topics": intent.explicit_topics,
                     "route_reason": intent.route_reason,
-                    "prefers_transcript_lookup": bool(extra_asset_ids),
+                    "prefers_transcript_lookup": prefer_transcript_lookup,
                 },
                 "models": {
                     "planner": {
@@ -1193,6 +1384,11 @@ class ChatOrchestrator:
             response_decision,
             latest_user_message,
         ) = self._prepare_orchestration_context(messages=messages, thinking=thinking)
+        prefer_transcript_lookup = bool(extra_asset_ids)
+        transcript_requested_but_unavailable = self._is_explicit_transcript_request(
+            messages,
+            intent,
+        ) and not search_capabilities.get("supports_transcript_lookup", False)
 
         planner_client = planner_decision.client
         planner_spec = planner_decision.spec
@@ -1220,6 +1416,9 @@ class ChatOrchestrator:
                 decision=planner_decision,
                 intent=intent,
             )
+            yield {
+                "delta": self._reasoning_reset_delta("planner", iteration),
+            }
             response = yield from self._stream_chat_response(
                 client=planner_client,
                 messages=conversation,
@@ -1230,7 +1429,12 @@ class ChatOrchestrator:
 
             requests = self._collect_requests(response, iteration)
             requests = [
-                self._normalize_request(request, intent, search_capabilities)
+                self._normalize_request(
+                    request,
+                    intent,
+                    search_capabilities,
+                    prefer_transcript_lookup=prefer_transcript_lookup,
+                )
                 for request in requests
             ]
 
@@ -1266,6 +1470,23 @@ class ChatOrchestrator:
             user_tool_names = [
                 request.name for request in requests if request.visibility == "user"
             ]
+            transcript_unavailable_nudge = self._select_transcript_unavailable_nudge(
+                transcript_requested_but_unavailable=transcript_requested_but_unavailable,
+                user_tool_names=user_tool_names,
+                prompted_nudges=prompted_nudges,
+            )
+            if transcript_unavailable_nudge:
+                prompted_nudges.add(transcript_unavailable_nudge[0])
+                stripped_content = sanitize_generated_content(response.content or "")
+                if stripped_content:
+                    conversation.append(
+                        {"role": "assistant", "content": stripped_content}
+                    )
+                conversation.append(
+                    {"role": "user", "content": transcript_unavailable_nudge[1]}
+                )
+                continue
+
             pre_execution_nudge = select_pre_execution_nudge(
                 self.result_store,
                 intent,
@@ -1346,6 +1567,20 @@ class ChatOrchestrator:
             if has_target_coverage(self.result_store, intent):
                 break
 
+            transcript_post_execution_nudge = (
+                self._select_transcript_post_execution_nudge(
+                    self.result_store,
+                    prefer_transcript_lookup=prefer_transcript_lookup,
+                    prompted_nudges=prompted_nudges,
+                )
+            )
+            if transcript_post_execution_nudge:
+                prompted_nudges.add(transcript_post_execution_nudge[0])
+                conversation.append(
+                    {"role": "user", "content": transcript_post_execution_nudge[1]}
+                )
+                continue
+
             post_execution_nudge = select_post_execution_nudge(
                 self.result_store,
                 intent,
@@ -1366,6 +1601,12 @@ class ChatOrchestrator:
                 decision=response_decision,
                 intent=intent,
             )
+            yield {
+                "delta": self._reasoning_reset_delta(
+                    "response",
+                    len(usage_trace) + 1,
+                ),
+            }
             response = yield from self._stream_chat_response(
                 client=response_client,
                 messages=conversation,
@@ -1449,7 +1690,7 @@ class ChatOrchestrator:
                     "explicit_entities": intent.explicit_entities,
                     "explicit_topics": intent.explicit_topics,
                     "route_reason": intent.route_reason,
-                    "prefers_transcript_lookup": bool(extra_asset_ids),
+                    "prefers_transcript_lookup": prefer_transcript_lookup,
                 },
                 "models": {
                     "planner": {
