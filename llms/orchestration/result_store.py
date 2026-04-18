@@ -40,12 +40,15 @@ def compact_video_hit(hit: dict) -> dict:
 
 def compact_owner(owner: dict) -> dict:
     mid = owner.get("mid")
-    return {
+    payload = {
         "name": owner.get("name", ""),
         "mid": mid,
         "url": make_space_url(mid),
         "score": owner.get("score"),
     }
+    if owner.get("sources"):
+        payload["sources"] = list(owner.get("sources") or [])
+    return payload
 
 
 def compact_google_row(row: dict) -> dict:
@@ -184,14 +187,33 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         seed_summary = (
             result.get("text") or result.get("bvids") or result.get("mids") or ""
         )
-        summary_text = f"text={seed_summary}, owners=" + ", ".join(
-            owner["name"] for owner in owner_rows if owner.get("name")
+        source_counts = result.get("source_counts") or {}
+        source_summary = ", ".join(
+            f"{source}={count}" for source, count in source_counts.items() if count
         )
+        owner_summary = ", ".join(
+            (
+                owner["name"]
+                + (
+                    f"[{','.join(owner.get('sources') or [])}]"
+                    if owner.get("sources")
+                    else ""
+                )
+            )
+            for owner in owner_rows
+            if owner.get("name")
+        )
+        summary_text = f"text={seed_summary}"
+        if source_summary:
+            summary_text += f", sources={source_summary}"
+        if owner_summary:
+            summary_text += f", owners={owner_summary}"
         return {
             "result_id": result_id,
             "tool": canonical_name,
             "text": result.get("text", ""),
             "owners": owner_rows,
+            "source_counts": source_counts,
             "summary_text": summary_text,
         }
 
@@ -370,17 +392,38 @@ def inspect_results(result_store: ResultStore, args: dict) -> dict:
         if canonical_name == "search_owners" or isinstance(
             record.result.get("owners"), list
         ):
-            inspected.append(
-                {
-                    "result_id": result_id,
-                    "focus": focus,
-                    "text": record.result.get("text", ""),
-                    "owners": [
-                        compact_owner(owner)
-                        for owner in (record.result.get("owners") or [])[:max_items]
-                    ],
-                }
-            )
+            payload = {
+                "result_id": result_id,
+                "focus": focus,
+                "text": record.result.get("text", ""),
+                "owners": [
+                    compact_owner(owner)
+                    for owner in (record.result.get("owners") or [])[:max_items]
+                ],
+            }
+            if record.result.get("source_counts"):
+                payload["source_counts"] = dict(
+                    record.result.get("source_counts") or {}
+                )
+            if isinstance(record.result.get("source_groups"), list):
+                payload["source_groups"] = [
+                    {
+                        "source": group.get("source", ""),
+                        "label": group.get("label", ""),
+                        "total_owners": group.get("total_owners", 0),
+                        "owners": [
+                            compact_owner(owner)
+                            for owner in (group.get("owners") or [])[:max_items]
+                        ],
+                    }
+                    for group in (record.result.get("source_groups") or [])[:max_items]
+                ]
+            if isinstance(record.result.get("google_results"), list):
+                payload["google_results"] = [
+                    compact_google_row(row)
+                    for row in (record.result.get("google_results") or [])[:max_items]
+                ]
+            inspected.append(payload)
             continue
 
         if canonical_name == "expand_query":

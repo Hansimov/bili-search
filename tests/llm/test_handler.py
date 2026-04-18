@@ -841,6 +841,84 @@ def test_handle_stream_emits_tool_events_content_and_done():
     assert parsed_chunks[-1]["choices"][0]["finish_reason"] == "stop"
 
 
+def test_handle_stream_emits_streaming_internal_small_tool_updates():
+    mock_large_llm = MagicMock(spec=LLMClient)
+    mock_large_llm.chat_stream.side_effect = [
+        iter(
+            [
+                make_stream_chunk(
+                    delta={
+                        "content": "<run_small_llm_task task='把候选结果压成 2 条要点' context='候选结果很多'/>"
+                    },
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 12,
+                        "completion_tokens": 6,
+                        "total_tokens": 18,
+                    },
+                ),
+            ]
+        ),
+        iter(
+            [
+                make_stream_chunk(
+                    delta={"content": "最终回答如下。"},
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 8,
+                        "completion_tokens": 4,
+                        "total_tokens": 12,
+                    },
+                )
+            ]
+        ),
+    ]
+    mock_small_llm = MagicMock(spec=LLMClient)
+    mock_small_llm.chat_stream.return_value = iter(
+        [
+            make_stream_chunk(delta={"content": "- 要点1"}),
+            make_stream_chunk(
+                delta={"content": "\n- 要点2"},
+                finish_reason="stop",
+            ),
+        ]
+    )
+    mock_search = MagicMock()
+
+    handler = ChatHandler(
+        llm_client=mock_large_llm,
+        small_llm_client=mock_small_llm,
+        search_client=mock_search,
+    )
+
+    chunks = list(
+        handler.handle_stream(
+            messages=[{"role": "user", "content": "请总结一下"}],
+            thinking=True,
+        )
+    )
+    parsed_chunks = [json.loads(chunk) for chunk in chunks[:-1]]
+
+    tool_event_chunks = [chunk for chunk in parsed_chunks if chunk.get("tool_events")]
+    statuses = [
+        chunk["tool_events"][0]["calls"][0]["status"] for chunk in tool_event_chunks
+    ]
+
+    assert statuses == ["pending", "streaming", "streaming", "completed"]
+    assert (
+        tool_event_chunks[1]["tool_events"][0]["calls"][0]["result"]["result"]
+        == "- 要点1"
+    )
+    assert (
+        tool_event_chunks[-1]["tool_events"][0]["calls"][0]["result"]["result"]
+        == "- 要点1\n- 要点2"
+    )
+    assert (
+        tool_event_chunks[-1]["tool_events"][0]["calls"][0]["visibility"] == "internal"
+    )
+    assert mock_small_llm.chat_stream.call_count == 1
+
+
 def test_handle_stream_retracts_planning_content_into_thinking():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat_stream.side_effect = [

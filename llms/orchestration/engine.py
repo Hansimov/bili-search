@@ -162,13 +162,6 @@ class ChatOrchestrator:
                     owner_text = owner_seed
             elif not str(arguments.get("text", "") or "").strip():
                 arguments["text"] = owner_text
-            if (
-                arguments.get("text")
-                and str(arguments.get("mode", "auto") or "auto") == "auto"
-                and intent.final_target in {"owners", "relations"}
-                and intent.task_mode == "exploration"
-            ):
-                arguments["mode"] = "topic"
         elif name == "search_videos" and intent.needs_term_normalization:
             raw_queries = arguments.get("queries")
             if isinstance(raw_queries, str):
@@ -343,12 +336,13 @@ class ChatOrchestrator:
     def _inspect_result(self, result_store: ResultStore, args: dict) -> dict:
         return inspect_results(result_store, args)
 
-    def _run_small_task(
-        self, result_store: ResultStore, args: dict, intent: IntentProfile
-    ) -> dict:
+    def _build_small_task_messages(
+        self,
+        result_store: ResultStore,
+        args: dict,
+        intent: IntentProfile,
+    ) -> tuple[str, ModelDecision, list[dict[str, str]]]:
         task = str(args.get("task", "")).strip()
-        if not task:
-            return {"error": "Missing task"}
         context_parts = []
         transcript_context_present = False
         transcript_context_truncated = False
@@ -356,37 +350,34 @@ class ChatOrchestrator:
             context_parts.append(str(args.get("context")))
         for result_id in list(args.get("result_ids") or []):
             record = result_store.get(result_id)
-            if record is not None:
-                if canonical_tool_name(record.request.name) == "get_video_transcript":
-                    transcript_context_present = True
-                    transcript = (record.result.get("transcript") or {}).get(
-                        "text"
-                    ) or ""
-                    transcript_text = str(transcript or "")
-                    trimmed_transcript = transcript_text[
-                        :_TRANSCRIPT_CONTEXT_CHAR_LIMIT
-                    ]
-                    transcript_context_truncated = (
-                        len(transcript_text) > _TRANSCRIPT_CONTEXT_CHAR_LIMIT
+            if record is None:
+                continue
+            if canonical_tool_name(record.request.name) == "get_video_transcript":
+                transcript_context_present = True
+                transcript = (record.result.get("transcript") or {}).get("text") or ""
+                transcript_text = str(transcript or "")
+                trimmed_transcript = transcript_text[:_TRANSCRIPT_CONTEXT_CHAR_LIMIT]
+                transcript_context_truncated = (
+                    len(transcript_text) > _TRANSCRIPT_CONTEXT_CHAR_LIMIT
+                )
+                context_parts.append(
+                    json.dumps(
+                        {
+                            "result_id": record.result_id,
+                            "tool": record.request.name,
+                            "video_id": record.result.get("bvid")
+                            or record.result.get("requested_video_id"),
+                            "title": record.result.get("title", ""),
+                            "text_length": len(transcript_text),
+                            "truncated": transcript_context_truncated,
+                        },
+                        ensure_ascii=False,
                     )
-                    context_parts.append(
-                        json.dumps(
-                            {
-                                "result_id": record.result_id,
-                                "tool": record.request.name,
-                                "video_id": record.result.get("bvid")
-                                or record.result.get("requested_video_id"),
-                                "title": record.result.get("title", ""),
-                                "text_length": len(transcript_text),
-                                "truncated": transcript_context_truncated,
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                    if trimmed_transcript:
-                        context_parts.append(f"[转写正文]\n{trimmed_transcript}")
-                    continue
-                context_parts.append(json.dumps(record.summary, ensure_ascii=False))
+                )
+                if trimmed_transcript:
+                    context_parts.append(f"[转写正文]\n{trimmed_transcript}")
+                continue
+            context_parts.append(json.dumps(record.summary, ensure_ascii=False))
         context = "\n".join(context_parts).strip()
         decision = self._select_model(intent, stage="delegate", thinking=False)
         self._log_model_decision(
@@ -426,14 +417,85 @@ class ChatOrchestrator:
                 ),
             },
         ]
-        response = decision.client.chat(messages=messages, temperature=0.2)
-        return {
+        return task, decision, messages
+
+    @staticmethod
+    def _build_small_task_result(
+        task: str,
+        decision: ModelDecision,
+        content: str,
+        *,
+        partial: bool = False,
+    ) -> dict:
+        payload = {
             "task": task,
             "model": decision.spec.config_name,
             "model_name": decision.spec.model_name,
             "model_reason": decision.reason,
-            "result": sanitize_generated_content(response.content or ""),
+            "result": sanitize_generated_content(content or ""),
         }
+        if partial:
+            payload["partial"] = True
+        return payload
+
+    def _run_small_task(
+        self, result_store: ResultStore, args: dict, intent: IntentProfile
+    ) -> dict:
+        task = str(args.get("task", "")).strip()
+        if not task:
+            return {"error": "Missing task"}
+        _, decision, messages = self._build_small_task_messages(
+            result_store,
+            args,
+            intent,
+        )
+        response = decision.client.chat(messages=messages, temperature=0.2)
+        return self._build_small_task_result(
+            task,
+            decision,
+            response.content or "",
+        )
+
+    def _run_small_task_stream(
+        self,
+        result_store: ResultStore,
+        args: dict,
+        intent: IntentProfile,
+        *,
+        cancelled: Optional[object] = None,
+    ) -> Generator[dict[str, Any], None, dict]:
+        task = str(args.get("task", "")).strip()
+        if not task:
+            return {"error": "Missing task"}
+        _, decision, messages = self._build_small_task_messages(
+            result_store,
+            args,
+            intent,
+        )
+        stream = decision.client.chat_stream(messages=messages, temperature=0.2)
+        accumulated_content = ""
+        saw_content = False
+        for chunk in stream or []:
+            if cancelled is not None and getattr(cancelled, "is_set", lambda: False)():
+                break
+            choices = chunk.get("choices", [])
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+            content_delta = delta.get("content")
+            if not content_delta:
+                continue
+            saw_content = True
+            accumulated_content += content_delta
+            yield self._build_small_task_result(
+                task,
+                decision,
+                accumulated_content,
+                partial=True,
+            )
+        if not saw_content:
+            return self._run_small_task(result_store, args, intent)
+        return self._build_small_task_result(task, decision, accumulated_content)
 
     @staticmethod
     def _select_transcript_post_execution_nudge(
@@ -496,6 +558,36 @@ class ChatOrchestrator:
             return self._run_small_task(result_store, request.arguments, intent)
         return {"error": f"Unknown internal tool: {request.name}"}
 
+    def _execute_request(
+        self,
+        result_store: ResultStore,
+        request: ToolCallRequest,
+        intent: IntentProfile,
+        *,
+        result: dict | None = None,
+    ) -> ToolExecutionRecord:
+        resolved_result = result
+        if resolved_result is None:
+            if request.visibility == "internal":
+                resolved_result = self._execute_internal_call(
+                    result_store,
+                    request,
+                    intent,
+                )
+            else:
+                resolved_result = self.tool_executor.execute_request(request)
+        result_id = f"R{len(result_store.order) + 1}"
+        summary = self._result_summary(result_id, request.name, resolved_result)
+        record = ToolExecutionRecord(
+            result_id=result_id,
+            request=request,
+            result=resolved_result,
+            summary=summary,
+            visibility=request.visibility,
+        )
+        result_store.add(record)
+        return record
+
     def _execute_requests(
         self,
         result_store: ResultStore,
@@ -506,21 +598,7 @@ class ChatOrchestrator:
             return []
 
         def run_one(request: ToolCallRequest) -> ToolExecutionRecord:
-            if request.visibility == "internal":
-                result = self._execute_internal_call(result_store, request, intent)
-            else:
-                result = self.tool_executor.execute_request(request)
-            result_id = f"R{len(result_store.order) + 1}"
-            summary = self._result_summary(result_id, request.name, result)
-            record = ToolExecutionRecord(
-                result_id=result_id,
-                request=request,
-                result=result,
-                summary=summary,
-                visibility=request.visibility,
-            )
-            result_store.add(record)
-            return record
+            return self._execute_request(result_store, request, intent)
 
         max_workers = min(max(len(requests), 1), 4)
         if max_workers == 1:
@@ -818,24 +896,141 @@ class ChatOrchestrator:
             "calls": [record.to_tool_event_call() for record in records],
         }
 
+    @staticmethod
+    def _pending_tool_call_payload(request: ToolCallRequest) -> dict[str, Any]:
+        return {
+            "type": request.name,
+            "args": request.arguments,
+            "status": "pending",
+            "visibility": request.visibility,
+        }
+
+    @staticmethod
+    def _streaming_tool_call_payload(
+        request: ToolCallRequest,
+        result: dict,
+    ) -> dict[str, Any]:
+        payload = ChatOrchestrator._pending_tool_call_payload(request)
+        payload["status"] = "streaming"
+        payload["result"] = result
+        result_text = str((result or {}).get("result", "") or "").strip()
+        if result_text:
+            payload["summary"] = {"summary_text": result_text}
+        return payload
+
+    @staticmethod
+    def _build_tool_event_from_calls(
+        iteration: int,
+        calls: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "iteration": iteration,
+            "tools": [str(call.get("type", "") or "") for call in calls],
+            "calls": calls,
+        }
+
     def _build_pending_tool_event(
         self,
         iteration: int,
         requests: list[ToolCallRequest],
     ) -> dict:
-        return {
-            "iteration": iteration,
-            "tools": [request.name for request in requests],
-            "calls": [
-                {
-                    "type": request.name,
-                    "args": request.arguments,
-                    "status": "pending",
-                    "visibility": request.visibility,
-                }
-                for request in requests
-            ],
-        }
+        return self._build_tool_event_from_calls(
+            iteration,
+            [self._pending_tool_call_payload(request) for request in requests],
+        )
+
+    def _execute_small_task_request_stream(
+        self,
+        *,
+        result_store: ResultStore,
+        request: ToolCallRequest,
+        intent: IntentProfile,
+        iteration: int,
+        request_index: int,
+        current_calls: list[dict[str, Any]],
+        cancelled: Optional[object] = None,
+    ) -> Generator[dict[str, Any], None, ToolExecutionRecord]:
+        stream = self._run_small_task_stream(
+            result_store,
+            request.arguments,
+            intent,
+            cancelled=cancelled,
+        )
+        final_result: dict | None = None
+        while True:
+            try:
+                partial_result = next(stream)
+            except StopIteration as stop:
+                final_result = stop.value
+                break
+            current_calls[request_index] = self._streaming_tool_call_payload(
+                request,
+                partial_result,
+            )
+            yield {
+                "tool_events": [
+                    self._build_tool_event_from_calls(iteration, list(current_calls))
+                ]
+            }
+        return self._execute_request(
+            result_store,
+            request,
+            intent,
+            result=final_result,
+        )
+
+    def _execute_requests_with_stream_events(
+        self,
+        result_store: ResultStore,
+        requests: list[ToolCallRequest],
+        intent: IntentProfile,
+        *,
+        iteration: int,
+        cancelled: Optional[object] = None,
+    ) -> Generator[dict[str, Any], None, list[ToolExecutionRecord]]:
+        if not requests:
+            return []
+
+        pending_event = self._build_pending_tool_event(iteration, requests)
+        yield {"tool_events": [pending_event]}
+
+        has_streaming_small_task = any(
+            request.visibility == "internal" and request.name == "run_small_llm_task"
+            for request in requests
+        )
+        if not has_streaming_small_task:
+            records = self._execute_requests(result_store, requests, intent)
+            yield {"tool_events": [self._build_tool_events(iteration, records)]}
+            return records
+
+        current_calls = [
+            self._pending_tool_call_payload(request) for request in requests
+        ]
+        records: list[ToolExecutionRecord] = []
+        for request_index, request in enumerate(requests):
+            if (
+                request.visibility == "internal"
+                and request.name == "run_small_llm_task"
+            ):
+                record = yield from self._execute_small_task_request_stream(
+                    result_store=result_store,
+                    request=request,
+                    intent=intent,
+                    iteration=iteration,
+                    request_index=request_index,
+                    current_calls=current_calls,
+                    cancelled=cancelled,
+                )
+            else:
+                record = self._execute_request(result_store, request, intent)
+            records.append(record)
+            current_calls[request_index] = record.to_tool_event_call(status="completed")
+            yield {
+                "tool_events": [
+                    self._build_tool_event_from_calls(iteration, list(current_calls))
+                ]
+            }
+        return records
 
     def _stream_chat_response(
         self,
@@ -1522,11 +1717,15 @@ class ChatOrchestrator:
                     break
                 continue
 
-            yield {"tool_events": [self._build_pending_tool_event(iteration, requests)]}
-            records = self._execute_requests(self.result_store, requests, intent)
+            records = yield from self._execute_requests_with_stream_events(
+                self.result_store,
+                requests,
+                intent,
+                iteration=iteration,
+                cancelled=cancelled,
+            )
             completed_event = self._build_tool_events(iteration, records)
             tool_events.append(completed_event)
-            yield {"tool_events": [completed_event]}
 
             if response.tool_calls:
                 conversation.append(response.to_message_dict())

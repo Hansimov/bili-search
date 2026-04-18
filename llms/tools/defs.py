@@ -9,7 +9,7 @@ _PROMPT_TOOL_EXAMPLES = {
     "search_videos": "<search_videos queries='[\"黑神话 :view>=1w q=vwr\"]'/>",
     "get_video_transcript": "<get_video_transcript video_id='BV1YXZPB1Erc' head_chars='6000' include_segments='true'/>",
     "search_google": "<search_google query='Gemini 2.5 更新 site:bilibili.com/video' num='5'/>",
-    "search_owners": "<search_owners text='黑神话悟空' mode='topic' size='8'/>",
+    "search_owners": "<search_owners text='黑神话悟空' size='8'/>",
     "expand_query": "<expand_query text='康夫UI' mode='correction' size='8'/>",
     "read_spec": "<read_spec name='search_syntax'/>",
     "read_prompt_assets": "<read_prompt_assets tool_names='[\"search_videos\"]' levels='[\"examples\"]'/>",
@@ -121,6 +121,7 @@ def build_search_google_tool(capabilities: dict | None = None) -> dict:
         "也适合作为 B 站内容检索前的关键词侦察层。"
         "最重要的 site 范围包括：`site:bilibili.com`(全 B 站)、`site:space.bilibili.com`(用户页)、"
         "`site:bilibili.com/video`(视频)、`site:bilibili.com/read`(文章/专栏)。"
+        "作者/UP 主发现优先用 search_owners；它已经内置聚合 `site:space.bilibili.com` 的侦察结果。"
         "使用 `site:` 时，默认把关键词写前面、`site:` 放在最后。"
         "若最终目标仍是 B 站视频、作者或专栏，search_google 通常只是侦察/启发层，拿到线索后应继续调用终局工具。"
         "query 应整理成紧凑搜索短语，可直接包含 site 过滤，不要把整句口语原样塞进去。"
@@ -236,7 +237,8 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                 "作者问题优先用它，不要机械转成视频搜索。"
                 "作者最近视频这类问题，如果作者词不稳，应先用它确认作者，再继续 search_videos。"
                 "按主题或作者线索找作者时传 text；若已经拿到 bvids 或 mids，也可直接继续做作者关系发掘。"
-                "mode=relation 适合关联账号/矩阵号；mode=topic 适合主题找作者；mode=name 适合名字查作者。"
+                "对 text 查询会自动并行聚合名字匹配、主题发现、关系发现，以及 `site:space.bilibili.com` 的 Google 侦察结果；"
+                "不需要再猜 mode，也不需要单独补一次 `search_google site:space.bilibili.com`。"
             ),
             "parameters": {
                 "type": "object",
@@ -244,12 +246,6 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                     "text": {
                         "type": "string",
                         "description": "作者名、别名、主题词或作者线索文本。主题找作者时也写在 text 里，不要传 queries。",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["auto", "name", "topic", "relation"],
-                        "description": "搜索模式，默认 auto",
-                        "default": "auto",
                     },
                     "bvids": {
                         "type": "array",
@@ -263,7 +259,7 @@ def build_search_owners_tool(capabilities: dict | None = None) -> dict:
                     },
                     "size": {
                         "type": "integer",
-                        "description": "返回作者数量",
+                        "description": "返回作者数量。text 聚合模式下表示每个来源的候选上限，最终会做合并去重。",
                         "default": 8,
                     },
                 },

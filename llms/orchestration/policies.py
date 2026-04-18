@@ -205,7 +205,7 @@ PRE_EXECUTION_NUDGE_RULES = (
         ),
         message=(
             "当前任务目标是找作者、矩阵号或关联作者。请先调用 search_owners 获取作者候选，"
-            "必要时用 mode=topic / mode=relation；不要先用 search_videos 兜圈子。"
+            "它会自动聚合名字、主题、关系和空间页线索；不要先用 search_videos 兜圈子。"
         ),
     ),
     ToolLoopNudgeRule(
