@@ -120,6 +120,28 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
     canonical_name = canonical_tool_name(tool_name)
     summary_text = ""
     if canonical_name == "search_videos":
+        if result.get("lookup_by") or result.get("mode") == "lookup":
+            hits = result.get("hits") or []
+            top_hits = [compact_video_hit(hit) for hit in hits[:5]]
+            lookup_seed = result.get("bvids") or result.get("mids") or ""
+            summary_text = (
+                f"lookup_by={result.get('lookup_by', '')}, seed={lookup_seed}, "
+                f"total_hits={result.get('total_hits', len(hits))}, top_hits="
+                + ", ".join(
+                    f"{hit['title']}({hit['bvid']})"
+                    for hit in top_hits
+                    if hit.get("title")
+                )
+            )
+            return {
+                "result_id": result_id,
+                "tool": canonical_name,
+                "lookup_by": result.get("lookup_by", ""),
+                "seed": lookup_seed,
+                "total_hits": result.get("total_hits", len(hits)),
+                "top_hits": top_hits,
+                "summary_text": summary_text,
+            }
         if result.get("results"):
             query_summaries = []
             for item in result.get("results", [])[:3]:

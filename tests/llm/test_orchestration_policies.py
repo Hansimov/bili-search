@@ -13,14 +13,14 @@ class FakeResultStore:
         self.records = {}
         self.order = []
 
-    def add(self, tool_name: str, result: dict):
+    def add(self, tool_name: str, result: dict, arguments: dict | None = None):
         result_id = f"R{len(self.order) + 1}"
         record = ToolExecutionRecord(
             result_id=result_id,
             request=ToolCallRequest(
                 id=result_id,
                 name=tool_name,
-                arguments={},
+                arguments=arguments or {},
             ),
             result=result,
             summary={},
@@ -83,6 +83,94 @@ def test_has_target_coverage_for_videos_accepts_internal_small_task_results():
     )
 
     assert has_target_coverage(store, _intent(final_target="videos")) is True
+
+
+def test_has_target_coverage_requires_recent_followup_after_explicit_bv_lookup():
+    store = FakeResultStore()
+    store.add(
+        "search_videos",
+        {
+            "mode": "lookup",
+            "lookup_by": "bvids",
+            "total_hits": 1,
+            "bvids": ["BV1e9cfz5EKj"],
+            "hits": [
+                {
+                    "bvid": "BV1e9cfz5EKj",
+                    "title": "人在柬埔寨，刚下飞机，现在跑还来得及吗？",
+                    "owner": {"mid": 39627524, "name": "食贫道"},
+                }
+            ],
+        },
+        arguments={"mode": "lookup", "bv": "BV1e9cfz5EKj"},
+    )
+
+    assert (
+        has_target_coverage(
+            store,
+            _intent(
+                raw_query="BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+                normalized_query="bv1e9cfz5ekj 这期视频的作者是谁 他最近还发了哪些视频",
+                final_target="videos",
+                needs_owner_resolution=True,
+                explicit_entities=["BV1e9cfz5EKj"],
+                explicit_topics=["BV1e9cfz5EKj", "视频的作者"],
+            ),
+        )
+        is False
+    )
+
+
+def test_has_target_coverage_accepts_recent_followup_after_mid_lookup():
+    store = FakeResultStore()
+    store.add(
+        "search_videos",
+        {
+            "mode": "lookup",
+            "lookup_by": "bvids",
+            "total_hits": 1,
+            "bvids": ["BV1e9cfz5EKj"],
+            "hits": [
+                {
+                    "bvid": "BV1e9cfz5EKj",
+                    "owner": {"mid": 39627524, "name": "食贫道"},
+                }
+            ],
+        },
+        arguments={"mode": "lookup", "bv": "BV1e9cfz5EKj"},
+    )
+    store.add(
+        "search_videos",
+        {
+            "mode": "lookup",
+            "lookup_by": "mids",
+            "total_hits": 0,
+            "mids": ["39627524"],
+            "date_window": "30d",
+            "hits": [],
+        },
+        arguments={
+            "mode": "lookup",
+            "mid": "39627524",
+            "date_window": "30d",
+            "exclude_bvids": ["BV1e9cfz5EKj"],
+        },
+    )
+
+    assert (
+        has_target_coverage(
+            store,
+            _intent(
+                raw_query="BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+                normalized_query="bv1e9cfz5ekj 这期视频的作者是谁 他最近还发了哪些视频",
+                final_target="videos",
+                needs_owner_resolution=True,
+                explicit_entities=["BV1e9cfz5EKj"],
+                explicit_topics=["BV1e9cfz5EKj", "视频的作者"],
+            ),
+        )
+        is True
+    )
 
 
 def test_select_pre_execution_nudge_blocks_repeating_mixed_searches():
@@ -247,6 +335,43 @@ def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
     assert rule[0] == "video_zero_hit_google_fallback"
 
 
+def test_select_post_execution_nudge_requests_recent_followup_after_explicit_bv_lookup():
+    store = FakeResultStore()
+    store.add(
+        "search_videos",
+        {
+            "mode": "lookup",
+            "lookup_by": "bvids",
+            "total_hits": 1,
+            "bvids": ["BV1e9cfz5EKj"],
+            "hits": [
+                {
+                    "bvid": "BV1e9cfz5EKj",
+                    "owner": {"mid": 39627524, "name": "食贫道"},
+                }
+            ],
+        },
+        arguments={"mode": "lookup", "bv": "BV1e9cfz5EKj"},
+    )
+
+    rule = select_post_execution_nudge(
+        store,
+        _intent(
+            raw_query="BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+            normalized_query="bv1e9cfz5ekj 这期视频的作者是谁 他最近还发了哪些视频",
+            final_target="videos",
+            needs_owner_resolution=True,
+            explicit_entities=["BV1e9cfz5EKj"],
+            explicit_topics=["BV1e9cfz5EKj", "视频的作者"],
+        ),
+        "BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "explicit_video_lookup_recent_followup"
+
+
 def test_select_post_execution_nudge_prefers_token_retry_for_alias_expansion():
     store = FakeResultStore()
     store.add(
@@ -341,7 +466,38 @@ def test_normalize_request_rewrites_known_bv_video_search_to_transcript():
     )
 
     assert normalized.name == "get_video_transcript"
-    assert normalized.arguments == {"video_id": "BV1R2XZBQEIO"}
+    assert normalized.arguments == {"video_id": "BV1R2XZBQEio"}
+
+
+def test_normalize_request_rewrites_explicit_bv_query_to_lookup():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    request = ToolCallRequest(
+        id="call_lookup_1",
+        name="search_videos",
+        arguments={"queries": ["BV1e9cfz5EKj"]},
+    )
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            final_target="videos",
+            task_mode="exploration",
+            explicit_entities=["BV1e9cfz5EKj"],
+            explicit_topics=["BV1e9cfz5EKj"],
+        ),
+        {"supports_transcript_lookup": True},
+        prefer_transcript_lookup=False,
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {
+        "mode": "lookup",
+        "bv": "BV1e9cfz5EKj",
+    }
 
 
 def test_run_blocks_search_detour_when_transcript_is_unavailable():
@@ -398,3 +554,104 @@ def test_run_blocks_search_detour_when_transcript_is_unavailable():
 
     assert "无法读取该视频的音频转写文本" in result.content
     tool_executor.execute_request.assert_not_called()
+
+
+def test_run_auto_follows_explicit_bv_lookup_with_recent_mid_lookup():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="<search_videos bv='BV1e9cfz5EKj' mode='lookup' />",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            },
+        ),
+        ChatResponse(
+            content="作者是食贫道，近期暂无更多结果。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 18,
+                "completion_tokens": 12,
+                "total_tokens": 30,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "mode": "lookup",
+            "lookup_by": "bvids",
+            "total_hits": 1,
+            "bvids": ["BV1e9cfz5EKj"],
+            "hits": [
+                {
+                    "bvid": "BV1e9cfz5EKj",
+                    "title": "人在柬埔寨，刚下飞机，现在跑还来得及吗？",
+                    "owner": {"mid": 39627524, "name": "食贫道"},
+                }
+            ],
+            "source_counts": {"mongo": 1, "es": 1},
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mids",
+            "total_hits": 0,
+            "mids": ["39627524"],
+            "date_window": "30d",
+            "hits": [],
+            "source_counts": {"mongo": 0, "es": 0},
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "作者是 食贫道" in result.content
+    assert "当前 30 天时间窗内未检索到该作者的其他公开视频。" in result.content
+    assert llm.chat.call_count == 1
+    assert tool_executor.execute_request.call_count == 2
+
+    first_request = tool_executor.execute_request.call_args_list[0].args[0]
+    second_request = tool_executor.execute_request.call_args_list[1].args[0]
+    assert first_request.name == "search_videos"
+    assert first_request.arguments == {"bv": "BV1e9cfz5EKj", "mode": "lookup"}
+    assert second_request.name == "search_videos"
+    assert second_request.arguments == {
+        "mode": "lookup",
+        "date_window": "30d",
+        "limit": 10,
+        "exclude_bvids": ["BV1e9cfz5EKj"],
+        "mid": "39627524",
+    }
+
+    calls = result.tool_events[0]["calls"]
+    assert len(calls) == 2
+    assert calls[1]["type"] == "search_videos"
+    assert calls[1]["args"]["mid"] == "39627524"

@@ -37,10 +37,24 @@ def make_tool_cmd_response(
 def make_function_call_response(
     *tool_calls: ToolCall, usage: dict | None = None
 ) -> ChatResponse:
+    xml_commands: list[str] = []
+    for tool_call in tool_calls:
+        arguments = tool_call.arguments
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        attrs = " ".join(
+            f"{key}='{json.dumps(value, ensure_ascii=False)}'"
+            for key, value in (arguments or {}).items()
+        )
+        xml_commands.append(
+            f"<{tool_call.name} {attrs}/>" if attrs else f"<{tool_call.name}/>"
+        )
     return ChatResponse(
-        content=None,
-        tool_calls=list(tool_calls),
-        finish_reason="tool_calls",
+        content="\n".join(xml_commands),
+        finish_reason="stop",
         usage=usage
         or {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
     )
@@ -205,7 +219,7 @@ def test_handle_xml_tool_flow_uses_observation_context_instead_of_raw_results():
     assert "[搜索结果]" not in observation_messages[0]["content"]
 
 
-def test_handle_function_calling_flow_injects_tool_messages():
+def test_handle_xml_tool_flow_injects_observation_messages():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [
         make_function_call_response(
@@ -227,16 +241,77 @@ def test_handle_function_calling_flow_injects_tool_messages():
 
     assert "黑神话" in assistant_content(result)
     second_call_messages = mock_llm.chat.call_args_list[1].kwargs["messages"]
-    assert any(
-        message.get("role") == "assistant" and message.get("tool_calls")
+    observation_messages = [
+        message
         for message in second_call_messages
-    )
-    tool_messages = [
-        message for message in second_call_messages if message.get("role") == "tool"
+        if message.get("role") == "user"
+        and "[TOOL_OBSERVATIONS]" in str(message.get("content") or "")
     ]
-    assert tool_messages
-    assert "BV1abc" in tool_messages[0]["content"]
-    assert "https://www.bilibili.com/video/BV1abc" in tool_messages[0]["content"]
+    assert observation_messages
+    assert "BV1abc" in observation_messages[0]["content"]
+    assert "search_videos" in observation_messages[0]["content"]
+
+
+def test_normalize_search_video_commands_coerces_explicit_bv_lookup():
+    normalized = ChatHandler._normalize_search_video_commands(
+        [
+            {
+                "type": "search_videos",
+                "args": {"queries": ["BV1e9cfz5EKj"]},
+            }
+        ]
+    )
+
+    assert normalized == [
+        {
+            "type": "search_videos",
+            "args": {"mode": "lookup", "bv": "BV1e9cfz5EKj"},
+        }
+    ]
+
+
+def test_plan_tool_commands_continues_recent_video_lookup_after_explicit_bv_hit():
+    planned = ChatHandler._plan_tool_commands(
+        commands=[],
+        messages=[
+            {
+                "role": "user",
+                "content": "BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+            }
+        ],
+        last_tool_results=[
+            {
+                "type": "search_videos",
+                "args": {"mode": "lookup", "bv": "BV1e9cfz5EKj"},
+                "result": {
+                    "mode": "lookup",
+                    "lookup_by": "bvids",
+                    "bvids": ["BV1e9cfz5EKj"],
+                    "hits": [
+                        {
+                            "bvid": "BV1e9cfz5EKj",
+                            "title": "人在柬埔寨，刚下飞机，现在跑还来得及吗？",
+                            "owner": {"mid": 39627524, "name": "食贫道"},
+                        }
+                    ],
+                },
+            }
+        ],
+        owner_result_scope=None,
+    )
+
+    assert planned == [
+        {
+            "type": "search_videos",
+            "args": {
+                "mode": "lookup",
+                "date_window": "30d",
+                "limit": 10,
+                "exclude_bvids": ["BV1e9cfz5EKj"],
+                "mid": "39627524",
+            },
+        }
+    ]
 
 
 def test_tool_events_include_visibility_summary_and_result_ids():

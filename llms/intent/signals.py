@@ -7,8 +7,10 @@ through llms.intent.classifier as ad hoc constants.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from llms.contracts import FacetScore
+from llms.messages import extract_bvids, extract_owner_mids
 from llms.messages import extract_message_text
 from llms.intent.focus import compact_focus_key
 from llms.intent.focus import extract_focus_spans
@@ -62,6 +64,9 @@ _KEYWORD_EXPANSION_AMBIGUITY_THRESHOLD = 0.40
 _TARGET_LOW_CONFIDENCE_THRESHOLD = 0.18
 _TARGET_MARGIN_THRESHOLD = 0.06
 _ALIAS_TOKEN_MAX_LEN = 6
+_QUESTION_TAIL_RE = re.compile(
+    r"(是谁|是什么|讲了什么|讲啥|说了什么|说啥|最近还?发了哪些视频|最近还有哪些视频|最近视频|代表作有哪些?)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,18 +101,26 @@ class IntentSignalProfile:
 
 
 def build_conversation_window(messages: list[dict]) -> ConversationWindow:
-    user_messages = [
-        normalize_text(extract_message_text(message))
+    raw_user_messages = [
+        extract_message_text(message)
         for message in messages or []
         if message.get("role") == "user"
     ]
-    latest_user_text = user_messages[-1] if user_messages else ""
-    history_text = " ".join(user_messages[:-1][-2:]) if len(user_messages) > 1 else ""
+    normalized_user_messages = [
+        normalize_text(text) for text in raw_user_messages if str(text or "").strip()
+    ]
+    latest_user_text = raw_user_messages[-1] if raw_user_messages else ""
+    normalized_query = normalize_text(latest_user_text)
+    history_text = (
+        " ".join(normalized_user_messages[:-1][-2:])
+        if len(normalized_user_messages) > 1
+        else ""
+    )
     return ConversationWindow(
         latest_user_text=latest_user_text,
-        normalized_query=latest_user_text,
+        normalized_query=normalized_query,
         history_text=history_text,
-        user_turn_count=len(user_messages),
+        user_turn_count=len(raw_user_messages),
     )
 
 
@@ -178,6 +191,52 @@ def collect_history_candidates(messages: list[dict], limit: int = 5) -> list[str
     return history_candidates
 
 
+def _collect_explicit_anchor_tokens(latest_user_text: str) -> list[str]:
+    anchors: list[str] = []
+    for bvid in extract_bvids({"content": latest_user_text}):
+        if bvid not in anchors:
+            anchors.append(bvid)
+    for mid in extract_owner_mids({"content": latest_user_text}):
+        token = f"uid={mid}"
+        if token not in anchors:
+            anchors.append(token)
+    return anchors
+
+
+def _drop_anchored_question_tail_candidates(
+    candidates: list[str],
+    *,
+    anchor_tokens: list[str],
+) -> list[str]:
+    if not anchor_tokens:
+        return list(candidates)
+
+    filtered: list[str] = []
+    for candidate in candidates:
+        normalized = normalize_text(candidate).replace(" ", "")
+        if normalized and _QUESTION_TAIL_RE.search(normalized):
+            continue
+        if candidate not in filtered:
+            filtered.append(candidate)
+    return filtered
+
+
+def _merge_anchor_tokens(candidates: list[str], latest_user_text: str) -> list[str]:
+    anchor_tokens = _collect_explicit_anchor_tokens(latest_user_text)
+    merged = _drop_anchored_question_tail_candidates(
+        candidates,
+        anchor_tokens=anchor_tokens,
+    )
+    if not anchor_tokens:
+        return merged
+
+    anchored: list[str] = []
+    for candidate in [*anchor_tokens, *merged]:
+        if candidate not in anchored:
+            anchored.append(candidate)
+    return anchored
+
+
 def extract_topics(
     messages: list[dict],
     latest_user_text: str,
@@ -186,7 +245,7 @@ def extract_topics(
     final_target_matches: list[SemanticMatch] | None = None,
     task_mode_matches: list[SemanticMatch] | None = None,
 ) -> list[str]:
-    return merge_followup_candidates(
+    topics = merge_followup_candidates(
         messages,
         extract_topic_candidates(
             latest_user_text,
@@ -194,7 +253,8 @@ def extract_topics(
             final_target_matches=final_target_matches,
             task_mode_matches=task_mode_matches,
         ),
-    )[:10]
+    )
+    return _merge_anchor_tokens(topics, latest_user_text)[:10]
 
 
 def _looks_entity_like(
@@ -224,15 +284,27 @@ def extract_entities(
     final_target_matches: list[SemanticMatch] | None = None,
     task_mode_matches: list[SemanticMatch] | None = None,
 ) -> list[str]:
-    latest_topics = extract_topic_candidates(
+    latest_topics = _merge_anchor_tokens(
+        extract_topic_candidates(
+            latest_user_text,
+            history_text=history_text,
+            final_target_matches=final_target_matches,
+            task_mode_matches=task_mode_matches,
+        ),
         latest_user_text,
-        history_text=history_text,
-        final_target_matches=final_target_matches,
-        task_mode_matches=task_mode_matches,
     )
     topics = merge_followup_candidates(messages, latest_topics)
+    explicit_anchor_keys = {
+        compact_focus_key(token)
+        for token in _collect_explicit_anchor_tokens(latest_user_text)
+        if compact_focus_key(token)
+    }
     entities: list[str] = []
     for topic in topics:
+        if compact_focus_key(topic) in explicit_anchor_keys:
+            if topic not in entities:
+                entities.append(topic)
+            continue
         from_history = topic not in latest_topics
         if _looks_entity_like(
             topic,
@@ -357,11 +429,17 @@ def build_route_reasons(
     needs_term_normalization_flag: bool,
     needs_owner_resolution: bool,
     needs_external_search: bool,
+    has_explicit_video_anchor: bool,
+    has_explicit_owner_id: bool,
     task_mode: str,
     final_target_matches: list[SemanticMatch],
     task_mode_matches: list[SemanticMatch],
 ) -> list[str]:
     route_reasons: list[str] = []
+    if has_explicit_video_anchor:
+        route_reasons.append("signal:explicit-video-anchor")
+    if has_explicit_owner_id:
+        route_reasons.append("signal:explicit-owner-id")
     if needs_keyword_expansion:
         route_reasons.append("taxonomy:abstract-video-exploration")
     if needs_term_normalization_flag:
@@ -428,6 +506,8 @@ def derive_intent_signals(
         final_target_matches=final_target_matches,
         task_mode_matches=task_mode_matches,
     )
+    explicit_video_anchors = extract_bvids({"content": window.latest_user_text})
+    explicit_owner_ids = extract_owner_mids({"content": window.latest_user_text})
     if window.is_followup and not explicit_entities:
         for topic in collect_history_candidates(messages):
             if topic not in explicit_topics:
@@ -458,6 +538,8 @@ def derive_intent_signals(
     needs_keyword_expansion = bool(
         final_target == "videos"
         and task_mode == "exploration"
+        and not explicit_video_anchors
+        and not explicit_owner_ids
         and (
             (
                 ambiguity >= _KEYWORD_EXPANSION_AMBIGUITY_THRESHOLD
@@ -468,12 +550,18 @@ def derive_intent_signals(
     )
     needs_owner_resolution = bool(
         final_target == "videos"
-        and explicit_entities
         and not needs_keyword_expansion
         and (
-            window.is_followup
-            or task_mode in {"repeat", "known_item"}
-            or any(len(entity) <= 8 for entity in explicit_entities[:2])
+            explicit_video_anchors
+            or (
+                explicit_entities
+                and not explicit_owner_ids
+                and (
+                    window.is_followup
+                    or task_mode in {"repeat", "known_item"}
+                    or any(len(entity) <= 8 for entity in explicit_entities[:2])
+                )
+            )
         )
     )
     needs_external_search = final_target in {"external", "mixed"}
@@ -510,6 +598,8 @@ def derive_intent_signals(
             needs_term_normalization_flag=needs_term_normalization_flag,
             needs_owner_resolution=needs_owner_resolution,
             needs_external_search=needs_external_search,
+            has_explicit_video_anchor=bool(explicit_video_anchors),
+            has_explicit_owner_id=bool(explicit_owner_ids),
             task_mode=task_mode,
             final_target_matches=final_target_matches,
             task_mode_matches=task_mode_matches,

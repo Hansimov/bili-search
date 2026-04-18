@@ -194,6 +194,18 @@ DEFAULT_TOOL_PLANNING_PLUGINS: tuple[ToolPlanningPlugin, ...] = (
         ),
     ),
     HandlerMethodPlanningPlugin(
+        name="explicit_video_lookup_followup",
+        method_name="_build_explicit_video_lookup_followup_commands",
+        priority=55,
+        predicate=lambda context, signals: (
+            not context.commands
+            and "search_videos" in signals.last_result_types
+            and (
+                not context.intent or context.intent.final_target in {"videos", "mixed"}
+            )
+        ),
+    ),
+    HandlerMethodPlanningPlugin(
         name="owner_assisted_video_search",
         method_name="_build_owner_assisted_video_search_commands",
         priority=60,

@@ -78,7 +78,7 @@ def test_build_tool_definitions_includes_transcript_when_supported():
     assert "include_segments" in transcript_params["properties"]
 
 
-def test_build_search_videos_tool_marks_bvids_as_discover_only():
+def test_build_search_videos_tool_exposes_explicit_bv_lookup_mode():
     from llms.tools.defs import build_search_videos_tool
 
     tool = build_search_videos_tool(
@@ -90,9 +90,13 @@ def test_build_search_videos_tool_marks_bvids_as_discover_only():
     )
 
     description = tool["function"]["description"]
+    mode_property = tool["function"]["parameters"]["properties"]["mode"]
+    bv_description = tool["function"]["parameters"]["properties"]["bv"]["description"]
     bvids_description = tool["function"]["parameters"]["properties"]["bvids"][
         "description"
     ]
 
-    assert "不是单个 BV 的详情或字幕读取接口" in description
-    assert "不用于直接读取该 BV 的详情或转写" in bvids_description
+    assert "优先用 bv/bvids 或 mid/mids 做 exact lookup" in description
+    assert "lookup" in mode_property["enum"]
+    assert "明确 BV 号" in bv_description
+    assert "mode=lookup 时做 exact lookup" in bvids_description

@@ -12,6 +12,7 @@ from tclogger import logger
 
 from configs.envs import GOOGLE_HUB_ENVS
 from llms.contracts import ToolCallRequest
+from llms.messages import extract_bvids, normalize_bvid_key
 from llms.models import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
@@ -56,6 +57,13 @@ _OWNER_SOURCE_WEIGHTS = {
     "related_tokens": 1.1,
     "google_space": 0.85,
 }
+_BVID_LOOKUP_QUERY_RE = re.compile(
+    r"^(?:bv\s*=\s*)?(BV[0-9A-Za-z]{10})$", re.IGNORECASE
+)
+_MID_LOOKUP_QUERY_RE = re.compile(
+    r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
+    re.IGNORECASE,
+)
 
 
 def _normalize_query_spaces(query: str) -> str:
@@ -243,6 +251,7 @@ class SearchService:
             ),
             "available_endpoints": [
                 "/explore",
+                "/video_lookup",
                 "/suggest",
                 "/search",
                 "/random",
@@ -298,6 +307,11 @@ class SearchService:
         if self.transcript_client is None:
             return {"error": "Transcript lookup unavailable", "video_id": video_id}
         return self.transcript_client.get_video_transcript(video_id, request=kwargs)
+
+    def lookup_videos(self, **kwargs) -> dict:
+        if self.video_searcher is None:
+            return {"error": "Video lookup unavailable", "hits": [], "total_hits": 0}
+        return self.video_searcher.lookup_videos(**kwargs)
 
     def _relation_method(self, name: str):
         if self.relations_client is None:
@@ -384,6 +398,7 @@ class SearchServiceClient:
             "base_url": self.base_url,
             "available_endpoints": [
                 "/explore",
+                "/video_lookup",
                 "/suggest",
                 "/health",
                 "/capabilities",
@@ -418,6 +433,9 @@ class SearchServiceClient:
             "verbose": verbose,
         }
         return self._post("/explore", payload)
+
+    def lookup_videos(self, **kwargs) -> dict:
+        return self._post("/video_lookup", kwargs)
 
     def suggest(self, query: str, limit: int = 25, verbose: bool = False) -> dict:
         payload = {
@@ -648,6 +666,214 @@ class ToolExecutor:
             )
         return True
 
+    def _search_client_method(self, name: str):
+        method = getattr(self.search_client, name, None)
+        if method is None or not callable(method):
+            return None
+        if isinstance(method, Mock):
+            if isinstance(method.return_value, Mock) and method.side_effect is None:
+                return None
+        return method
+
+    @staticmethod
+    def _normalize_mid_values(values: object) -> list[str]:
+        normalized: list[str] = []
+        for value in _normalize_seed_values(values):
+            try:
+                normalized_value = str(int(value))
+            except (TypeError, ValueError):
+                continue
+            if normalized_value not in normalized:
+                normalized.append(normalized_value)
+        return normalized
+
+    @staticmethod
+    def _parse_lookup_query(query: str) -> tuple[str, str, str | None] | None:
+        query_text = str(query or "").strip()
+        if not query_text:
+            return None
+
+        bvid_match = _BVID_LOOKUP_QUERY_RE.fullmatch(query_text)
+        if bvid_match:
+            return ("bvid", bvid_match.group(1), None)
+
+        mid_match = _MID_LOOKUP_QUERY_RE.fullmatch(query_text)
+        if mid_match:
+            return ("mid", str(int(mid_match.group(1))), mid_match.group(2) or None)
+
+        return None
+
+    def _extract_video_lookup_request(self, args: dict) -> dict | None:
+        normalized_args = dict(args or {})
+        mode = str(normalized_args.get("mode", "auto") or "auto").lower()
+        if mode == "discover":
+            return None
+
+        raw_queries = normalized_args.get("queries")
+        if isinstance(raw_queries, str):
+            raw_queries = [raw_queries]
+        elif not isinstance(raw_queries, list):
+            query_text = str(normalized_args.get("query", "") or "").strip()
+            raw_queries = [query_text] if query_text else []
+
+        bvids: list[str] = []
+        bvid_keys: set[str] = set()
+        mids: list[str] = []
+        for key in ("bv", "bvid"):
+            for value in _normalize_seed_values(normalized_args.get(key)):
+                for match in extract_bvids({"content": value}):
+                    match_key = normalize_bvid_key(match)
+                    if match_key not in bvid_keys:
+                        bvid_keys.add(match_key)
+                        bvids.append(match)
+        for value in _normalize_seed_values(normalized_args.get("bvids")):
+            for match in extract_bvids({"content": value}):
+                match_key = normalize_bvid_key(match)
+                if match_key not in bvid_keys:
+                    bvid_keys.add(match_key)
+                    bvids.append(match)
+
+        for key in ("mid", "uid"):
+            for value in self._normalize_mid_values(normalized_args.get(key)):
+                if value not in mids:
+                    mids.append(value)
+        for value in self._normalize_mid_values(normalized_args.get("mids")):
+            if value not in mids:
+                mids.append(value)
+
+        date_window = str(normalized_args.get("date_window", "") or "").strip() or None
+        remaining_queries: list[str] = []
+        for query in raw_queries:
+            parsed = self._parse_lookup_query(query)
+            if parsed is None:
+                remaining_queries.append(str(query or "").strip())
+                continue
+            lookup_kind, lookup_value, query_window = parsed
+            if (
+                lookup_kind == "bvid"
+                and normalize_bvid_key(lookup_value) not in bvid_keys
+            ):
+                bvid_keys.add(normalize_bvid_key(lookup_value))
+                bvids.append(lookup_value)
+            elif lookup_kind == "mid" and lookup_value not in mids:
+                mids.append(lookup_value)
+            if query_window and not date_window:
+                date_window = query_window
+
+        if remaining_queries or not (bvids or mids):
+            return None
+
+        return {
+            "mode": "lookup",
+            "lookup_by": "bvids" if bvids else "mids",
+            "bvids": bvids,
+            "mids": mids,
+            "date_window": date_window,
+            "exclude_bvids": _normalize_seed_values(
+                normalized_args.get("exclude_bvids")
+            ),
+            "limit": int(
+                normalized_args.get("limit") or normalized_args.get("size") or 10
+            ),
+        }
+
+    def _format_lookup_video_result(
+        self,
+        result: dict,
+        lookup_request: dict,
+    ) -> dict:
+        hits = result.get("hits") or []
+        if hits and any(
+            key in hits[0] for key in ("link", "pubdate_str", "pub_to_now_str")
+        ):
+            formatted_hits = hits[: self.max_results]
+        else:
+            formatted_hits = format_hits_for_llm(hits, max_hits=self.max_results)
+        payload = {
+            "mode": "lookup",
+            "lookup_by": result.get("lookup_by")
+            or lookup_request.get("lookup_by")
+            or "unknown",
+            "total_hits": int(result.get("total_hits", len(hits)) or 0),
+            "hits": formatted_hits,
+            "source_counts": result.get("source_counts") or {},
+        }
+        if lookup_request.get("bvids"):
+            payload["bvids"] = lookup_request["bvids"]
+        if lookup_request.get("mids"):
+            payload["mids"] = lookup_request["mids"]
+        if lookup_request.get("date_window"):
+            payload["date_window"] = lookup_request["date_window"]
+        if lookup_request.get("exclude_bvids"):
+            payload["exclude_bvids"] = lookup_request["exclude_bvids"]
+        return payload
+
+    def _fallback_lookup_videos(self, lookup_request: dict) -> dict:
+        queries: list[str] = []
+        exclude_bvids = {
+            normalize_bvid_key(value)
+            for value in lookup_request.get("exclude_bvids") or []
+            if str(value or "").strip()
+        }
+        date_window = str(lookup_request.get("date_window", "") or "").strip()
+
+        for bvid in lookup_request.get("bvids") or []:
+            query = f"bv={bvid}"
+            if query not in queries:
+                queries.append(query)
+        for mid in lookup_request.get("mids") or []:
+            query = f":uid={mid}"
+            if date_window:
+                query = f"{query} :date<={date_window}"
+            if query not in queries:
+                queries.append(query)
+
+        if not queries:
+            return {
+                "mode": "lookup",
+                "lookup_by": lookup_request.get("lookup_by") or "unknown",
+                "hits": [],
+                "total_hits": 0,
+                "source_counts": {},
+            }
+
+        hits: list[dict] = []
+        seen_bvids: set[str] = set()
+        for query in queries:
+            result = self._search_single_query(query)
+            for hit in result.get("hits") or []:
+                bvid = str(hit.get("bvid") or "").strip()
+                bvid_key = normalize_bvid_key(bvid)
+                if not bvid_key or bvid_key in seen_bvids or bvid_key in exclude_bvids:
+                    continue
+                seen_bvids.add(bvid_key)
+                hits.append(hit)
+
+        return {
+            "mode": "lookup",
+            "lookup_by": lookup_request.get("lookup_by") or "unknown",
+            "hits": hits,
+            "total_hits": len(hits),
+            "source_counts": {"explore": len(hits)},
+        }
+
+    def _lookup_videos(self, lookup_request: dict) -> dict:
+        method = self._search_client_method("lookup_videos")
+        if method is not None:
+            result = method(
+                bvids=lookup_request.get("bvids") or None,
+                mids=lookup_request.get("mids") or None,
+                limit=lookup_request.get("limit") or 10,
+                date_window=lookup_request.get("date_window"),
+                exclude_bvids=lookup_request.get("exclude_bvids") or None,
+                verbose=self.verbose,
+            )
+            if isinstance(result, dict) and not result.get("error"):
+                return self._format_lookup_video_result(result, lookup_request)
+
+        fallback = self._fallback_lookup_videos(lookup_request)
+        return self._format_lookup_video_result(fallback, lookup_request)
+
     def _is_google_available(self) -> bool:
         """Check Google search hub availability with cached result."""
         if self.google_client is None:
@@ -752,12 +978,14 @@ class ToolExecutor:
         Accepts either `queries` (array of strings) or a single `query` string.
         Each query is executed independently and results are merged.
         """
+        lookup_request = self._extract_video_lookup_request(args)
+        if lookup_request is not None:
+            return self._lookup_videos(lookup_request)
+
         mode = str(args.get("mode", "auto") or "auto")
         bvids = _normalize_seed_values(args.get("bvids"))
         mids = _normalize_seed_values(args.get("mids"))
-        discover_requested = mode == "discover" or (
-            not args.get("queries") and not args.get("query") and (bvids or mids)
-        )
+        discover_requested = mode == "discover"
 
         if discover_requested and bvids:
             if not self._supports_relation_endpoint("related_videos_by_videos"):

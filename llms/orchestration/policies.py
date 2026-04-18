@@ -7,6 +7,7 @@ smuggle new route decisions into this module with ad hoc text matching.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Callable
 
 from llms.contracts import IntentProfile
@@ -14,6 +15,17 @@ from llms.tools.names import canonical_tool_name
 
 
 FINAL_ANSWER_NUDGE = "请直接基于现有结果回答，不要继续规划，也不要再次调用工具。"
+_EXPLICIT_BVID_RE = re.compile(r"\bBV[0-9A-Za-z]{10}\b", re.IGNORECASE)
+_RECENT_TIMELINE_TOKENS = (
+    "最近",
+    "近期",
+    "近况",
+    "最近还发",
+    "最近还有哪些视频",
+    "最近发了哪些视频",
+    "还发了哪些视频",
+    "还发了什么视频",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +56,95 @@ class BlockedRequestNudgeRule:
 
 
 def is_recent_timeline_request(intent: IntentProfile) -> bool:
-    return intent.task_mode == "repeat" or "recent_only" in intent.top_labels(
-        "constraints",
-        limit=8,
+    query_text = re.sub(r"\s+", "", str(intent.raw_query or ""))
+    return (
+        intent.task_mode == "repeat"
+        or "recent_only" in intent.top_labels("constraints", limit=8)
+        or any(token in query_text for token in _RECENT_TIMELINE_TOKENS)
+    )
+
+
+def _iter_successful_tool_records(result_store, tool_name: str):
+    expected_tool_name = canonical_tool_name(tool_name)
+    for result_id in result_store.order:
+        record = result_store.get(result_id)
+        if (
+            record is None
+            or canonical_tool_name(record.request.name) != expected_tool_name
+        ):
+            continue
+        result = record.result or {}
+        if result.get("error"):
+            continue
+        yield record
+
+
+def has_explicit_video_anchor(intent: IntentProfile) -> bool:
+    candidates = [
+        str(token or "")
+        for token in [
+            *(intent.explicit_entities or []),
+            *(intent.explicit_topics or []),
+            intent.raw_query,
+        ]
+        if str(token or "").strip()
+    ]
+    return any(_EXPLICIT_BVID_RE.search(candidate) for candidate in candidates)
+
+
+def has_explicit_bvid_lookup_result(result_store) -> bool:
+    for record in _iter_successful_tool_records(result_store, "search_videos"):
+        args = record.request.arguments or {}
+        result = record.result or {}
+        lookup_by = str(result.get("lookup_by") or args.get("lookup_by") or "").lower()
+        mode = str(args.get("mode") or result.get("mode") or "").lower()
+        if mode != "lookup":
+            continue
+        if lookup_by in {"bvid", "bvids"}:
+            return True
+        if args.get("bv") or args.get("bvid") or args.get("bvids"):
+            return True
+    return False
+
+
+def has_recent_owner_timeline_result(result_store) -> bool:
+    for record in _iter_successful_tool_records(result_store, "search_videos"):
+        args = record.request.arguments or {}
+        result = record.result or {}
+        lookup_by = str(result.get("lookup_by") or args.get("lookup_by") or "").lower()
+        mode = str(args.get("mode") or result.get("mode") or "").lower()
+        if (
+            mode == "lookup"
+            and (
+                lookup_by in {"mid", "mids"}
+                or args.get("mid")
+                or args.get("mids")
+                or args.get("uid")
+            )
+            and (args.get("date_window") or result.get("date_window"))
+        ):
+            return True
+
+        queries = args.get("queries")
+        if isinstance(queries, str):
+            queries = [queries]
+        if any(":date<=" in str(query or "") for query in queries or []) and any(
+            marker in str(query or "")
+            for query in queries or []
+            for marker in (":uid=", ":user=")
+        ):
+            return True
+    return False
+
+
+def needs_explicit_video_lookup_followup(result_store, intent: IntentProfile) -> bool:
+    return bool(
+        intent.final_target == "videos"
+        and intent.needs_owner_resolution
+        and has_explicit_video_anchor(intent)
+        and is_recent_timeline_request(intent)
+        and has_explicit_bvid_lookup_result(result_store)
+        and not has_recent_owner_timeline_result(result_store)
     )
 
 
@@ -310,6 +408,17 @@ PRE_EXECUTION_NUDGE_RULES = (
 
 POST_EXECUTION_NUDGE_RULES = (
     ResultNudgeRule(
+        name="explicit_video_lookup_recent_followup",
+        predicate=lambda store, intent, latest_user_message: (
+            needs_explicit_video_lookup_followup(store, intent)
+        ),
+        message=(
+            "你已经通过显式 BV lookup 拿到了这期视频和作者线索。下一步直接继续调用 search_videos，"
+            "使用 mode='lookup' 和作者 mid/uid 查询最近视频，并把当前 BV 放进 exclude_bvids；"
+            "不要现在就结束回答，也不要退回泛化搜索。"
+        ),
+    ),
+    ResultNudgeRule(
         name="mixed_zero_hit_video_fallback",
         predicate=lambda store, intent, latest_user_message: (
             intent.final_target == "mixed"
@@ -368,7 +477,11 @@ BLOCKED_REQUEST_NUDGE_RULES = (
 
 def has_target_coverage(result_store, intent: IntentProfile) -> bool:
     rule = COVERAGE_RULES.get(intent.final_target)
-    return bool(rule and rule.predicate(result_store))
+    if not rule:
+        return False
+    if needs_explicit_video_lookup_followup(result_store, intent):
+        return False
+    return bool(rule.predicate(result_store))
 
 
 def _select_nudge(rules, prompted_rules: set[str], *args) -> tuple[str, str] | None:

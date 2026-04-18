@@ -83,3 +83,21 @@ def test_build_intent_profile_carries_owner_context_for_representative_followup(
     asset_ids = select_prompt_asset_ids(profile)
     assert "tool.search_videos.detailed" in asset_ids
     assert "tool.search_videos.examples" in asset_ids
+
+
+def test_build_intent_profile_preserves_explicit_bv_anchor_for_author_recent_query():
+    profile = build_intent_profile(
+        [
+            {
+                "role": "user",
+                "content": "BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+            }
+        ]
+    )
+
+    assert profile.final_target == "videos"
+    assert profile.needs_keyword_expansion is False
+    assert profile.needs_owner_resolution is True
+    assert "BV1e9cfz5EKj" in profile.explicit_entities
+    assert all("作者是谁" not in topic for topic in profile.explicit_topics)
+    assert all("最近还发了哪些视频" not in topic for topic in profile.explicit_topics)

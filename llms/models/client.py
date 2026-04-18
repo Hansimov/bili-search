@@ -1,7 +1,12 @@
 """LLM API client interface built on top of webu.llms.client.
 
-Keeps the structured ToolCall / ChatResponse interface used by bili-search
-while reusing webu's request construction, timeout, and thinking-mode logic.
+Keeps the structured ChatResponse interface used by bili-search while reusing
+webu's request construction, timeout, and thinking-mode logic.
+
+Design note:
+    bili-search active orchestration is XML-only. Even though this client keeps
+    compatibility parsing for provider `tool_calls`, chat planning and runtime
+    execution must not depend on provider function calling.
 """
 
 from __future__ import annotations
@@ -80,7 +85,12 @@ class ChatResponse:
 
 
 class LLMClient(WebuLLMClient):
-    """Structured chat client with optional OpenAI-style function calling."""
+    """Structured chat client used by the XML-only bili-search orchestrator.
+
+    Compatibility parsing for provider `tool_calls` is intentionally retained at
+    this transport layer, but the active chat stack must not pass `tools` or
+    depend on provider function calling.
+    """
 
     def __init__(
         self,

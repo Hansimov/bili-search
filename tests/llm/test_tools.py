@@ -111,6 +111,23 @@ MOCK_TRANSCRIPT_RESULT = {
     },
 }
 
+MOCK_VIDEO_LOOKUP_RESULT = {
+    "lookup_by": "bvids",
+    "bvids": ["BV1e9cfz5EKj"],
+    "hits": [
+        {
+            "bvid": "BV1e9cfz5EKj",
+            "title": "人在柬埔寨，刚下飞机，现在跑还来得及吗？",
+            "desc": "示例描述",
+            "owner": {"mid": 39627524, "name": "食贫道"},
+            "pubdate": 1708700000,
+            "stat": {"view": 1234567},
+        }
+    ],
+    "total_hits": 1,
+    "source_counts": {"mongo": 1, "es": 1},
+}
+
 # ============================================================
 # Tests
 # ============================================================
@@ -145,6 +162,8 @@ def test_tool_definitions_format():
     search_params = search_tool["function"]["parameters"]
     assert "queries" in search_params["properties"]
     assert search_params["properties"]["queries"]["type"] == "array"
+    assert "bv" in search_params["properties"]
+    assert "mid" in search_params["properties"]
 
     logger.success("[PASS] tool definitions format")
 
@@ -181,6 +200,44 @@ def test_execute_search_videos():
     mock_client.explore.assert_called_once_with(query="黑神话")
 
     logger.success("[PASS] execute search_videos")
+
+
+def test_execute_search_videos_explicit_bv_query_uses_lookup():
+    """Explicit BV-only video queries should be coerced into exact lookup."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_videos explicit bv lookup")
+
+    mock_client = MagicMock()
+    mock_client.lookup_videos.return_value = MOCK_VIDEO_LOOKUP_RESULT
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_test_lookup_1",
+        name="search_videos",
+        arguments=json.dumps({"queries": ["BV1e9cfz5EKj"]}),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["mode"] == "lookup"
+    assert result_data["lookup_by"] == "bvids"
+    assert result_data["bvids"] == ["BV1e9cfz5EKj"]
+    assert result_data["total_hits"] == 1
+    assert result_data["hits"][0]["bvid"] == "BV1e9cfz5EKj"
+    assert result_data["hits"][0]["owner"]["name"] == "食贫道"
+    assert result_data["source_counts"] == {"mongo": 1, "es": 1}
+
+    mock_client.lookup_videos.assert_called_once_with(
+        bvids=["BV1e9cfz5EKj"],
+        mids=None,
+        limit=10,
+        date_window=None,
+        exclude_bvids=None,
+        verbose=False,
+    )
+
+    logger.success("[PASS] execute search_videos explicit bv lookup")
 
 
 def test_execute_search_owners_relation_discovery():

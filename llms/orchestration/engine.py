@@ -20,12 +20,15 @@ from llms.contracts import (
 from llms.intent import build_intent_profile
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
-from llms.messages import extract_bvids, extract_message_text
+from llms.messages import extract_bvids, extract_message_text, normalize_bvid_key
 from llms.models import ChatResponse
 from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
+from llms.orchestration.policies import has_explicit_video_anchor
 from llms.orchestration.policies import has_successful_tool_result
 from llms.orchestration.policies import has_target_coverage
+from llms.orchestration.policies import is_recent_timeline_request
+from llms.orchestration.policies import needs_explicit_video_lookup_followup
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
@@ -49,12 +52,6 @@ _THINKING_PROMPT = (
     "尽量把复杂规划留给大模型，把窄任务交给小模型。"
 )
 
-_INTERNAL_TOOL_NAMES = {
-    "read_prompt_assets",
-    "inspect_tool_result",
-    "run_small_llm_task",
-}
-
 _TRANSCRIPT_HINT_RE = re.compile(
     r"(讲了什么|讲啥|说了什么|说啥|主要讲|主要内容|总结|摘要|概括|梗概|重点|字幕|转写|音频)",
     re.IGNORECASE,
@@ -64,6 +61,13 @@ _EXPLICIT_TRANSCRIPT_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _TRANSCRIPT_CONTEXT_CHAR_LIMIT = 24000
+_BVID_LOOKUP_QUERY_RE = re.compile(
+    r"^(?:bv\s*=\s*)?(BV[0-9A-Za-z]{10})$", re.IGNORECASE
+)
+_MID_LOOKUP_QUERY_RE = re.compile(
+    r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
+    re.IGNORECASE,
+)
 
 
 def _shared_prefix_len(left: str, right: str) -> int:
@@ -127,6 +131,140 @@ class ChatOrchestrator:
                     return text
         return ""
 
+    @staticmethod
+    def _normalize_seed_values(values: Any) -> list[str]:
+        if isinstance(values, str):
+            text = values.strip()
+            return [text] if text else []
+        if isinstance(values, (list, tuple, set)):
+            return [str(item).strip() for item in values if str(item or "").strip()]
+        return []
+
+    @staticmethod
+    def _normalize_mid_values(values: Any) -> list[str]:
+        normalized: list[str] = []
+        for value in ChatOrchestrator._normalize_seed_values(values):
+            try:
+                normalized_value = str(int(value))
+            except (TypeError, ValueError):
+                continue
+            if normalized_value not in normalized:
+                normalized.append(normalized_value)
+        return normalized
+
+    @staticmethod
+    def _parse_lookup_query(query: str) -> tuple[str, str | None, str | None] | None:
+        query_text = str(query or "").strip()
+        if not query_text:
+            return None
+
+        bvid_match = _BVID_LOOKUP_QUERY_RE.fullmatch(query_text)
+        if bvid_match:
+            return ("bvid", bvid_match.group(1), None)
+
+        mid_match = _MID_LOOKUP_QUERY_RE.fullmatch(query_text)
+        if mid_match:
+            return ("mid", str(int(mid_match.group(1))), mid_match.group(2) or None)
+
+        return None
+
+    def _normalize_search_video_lookup_arguments(
+        self,
+        arguments: dict,
+        intent: IntentProfile,
+    ) -> dict:
+        normalized = dict(arguments or {})
+        mode = str(normalized.get("mode", "auto") or "auto").lower()
+        if mode == "discover":
+            return normalized
+
+        raw_queries = normalized.get("queries")
+        if isinstance(raw_queries, str):
+            raw_queries = [raw_queries]
+        elif not isinstance(raw_queries, list):
+            single_query = str(normalized.get("query", "") or "").strip()
+            raw_queries = [single_query] if single_query else []
+
+        explicit_bvids: list[str] = []
+        explicit_bvid_keys: set[str] = set()
+        explicit_mids: list[str] = []
+        date_window = str(normalized.get("date_window", "") or "").strip() or None
+
+        for key in ("bv", "bvid"):
+            for value in self._normalize_seed_values(normalized.get(key)):
+                matches = extract_bvids({"content": value})
+                for match in matches:
+                    match_key = normalize_bvid_key(match)
+                    if match_key not in explicit_bvid_keys:
+                        explicit_bvid_keys.add(match_key)
+                        explicit_bvids.append(match)
+
+        for value in self._normalize_seed_values(normalized.get("bvids")):
+            matches = extract_bvids({"content": value})
+            for match in matches:
+                match_key = normalize_bvid_key(match)
+                if match_key not in explicit_bvid_keys:
+                    explicit_bvid_keys.add(match_key)
+                    explicit_bvids.append(match)
+
+        for key in ("mid", "uid"):
+            for value in self._normalize_mid_values(normalized.get(key)):
+                if value not in explicit_mids:
+                    explicit_mids.append(value)
+
+        for value in self._normalize_mid_values(normalized.get("mids")):
+            if value not in explicit_mids:
+                explicit_mids.append(value)
+
+        remaining_queries: list[str] = []
+        for query in raw_queries:
+            parsed = self._parse_lookup_query(query)
+            if parsed is None:
+                remaining_queries.append(str(query or "").strip())
+                continue
+            lookup_kind, lookup_value, query_window = parsed
+            if (
+                lookup_kind == "bvid"
+                and normalize_bvid_key(lookup_value) not in explicit_bvid_keys
+            ):
+                explicit_bvid_keys.add(normalize_bvid_key(lookup_value))
+                explicit_bvids.append(lookup_value)
+            elif lookup_kind == "mid" and lookup_value not in explicit_mids:
+                explicit_mids.append(lookup_value)
+            if query_window and not date_window:
+                date_window = query_window
+
+        if remaining_queries or not (explicit_bvids or explicit_mids):
+            return normalized
+
+        normalized.pop("query", None)
+        normalized.pop("queries", None)
+        normalized["mode"] = "lookup"
+        if date_window:
+            normalized["date_window"] = date_window
+
+        if explicit_bvids:
+            if len(explicit_bvids) == 1:
+                normalized["bv"] = explicit_bvids[0]
+                normalized.pop("bvid", None)
+                normalized.pop("bvids", None)
+            else:
+                normalized["bvids"] = explicit_bvids
+                normalized.pop("bv", None)
+                normalized.pop("bvid", None)
+
+        if explicit_mids:
+            if len(explicit_mids) == 1:
+                normalized["mid"] = explicit_mids[0]
+                normalized.pop("uid", None)
+                normalized.pop("mids", None)
+            else:
+                normalized["mids"] = explicit_mids
+                normalized.pop("mid", None)
+                normalized.pop("uid", None)
+
+        return normalized
+
     def _normalize_request(
         self,
         request: ToolCallRequest,
@@ -153,6 +291,8 @@ class ChatOrchestrator:
                     visibility=request.visibility,
                     source=request.source,
                 )
+        if name == "search_videos":
+            arguments = self._normalize_search_video_lookup_arguments(arguments, intent)
         if name == "search_owners":
             owner_text = self._owner_request_text(arguments)
             if not owner_text:
@@ -202,7 +342,7 @@ class ChatOrchestrator:
         arguments: dict,
         intent: IntentProfile,
     ) -> str:
-        direct_keys = ("video_id", "bvid", "aid")
+        direct_keys = ("video_id", "bv", "bvid", "aid")
         for key in direct_keys:
             value = str(arguments.get(key, "") or "").strip()
             if value:
@@ -236,99 +376,10 @@ class ChatOrchestrator:
         response: ChatResponse,
         iteration: int,
     ) -> list[ToolCallRequest]:
-        requests: list[ToolCallRequest] = []
-        for tool_call in response.tool_calls:
-            name = canonical_tool_name(tool_call.name)
-            requests.append(
-                ToolCallRequest(
-                    id=tool_call.id,
-                    name=name,
-                    arguments=tool_call.parse_arguments(),
-                    visibility=("internal" if name in _INTERNAL_TOOL_NAMES else "user"),
-                    source="function_call",
-                )
-            )
-        xml_requests = parse_xml_tool_calls(response.content or "", iteration)
-        if not requests:
-            return xml_requests
-        seen_signatures = {command_signature(request) for request in requests}
-        for request in xml_requests:
-            signature = command_signature(request)
-            if signature in seen_signatures:
-                continue
-            requests.append(request)
-            seen_signatures.add(signature)
-        return requests
-
-    def _build_internal_tool_defs(self) -> list[dict]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_prompt_assets",
-                    "description": "读取更高层级的提示资产。用于按 tool_name / levels 获取 detailed 或 examples 说明。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "tool_names": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "levels": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "enum": ["brief", "detailed", "examples"],
-                                },
-                            },
-                            "asset_ids": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "inspect_tool_result",
-                    "description": "读取已执行工具的更细结果摘要。通过 result_ids 和 focus 请求更具体的视图。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "result_ids": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "focus": {"type": "string"},
-                            "max_items": {"type": "integer", "default": 5},
-                        },
-                        "required": ["result_ids"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "run_small_llm_task",
-                    "description": "将窄任务并行委托给小模型，例如关键词压缩、结果归纳、候选对比。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "task": {"type": "string"},
-                            "context": {"type": "string"},
-                            "result_ids": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "output_format": {"type": "string"},
-                        },
-                        "required": ["task"],
-                    },
-                },
-            },
-        ]
+        # bili-search intentionally uses inline XML only so tool planning can
+        # stream to the UI. Provider function calling is not part of the active
+        # orchestration contract.
+        return parse_xml_tool_calls(response.content or "", iteration)
 
     def _result_summary(self, result_id: str, tool_name: str, result: dict) -> dict:
         return summarize_result(result_id, tool_name, result)
@@ -628,6 +679,214 @@ class ChatOrchestrator:
             "",
         )
 
+    @staticmethod
+    def _extract_recent_window(text: str) -> str:
+        source = "".join(str(text or "").split())
+        if not source:
+            return "30d"
+
+        unit_scale = {"天": 1, "日": 1, "周": 7, "月": 30}
+        chinese_digits = {
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+        index = 0
+        while index < len(source):
+            value = None
+            if source[index].isdigit():
+                start = index
+                while index < len(source) and source[index].isdigit():
+                    index += 1
+                value = int(source[start:index])
+            elif source[index] in chinese_digits:
+                value = chinese_digits[source[index]]
+                index += 1
+            else:
+                index += 1
+                continue
+
+            if index < len(source) and source[index] == "个":
+                index += 1
+            if index < len(source) and source[index] in unit_scale:
+                return f"{value * unit_scale[source[index]]}d"
+        return "30d"
+
+    def _build_deterministic_followup_requests(
+        self,
+        result_store: ResultStore,
+        intent: IntentProfile,
+    ) -> list[ToolCallRequest]:
+        if not needs_explicit_video_lookup_followup(result_store, intent):
+            return []
+
+        mids: list[int] = []
+        owner_names: list[str] = []
+        anchor_bvids: list[str] = []
+        seen_mids: set[int] = set()
+        seen_owner_names: set[str] = set()
+        seen_bvid_keys: set[str] = set()
+
+        for result_id in result_store.order:
+            record = result_store.get(result_id)
+            if (
+                record is None
+                or canonical_tool_name(record.request.name) != "search_videos"
+            ):
+                continue
+
+            args = record.request.arguments or {}
+            result = record.result or {}
+            mode = str(args.get("mode") or result.get("mode") or "").lower()
+            lookup_by = str(
+                result.get("lookup_by") or args.get("lookup_by") or ""
+            ).lower()
+            has_bvid_seed = bool(
+                args.get("bv") or args.get("bvid") or args.get("bvids")
+            )
+            if mode != "lookup" or (
+                lookup_by not in {"bvid", "bvids"} and not has_bvid_seed
+            ):
+                continue
+
+            for value in [*(args.get("bvids") or []), *(result.get("bvids") or [])]:
+                bvid = str(value or "").strip()
+                bvid_key = normalize_bvid_key(bvid)
+                if bvid_key and bvid_key not in seen_bvid_keys:
+                    seen_bvid_keys.add(bvid_key)
+                    anchor_bvids.append(bvid)
+            for key in ("bv", "bvid"):
+                bvid = str(args.get(key, "") or "").strip()
+                bvid_key = normalize_bvid_key(bvid)
+                if bvid_key and bvid_key not in seen_bvid_keys:
+                    seen_bvid_keys.add(bvid_key)
+                    anchor_bvids.append(bvid)
+
+            for hit in result.get("hits") or []:
+                owner = hit.get("owner") or {}
+                owner_name = str(owner.get("name") or "").strip()
+                if owner_name and owner_name not in seen_owner_names:
+                    seen_owner_names.add(owner_name)
+                    owner_names.append(owner_name)
+                try:
+                    owner_mid = int(str(owner.get("mid") or "").strip())
+                except (TypeError, ValueError):
+                    owner_mid = None
+                if owner_mid and owner_mid not in seen_mids:
+                    seen_mids.add(owner_mid)
+                    mids.append(owner_mid)
+
+        if not mids and not owner_names:
+            return []
+
+        window = self._extract_recent_window(intent.raw_query)
+        if mids:
+            arguments: dict[str, Any] = {
+                "mode": "lookup",
+                "date_window": window,
+                "limit": 10,
+            }
+            if anchor_bvids:
+                arguments["exclude_bvids"] = anchor_bvids[:10]
+            if len(mids) == 1:
+                arguments["mid"] = str(mids[0])
+            else:
+                arguments["mids"] = [str(mid) for mid in mids[:5]]
+        else:
+            queries: list[str] = []
+            for owner_name in owner_names[:3]:
+                query = f":user={owner_name} :date<={window}"
+                if query not in queries:
+                    queries.append(query)
+            if not queries:
+                return []
+            arguments = {"queries": queries}
+
+        return [
+            ToolCallRequest(
+                id=f"auto_followup_{len(result_store.order) + 1}",
+                name="search_videos",
+                arguments=arguments,
+                visibility="user",
+                source="deterministic_followup",
+            )
+        ]
+
+    def _build_explicit_video_lookup_answer(
+        self,
+        intent: IntentProfile,
+    ) -> str | None:
+        if intent.final_target != "videos" or not has_explicit_video_anchor(intent):
+            return None
+        if not (intent.needs_owner_resolution or is_recent_timeline_request(intent)):
+            return None
+
+        primary_hit: dict | None = None
+        recent_hits: list[dict] = []
+
+        for result_id in self.result_store.order:
+            record = self.result_store.get(result_id)
+            if (
+                record is None
+                or canonical_tool_name(record.request.name) != "search_videos"
+            ):
+                continue
+
+            result = record.result or {}
+            lookup_by = str(result.get("lookup_by") or "").lower()
+            hits = result.get("hits") or []
+            if not primary_hit and lookup_by in {"bvid", "bvids"} and hits:
+                primary_hit = hits[0]
+            if lookup_by in {"mid", "mids"} and not recent_hits:
+                recent_hits = list(hits)
+
+        if not primary_hit:
+            return None
+
+        owner = primary_hit.get("owner") or {}
+        bvid = str(primary_hit.get("bvid") or "").strip()
+        title = str(primary_hit.get("title") or "").strip()
+        owner_name = str(owner.get("name") or "").strip()
+        owner_mid = str(owner.get("mid") or "").strip()
+
+        lines: list[str] = []
+        title_text = f"《{title}》" if title else "该视频"
+        if bvid and title:
+            lines.append(f"{bvid} 这期视频的标题是 {title_text}。")
+        elif title:
+            lines.append(f"这期视频的标题是 {title_text}。")
+
+        if owner_name and owner_mid:
+            lines.append(f"作者是 {owner_name}，UID 为 {owner_mid}。")
+        elif owner_name:
+            lines.append(f"作者是 {owner_name}。")
+        elif owner_mid:
+            lines.append(f"作者 UID 为 {owner_mid}。")
+
+        if is_recent_timeline_request(intent):
+            if recent_hits:
+                lines.append("该作者近 30 天发布的视频包括：")
+                for index, hit in enumerate(recent_hits[:5], start=1):
+                    hit_title = str(hit.get("title") or "").strip()
+                    hit_bvid = str(hit.get("bvid") or "").strip()
+                    if hit_title and hit_bvid:
+                        lines.append(f"{index}. 《{hit_title}》({hit_bvid})")
+                    elif hit_title:
+                        lines.append(f"{index}. 《{hit_title}》")
+                    elif hit_bvid:
+                        lines.append(f"{index}. {hit_bvid}")
+            else:
+                lines.append("当前 30 天时间窗内未检索到该作者的其他公开视频。")
+
+        return "\n".join(line for line in lines if line).strip() or None
+
     def _wants_transcript_lookup(
         self,
         messages: list[dict],
@@ -862,18 +1121,6 @@ class ChatOrchestrator:
         records: list[ToolExecutionRecord],
     ) -> list[dict]:
         messages: list[dict] = []
-        if response.tool_calls:
-            messages.append(response.to_message_dict())
-            for tool_call, record in zip(response.tool_calls, records):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(record.summary, ensure_ascii=False),
-                    }
-                )
-            return messages
-
         analysis = sanitize_generated_content(response.content or "")
         if analysis:
             messages.append({"role": "assistant", "content": analysis})
@@ -1362,32 +1609,38 @@ class ChatOrchestrator:
                 continue
 
             records = self._execute_requests(self.result_store, requests, intent)
+            followup_requests = self._build_deterministic_followup_requests(
+                self.result_store,
+                intent,
+            )
+            deduped_followup_requests: list[ToolCallRequest] = []
+            for request in followup_requests:
+                signature = command_signature(request)
+                if signature in executed_signatures:
+                    continue
+                executed_signatures.add(signature)
+                deduped_followup_requests.append(request)
+            if deduped_followup_requests:
+                records.extend(
+                    self._execute_requests(
+                        self.result_store,
+                        deduped_followup_requests,
+                        intent,
+                    )
+                )
             tool_events.append(self._build_tool_events(iteration, records))
 
-            if response.tool_calls:
-                conversation.append(response.to_message_dict())
-                for tool_call, record in zip(response.tool_calls, records):
-                    conversation.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps(record.summary, ensure_ascii=False),
-                        }
-                    )
-            else:
-                stripped_content = sanitize_generated_content(response.content or "")
-                if stripped_content:
-                    conversation.append(
-                        {"role": "assistant", "content": stripped_content}
-                    )
-                conversation.append(
-                    {
-                        "role": "user",
-                        "content": self.result_store.render_observation(
-                            [record.result_id for record in records]
-                        ),
-                    }
-                )
+            stripped_content = sanitize_generated_content(response.content or "")
+            if stripped_content:
+                conversation.append({"role": "assistant", "content": stripped_content})
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": self.result_store.render_observation(
+                        [record.result_id for record in records]
+                    ),
+                }
+            )
 
             blocked_request_nudge = select_blocked_request_nudge(
                 intent,
@@ -1399,6 +1652,15 @@ class ChatOrchestrator:
                 conversation.append(
                     {"role": "user", "content": blocked_request_nudge[1]}
                 )
+
+            deterministic_lookup_answer = self._build_explicit_video_lookup_answer(
+                intent
+            )
+            if deterministic_lookup_answer and has_target_coverage(
+                self.result_store, intent
+            ):
+                final_content = deterministic_lookup_answer
+                break
 
             if has_target_coverage(self.result_store, intent):
                 break
@@ -1724,33 +1986,40 @@ class ChatOrchestrator:
                 iteration=iteration,
                 cancelled=cancelled,
             )
+            followup_requests = self._build_deterministic_followup_requests(
+                self.result_store,
+                intent,
+            )
+            deduped_followup_requests: list[ToolCallRequest] = []
+            for request in followup_requests:
+                signature = command_signature(request)
+                if signature in executed_signatures:
+                    continue
+                executed_signatures.add(signature)
+                deduped_followup_requests.append(request)
+            if deduped_followup_requests:
+                followup_records = yield from self._execute_requests_with_stream_events(
+                    self.result_store,
+                    deduped_followup_requests,
+                    intent,
+                    iteration=iteration,
+                    cancelled=cancelled,
+                )
+                records.extend(followup_records)
             completed_event = self._build_tool_events(iteration, records)
             tool_events.append(completed_event)
 
-            if response.tool_calls:
-                conversation.append(response.to_message_dict())
-                for tool_call, record in zip(response.tool_calls, records):
-                    conversation.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps(record.summary, ensure_ascii=False),
-                        }
-                    )
-            else:
-                stripped_content = sanitize_generated_content(response.content or "")
-                if stripped_content:
-                    conversation.append(
-                        {"role": "assistant", "content": stripped_content}
-                    )
-                conversation.append(
-                    {
-                        "role": "user",
-                        "content": self.result_store.render_observation(
-                            [record.result_id for record in records]
-                        ),
-                    }
-                )
+            stripped_content = sanitize_generated_content(response.content or "")
+            if stripped_content:
+                conversation.append({"role": "assistant", "content": stripped_content})
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": self.result_store.render_observation(
+                        [record.result_id for record in records]
+                    ),
+                }
+            )
 
             blocked_request_nudge = select_blocked_request_nudge(
                 intent,
@@ -1762,6 +2031,17 @@ class ChatOrchestrator:
                 conversation.append(
                     {"role": "user", "content": blocked_request_nudge[1]}
                 )
+
+            deterministic_lookup_answer = self._build_explicit_video_lookup_answer(
+                intent
+            )
+            if deterministic_lookup_answer and has_target_coverage(
+                self.result_store, intent
+            ):
+                final_content = deterministic_lookup_answer
+                content_streamed = True
+                yield {"delta": {"content": deterministic_lookup_answer}}
+                break
 
             if has_target_coverage(self.result_store, intent):
                 break

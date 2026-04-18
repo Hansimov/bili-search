@@ -6,6 +6,15 @@ from typing import Any, Iterable
 
 
 _BVID_RE = re.compile(r"\bBV[0-9A-Za-z]{10}\b", re.IGNORECASE)
+_OWNER_MID_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_])(?:uid|mid)\s*[:=：]?\s*(\d{4,})(?!\d))",
+    re.IGNORECASE,
+)
+_SPACE_MID_RE = re.compile(r"space\.bilibili\.com/(\d{4,})(?:/|$)", re.IGNORECASE)
+
+
+def normalize_bvid_key(bvid: Any) -> str:
+    return str(bvid or "").strip().upper()
 
 
 def _content_value(message_or_content: Any) -> Any:
@@ -62,17 +71,37 @@ def extract_bvids(message_or_content: Any) -> list[str]:
     results: list[str] = []
     seen: set[str] = set()
     for match in _BVID_RE.findall(text):
-        normalized = match.upper()
-        if normalized in seen:
+        normalized_key = normalize_bvid_key(match)
+        if normalized_key in seen:
             continue
-        seen.add(normalized)
-        results.append(normalized)
+        seen.add(normalized_key)
+        results.append(match)
+    return results
+
+
+def extract_owner_mids(message_or_content: Any) -> list[int]:
+    text = extract_message_text(message_or_content)
+    results: list[int] = []
+    seen: set[int] = set()
+
+    for pattern in (_OWNER_MID_RE, _SPACE_MID_RE):
+        for match in pattern.findall(text):
+            try:
+                normalized = int(str(match).strip())
+            except (TypeError, ValueError):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            results.append(normalized)
     return results
 
 
 __all__ = [
     "extract_bvids",
     "extract_message_text",
+    "extract_owner_mids",
     "has_image_content",
     "iter_text_fragments",
+    "normalize_bvid_key",
 ]

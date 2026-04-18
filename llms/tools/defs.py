@@ -1,4 +1,9 @@
-"""Tool definitions in OpenAI function calling format."""
+"""Tool schemas and prompt metadata for the XML-only tool protocol.
+
+The schema shape mirrors OpenAI-style function metadata because it is compact
+and convenient for prompt generation, but bili-search runtime orchestration must
+still use inline XML only.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,7 @@ from copy import deepcopy
 
 
 _PROMPT_TOOL_EXAMPLES = {
-    "search_videos": "<search_videos queries='[\"黑神话 :view>=1w q=vwr\"]'/>",
+    "search_videos": "<search_videos bv='BV1e9cfz5EKj'/>；<search_videos queries='[\"黑神话 :view>=1w q=vwr\"]'/>",
     "get_video_transcript": "<get_video_transcript video_id='BV1YXZPB1Erc' head_chars='6000' include_segments='true'/>",
     "search_google": "<search_google query='Gemini 2.5 更新 site:bilibili.com/video' num='5'/>",
     "search_owners": "<search_owners text='黑神话悟空' size='8'/>",
@@ -61,24 +66,26 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
             "description": (
                 "搜索 B 站视频。这是默认终局工具，适合视频、代表作、时间线、热门、教程和解读。"
                 f"{multi_query_text}"
-                "普通检索时用 queries；若已拿到作者 mids 或种子视频 bvids，也可直接基于种子继续发掘相关视频。"
-                "bvids 只用于 discover 模式下从种子继续找相关视频，不是单个 BV 的详情或字幕读取接口。"
+                "普通检索时用 queries；若用户已给出明确 BV/MID，优先用 bv/bvids 或 mid/mids 做 exact lookup。"
+                "lookup 会优先读取该 BV 的视频信息、owner.mid 和最近作品候选；discover 才用于基于种子继续发掘相关视频。"
                 "若用户已给出具体 BV 并要求总结视频内容、字幕或转写，应优先使用 get_video_transcript；"
-                "若当前没有该工具，就应直接说明无法读取转写，而不是把 bvids 当成转写接口。"
+                "若当前没有该工具，就应直接说明无法读取转写，而不是把 BV lookup 充当转写接口。"
                 "queries 必须是整理后的 DSL 搜索语句，而不是用户原话整句。"
                 "优先保留关键实体、主题词、作者、时间窗、热度和时长条件。"
+                "像“BV... 这期视频的作者是谁，他最近还发了什么”这类请求，第一步应该先用 bv lookup，再根据返回的 owner.mid 继续。"
                 "作者关系问题通常不该直接用它；作者名不稳时先 search_owners。"
                 "抽象偏好、口语标签、黑话或 vibe 请求，通常先 expand_query 再回到本工具。"
                 f"搜索模式：默认q={default_mode}（泛搜热门），精确主题匹配用q={rerank_mode}。"
-                f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']。"
+                f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']；"
+                "示例lookup：bv='BV1e9cfz5EKj'；mid='946974' date_window='30d'。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "mode": {
                         "type": "string",
-                        "enum": ["auto", "search", "discover"],
-                        "description": "普通检索或基于 mids/bvids 的继续发掘，默认 auto",
+                        "enum": ["auto", "search", "lookup", "discover"],
+                        "description": "普通检索、显式 ID lookup，或基于种子继续发掘相关视频，默认 auto",
                         "default": "auto",
                     },
                     "queries": {
@@ -92,19 +99,49 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                             f"精确主题搜索时在末尾添加 q={rerank_mode}。"
                         ),
                     },
+                    "bv": {
+                        "type": "string",
+                        "description": "单个明确 BV 号。适合已知视频详情、作者、最近作品等 exact lookup。",
+                    },
+                    "bvid": {
+                        "type": "string",
+                        "description": "`bv` 的同义字段。",
+                    },
                     "bvids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "已知种子视频 BV 号。仅用于从现有视频继续发掘相关视频，不用于直接读取该 BV 的详情或转写。",
+                        "description": "明确 BV 列表。mode=lookup 时做 exact lookup；mode=discover 时基于这些视频继续发掘相关视频。",
+                    },
+                    "mid": {
+                        "type": "string",
+                        "description": "单个明确作者 mid。适合按作者 recent/works 做 lookup。",
+                    },
+                    "uid": {
+                        "type": "string",
+                        "description": "`mid` 的同义字段。",
                     },
                     "mids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "已知作者 mid 列表。用于从作者继续发掘代表作或相关视频。",
+                        "description": "明确作者 mid 列表。mode=lookup 时拉该作者近期作品；mode=discover 时发掘相关视频。",
+                    },
+                    "date_window": {
+                        "type": "string",
+                        "description": "lookup 作者作品时的时间窗，如 7d、30d、90d。只有明确问“最近”时再传。",
+                    },
+                    "exclude_bvids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "lookup 作者作品时要排除的 BV 列表，例如先前已查过的锚点视频。",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "lookup 或 discover 模式下返回候选数量",
+                        "default": 10,
                     },
                     "size": {
                         "type": "integer",
-                        "description": "discover 模式下返回候选数量",
+                        "description": "`limit` 的兼容别名。",
                         "default": 10,
                     },
                 },

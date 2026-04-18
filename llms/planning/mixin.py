@@ -5,6 +5,7 @@ from llms.intent.focus import build_focus_query
 from llms.intent.focus import compact_focus_key
 from llms.intent.focus import extract_focus_spans
 from llms.intent.focus import select_primary_focus_term
+from llms.messages import normalize_bvid_key
 from llms.planning.pipeline import DEFAULT_TOOL_PLANNING_PLUGINS
 from llms.planning.pipeline import ToolPlanningContext, apply_tool_planning_plugins
 from llms.tools.names import canonical_tool_name
@@ -769,11 +770,124 @@ class ToolPlanningMixin:
             return True
         if has_date_filter(cls._extract_recent_assistant_commands(messages)):
             return True
+        latest_user_text = "".join(cls._get_latest_user_text(messages).split())
+        if any(
+            token in latest_user_text
+            for token in (
+                "最近",
+                "近期",
+                "近况",
+                "最近还发",
+                "最近还有哪些视频",
+                "最近发了哪些视频",
+            )
+        ):
+            return True
         intent = build_intent_profile(messages)
         return intent.task_mode == "repeat" or "recent_only" in intent.top_labels(
             "constraints",
             limit=8,
         )
+
+    @classmethod
+    def _extract_explicit_video_lookup_owner_context(
+        cls,
+        results: list[dict] | None,
+    ) -> tuple[list[int], list[str], list[str]]:
+        mids: list[int] = []
+        owner_names: list[str] = []
+        anchor_bvids: list[str] = []
+        anchor_bvid_keys: set[str] = set()
+
+        for result_item in results or []:
+            if _tool_type(result_item) != "search_videos":
+                continue
+
+            args = result_item.get("args") or {}
+            result = result_item.get("result") or {}
+            lookup_by = str(result.get("lookup_by") or "").lower()
+            has_bvid_seed = bool(
+                args.get("bv") or args.get("bvid") or args.get("bvids")
+            )
+            if lookup_by not in {"bvids", "bvid"} and not has_bvid_seed:
+                continue
+
+            for value in args.get("bvids") or []:
+                bvid = str(value or "").strip()
+                bvid_key = normalize_bvid_key(bvid)
+                if bvid_key and bvid_key not in anchor_bvid_keys:
+                    anchor_bvid_keys.add(bvid_key)
+                    anchor_bvids.append(bvid)
+            for key in ("bv", "bvid"):
+                bvid = str(args.get(key, "") or "").strip()
+                bvid_key = normalize_bvid_key(bvid)
+                if bvid_key and bvid_key not in anchor_bvid_keys:
+                    anchor_bvid_keys.add(bvid_key)
+                    anchor_bvids.append(bvid)
+            for value in result.get("bvids") or []:
+                bvid = str(value or "").strip()
+                bvid_key = normalize_bvid_key(bvid)
+                if bvid_key and bvid_key not in anchor_bvid_keys:
+                    anchor_bvid_keys.add(bvid_key)
+                    anchor_bvids.append(bvid)
+
+            for hit in result.get("hits") or []:
+                owner = hit.get("owner") or {}
+                owner_name = str(owner.get("name") or "").strip()
+                if owner_name and owner_name not in owner_names:
+                    owner_names.append(owner_name)
+                owner_mid = owner.get("mid")
+                try:
+                    normalized_mid = int(str(owner_mid).strip())
+                except (TypeError, ValueError):
+                    normalized_mid = None
+                if normalized_mid and normalized_mid not in mids:
+                    mids.append(normalized_mid)
+
+        return mids, owner_names, anchor_bvids
+
+    @classmethod
+    def _build_explicit_video_lookup_followup_commands(
+        cls,
+        commands: list[dict],
+        messages: list[dict],
+        last_tool_results: list[dict] | None,
+        intent=None,
+    ) -> list[dict]:
+        if commands or not last_tool_results:
+            return commands
+        if not cls._wants_recent_video_results(messages):
+            return commands
+
+        mids, owner_names, anchor_bvids = (
+            cls._extract_explicit_video_lookup_owner_context(last_tool_results)
+        )
+        if not mids and not owner_names:
+            return commands
+
+        window = cls._extract_recent_window(cls._get_latest_user_text(messages))
+        if mids:
+            args: dict = {
+                "mode": "lookup",
+                "date_window": window,
+                "limit": 10,
+            }
+            if anchor_bvids:
+                args["exclude_bvids"] = anchor_bvids[:10]
+            if len(mids) == 1:
+                args["mid"] = str(mids[0])
+            else:
+                args["mids"] = [str(mid) for mid in mids[:5]]
+            return [{"type": "search_videos", "args": args}]
+
+        queries: list[str] = []
+        for owner_name in owner_names[:3]:
+            query = f":user={owner_name} :date<={window}"
+            if query not in queries:
+                queries.append(query)
+        if not queries:
+            return commands
+        return [{"type": "search_videos", "args": {"queries": queries}}]
 
     @classmethod
     def _continue_intermediate_plan(

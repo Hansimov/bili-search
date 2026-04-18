@@ -9,6 +9,13 @@
 - 保持现有后端 OpenAI 兼容接口和前端 `tool_events` 契约基本不变。
 - 明确禁止回到“写几个关键词 / 正则就决定路由”的实现方式。意图与 planning 的决策必须优先落在 taxonomy、examples、intent signals 和 execution signals 上。
 
+## 强制设计约束
+
+- 工具协议必须使用 inline XML，自闭合标签一行一个。
+- 主编排链路禁止依赖 provider function calling。
+- 原因不是偏好问题，而是产品约束：inline XML 可以随 SSE 流式暴露规划和工具调用，用户能实时看到过程；provider function calling 无法满足这条要求。
+- 后续 Copilot 或开发者若要扩展工具、提示词或编排逻辑，必须继续遵守 XML-only 约束，不能把 active path 改回 `tools/tool_calls`。
+
 ## 结构重排
 
 - `llms/contracts/`
@@ -48,6 +55,7 @@
   - 大模型：`deepseek`
   - 小模型：`qwen3.5-4b`
 - `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` 接口封装。
+- 虽然 transport 层仍保留 `tool_calls` 兼容解析，但 bili-search active path 禁止使用它；真正的工具协议只认 inline XML。
 - `create_model_clients(...)` 会一次性构造大小模型 client，并把公开能力暴露给运行时和测试脚本。
 
 ### 意图路由
@@ -81,11 +89,10 @@
 
 - `llms/orchestration/engine.py` 是执行核心，`llms/chat/orchestrator.py` 只保留 re-export。
 - `llms/orchestration/policies.py` 提供 coverage / nudge / fallback policy，避免把这类逻辑继续堆回 orchestrator 的 if/else 中。
-- `llms/orchestration/tool_markup.py` 负责 function-calling / XML fallback 共用的命令解析与清洗，避免 handler 和 engine 双份实现。
+- `llms/orchestration/tool_markup.py` 负责 inline XML / DSML 残留标记的命令解析与清洗，避免 handler 和 engine 双份实现。
 - 它负责：
   - 选择 planner / response / delegate 模型
-  - 优先走 OpenAI 风格 function calling
-  - 在必要时回退到 XML 工具命令兼容路径
+  - 统一走 inline XML 工具协议
   - 执行内部编排工具：
     - `read_prompt_assets`
     - `inspect_tool_result`
@@ -183,7 +190,7 @@ conda run -n ai python -m tests.llm.test_live_chat \
 - 视频回答要尽量给出可点击 BV 链接，而不只是标题
 - 作者回答要尽量给出真实 `space.bilibili.com/{mid}` 链接
 - 抽象 query 要么先语义展开，要么直接落成可检索的视频 query，避免误走 Google
-- 回答中不应泄漏 DSML / function-calling 中间标记
+- 回答中不应泄漏 DSML / XML 工具中间标记
 - 若 live 后端出现 relation / auto-constraint 的 `429 circuit_breaking_exception`，优先通过更早收口、少轮次补搜和 Google 站点兜底减压，而不是继续堆更多 planner 迭代
 
 ## 验证命令

@@ -70,6 +70,32 @@ class UserBriefRequest(BaseModel):
     )
 
 
+class VideoLookupRequest(BaseModel):
+    bv: Optional[str] = Field(None, description="Single explicit BV id")
+    bvid: Optional[str] = Field(None, description="Alias of bv")
+    bvids: list[Union[str, int]] = Field(
+        default_factory=list,
+        description="Explicit BV ids for exact lookup",
+    )
+    mid: Optional[Union[int, str]] = Field(
+        None, description="Single explicit owner mid"
+    )
+    uid: Optional[Union[int, str]] = Field(None, description="Alias of mid")
+    mids: list[Union[int, str]] = Field(
+        default_factory=list,
+        description="Explicit owner mids for recent-work lookup",
+    )
+    date_window: Optional[str] = Field(
+        None,
+        description="Optional recent-window like 7d / 30d / 90d",
+    )
+    exclude_bvids: list[Union[str, int]] = Field(
+        default_factory=list,
+        description="Optional BV ids to exclude from the lookup result",
+    )
+    limit: int = Field(10, description="Maximum hits to return")
+
+
 class SearchApp:
     def __init__(self, app_envs: dict | None = None):
         resolved_envs = app_envs or resolve_search_app_envs()
@@ -352,6 +378,25 @@ class SearchApp:
             return {"error": "Missing video_id"}
         return self.transcript_client.get_video_transcript(video_id, request=payload)
 
+    def video_lookup(self, request: VideoLookupRequest):
+        bvids = [*request.bvids]
+        for value in (request.bv, request.bvid):
+            if value not in (None, ""):
+                bvids.append(value)
+
+        mids = [*request.mids]
+        for value in (request.mid, request.uid):
+            if value not in (None, ""):
+                mids.append(value)
+
+        return self.video_searcher.lookup_videos(
+            bvids=bvids or None,
+            mids=mids or None,
+            date_window=request.date_window,
+            exclude_bvids=request.exclude_bvids,
+            limit=request.limit,
+        )
+
     def user_briefs(self, request: UserBriefRequest):
         return {"users": self.video_searcher.get_user_briefs(request.mids)}
 
@@ -454,6 +499,10 @@ class SearchApp:
             "/video_transcript",
             summary="Get transcript text for a specific video",
         )(self.video_transcript)
+        self.app.post(
+            "/video_lookup",
+            summary="Lookup explicit BV or owner-mid anchored video docs",
+        )(self.video_lookup)
         self.app.post(
             "/user_briefs",
             summary="Get lightweight owner metadata from local MongoDB",
@@ -667,6 +716,7 @@ class SearchApp:
                 "/hybrid_search",
                 "/search_owners",
                 "/video_transcript",
+                "/video_lookup",
                 "/user_briefs",
                 *[f"/{endpoint}" for endpoint in RELATED_ENDPOINTS],
             ],
