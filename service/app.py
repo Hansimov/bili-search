@@ -63,6 +63,13 @@ class ChatCompletionRequest(BaseModel):
     )
 
 
+class UserBriefRequest(BaseModel):
+    mids: list[Union[int, str]] = Field(
+        default_factory=list,
+        description="User mids to hydrate from local MongoDB",
+    )
+
+
 class SearchApp:
     def __init__(self, app_envs: dict | None = None):
         resolved_envs = app_envs or resolve_search_app_envs()
@@ -345,6 +352,9 @@ class SearchApp:
             return {"error": "Missing video_id"}
         return self.transcript_client.get_video_transcript(video_id, request=payload)
 
+    def user_briefs(self, request: UserBriefRequest):
+        return {"users": self.video_searcher.get_user_briefs(request.mids)}
+
     def related_owners_by_tokens(
         self,
         text: str = Body(...),
@@ -444,6 +454,10 @@ class SearchApp:
             "/video_transcript",
             summary="Get transcript text for a specific video",
         )(self.video_transcript)
+        self.app.post(
+            "/user_briefs",
+            summary="Get lightweight owner metadata from local MongoDB",
+        )(self.user_briefs)
         self.app.post(
             "/related_owners_by_tokens",
             summary="Find related owners by topic tokens",
@@ -653,6 +667,7 @@ class SearchApp:
                 "/hybrid_search",
                 "/search_owners",
                 "/video_transcript",
+                "/user_briefs",
                 *[f"/{endpoint}" for endpoint in RELATED_ENDPOINTS],
             ],
             "docs": ["search_syntax"],

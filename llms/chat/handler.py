@@ -518,6 +518,20 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         saw_content = False
         for segment_text, segment_key, start, end in segments:
             is_long_cjk_clause = bool(re.fullmatch(r"[\u4e00-\u9fff]+", segment_text)) and len(segment_text) >= 5
+            normalized_segment = "".join(str(segment_text or "").split())
+            is_short_question_clause = normalized_segment in {
+                "是谁",
+                "是什么",
+                "谁",
+                "什么",
+                "哪个",
+                "哪位",
+                "哪种",
+                "吗",
+                "呢",
+                "嘛",
+                "么",
+            }
             if not saw_content:
                 if not segment_key:
                     continue
@@ -528,7 +542,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             if not segment_key:
                 subject_end = end
                 continue
-            if is_long_cjk_clause:
+            if is_long_cjk_clause or is_short_question_clause:
                 break
             subject_end = end
 
@@ -600,10 +614,17 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             content,
             intent=resolved_intent,
         )
+        latest_user_text = cls._get_latest_user_text(messages)
+        if latest_user_text:
+            primary_context_intent = build_intent_profile(
+                [{"role": "user", "content": latest_user_text}]
+            )
+        else:
+            primary_context_intent = resolved_intent
         return cls._ensure_primary_subject_context(
             messages,
             final_content,
-            intent=resolved_intent,
+            intent=primary_context_intent,
         )
 
     @staticmethod
@@ -1042,7 +1063,10 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             thinking=thinking,
             max_iterations=max_iterations,
         )
-        final_content = self._ensure_response_context(messages, result.content)
+        final_content = self._ensure_response_context(
+            messages,
+            _sanitize_content(result.content or ""),
+        )
         elapsed_seconds = time.perf_counter() - start_time
         normalized_usage = self._normalize_usage(result.usage)
         perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
@@ -1080,7 +1104,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             thinking=thinking,
         )
 
-        result = yield from self._relay_orchestration_stream(
+        result, streamed_content = yield from self._relay_orchestration_stream(
             request_id=request_id,
             stream=self.orchestrator.run_stream(
                 messages=messages,
@@ -1090,12 +1114,17 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             ),
         )
 
-        final_content = self._ensure_response_context(messages, result.content)
+        final_content = self._ensure_response_context(
+            messages,
+            _sanitize_content(result.content or ""),
+        )
+        streamed_visible_content = _sanitize_content(streamed_content)
         if final_content:
             should_replay_content = (
-                not result.content_streamed or final_content != result.content
+                not streamed_visible_content
+                or final_content.strip() != streamed_visible_content.strip()
             )
-            if result.content_streamed and final_content != result.content:
+            if streamed_visible_content and should_replay_content:
                 yield self._format_stream_chunk(
                     request_id=request_id,
                     delta={"retract_content": True},
@@ -1126,17 +1155,23 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         *,
         request_id: str,
         stream,
-    ) -> Generator[str, None, object]:
+    ) -> Generator[str, None, tuple[object, str]]:
+        streamed_content = ""
         try:
             while True:
                 event = next(stream)
+                delta = event.get("delta") or {}
+                if delta.get("retract_content"):
+                    streamed_content = ""
+                if delta.get("content"):
+                    streamed_content += str(delta.get("content") or "")
                 yield self._format_stream_chunk(
                     request_id=request_id,
-                    delta=event.get("delta") or {},
+                    delta=delta,
                     tool_events=event.get("tool_events"),
                 )
         except StopIteration as stop:
-            return stop.value
+            return stop.value, streamed_content
 
     @staticmethod
     def _chunk_text_for_stream(text: str, chunk_size: int = 96) -> list[str]:

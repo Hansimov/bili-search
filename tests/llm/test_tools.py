@@ -728,6 +728,30 @@ def test_create_google_search_client_supports_fallback_urls():
     assert client.base_urls == ["http://primary:18100", "http://secondary:18100"]
 
 
+def test_create_google_search_client_reads_secrets_when_env_missing():
+    from llms.tools.executor import create_google_search_client
+
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "BILI_GOOGLE_HUB_BASE_URL": "",
+                "BILI_GOOGLE_HUB_TIMEOUT": "",
+            },
+            clear=False,
+        ),
+        patch(
+            "llms.tools.executor.GOOGLE_HUB_ENVS",
+            {"endpoint": "http://127.0.0.1:18100", "timeout": 17},
+        ),
+    ):
+        client = create_google_search_client()
+
+    assert client is not None
+    assert client.base_url == "http://127.0.0.1:18100"
+    assert client.timeout == 17.0
+
+
 def test_execute_empty_query():
     """Test search with empty query."""
     logger.note("=" * 60)

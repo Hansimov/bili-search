@@ -133,6 +133,52 @@ class VideoSearcherV2:
             }
         return res_dict
 
+    def get_user_briefs(self, mids: list[Union[str, int]]) -> list[dict]:
+        normalized_mids: list[int] = []
+        seen_mids: set[int] = set()
+        for mid in mids or []:
+            try:
+                normalized_mid = int(str(mid).strip())
+            except (TypeError, ValueError):
+                continue
+            if normalized_mid in seen_mids:
+                continue
+            seen_mids.add(normalized_mid)
+            normalized_mids.append(normalized_mid)
+
+        if not normalized_mids:
+            return []
+
+        pipeline = [
+            {"$match": {"mid": {"$in": normalized_mids}}},
+            {
+                "$project": {
+                    "_id": 0,
+                    "mid": 1,
+                    "name": 1,
+                    "face": 1,
+                    "video_count": {"$size": {"$ifNull": ["$videos", []]}},
+                }
+            },
+        ]
+        cursor = self.mongo.get_agg_cursor(
+            "users",
+            pipeline,
+            batch_size=min(max(len(normalized_mids), 8), 256),
+        )
+        docs = list(cursor)
+        docs_by_mid = {
+            int(doc.get("mid")): {
+                "mid": int(doc.get("mid")),
+                "name": str(doc.get("name") or "").strip(),
+                "face": str(doc.get("face") or "").strip(),
+                "video_count": int(doc.get("video_count") or 0),
+            }
+            for doc in docs
+            if doc.get("mid") not in (None, "")
+        }
+        return [docs_by_mid[mid] for mid in normalized_mids if mid in docs_by_mid]
+
     def construct_search_body(
         self,
         query_dsl_dict: dict,

@@ -123,6 +123,7 @@ def test_capabilities_endpoint():
     assert "/explore" in data["available_endpoints"]
     assert "/search_owners" in data["available_endpoints"]
     assert "/video_transcript" in data["available_endpoints"]
+    assert "/user_briefs" in data["available_endpoints"]
     assert "/related_owners_by_tokens" in data["available_endpoints"]
 
     logger.success("[PASS] /capabilities endpoint")
@@ -265,6 +266,43 @@ def test_video_transcript_endpoint_reports_unavailable_when_unconfigured():
     logger.success(
         "[PASS] /video_transcript unavailable when transcript client disabled"
     )
+
+
+def test_user_briefs_endpoint_uses_local_lookup():
+    """Test /user_briefs forwards mids to the local Mongo-backed searcher helper."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /user_briefs endpoint")
+
+    search_app, _, mock_searcher, _, _ = create_test_app()
+    mock_searcher.get_user_briefs.return_value = [
+        {
+            "mid": 946974,
+            "name": "影视飓风",
+            "face": "https://example.com/face.jpg",
+            "video_count": 321,
+        }
+    ]
+
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/user_briefs",
+        json={"mids": [946974, "12345", "bad-mid"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "users": [
+            {
+                "mid": 946974,
+                "name": "影视飓风",
+                "face": "https://example.com/face.jpg",
+                "video_count": 321,
+            }
+        ]
+    }
+    mock_searcher.get_user_briefs.assert_called_once_with([946974, "12345", "bad-mid"])
+
+    logger.success("[PASS] /user_briefs endpoint")
 
 
 def test_chat_completions_v1_path():

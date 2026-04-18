@@ -25,4 +25,8 @@ MONGO_ENVS = SECRETS["mongo"]
 LLMS_ENVS = SECRETS["llms"]
 TEI_CLIENTS_ENVS = SECRETS["tei_clients"]
 TEI_CLIENTS_ENDPOINTS = TEI_CLIENTS_ENVS.get("endpoints", [])
+try:
+    GOOGLE_HUB_ENVS = SECRETS["google_hub"]
+except Exception:
+    GOOGLE_HUB_ENVS = {}
 LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "deepseek")

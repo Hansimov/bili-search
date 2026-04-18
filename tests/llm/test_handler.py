@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from llms.chat.handler import ChatHandler
 from llms.models import ChatResponse, LLMClient, ToolCall
@@ -525,6 +526,35 @@ def test_ensure_primary_subject_context_prefers_rewritten_alias_when_missing():
     assert content.startswith("ComfyUI：\n")
 
 
+def test_ensure_primary_subject_context_keeps_compact_subject_instead_of_question():
+    content = ChatHandler._ensure_primary_subject_context(
+        [{"role": "user", "content": "红警08是谁"}],
+        "他是红警区创作者。",
+        intent=SimpleNamespace(
+            final_target="external",
+            needs_term_normalization=False,
+            explicit_entities=["红警08"],
+            explicit_topics=[],
+        ),
+    )
+
+    assert content.startswith("红警08：\n")
+    assert not content.startswith("红警08是谁")
+
+
+def test_ensure_response_context_ignores_previous_turn_subject_for_new_identity_query():
+    content = ChatHandler._ensure_response_context(
+        [
+            {"role": "user", "content": "红警08是谁"},
+            {"role": "assistant", "content": "红警08是红警区作者。"},
+            {"role": "user", "content": "月亮三是谁"},
+        ],
+        "红警月亮3是红警区创作者。",
+    )
+
+    assert content == "红警月亮3是红警区创作者。"
+
+
 def test_handle_falls_back_to_small_model_when_final_response_errors():
     mock_large_llm = MagicMock(spec=LLMClient)
     mock_small_llm = MagicMock(spec=LLMClient)
@@ -975,6 +1005,49 @@ def test_handle_stream_retracts_planning_content_into_thinking():
         effective_content += delta.get("content", "")
     assert "我先查一下黑神话相关结果。" not in effective_content
     assert effective_content.endswith("找到了相关视频，可以先看 BV1abc。")
+
+
+def test_handle_stream_replays_postprocessed_final_content_when_it_changes():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat_stream.return_value = iter(
+        [
+            make_stream_chunk(
+                delta={"content": "这是正文。"},
+                finish_reason="stop",
+                usage={
+                    "prompt_tokens": 8,
+                    "completion_tokens": 4,
+                    "total_tokens": 12,
+                },
+            )
+        ]
+    )
+    mock_search = MagicMock()
+    handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+
+    with patch.object(
+        ChatHandler,
+        "_ensure_response_context",
+        return_value="主题：\n这是正文。",
+    ):
+        chunks = list(
+            handler.handle_stream(messages=[{"role": "user", "content": "test"}])
+        )
+
+    parsed_chunks = [json.loads(chunk) for chunk in chunks[:-1]]
+    assert any(
+        chunk["choices"][0]["delta"].get("retract_content") for chunk in parsed_chunks
+    )
+
+    effective_content = ""
+    for chunk in parsed_chunks:
+        delta = chunk["choices"][0]["delta"]
+        if delta.get("retract_content"):
+            effective_content = ""
+            continue
+        effective_content += delta.get("content", "")
+
+    assert effective_content.endswith("主题：\n这是正文。")
 
 
 def test_handle_stream_emits_reasoning_reset_between_orchestration_phases():

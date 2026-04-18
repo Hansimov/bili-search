@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 from tclogger import logger
 
+from configs.envs import GOOGLE_HUB_ENVS
 from llms.contracts import ToolCallRequest
 from llms.models import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
@@ -538,11 +539,21 @@ def create_google_search_client(
     timeout: float | None = None,
     verbose: bool = False,
 ):
-    resolved_urls = _split_google_hub_urls(
-        base_url or os.getenv("BILI_GOOGLE_HUB_BASE_URL", "http://127.0.0.1:18100")
-    )
+    configured_base_url = str(base_url or "").strip()
+    if not configured_base_url:
+        configured_base_url = str(os.getenv("BILI_GOOGLE_HUB_BASE_URL") or "").strip()
+    if not configured_base_url:
+        configured_base_url = str(
+            GOOGLE_HUB_ENVS.get("endpoint") or GOOGLE_HUB_ENVS.get("base_url") or ""
+        ).strip()
+
+    resolved_urls = _split_google_hub_urls(configured_base_url)
     resolved_timeout = float(
-        timeout if timeout is not None else os.getenv("BILI_GOOGLE_HUB_TIMEOUT", "45")
+        timeout
+        if timeout is not None
+        else os.getenv("BILI_GOOGLE_HUB_TIMEOUT")
+        or GOOGLE_HUB_ENVS.get("timeout")
+        or 45
     )
     if not resolved_urls:
         return None
