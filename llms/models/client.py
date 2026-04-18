@@ -84,6 +84,21 @@ class ChatResponse:
         return msg
 
 
+def _error_stream_chunk(message: str) -> dict:
+    return {
+        "id": "stream-error",
+        "object": "chat.completion.chunk",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "error",
+            }
+        ],
+        "error": {"message": message},
+    }
+
+
 class LLMClient(WebuLLMClient):
     """Structured chat client used by the XML-only bili-search orchestrator.
 
@@ -215,6 +230,7 @@ class LLMClient(WebuLLMClient):
             response.raise_for_status()
         except requests.exceptions.RequestException as exc:
             logger.warn(f"× LLM stream error: {exc}")
+            yield _error_stream_chunk(str(exc))
             return
 
         for line in response.iter_lines():

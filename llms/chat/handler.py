@@ -446,6 +446,18 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 *(resolved_intent.explicit_topics or []),
             ]
         )
+        leading_subject = cls._extract_leading_subject_phrase(
+            cls._get_latest_user_text(messages)
+        )
+        author_name_key = _anchor_subject_key(author_name)
+        leading_subject_key = _anchor_subject_key(leading_subject)
+        if leading_subject_key and (
+            not author_name_key
+            or author_name_key in leading_subject_key
+            or len(leading_subject) < len(author_name)
+        ):
+            author_name = leading_subject
+        author_name = " ".join(str(author_name or "").split()).strip()
         if not author_name or author_name in final_content:
             return final_content
         return f"{author_name}最近视频：\n{final_content}"

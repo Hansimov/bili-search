@@ -314,6 +314,35 @@ def test_plan_tool_commands_continues_recent_video_lookup_after_explicit_bv_hit(
     ]
 
 
+def test_plan_tool_commands_drops_same_round_unresolved_user_scoped_video_search():
+    planned = ChatHandler._plan_tool_commands(
+        commands=[
+            {
+                "type": "search_owners",
+                "args": {"text": "红警08", "mode": "name"},
+            },
+            {
+                "type": "search_videos",
+                "args": {"queries": [":user=红警08 :date<=30d"]},
+            },
+        ],
+        messages=[
+            {
+                "role": "user",
+                "content": "红警08最近发了哪些视频",
+            }
+        ],
+        last_tool_results=None,
+        owner_result_scope=None,
+    )
+
+    assert all(command["type"] != "search_videos" for command in planned)
+    assert {
+        "type": "search_owners",
+        "args": {"text": "红警08", "mode": "name"},
+    } in planned
+
+
 def test_tool_events_include_visibility_summary_and_result_ids():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [
@@ -615,6 +644,22 @@ def test_ensure_primary_subject_context_keeps_compact_subject_instead_of_questio
 
     assert content.startswith("红警08：\n")
     assert not content.startswith("红警08是谁")
+
+
+def test_ensure_author_timeline_context_prefers_compact_subject_for_recent_query():
+    content = ChatHandler._ensure_author_timeline_context(
+        [{"role": "user", "content": "红警08最近发了什么视频"}],
+        "找到了最近视频。",
+        intent=SimpleNamespace(
+            final_target="videos",
+            task_mode="repeat",
+            explicit_entities=["红警08最近发了什么视频"],
+            explicit_topics=["红警08最近发了什么视频"],
+        ),
+    )
+
+    assert content.startswith("红警08最近视频：\n")
+    assert not content.startswith("红警08最近发了什么视频最近视频")
 
 
 def test_ensure_response_context_ignores_previous_turn_subject_for_new_identity_query():

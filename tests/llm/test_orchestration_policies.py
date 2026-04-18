@@ -655,3 +655,537 @@ def test_run_auto_follows_explicit_bv_lookup_with_recent_mid_lookup():
     assert len(calls) == 2
     assert calls[1]["type"] == "search_videos"
     assert calls[1]["args"]["mid"] == "39627524"
+
+
+def test_run_auto_follows_owner_search_with_recent_mid_lookup():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="<search_owners text='红警08' mode='name' />",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "红警08",
+            "mode": "name",
+            "total_owners": 2,
+            "owners": [
+                {
+                    "mid": 1629347259,
+                    "name": "红警HBK08",
+                    "score": 184,
+                },
+                {
+                    "mid": 174335400,
+                    "name": "红警HBK08老公",
+                    "score": 177,
+                },
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mid",
+            "total_hits": 2,
+            "mid": "1629347259",
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1f1d5BVEWB",
+                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                },
+                {
+                    "bvid": "BV1Z2d5BkEKr",
+                    "title": "红警缆桩脊团战！铁幕和队友接力，冲入敌营！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                },
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "红警08最近发了什么视频",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "红警HBK08" in result.content
+    assert "BV1f1d5BVEWB" in result.content
+    assert llm.chat.call_count == 1
+    assert tool_executor.execute_request.call_count == 2
+
+    first_request = tool_executor.execute_request.call_args_list[0].args[0]
+    second_request = tool_executor.execute_request.call_args_list[1].args[0]
+    assert first_request.name == "search_owners"
+    assert first_request.arguments == {"text": "红警08", "mode": "name"}
+    assert second_request.name == "search_videos"
+    assert second_request.arguments == {
+        "mode": "lookup",
+        "mid": "1629347259",
+        "date_window": "30d",
+        "limit": 10,
+    }
+
+    calls = result.tool_events[0]["calls"]
+    assert len(calls) == 2
+    assert calls[0]["type"] == "search_owners"
+
+
+def test_recent_timeline_answer_prefers_later_mid_lookup_over_earlier_zero_hit_user_query():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    orchestrator.result_store = FakeResultStore()
+    orchestrator.result_store.add(
+        "search_videos",
+        {
+            "results": [
+                {
+                    "query": ":user=红警08 :date<=30d",
+                    "total_hits": 0,
+                    "hits": [],
+                }
+            ]
+        },
+        arguments={"queries": [":user=红警08 :date<=30d"]},
+    )
+    orchestrator.result_store.add(
+        "search_owners",
+        {
+            "text": "红警08",
+            "mode": "name",
+            "total_owners": 2,
+            "owners": [
+                {
+                    "mid": 1629347259,
+                    "name": "红警HBK08",
+                    "score": 184,
+                },
+                {
+                    "mid": 174335400,
+                    "name": "红警HBK08老公",
+                    "score": 177,
+                },
+            ],
+        },
+        arguments={"text": "红警08", "mode": "name"},
+    )
+    orchestrator.result_store.add(
+        "search_videos",
+        {
+            "mode": "lookup",
+            "lookup_by": "mids",
+            "total_hits": 2,
+            "mids": ["1629347259"],
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1f1d5BVEWB",
+                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                },
+                {
+                    "bvid": "BV1Z2d5BkEKr",
+                    "title": "红警缆桩脊团战！铁幕和队友接力，冲入敌营！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                },
+            ],
+        },
+        arguments={
+            "mode": "lookup",
+            "mid": "1629347259",
+            "date_window": "30d",
+            "limit": 10,
+        },
+    )
+
+    answer = orchestrator._build_owner_recent_timeline_answer(
+        _intent(
+            raw_query="红警08最近发了哪些视频",
+            normalized_query="红警08最近发了哪些视频",
+            final_target="videos",
+            task_mode="repeat",
+            explicit_topics=["红警08最近发了哪些视频"],
+        ),
+        [{"role": "user", "content": "红警08最近发了哪些视频"}],
+    )
+
+    assert answer is not None
+    assert "红警HBK08" in answer
+    assert "BV1f1d5BVEWB" in answer
+    assert "未检索到" not in answer
+
+
+def test_run_recovers_owner_recent_query_after_planner_rate_limit():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="[Error: 429 Client Error: Too Many Requests for url: https://ark.cn-beijing.volces.com/api/v3/chat/completions]",
+            finish_reason="error",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 4,
+                "total_tokens": 24,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "红警08",
+            "mode": "name",
+            "total_owners": 1,
+            "owners": [
+                {
+                    "mid": 1629347259,
+                    "name": "红警HBK08",
+                    "score": 184,
+                }
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mid",
+            "total_hits": 1,
+            "mid": "1629347259",
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1f1d5BVEWB",
+                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "红警08最近发了什么视频",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "红警HBK08" in result.content
+    assert "BV1f1d5BVEWB" in result.content
+    assert llm.chat.call_count == 1
+    assert tool_executor.execute_request.call_count == 2
+    assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
+    assert result.tool_events[0]["calls"][1]["args"]["mid"] == "1629347259"
+
+
+def test_run_recovers_explicit_bv_query_after_planner_rate_limit():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="[Error: 429 Client Error: Too Many Requests for url: https://ark.cn-beijing.volces.com/api/v3/chat/completions]",
+            finish_reason="error",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 4,
+                "total_tokens": 24,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "mode": "lookup",
+            "lookup_by": "bvids",
+            "total_hits": 1,
+            "bvids": ["BV1e9cfz5EKj"],
+            "hits": [
+                {
+                    "bvid": "BV1e9cfz5EKj",
+                    "title": "人在柬埔寨，刚下飞机，现在跑还来得及吗？",
+                    "owner": {"mid": 39627524, "name": "食贫道"},
+                }
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mids",
+            "total_hits": 0,
+            "mids": ["39627524"],
+            "date_window": "30d",
+            "hits": [],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "作者是 食贫道" in result.content
+    assert "当前 30 天时间窗内未检索到该作者的其他公开视频。" in result.content
+    assert llm.chat.call_count == 1
+    assert tool_executor.execute_request.call_count == 2
+    assert result.tool_events[0]["calls"][0]["args"] == {
+        "bv": "BV1e9cfz5EKj",
+        "mode": "lookup",
+    }
+    assert result.tool_events[0]["calls"][1]["args"]["mid"] == "39627524"
+
+
+def _drain_orchestration_stream(stream):
+    chunks = []
+    while True:
+        try:
+            chunks.append(next(stream))
+        except StopIteration as stop:
+            return chunks, stop.value
+
+
+def test_run_stream_recovers_owner_recent_query_after_planner_stream_error():
+    llm = MagicMock()
+    llm.chat_stream.side_effect = [
+        iter(
+            [
+                {
+                    "id": "chunk-1",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "error",
+                        }
+                    ],
+                }
+            ]
+        )
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "红警08",
+            "mode": "name",
+            "total_owners": 1,
+            "owners": [
+                {
+                    "mid": 1629347259,
+                    "name": "红警HBK08",
+                    "score": 184,
+                }
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mid",
+            "total_hits": 1,
+            "mid": "1629347259",
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1f1d5BVEWB",
+                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    chunks, result = _drain_orchestration_stream(
+        orchestrator.run_stream(
+            messages=[{"role": "user", "content": "红警08最近发了什么视频"}],
+            thinking=False,
+            max_iterations=2,
+        )
+    )
+
+    assert "红警HBK08" in result.content
+    assert "BV1f1d5BVEWB" in result.content
+    assert tool_executor.execute_request.call_count == 2
+    assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
+    assert result.tool_events[0]["calls"][1]["args"]["mid"] == "1629347259"
+    assert any(chunk.get("tool_events") for chunk in chunks)
+    assert any(
+        chunk.get("delta", {}).get("content")
+        and "红警HBK08" in chunk.get("delta", {}).get("content", "")
+        for chunk in chunks
+    )
+
+
+def test_run_stream_recovers_explicit_bv_query_after_planner_stream_error():
+    llm = MagicMock()
+    llm.chat_stream.side_effect = [
+        iter(
+            [
+                {
+                    "id": "chunk-1",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "error",
+                        }
+                    ],
+                }
+            ]
+        )
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "mode": "lookup",
+            "lookup_by": "bvids",
+            "total_hits": 1,
+            "bvids": ["BV1PSdpBCE3H"],
+            "hits": [
+                {
+                    "bvid": "BV1PSdpBCE3H",
+                    "title": "当高数值遇上好战术！绿龙完美假打拿下双人五杀！不得不说一句陌生~",
+                    "owner": {"mid": 203680252, "name": "AYCS2"},
+                }
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mids",
+            "total_hits": 1,
+            "mids": ["203680252"],
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1F2djBHETQ",
+                    "title": "别炸我职业哥了！Zywoo面对NAVI打出30-7逆天数据，豆豆转基因直接化身第二个大番薯，小蜜蜂挺进四强！",
+                    "owner": {"mid": 203680252, "name": "AYCS2"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    chunks, result = _drain_orchestration_stream(
+        orchestrator.run_stream(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "BV1PSdpBCE3H 这期视频作者是谁？他还发了哪些视频？",
+                }
+            ],
+            thinking=False,
+            max_iterations=2,
+        )
+    )
+
+    assert "作者是 AYCS2" in result.content
+    assert "BV1F2djBHETQ" in result.content
+    assert tool_executor.execute_request.call_count == 2
+    assert result.tool_events[0]["calls"][0]["args"] == {
+        "bv": "BV1PSdpBCE3H",
+        "mode": "lookup",
+    }
+    assert result.tool_events[0]["calls"][1]["args"]["mid"] == "203680252"
+    assert any(chunk.get("tool_events") for chunk in chunks)

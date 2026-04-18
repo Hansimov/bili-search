@@ -20,7 +20,12 @@ from llms.contracts import (
 from llms.intent import build_intent_profile
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
-from llms.messages import extract_bvids, extract_message_text, normalize_bvid_key
+from llms.messages import (
+    extract_bvids,
+    extract_message_text,
+    extract_owner_mids,
+    normalize_bvid_key,
+)
 from llms.models import ChatResponse
 from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
@@ -41,6 +46,7 @@ from llms.orchestration.tool_markup import find_tool_command_start
 from llms.orchestration.tool_markup import parse_xml_tool_calls
 from llms.orchestration.tool_markup import partial_tool_prefix_len
 from llms.orchestration.tool_markup import sanitize_generated_content
+from llms.planning.owner_resolution import OwnerResolutionMixin
 from llms.prompts.assets import get_prompt_assets
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
 from llms.runtime.usage import accumulate_usage, normalize_usage
@@ -66,6 +72,18 @@ _BVID_LOOKUP_QUERY_RE = re.compile(
 )
 _MID_LOOKUP_QUERY_RE = re.compile(
     r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
+    re.IGNORECASE,
+)
+_RECENT_OWNER_QUERY_PATTERNS = (
+    re.compile(
+        r"^(?P<subject>.+?)(?:最近|近期|近况)(?:还)?(?:发了|发布了|上传了|更新了)?(?:哪些|什么)?(?:视频|作品).*$"
+    ),
+    re.compile(
+        r"^(?P<subject>.+?)(?:还)?(?:发了|发布了|上传了|更新了)(?:哪些|什么)?(?:视频|作品).*$"
+    ),
+)
+_RECENT_OWNER_SUBJECT_STOP_RE = re.compile(
+    r"(最近|近期|近况|视频|作品|作者|发了|发布了|上传了|更新了|还发了|什么|哪些|谁|是谁)",
     re.IGNORECASE,
 )
 
@@ -719,23 +737,241 @@ class ChatOrchestrator:
                 return f"{value * unit_scale[source[index]]}d"
         return "30d"
 
-    def _build_deterministic_followup_requests(
-        self,
-        result_store: ResultStore,
-        intent: IntentProfile,
-    ) -> list[ToolCallRequest]:
-        if not needs_explicit_video_lookup_followup(result_store, intent):
-            return []
+    @staticmethod
+    def _format_recent_window_label(window: str | None) -> str:
+        value = str(window or "").strip().lower()
+        match = re.fullmatch(r"(\d+)([dwmy])", value)
+        if not match:
+            return "30 天"
+        amount = int(match.group(1))
+        unit = match.group(2)
+        unit_label = {
+            "d": "天",
+            "w": "周",
+            "m": "个月",
+            "y": "年",
+        }.get(unit, "天")
+        return f"{amount} {unit_label}"
 
-        mids: list[int] = []
-        owner_names: list[str] = []
-        anchor_bvids: list[str] = []
-        seen_mids: set[int] = set()
-        seen_owner_names: set[str] = set()
-        seen_bvid_keys: set[str] = set()
+    @staticmethod
+    def _clean_subject_text(text: str) -> str:
+        return " ".join(str(text or "").split()).strip(
+            " ，。！？?；;：:、()[]{}<>《》\"'`~!@#$%^&*-+=|\\/"
+        )
+
+    @classmethod
+    def _extract_leading_subject_phrase(cls, latest_user_text: str) -> str:
+        source = str(latest_user_text or "").strip()
+        if not source:
+            return ""
+
+        segments = [
+            (
+                match.group(0),
+                match.start(),
+                match.end(),
+            )
+            for match in re.finditer(
+                r"[A-Za-z]+|\d+(?:[./]\d+)*|[\u4e00-\u9fff]+|[^A-Za-z0-9\u4e00-\u9fff\s]+",
+                source,
+            )
+        ]
+        if not segments:
+            return ""
+
+        subject_start = None
+        subject_end = None
+        saw_content = False
+        for segment_text, start, end in segments:
+            is_long_cjk_clause = (
+                bool(re.fullmatch(r"[\u4e00-\u9fff]+", segment_text))
+                and len(segment_text) >= 5
+            )
+            normalized_segment = "".join(str(segment_text or "").split())
+            is_short_question_clause = normalized_segment in {
+                "是谁",
+                "是什么",
+                "谁",
+                "什么",
+                "哪个",
+                "哪位",
+                "哪种",
+                "吗",
+                "呢",
+                "嘛",
+                "么",
+            }
+            if not saw_content:
+                if not normalized_segment:
+                    continue
+                subject_start = start
+                subject_end = end
+                saw_content = True
+                continue
+            if not normalized_segment:
+                subject_end = end
+                continue
+            if is_long_cjk_clause or is_short_question_clause:
+                break
+            subject_end = end
+
+        if subject_start is None or subject_end is None:
+            return ""
+        return cls._clean_subject_text(source[subject_start:subject_end])
+
+    @classmethod
+    def _extract_recent_owner_subject(
+        cls,
+        messages: list[dict],
+        intent: IntentProfile,
+    ) -> str:
+        latest_user_text = cls._latest_user_text(messages)
+        candidate_texts = [
+            *(intent.explicit_entities or []),
+            *(intent.explicit_topics or []),
+        ]
+        for candidate in candidate_texts:
+            cleaned = cls._clean_subject_text(candidate)
+            if (
+                cleaned
+                and len(cleaned) <= 32
+                and not _RECENT_OWNER_SUBJECT_STOP_RE.search(cleaned)
+            ):
+                return rewrite_known_term_aliases(cleaned) or cleaned
+
+        normalized_source = "".join(str(latest_user_text or "").split())
+        for pattern in _RECENT_OWNER_QUERY_PATTERNS:
+            match = pattern.match(normalized_source)
+            if not match:
+                continue
+            subject = cls._clean_subject_text(match.group("subject"))
+            if subject and len(subject) <= 32:
+                return rewrite_known_term_aliases(subject) or subject
+
+        leading_subject = cls._extract_leading_subject_phrase(latest_user_text)
+        if (
+            leading_subject
+            and len(leading_subject) <= 32
+            and not _RECENT_OWNER_SUBJECT_STOP_RE.search(leading_subject)
+        ):
+            return rewrite_known_term_aliases(leading_subject) or leading_subject
+        return ""
+
+    @classmethod
+    def _select_recent_owner_candidate(
+        cls,
+        result_store: ResultStore,
+        messages: list[dict],
+        intent: IntentProfile,
+    ) -> tuple[str, dict | None]:
+        subject = cls._extract_recent_owner_subject(messages, intent)
+        best_owner: dict | None = None
+        best_rank = float("-inf")
 
         for result_id in result_store.order:
             record = result_store.get(result_id)
+            if (
+                record is None
+                or canonical_tool_name(record.request.name) != "search_owners"
+            ):
+                continue
+            result = record.result or {}
+            owners = result.get("owners") or []
+            source_text = cls._owner_request_text(result) or cls._owner_request_text(
+                record.request.arguments or {}
+            )
+            seed_text = subject or source_text
+            if not seed_text:
+                continue
+            matching_owners = [
+                owner
+                for owner in owners
+                if OwnerResolutionMixin._owner_name_matches_source(
+                    seed_text,
+                    str(owner.get("name") or "").strip(),
+                )
+            ]
+            if matching_owners:
+                top_owner = matching_owners[0]
+                try:
+                    top_score = float(top_owner.get("score") or 0.0)
+                except (TypeError, ValueError):
+                    top_score = 0.0
+                try:
+                    next_score = float(matching_owners[1].get("score") or 0.0)
+                except (IndexError, TypeError, ValueError):
+                    next_score = float("-inf")
+                if top_owner.get("mid") and (
+                    len(matching_owners) == 1 or top_score - next_score >= 3.0
+                ):
+                    if top_score > best_rank:
+                        best_owner = top_owner
+                        best_rank = top_score
+                    continue
+            for index, owner in enumerate(owners):
+                if not OwnerResolutionMixin._is_confident_owner_candidate(
+                    seed_text,
+                    owner,
+                    owners=owners,
+                ):
+                    continue
+                try:
+                    service_score = float(owner.get("score") or 0.0)
+                except (TypeError, ValueError):
+                    service_score = 0.0
+                candidate_rank = service_score - index * 0.001
+                if candidate_rank > best_rank:
+                    best_owner = owner
+                    best_rank = candidate_rank
+                break
+
+        return subject, best_owner
+
+    def _build_owner_recent_timeline_followup_requests(
+        self,
+        result_store: ResultStore,
+        intent: IntentProfile,
+        messages: list[dict] | None = None,
+    ) -> list[ToolCallRequest]:
+        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
+            return []
+        if not is_recent_timeline_request(intent):
+            return []
+
+        message_list = list(messages or [])
+        _subject, owner_candidate = self._select_recent_owner_candidate(
+            result_store,
+            message_list,
+            intent,
+        )
+        if not owner_candidate:
+            return []
+
+        try:
+            owner_mid = str(int(str(owner_candidate.get("mid") or "").strip()))
+        except (TypeError, ValueError):
+            return []
+
+        arguments = {
+            "mode": "lookup",
+            "mid": owner_mid,
+            "date_window": self._extract_recent_window(intent.raw_query),
+            "limit": 10,
+        }
+        return [
+            ToolCallRequest(
+                id=f"auto_owner_recent_{len(result_store.order) + 1}",
+                name="search_videos",
+                arguments=arguments,
+                visibility="user",
+                source="deterministic_followup",
+            )
+        ]
+
+    def _extract_recent_timeline_hits(self) -> tuple[list[dict], str | None, bool]:
+        fallback_candidate: tuple[list[dict], str | None, bool] | None = None
+        for result_id in reversed(self.result_store.order):
+            record = self.result_store.get(result_id)
             if (
                 record is None
                 or canonical_tool_name(record.request.name) != "search_videos"
@@ -748,76 +984,316 @@ class ChatOrchestrator:
             lookup_by = str(
                 result.get("lookup_by") or args.get("lookup_by") or ""
             ).lower()
-            has_bvid_seed = bool(
-                args.get("bv") or args.get("bvid") or args.get("bvids")
+            date_window = (
+                str(result.get("date_window") or args.get("date_window") or "").strip()
+                or None
             )
-            if mode != "lookup" or (
-                lookup_by not in {"bvid", "bvids"} and not has_bvid_seed
+
+            if mode == "lookup" and (
+                lookup_by in {"mid", "mids"}
+                or args.get("mid")
+                or args.get("mids")
+                or args.get("uid")
+            ):
+                return list(result.get("hits") or []), date_window, True
+
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list):
+                continue
+            query_text = "\n".join(str(query or "") for query in queries)
+            if ":date<=" not in query_text or not any(
+                marker in query_text for marker in (":uid=", ":user=")
             ):
                 continue
+            if not date_window:
+                date_match = re.search(r":date<=([0-9]+[dwmy])", query_text)
+                if date_match:
+                    date_window = date_match.group(1)
+            if fallback_candidate is None:
+                fallback_candidate = (
+                    list(result.get("hits") or []),
+                    date_window,
+                    True,
+                )
 
-            for value in [*(args.get("bvids") or []), *(result.get("bvids") or [])]:
-                bvid = str(value or "").strip()
-                bvid_key = normalize_bvid_key(bvid)
-                if bvid_key and bvid_key not in seen_bvid_keys:
-                    seen_bvid_keys.add(bvid_key)
-                    anchor_bvids.append(bvid)
-            for key in ("bv", "bvid"):
-                bvid = str(args.get(key, "") or "").strip()
-                bvid_key = normalize_bvid_key(bvid)
-                if bvid_key and bvid_key not in seen_bvid_keys:
-                    seen_bvid_keys.add(bvid_key)
-                    anchor_bvids.append(bvid)
+        if fallback_candidate is not None:
+            return fallback_candidate
 
-            for hit in result.get("hits") or []:
-                owner = hit.get("owner") or {}
+        return [], None, False
+
+    def _build_owner_recent_timeline_answer(
+        self,
+        intent: IntentProfile,
+        messages: list[dict],
+    ) -> str | None:
+        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
+            return None
+        if not is_recent_timeline_request(intent):
+            return None
+
+        subject, owner_candidate = self._select_recent_owner_candidate(
+            self.result_store,
+            messages,
+            intent,
+        )
+        recent_hits, date_window, recent_lookup_attempted = (
+            self._extract_recent_timeline_hits()
+        )
+        if not owner_candidate and not recent_hits and not recent_lookup_attempted:
+            return None
+
+        owner_name = ""
+        owner_mid = ""
+        if owner_candidate:
+            owner_name = str(owner_candidate.get("name") or "").strip()
+            owner_mid = str(owner_candidate.get("mid") or "").strip()
+
+        if recent_hits and (not owner_name or not owner_mid):
+            owner = recent_hits[0].get("owner") or {}
+            if not owner_name:
                 owner_name = str(owner.get("name") or "").strip()
-                if owner_name and owner_name not in seen_owner_names:
-                    seen_owner_names.add(owner_name)
-                    owner_names.append(owner_name)
-                try:
-                    owner_mid = int(str(owner.get("mid") or "").strip())
-                except (TypeError, ValueError):
-                    owner_mid = None
-                if owner_mid and owner_mid not in seen_mids:
-                    seen_mids.add(owner_mid)
-                    mids.append(owner_mid)
+            if not owner_mid:
+                owner_mid = str(owner.get("mid") or "").strip()
 
-        if not mids and not owner_names:
+        lines: list[str] = []
+        if subject and owner_name and subject != owner_name:
+            if owner_mid:
+                lines.append(
+                    f"{subject} 对应的作者是 {owner_name}，UID 为 {owner_mid}。"
+                )
+            else:
+                lines.append(f"{subject} 对应的作者是 {owner_name}。")
+        elif owner_name and owner_mid:
+            lines.append(f"作者是 {owner_name}，UID 为 {owner_mid}。")
+        elif owner_name:
+            lines.append(f"作者是 {owner_name}。")
+        elif owner_mid:
+            lines.append(f"作者 UID 为 {owner_mid}。")
+
+        if owner_mid:
+            lines.append(f"空间链接：https://space.bilibili.com/{owner_mid}")
+
+        window = date_window or self._extract_recent_window(intent.raw_query)
+        if recent_hits:
+            timeline_owner = owner_name or subject or "该作者"
+            lines.append(
+                f"{timeline_owner}近 {self._format_recent_window_label(window)} 发布的视频包括："
+            )
+            for index, hit in enumerate(recent_hits[:5], start=1):
+                hit_title = str(hit.get("title") or "").strip()
+                hit_bvid = str(hit.get("bvid") or "").strip()
+                if hit_title and hit_bvid:
+                    lines.append(f"{index}. 《{hit_title}》({hit_bvid})")
+                elif hit_title:
+                    lines.append(f"{index}. 《{hit_title}》")
+                elif hit_bvid:
+                    lines.append(f"{index}. {hit_bvid}")
+        elif recent_lookup_attempted:
+            lines.append(
+                f"当前 {self._format_recent_window_label(window)} 时间窗内未检索到该作者的公开视频。"
+            )
+
+        return "\n".join(line for line in lines if line).strip() or None
+
+    def _build_deterministic_recovery_requests(
+        self,
+        messages: list[dict],
+        intent: IntentProfile,
+        *,
+        prefer_transcript_lookup: bool = False,
+    ) -> list[ToolCallRequest]:
+        if intent.final_target != "videos" or prefer_transcript_lookup:
             return []
 
-        window = self._extract_recent_window(intent.raw_query)
-        if mids:
-            arguments: dict[str, Any] = {
+        if has_explicit_video_anchor(intent) and (
+            intent.needs_owner_resolution or is_recent_timeline_request(intent)
+        ):
+            explicit_bvids = extract_bvids({"content": intent.raw_query})
+            if explicit_bvids:
+                arguments: dict[str, Any] = {"mode": "lookup"}
+                if len(explicit_bvids) == 1:
+                    arguments["bv"] = explicit_bvids[0]
+                else:
+                    arguments["bvids"] = explicit_bvids[:5]
+                return [
+                    ToolCallRequest(
+                        id="auto_recover_explicit_bvid_1",
+                        name="search_videos",
+                        arguments=arguments,
+                        visibility="user",
+                        source="deterministic_recovery",
+                    )
+                ]
+
+        if not is_recent_timeline_request(intent):
+            return []
+
+        explicit_mids = extract_owner_mids({"content": intent.raw_query})
+        if explicit_mids:
+            arguments = {
                 "mode": "lookup",
-                "date_window": window,
+                "date_window": self._extract_recent_window(intent.raw_query),
                 "limit": 10,
             }
-            if anchor_bvids:
-                arguments["exclude_bvids"] = anchor_bvids[:10]
-            if len(mids) == 1:
-                arguments["mid"] = str(mids[0])
+            if len(explicit_mids) == 1:
+                arguments["mid"] = str(explicit_mids[0])
             else:
-                arguments["mids"] = [str(mid) for mid in mids[:5]]
-        else:
-            queries: list[str] = []
-            for owner_name in owner_names[:3]:
-                query = f":user={owner_name} :date<={window}"
-                if query not in queries:
-                    queries.append(query)
-            if not queries:
-                return []
-            arguments = {"queries": queries}
+                arguments["mids"] = [str(mid) for mid in explicit_mids[:5]]
+            return [
+                ToolCallRequest(
+                    id="auto_recover_owner_mid_1",
+                    name="search_videos",
+                    arguments=arguments,
+                    visibility="user",
+                    source="deterministic_recovery",
+                )
+            ]
 
+        owner_subject = self._extract_recent_owner_subject(messages, intent)
+        if not owner_subject:
+            return []
         return [
             ToolCallRequest(
-                id=f"auto_followup_{len(result_store.order) + 1}",
-                name="search_videos",
-                arguments=arguments,
+                id="auto_recover_owner_name_1",
+                name="search_owners",
+                arguments={"text": owner_subject, "mode": "name"},
                 visibility="user",
-                source="deterministic_followup",
+                source="deterministic_recovery",
             )
         ]
+
+    def _build_deterministic_followup_requests(
+        self,
+        result_store: ResultStore,
+        intent: IntentProfile,
+        messages: list[dict] | None = None,
+    ) -> list[ToolCallRequest]:
+        followup_requests: list[ToolCallRequest] = []
+
+        if needs_explicit_video_lookup_followup(result_store, intent):
+            mids: list[int] = []
+            owner_names: list[str] = []
+            anchor_bvids: list[str] = []
+            seen_mids: set[int] = set()
+            seen_owner_names: set[str] = set()
+            seen_bvid_keys: set[str] = set()
+
+            for result_id in result_store.order:
+                record = result_store.get(result_id)
+                if (
+                    record is None
+                    or canonical_tool_name(record.request.name) != "search_videos"
+                ):
+                    continue
+
+                args = record.request.arguments or {}
+                result = record.result or {}
+                mode = str(args.get("mode") or result.get("mode") or "").lower()
+                lookup_by = str(
+                    result.get("lookup_by") or args.get("lookup_by") or ""
+                ).lower()
+                has_bvid_seed = bool(
+                    args.get("bv") or args.get("bvid") or args.get("bvids")
+                )
+                if mode != "lookup" or (
+                    lookup_by not in {"bvid", "bvids"} and not has_bvid_seed
+                ):
+                    continue
+
+                for value in [*(args.get("bvids") or []), *(result.get("bvids") or [])]:
+                    bvid = str(value or "").strip()
+                    bvid_key = normalize_bvid_key(bvid)
+                    if bvid_key and bvid_key not in seen_bvid_keys:
+                        seen_bvid_keys.add(bvid_key)
+                        anchor_bvids.append(bvid)
+                for key in ("bv", "bvid"):
+                    bvid = str(args.get(key, "") or "").strip()
+                    bvid_key = normalize_bvid_key(bvid)
+                    if bvid_key and bvid_key not in seen_bvid_keys:
+                        seen_bvid_keys.add(bvid_key)
+                        anchor_bvids.append(bvid)
+
+                for hit in result.get("hits") or []:
+                    owner = hit.get("owner") or {}
+                    owner_name = str(owner.get("name") or "").strip()
+                    if owner_name and owner_name not in seen_owner_names:
+                        seen_owner_names.add(owner_name)
+                        owner_names.append(owner_name)
+                    try:
+                        owner_mid = int(str(owner.get("mid") or "").strip())
+                    except (TypeError, ValueError):
+                        owner_mid = None
+                    if owner_mid and owner_mid not in seen_mids:
+                        seen_mids.add(owner_mid)
+                        mids.append(owner_mid)
+
+            if mids or owner_names:
+                window = self._extract_recent_window(intent.raw_query)
+                if mids:
+                    arguments: dict[str, Any] = {
+                        "mode": "lookup",
+                        "date_window": window,
+                        "limit": 10,
+                    }
+                    if anchor_bvids:
+                        arguments["exclude_bvids"] = anchor_bvids[:10]
+                    if len(mids) == 1:
+                        arguments["mid"] = str(mids[0])
+                    else:
+                        arguments["mids"] = [str(mid) for mid in mids[:5]]
+                else:
+                    queries: list[str] = []
+                    for owner_name in owner_names[:3]:
+                        query = f":user={owner_name} :date<={window}"
+                        if query not in queries:
+                            queries.append(query)
+                    if queries:
+                        arguments = {"queries": queries}
+                    else:
+                        arguments = {}
+
+                if arguments:
+                    followup_requests.append(
+                        ToolCallRequest(
+                            id=f"auto_followup_{len(result_store.order) + 1}",
+                            name="search_videos",
+                            arguments=arguments,
+                            visibility="user",
+                            source="deterministic_followup",
+                        )
+                    )
+
+        followup_requests.extend(
+            self._build_owner_recent_timeline_followup_requests(
+                result_store,
+                intent,
+                messages=messages,
+            )
+        )
+
+        deduped_requests: list[ToolCallRequest] = []
+        seen_signatures: set[str] = set()
+        for request in followup_requests:
+            signature = command_signature(request)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            deduped_requests.append(request)
+        return deduped_requests
+
+    def _build_deterministic_final_answer(
+        self,
+        intent: IntentProfile,
+        messages: list[dict],
+    ) -> str | None:
+        return self._build_explicit_video_lookup_answer(
+            intent
+        ) or self._build_owner_recent_timeline_answer(
+            intent,
+            messages,
+        )
 
     def _build_explicit_video_lookup_answer(
         self,
@@ -1554,6 +2030,69 @@ class ChatOrchestrator:
                 )
             )
 
+            if not requests and self._is_error_response(response):
+                recovery_requests = [
+                    self._normalize_request(
+                        request,
+                        intent,
+                        search_capabilities,
+                        prefer_transcript_lookup=prefer_transcript_lookup,
+                    )
+                    for request in self._build_deterministic_recovery_requests(
+                        messages,
+                        intent,
+                        prefer_transcript_lookup=prefer_transcript_lookup,
+                    )
+                ]
+                deduped_recovery_requests: list[ToolCallRequest] = []
+                for request in recovery_requests:
+                    signature = command_signature(request)
+                    if signature in executed_signatures:
+                        continue
+                    executed_signatures.add(signature)
+                    deduped_recovery_requests.append(request)
+
+                if deduped_recovery_requests:
+                    recovery_records = self._execute_requests(
+                        self.result_store,
+                        deduped_recovery_requests,
+                        intent,
+                    )
+                    recovery_followup_requests = (
+                        self._build_deterministic_followup_requests(
+                            self.result_store,
+                            intent,
+                            messages=messages,
+                        )
+                    )
+                    deduped_recovery_followups: list[ToolCallRequest] = []
+                    for request in recovery_followup_requests:
+                        signature = command_signature(request)
+                        if signature in executed_signatures:
+                            continue
+                        executed_signatures.add(signature)
+                        deduped_recovery_followups.append(request)
+                    if deduped_recovery_followups:
+                        recovery_records.extend(
+                            self._execute_requests(
+                                self.result_store,
+                                deduped_recovery_followups,
+                                intent,
+                            )
+                        )
+                    tool_events.append(
+                        self._build_tool_events(iteration, recovery_records)
+                    )
+
+                final_content = (
+                    self._build_deterministic_final_answer(intent, messages) or ""
+                )
+                if final_content:
+                    break
+                if deduped_recovery_requests:
+                    break
+                break
+
             user_tool_names = [
                 request.name for request in requests if request.visibility == "user"
             ]
@@ -1612,6 +2151,7 @@ class ChatOrchestrator:
             followup_requests = self._build_deterministic_followup_requests(
                 self.result_store,
                 intent,
+                messages=messages,
             )
             deduped_followup_requests: list[ToolCallRequest] = []
             for request in followup_requests:
@@ -1653,8 +2193,9 @@ class ChatOrchestrator:
                     {"role": "user", "content": blocked_request_nudge[1]}
                 )
 
-            deterministic_lookup_answer = self._build_explicit_video_lookup_answer(
-                intent
+            deterministic_lookup_answer = self._build_deterministic_final_answer(
+                intent,
+                messages,
             )
             if deterministic_lookup_answer and has_target_coverage(
                 self.result_store, intent
@@ -1807,9 +2348,7 @@ class ChatOrchestrator:
                 "result_ids": self.result_store.latest_ids(limit=32),
                 "summary": {
                     "llm_calls": len(usage_trace),
-                    "tool_iterations": sum(
-                        1 for entry in usage_trace if entry.get("tool_count", 0) > 0
-                    ),
+                    "tool_iterations": len(tool_events),
                     "peak_prompt_tokens": max(
                         (entry.get("prompt_tokens", 0) for entry in usage_trace),
                         default=0,
@@ -1924,6 +2463,82 @@ class ChatOrchestrator:
                 )
             )
 
+            if not requests and self._is_error_response(response):
+                recovery_requests = [
+                    self._normalize_request(
+                        request,
+                        intent,
+                        search_capabilities,
+                        prefer_transcript_lookup=prefer_transcript_lookup,
+                    )
+                    for request in self._build_deterministic_recovery_requests(
+                        messages,
+                        intent,
+                        prefer_transcript_lookup=prefer_transcript_lookup,
+                    )
+                ]
+                deduped_recovery_requests: list[ToolCallRequest] = []
+                for request in recovery_requests:
+                    signature = command_signature(request)
+                    if signature in executed_signatures:
+                        continue
+                    executed_signatures.add(signature)
+                    deduped_recovery_requests.append(request)
+
+                if deduped_recovery_requests:
+                    recovery_records = (
+                        yield from self._execute_requests_with_stream_events(
+                            self.result_store,
+                            deduped_recovery_requests,
+                            intent,
+                            iteration=iteration,
+                            cancelled=cancelled,
+                        )
+                    )
+                    recovery_followup_requests = (
+                        self._build_deterministic_followup_requests(
+                            self.result_store,
+                            intent,
+                            messages=messages,
+                        )
+                    )
+                    deduped_recovery_followups: list[ToolCallRequest] = []
+                    for request in recovery_followup_requests:
+                        signature = command_signature(request)
+                        if signature in executed_signatures:
+                            continue
+                        executed_signatures.add(signature)
+                        deduped_recovery_followups.append(request)
+                    if deduped_recovery_followups:
+                        followup_records = (
+                            yield from self._execute_requests_with_stream_events(
+                                self.result_store,
+                                deduped_recovery_followups,
+                                intent,
+                                iteration=iteration,
+                                cancelled=cancelled,
+                            )
+                        )
+                        recovery_records.extend(followup_records)
+                    tool_events.append(
+                        self._build_tool_events(iteration, recovery_records)
+                    )
+
+                deterministic_lookup_answer = self._build_deterministic_final_answer(
+                    intent,
+                    messages,
+                )
+                if deterministic_lookup_answer and has_target_coverage(
+                    self.result_store, intent
+                ):
+                    final_content = deterministic_lookup_answer
+                    content_streamed = True
+                    yield {"delta": {"content": deterministic_lookup_answer}}
+                    break
+                if deduped_recovery_requests:
+                    break
+                break
+
             user_tool_names = [
                 request.name for request in requests if request.visibility == "user"
             ]
@@ -1989,6 +2604,7 @@ class ChatOrchestrator:
             followup_requests = self._build_deterministic_followup_requests(
                 self.result_store,
                 intent,
+                messages=messages,
             )
             deduped_followup_requests: list[ToolCallRequest] = []
             for request in followup_requests:
@@ -2032,8 +2648,9 @@ class ChatOrchestrator:
                     {"role": "user", "content": blocked_request_nudge[1]}
                 )
 
-            deterministic_lookup_answer = self._build_explicit_video_lookup_answer(
-                intent
+            deterministic_lookup_answer = self._build_deterministic_final_answer(
+                intent,
+                messages,
             )
             if deterministic_lookup_answer and has_target_coverage(
                 self.result_store, intent
@@ -2196,9 +2813,7 @@ class ChatOrchestrator:
                 "result_ids": self.result_store.latest_ids(limit=32),
                 "summary": {
                     "llm_calls": len(usage_trace),
-                    "tool_iterations": sum(
-                        1 for entry in usage_trace if entry.get("tool_count", 0) > 0
-                    ),
+                    "tool_iterations": len(tool_events),
                     "peak_prompt_tokens": max(
                         (entry.get("prompt_tokens", 0) for entry in usage_trace),
                         default=0,

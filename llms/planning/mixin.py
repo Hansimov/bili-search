@@ -668,19 +668,62 @@ class ToolPlanningMixin:
         return last_tool_results
 
     @classmethod
+    def _drop_unresolved_owner_scoped_video_commands(
+        cls,
+        commands: list[dict],
+        owner_result_scope: list[dict] | None,
+    ) -> list[dict]:
+        resolved_map = cls._extract_resolved_owner_map(owner_result_scope)
+        filtered: list[dict] = []
+        for command in commands or []:
+            if command.get("type") != "search_videos":
+                filtered.append(command)
+                continue
+
+            args = command.get("args") or {}
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                queries = [queries]
+            if not isinstance(queries, list) or not queries:
+                filtered.append(command)
+                continue
+
+            user_filters: list[str] = []
+            for query in queries:
+                user_filters.extend(
+                    cls._extract_user_filters_from_query(str(query or ""))
+                )
+
+            if user_filters and any(
+                cls._normalize_name_key(name) not in resolved_map
+                for name in user_filters
+            ):
+                continue
+
+            filtered.append(command)
+
+        return filtered
+
+    @classmethod
     def _merge_owner_resolution_commands(
         cls,
         commands: list[dict],
         owner_result_scope: list[dict] | None,
     ) -> list[dict]:
-        owner_resolution_commands = cls._build_owner_resolution_commands(
+        scoped_commands = cls._drop_unresolved_owner_scoped_video_commands(
             commands,
             owner_result_scope,
         )
+        owner_resolution_commands = cls._build_owner_resolution_commands(
+            scoped_commands,
+            owner_result_scope,
+        )
         if not owner_resolution_commands:
-            return commands
+            return scoped_commands
         passthrough_commands = [
-            command for command in commands if command.get("type") != "search_videos"
+            command
+            for command in scoped_commands
+            if command.get("type") != "search_videos"
         ]
         return passthrough_commands + owner_resolution_commands
 
