@@ -295,7 +295,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "run_small_llm_task brief",
         "TOOL_SMALL_MODEL",
         "brief",
-        "把窄任务委托给小模型，例如关键词整理、结果压缩、候选对比、按 result_id 归纳证据。可并行调用。",
+        "把窄任务委托给小模型，例如关键词整理、结果压缩、候选对比、按 result_id 归纳证据。task 写短句，优先依赖 result_id，不要把 preview 或冗长上下文重复塞进 task/context。可并行调用。",
         tags=("internal",),
         tool_name="run_small_llm_task",
     ),

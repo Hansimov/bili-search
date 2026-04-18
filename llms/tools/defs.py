@@ -19,7 +19,7 @@ _PROMPT_TOOL_EXAMPLES = {
     "read_spec": "<read_spec name='search_syntax'/>",
     "read_prompt_assets": "<read_prompt_assets tool_names='[\"search_videos\"]' levels='[\"examples\"]'/>",
     "inspect_tool_result": "<inspect_tool_result result_ids='[\"R1\"]' focus='只看最相关 BV' max_items='5'/>",
-    "run_small_llm_task": "<run_small_llm_task task='把候选结果压成 3 条要点' result_ids='[\"R1\",\"R2\"]' output_format='短要点'/>",
+    "run_small_llm_task": "<run_small_llm_task task='整理候选：中文要点' result_ids='[\"R1\",\"R2\"]' output_format='短要点'/>",
 }
 
 

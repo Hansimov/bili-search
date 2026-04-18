@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Generator, Optional
 
-from tclogger import logger
+from tclogger import logger, ts_to_str
 
 from llms.contracts import (
     IntentProfile,
@@ -67,6 +67,10 @@ _EXPLICIT_TRANSCRIPT_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _TRANSCRIPT_CONTEXT_CHAR_LIMIT = 24000
+_TRANSCRIPT_METADATA_DESC_LIMIT = 1200
+_TRANSCRIPT_METADATA_TAG_LIMIT = 12
+_TRANSCRIPT_SMALL_TASK_CANONICAL_TASK = "整理转写：主题概括 + 覆盖全片要点"
+_TRANSCRIPT_SMALL_TASK_CANONICAL_OUTPUT_FORMAT = "主题概括+中文要点"
 _BVID_LOOKUP_QUERY_RE = re.compile(
     r"^(?:bv\s*=\s*)?(BV[0-9A-Za-z]{10})$", re.IGNORECASE
 )
@@ -283,6 +287,52 @@ class ChatOrchestrator:
 
         return normalized
 
+    @staticmethod
+    def _looks_like_generated_transcript_context(context: Any) -> bool:
+        text = str(context or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        markers = (
+            "chars=",
+            "segments=",
+            "preview=",
+            "视频转写",
+            "转写的chars=",
+            "selected_text_length",
+            "full_text_length",
+        )
+        matched = sum(1 for marker in markers if marker in text or marker in lowered)
+        return matched >= 2
+
+    @classmethod
+    def _is_transcript_small_task_request(cls, arguments: dict) -> bool:
+        if not (arguments or {}).get("result_ids"):
+            return False
+        task_text = str((arguments or {}).get("task") or "").strip()
+        context_text = str((arguments or {}).get("context") or "").strip()
+        joined_text = "\n".join(part for part in (task_text, context_text) if part)
+        if not joined_text:
+            return False
+        if re.search(r"(转写|字幕|transcript)", joined_text, re.IGNORECASE):
+            return True
+        return cls._looks_like_generated_transcript_context(context_text)
+
+    def _normalize_small_task_arguments(self, arguments: dict) -> dict:
+        normalized = dict(arguments or {})
+        if not self._is_transcript_small_task_request(normalized):
+            return normalized
+
+        normalized["task"] = _TRANSCRIPT_SMALL_TASK_CANONICAL_TASK
+        normalized["output_format"] = _TRANSCRIPT_SMALL_TASK_CANONICAL_OUTPUT_FORMAT
+
+        if self._looks_like_generated_transcript_context(normalized.get("context")):
+            normalized.pop("context", None)
+        elif not str(normalized.get("context", "") or "").strip():
+            normalized.pop("context", None)
+
+        return normalized
+
     def _normalize_request(
         self,
         request: ToolCallRequest,
@@ -291,10 +341,20 @@ class ChatOrchestrator:
         *,
         prefer_transcript_lookup: bool = False,
     ) -> ToolCallRequest:
-        if request.visibility != "user":
-            return request
         name = canonical_tool_name(request.name)
         arguments = dict(request.arguments or {})
+        if name == "run_small_llm_task" and request.visibility == "internal":
+            arguments = self._normalize_small_task_arguments(arguments)
+        if request.visibility != "user":
+            if arguments == request.arguments and name == request.name:
+                return request
+            return ToolCallRequest(
+                id=request.id,
+                name=name,
+                arguments=arguments,
+                visibility=request.visibility,
+                source=request.source,
+            )
         if name == "search_videos" and prefer_transcript_lookup:
             video_id = self._extract_transcript_video_id(arguments, intent)
             if video_id:
@@ -405,6 +465,147 @@ class ChatOrchestrator:
     def _inspect_result(self, result_store: ResultStore, args: dict) -> dict:
         return inspect_results(result_store, args)
 
+    @staticmethod
+    def _normalize_transcript_tags(raw_tags: Any) -> list[str]:
+        if isinstance(raw_tags, str):
+            values = re.split(r"[,/|、\n]+", raw_tags)
+        elif isinstance(raw_tags, (list, tuple, set)):
+            values = [str(item or "") for item in raw_tags]
+        else:
+            return []
+
+        normalized: list[str] = []
+        for value in values:
+            tag = str(value or "").strip()
+            if not tag or tag in normalized:
+                continue
+            normalized.append(tag)
+            if len(normalized) >= _TRANSCRIPT_METADATA_TAG_LIMIT:
+                break
+        return normalized
+
+    @staticmethod
+    def _compact_transcript_metadata_text(
+        value: Any,
+        *,
+        limit: int | None = None,
+    ) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if limit is not None and len(text) > limit:
+            return text[:limit].rstrip() + "..."
+        return text
+
+    @staticmethod
+    def _extract_transcript_bvid(result: dict) -> str:
+        for key in ("bvid", "requested_video_id", "video_id"):
+            raw_value = str((result or {}).get(key) or "").strip()
+            if not raw_value:
+                continue
+            matches = extract_bvids({"content": raw_value})
+            if matches:
+                return matches[0]
+        return ""
+
+    def _lookup_transcript_video_metadata(self, transcript_result: dict) -> dict:
+        result = transcript_result if isinstance(transcript_result, dict) else {}
+        bvid = self._extract_transcript_bvid(result)
+        lookup_hit: dict[str, Any] = {}
+        search_client = getattr(self.tool_executor, "search_client", None)
+        lookup_method = getattr(search_client, "lookup_videos", None)
+
+        if bvid and callable(lookup_method):
+            lookup_result = None
+            try:
+                lookup_result = lookup_method(
+                    bvids=[bvid],
+                    limit=1,
+                    verbose=self.verbose,
+                )
+            except TypeError:
+                try:
+                    lookup_result = lookup_method(bvids=[bvid], limit=1)
+                except Exception:
+                    lookup_result = None
+            except Exception:
+                lookup_result = None
+
+            if isinstance(lookup_result, dict):
+                hits = lookup_result.get("hits") or []
+                if hits and isinstance(hits[0], dict):
+                    lookup_hit = hits[0]
+
+        owner = result.get("owner") if isinstance(result.get("owner"), dict) else {}
+        if not owner and isinstance(lookup_hit.get("owner"), dict):
+            owner = lookup_hit.get("owner") or {}
+
+        title = self._compact_transcript_metadata_text(
+            result.get("title") or lookup_hit.get("title")
+        )
+        author = self._compact_transcript_metadata_text(owner.get("name"))
+        tags = self._normalize_transcript_tags(
+            result.get("tags")
+            or result.get("tag_names")
+            or lookup_hit.get("tags")
+            or lookup_hit.get("tag_names")
+        )
+        description = self._compact_transcript_metadata_text(
+            result.get("desc")
+            or result.get("description")
+            or lookup_hit.get("desc")
+            or lookup_hit.get("description"),
+            limit=_TRANSCRIPT_METADATA_DESC_LIMIT,
+        )
+
+        published_at = self._compact_transcript_metadata_text(
+            result.get("pubdate_str") or lookup_hit.get("pubdate_str")
+        )
+        if not published_at:
+            pubdate = result.get("pubdate") or lookup_hit.get("pubdate")
+            if pubdate not in (None, ""):
+                try:
+                    published_at = ts_to_str(int(pubdate))
+                except (TypeError, ValueError):
+                    published_at = self._compact_transcript_metadata_text(pubdate)
+
+        return {
+            "video_id": bvid
+            or self._compact_transcript_metadata_text(
+                result.get("bvid") or result.get("requested_video_id")
+            ),
+            "title": title,
+            "author": author,
+            "published_at": published_at,
+            "tags": tags,
+            "description": description,
+        }
+
+    def _build_transcript_context_block(
+        self,
+        record: ToolExecutionRecord,
+        transcript_text: str,
+        *,
+        truncated: bool,
+    ) -> str:
+        metadata = self._lookup_transcript_video_metadata(record.result)
+        lines = ["[转写信息]", f"result_id: {record.result_id}"]
+
+        if metadata.get("video_id"):
+            lines.append(f"视频ID: {metadata['video_id']}")
+        if metadata.get("title"):
+            lines.append(f"标题: {metadata['title']}")
+        if metadata.get("author"):
+            lines.append(f"作者: {metadata['author']}")
+        if metadata.get("published_at"):
+            lines.append(f"发布时间: {metadata['published_at']}")
+        if metadata.get("tags"):
+            lines.append(f"标签: {'、'.join(metadata['tags'])}")
+        if metadata.get("description"):
+            lines.append(f"简介: {metadata['description']}")
+
+        lines.append(f"转写字数: {len(transcript_text)}")
+        lines.append(f"转写被截断: {'是' if truncated else '否'}")
+        return "\n".join(lines)
+
     def _build_small_task_messages(
         self,
         result_store: ResultStore,
@@ -430,17 +631,10 @@ class ChatOrchestrator:
                     len(transcript_text) > _TRANSCRIPT_CONTEXT_CHAR_LIMIT
                 )
                 context_parts.append(
-                    json.dumps(
-                        {
-                            "result_id": record.result_id,
-                            "tool": record.request.name,
-                            "video_id": record.result.get("bvid")
-                            or record.result.get("requested_video_id"),
-                            "title": record.result.get("title", ""),
-                            "text_length": len(transcript_text),
-                            "truncated": transcript_context_truncated,
-                        },
-                        ensure_ascii=False,
+                    self._build_transcript_context_block(
+                        record,
+                        transcript_text,
+                        truncated=transcript_context_truncated,
                     )
                 )
                 if trimmed_transcript:
@@ -459,16 +653,13 @@ class ChatOrchestrator:
         extra_requirements = ""
         if transcript_context_present:
             system_content += (
-                " 当前上下文来自单个视频的音频转写。"
-                "请提炼覆盖全片的中文要点，而不是只复述开头。"
+                " 当前上下文来自单个视频的音频转写和元信息。"
+                "请结合标题、标签、简介、作者、发布时间，提炼主题和覆盖全片的中文要点，避免只复述开头。"
             )
             extra_requirements = (
-                "\n额外要求:\n"
-                "- 先用 1 句话说明这期视频的主题或主线。\n"
-                "- 再给 4 到 8 条中文要点，尽量覆盖前中后段。\n"
-                "- 如果视频是多人/多环节展示，优先按人物或环节分组。\n"
-                "- 不要只重复转写开头，也不要输出自我讨论。\n"
-                "- 只有在转写确实被截断时，才说明信息可能不完整。\n"
+                "\n要求: 先用 1 句话概括主题，再整理覆盖全片的中文要点。"
+                "如果视频是多人或多环节展示，优先按人物或环节归纳；"
+                "只有在转写确实被截断时，才说明信息可能不完整。"
             )
         messages = [
             {
@@ -601,7 +792,7 @@ class ChatOrchestrator:
         return (
             "transcript_result_should_be_compressed",
             "你已经拿到 get_video_transcript 的结果。下一步请直接基于刚拿到的 result_id 调用 "
-            "run_small_llm_task，把转写压成覆盖全片的 4 到 8 条中文要点，然后直接回答；"
+            "run_small_llm_task，把转写整理成主题概括和覆盖全片的中文要点，然后直接回答；"
             "不要改去 search_videos，也不要只复述 preview。",
         )
 
