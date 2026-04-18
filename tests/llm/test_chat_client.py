@@ -300,6 +300,35 @@ def test_chat_timeout(mock_post):
     logger.success("[PASS] chat() timeout handling")
 
 
+def test_chat_stream_uses_low_buffer_iter_lines_for_sse_latency():
+    """Test chat_stream uses a tiny iter_lines chunk size for lower SSE latency."""
+    logger.note("=" * 60)
+    logger.note("[TEST] chat_stream low-buffer iter_lines")
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.iter_lines.return_value = iter(
+        [
+            b'data: {"choices":[{"delta":{"content":"A"},"finish_reason":null}]}',
+            b"data: [DONE]",
+        ]
+    )
+
+    client = LLMClient(
+        endpoint="http://test/chat/completions",
+        api_key="test-key",
+        model="test-model",
+    )
+    client.create_response = MagicMock(return_value=mock_response)
+
+    chunks = list(client.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+    assert chunks[0]["choices"][0]["delta"]["content"] == "A"
+    mock_response.iter_lines.assert_called_once_with(chunk_size=1)
+
+    logger.success("[PASS] chat_stream low-buffer iter_lines")
+
+
 def test_create_llm_client():
     """Test create_llm_client factory function."""
     logger.note("=" * 60)

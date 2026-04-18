@@ -1054,9 +1054,25 @@ def test_handle_stream_emits_streaming_internal_small_tool_updates():
         chunk["tool_events"][0]["calls"][0]["status"] for chunk in tool_event_chunks
     ]
 
-    assert statuses == ["pending", "streaming", "streaming", "completed"]
+    assert statuses == [
+        "pending",
+        "streaming",
+        "streaming",
+        "streaming",
+        "completed",
+    ]
+    assert tool_event_chunks[1]["tool_events"][0]["calls"][0]["result"]["result"] == ""
+    placeholder_model_name = tool_event_chunks[1]["tool_events"][0]["calls"][0][
+        "result"
+    ]["model_name"]
+    assert isinstance(placeholder_model_name, str)
+    assert placeholder_model_name
     assert (
-        tool_event_chunks[1]["tool_events"][0]["calls"][0]["result"]["result"]
+        placeholder_model_name
+        == tool_event_chunks[-1]["tool_events"][0]["calls"][0]["result"]["model_name"]
+    )
+    assert (
+        tool_event_chunks[2]["tool_events"][0]["calls"][0]["result"]["result"]
         == "- 要点1"
     )
     assert (
@@ -1067,6 +1083,7 @@ def test_handle_stream_emits_streaming_internal_small_tool_updates():
         tool_event_chunks[-1]["tool_events"][0]["calls"][0]["visibility"] == "internal"
     )
     assert mock_small_llm.chat_stream.call_count == 1
+    assert mock_small_llm.chat_stream.call_args.kwargs["enable_thinking"] is False
 
 
 def test_handle_stream_retracts_planning_content_into_thinking():

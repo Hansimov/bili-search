@@ -518,7 +518,11 @@ class ChatOrchestrator:
             args,
             intent,
         )
-        response = decision.client.chat(messages=messages, temperature=0.2)
+        response = decision.client.chat(
+            messages=messages,
+            temperature=0.2,
+            enable_thinking=False,
+        )
         return self._build_small_task_result(
             task,
             decision,
@@ -541,7 +545,20 @@ class ChatOrchestrator:
             args,
             intent,
         )
-        stream = decision.client.chat_stream(messages=messages, temperature=0.2)
+        # Emit an immediate streaming placeholder so the UI can switch from
+        # "pending" to "streaming" before the small model produces its first
+        # text delta.
+        yield self._build_small_task_result(
+            task,
+            decision,
+            "",
+            partial=True,
+        )
+        stream = decision.client.chat_stream(
+            messages=messages,
+            temperature=0.2,
+            enable_thinking=False,
+        )
         accumulated_content = ""
         saw_content = False
         for chunk in stream or []:

@@ -233,7 +233,10 @@ class LLMClient(WebuLLMClient):
             yield _error_stream_chunk(str(exc))
             return
 
-        for line in response.iter_lines():
+        # Use a tiny chunk size to reduce first-token latency for SSE consumers,
+        # especially for delegated small-model tasks where users expect the
+        # tool panel to start updating immediately.
+        for line in response.iter_lines(chunk_size=1):
             if not line:
                 continue
             line_str = line.decode("utf-8")
