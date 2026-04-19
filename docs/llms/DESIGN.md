@@ -3,7 +3,7 @@
 ## 目标
 
 - 用“意图路由 + 多模型编排”替换旧的单体大提示词 + 单大模型循环。
-- 固定 `deepseek` 为大模型，固定 `qwen3.5-4b` 为小模型，并为后续模型扩展保留统一入口。
+- 固定 `minimax-m2.7` 为大模型，固定 `doubao-seed-2-0-mini` 为小模型，并为后续模型扩展保留统一入口。
 - 默认只加载当前任务最需要的提示资产，避免把整套长提示无差别塞进上下文。
 - 避免把大块原始工具结果直接回灌给大模型，只提供必要摘要、链接标识和 `result_id`。
 - 保持现有后端 OpenAI 兼容接口和前端 `tool_events` 契约基本不变。
@@ -22,7 +22,7 @@
   - 统一承载 `IntentProfile`、`ToolCallRequest`、`OrchestrationResult` 等共享数据契约。
 - `llms/models/`
   - `client.py`：LLM API client interface。
-  - `registry.py`：模型注册表和 large/small client 初始化。
+  - `registry.py`：模型注册表、provider/capabilities 推断和 large/small client 初始化。
 - `llms/runtime/`
   - `cli.py`：本地调试和单次查询入口。
   - `usage.py`：统一 usage 归一化、cache hit/miss 聚合和 perf stats 计算。
@@ -52,9 +52,10 @@
 
 - `llms/models/registry.py` 中的 `ModelRegistry` 负责声明和公开当前可用模型。
 - 当前固定默认值：
-  - 大模型：`deepseek`
-  - 小模型：`qwen3.5-4b`
+  - 大模型：`minimax-m2.7`
+  - 小模型：`doubao-seed-2-0-mini`
 - `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` 接口封装。
+- registry 会从 endpoint / model / api_format 推断 provider，并公开 `provider`、`api_format`、`supports_multimodal`、`supports_reasoning` 等能力元数据，便于后续切换和 live 验证。
 - 虽然 transport 层仍保留 `tool_calls` 兼容解析，但 bili-search active path 禁止使用它；真正的工具协议只认 inline XML。
 - `create_model_clients(...)` 会一次性构造大小模型 client，并把公开能力暴露给运行时和测试脚本。
 

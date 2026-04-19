@@ -158,8 +158,9 @@ class LLMClient(WebuLLMClient):
         enable_thinking: bool = None,
     ) -> ChatResponse:
         if self.verbose:
+            provider = self._resolve_provider(model=model)
             logger.note(
-                f"> LLM chat: model={model or self.model}, msgs={len(messages)}"
+                f"> LLM chat: provider={provider}, model={model or self.model}, msgs={len(messages)}"
                 + (f", tools={len(tools)}" if tools else "")
             )
 
@@ -212,8 +213,9 @@ class LLMClient(WebuLLMClient):
         enable_thinking: bool = None,
     ) -> Generator[dict, None, None]:
         if self.verbose:
+            provider = self._resolve_provider(model=model)
             logger.note(
-                f"> LLM stream: model={model or self.model}, msgs={len(messages)}"
+                f"> LLM stream: provider={provider}, model={model or self.model}, msgs={len(messages)}"
                 + (f", tools={len(tools)}" if tools else "")
             )
 
@@ -236,6 +238,7 @@ class LLMClient(WebuLLMClient):
         # Use a tiny chunk size to reduce first-token latency for SSE consumers,
         # especially for delegated small-model tasks where users expect the
         # tool panel to start updating immediately.
+        stream_state = {"reasoning": "", "content": ""}
         for line in response.iter_lines(chunk_size=1):
             if not line:
                 continue
@@ -246,7 +249,16 @@ class LLMClient(WebuLLMClient):
             if data_str == "[DONE]":
                 break
             try:
-                yield json.loads(data_str)
+                chunk = json.loads(data_str)
+                choices = chunk.get("choices", [])
+                if choices:
+                    delta = choices[0].get("delta") or {}
+                    if isinstance(delta, dict):
+                        choices[0]["delta"] = self._normalize_stream_delta(
+                            delta,
+                            stream_state,
+                        )
+                yield chunk
             except json.JSONDecodeError:
                 continue
 
@@ -332,6 +344,7 @@ class LLMClient(WebuLLMClient):
         choice = choices[0]
         message = choice.get("message", {})
         usage = data.get("usage", {})
+        reasoning_content, content = self._extract_message_parts(message)
         tool_calls = []
         for tool_call in message.get("tool_calls") or []:
             tool_calls.append(
@@ -343,8 +356,8 @@ class LLMClient(WebuLLMClient):
             )
 
         return ChatResponse(
-            content=message.get("content"),
-            reasoning_content=message.get("reasoning_content"),
+            content=content or None,
+            reasoning_content=reasoning_content or None,
             tool_calls=tool_calls,
             finish_reason=choice.get("finish_reason", ""),
             usage=usage,

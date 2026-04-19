@@ -161,6 +161,8 @@ class SearchApp:
             primary_large_config=llm_config,
             verbose=True,
         )
+        large_spec = self.model_registry.primary("large")
+        small_spec = self.model_registry.primary("small")
         self.llm_client = llm_clients[self.model_registry.primary_large_config]
         self.small_llm_client = llm_clients[self.model_registry.primary_small_config]
         search_service = SearchService(
@@ -180,8 +182,8 @@ class SearchApp:
         )
         logger.okay(
             "  Chat: "
-            f"large={self.model_registry.primary_large_config} ({self.llm_client.model}), "
-            f"small={self.model_registry.primary_small_config} ({self.small_llm_client.model})"
+            f"large={large_spec.config_name} [{large_spec.provider}] ({self.llm_client.model}), "
+            f"small={small_spec.config_name} [{small_spec.provider}] ({self.small_llm_client.model})"
         )
 
     def init_embed_client(self):

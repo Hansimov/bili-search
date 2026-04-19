@@ -116,9 +116,14 @@ class ModelSpec:
     config_name: str
     model_name: str
     role: ModelRole
+    provider: str = ""
+    api_format: str = "openai"
+    thinking_adapter: str = "auto"
     description: str = ""
     supports_tools: bool = True
     supports_streaming: bool = True
+    supports_multimodal: bool = False
+    supports_reasoning: bool = False
     max_iterations: int = 4
 
 

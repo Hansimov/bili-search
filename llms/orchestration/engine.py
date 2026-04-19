@@ -1737,7 +1737,7 @@ class ChatOrchestrator:
         logger.note(
             "> LLM route"
             f"[{phase}#{iteration}]: "
-            f"config={decision.spec.config_name}, model={decision.spec.model_name}, "
+            f"config={decision.spec.config_name}, provider={decision.spec.provider}, model={decision.spec.model_name}, "
             f"reason={decision.reason}, factors={factors}, "
             f"intent={intent.final_target}/{intent.task_mode}"
         )
@@ -1756,6 +1756,8 @@ class ChatOrchestrator:
             "phase": phase,
             "iteration": iteration,
             "model_config": decision.spec.config_name,
+            "model_provider": decision.spec.provider,
+            "model_api_format": decision.spec.api_format,
             "model_name": decision.spec.model_name,
             "model_reason": decision.reason,
             "model_factors": list(decision.factors),
@@ -2534,18 +2536,24 @@ class ChatOrchestrator:
                 "models": {
                     "planner": {
                         "config": planner_spec.config_name,
+                        "provider": planner_spec.provider,
+                        "api_format": planner_spec.api_format,
                         "model": planner_spec.model_name,
                         "reason": planner_decision.reason,
                         "factors": list(planner_decision.factors),
                     },
                     "response": {
                         "config": response_spec.config_name,
+                        "provider": response_spec.provider,
+                        "api_format": response_spec.api_format,
                         "model": response_spec.model_name,
                         "reason": response_decision.reason,
                         "factors": list(response_decision.factors),
                     },
                     "delegate": {
                         "config": self.model_registry.primary("small").config_name,
+                        "provider": self.model_registry.primary("small").provider,
+                        "api_format": self.model_registry.primary("small").api_format,
                         "model": self.model_registry.primary("small").model_name,
                         "reason": "窄任务统一下放给小模型执行。",
                         "factors": ["delegate", "small_model"],
@@ -2999,18 +3007,24 @@ class ChatOrchestrator:
                 "models": {
                     "planner": {
                         "config": planner_spec.config_name,
+                        "provider": planner_spec.provider,
+                        "api_format": planner_spec.api_format,
                         "model": planner_spec.model_name,
                         "reason": planner_decision.reason,
                         "factors": list(planner_decision.factors),
                     },
                     "response": {
                         "config": response_spec.config_name,
+                        "provider": response_spec.provider,
+                        "api_format": response_spec.api_format,
                         "model": response_spec.model_name,
                         "reason": response_decision.reason,
                         "factors": list(response_decision.factors),
                     },
                     "delegate": {
                         "config": self.model_registry.primary("small").config_name,
+                        "provider": self.model_registry.primary("small").provider,
+                        "api_format": self.model_registry.primary("small").api_format,
                         "model": self.model_registry.primary("small").model_name,
                         "reason": "窄任务统一下放给小模型执行。",
                         "factors": ["delegate", "small_model"],

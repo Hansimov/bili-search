@@ -54,9 +54,10 @@ def _create_handler(args):
     if not elastic_index:
         idx = SEARCH_APP_ENVS.get("elastic_index", {})
         elastic_index = idx.get("prod", idx) if isinstance(idx, dict) else idx
+    resolved_large_config = args.llm_config or SEARCH_APP_ENVS.get("llm_config")
 
     logger.note("> Initializing Bili Search Copilot CLI...")
-    logger.mesg(f"  LLM config: {args.llm_config}")
+    logger.mesg(f"  Large model config: {resolved_large_config}")
     if args.search_base_url:
         logger.mesg(f"  Search service: {args.search_base_url}")
         search_service = create_search_service(
@@ -92,6 +93,8 @@ def _create_handler(args):
         primary_large_config=args.llm_config,
         verbose=args.verbose,
     )
+    large_spec = model_registry.primary("large")
+    small_spec = model_registry.primary("small")
     llm_client = llm_clients[model_registry.primary_large_config]
     small_llm_client = llm_clients[model_registry.primary_small_config]
     handler = ChatHandler(
@@ -114,8 +117,8 @@ def _create_handler(args):
     )
     logger.mesg(
         "  Models: "
-        f"large={model_registry.primary_large_config} ({llm_client.model}), "
-        f"small={model_registry.primary_small_config} ({small_llm_client.model})"
+        f"large={large_spec.config_name} [{large_spec.provider}] ({llm_client.model}), "
+        f"small={small_spec.config_name} [{small_spec.provider}] ({small_llm_client.model})"
     )
 
     return handler
@@ -220,7 +223,7 @@ def main():
         "--llm-config",
         type=str,
         default=LLM_CONFIG,
-        help="LLM config name (default: deepseek)",
+        help=f"LLM config name (default: {LLM_CONFIG})",
     )
     parser.add_argument(
         "--elastic-index",
@@ -280,7 +283,7 @@ if __name__ == "__main__":
 
     # Interactive mode:
     #   python -m llms.runtime.cli
-    #   python -m llms.runtime.cli --llm-config deepseek --verbose
+    #   python -m llms.runtime.cli --llm-config minimax-m2.7 --verbose
     #   python -m llms.runtime.cli --elastic-index bili_videos_dev6 --elastic-env-name elastic_dev
     #
     # Single-shot mode:

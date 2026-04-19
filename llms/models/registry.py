@@ -8,11 +8,49 @@ from llms.contracts import ModelSpec
 
 
 DEFAULT_SMALL_MODEL_CONFIG = "doubao-seed-2-0-mini"
-DEFAULT_LARGE_MODEL_CONFIG = "deepseek"
+DEFAULT_LARGE_MODEL_CONFIG = "minimax-m2.7"
 
 
-def _supports_tools(model_envs: dict) -> bool:
+def _infer_provider(config_name: str, model_envs: dict) -> str:
+    api_format = str(model_envs.get("api_format", "openai") or "openai").lower()
+    endpoint = str(model_envs.get("endpoint", "") or "").lower()
+    model_name = str(model_envs.get("model", config_name) or config_name).lower()
+    if api_format in {
+        "minimax",
+        "qwen_vllm",
+        "dashscope",
+        "deepseek",
+        "doubao",
+        "ollama",
+    }:
+        return api_format
+    if "minimax" in endpoint or "minimax" in model_name:
+        return "minimax"
+    if any(token in endpoint for token in ("volcengine", "volces", "ark.cn")):
+        return "doubao"
+    if "deepseek" in endpoint or "deepseek" in model_name:
+        return "deepseek"
+    if "dashscope" in endpoint or "aliyuncs.com" in endpoint:
+        return "dashscope"
+    if any(token in model_name for token in ("qwen", "qwq")):
+        return "qwen_vllm"
+    return "openai"
+
+
+def _supports_tools(model_envs: dict, provider: str) -> bool:
     return model_envs.get("api_format", "openai") in {"openai", "ollama"}
+
+
+def _supports_multimodal(model_envs: dict, provider: str) -> bool:
+    if "supports_multimodal" in model_envs:
+        return bool(model_envs.get("supports_multimodal"))
+    return provider in {"doubao"}
+
+
+def _supports_reasoning(model_envs: dict, provider: str) -> bool:
+    if "supports_reasoning" in model_envs:
+        return bool(model_envs.get("supports_reasoning"))
+    return provider in {"minimax", "deepseek", "doubao"}
 
 
 class ModelRegistry:
@@ -41,20 +79,31 @@ class ModelRegistry:
 
         specs: dict[str, ModelSpec] = {}
         for config_name, model_envs in envs.items():
-            if config_name == small_config:
+            explicit_role = str(model_envs.get("role", "") or "").strip().lower()
+            if explicit_role in {"small", "large"}:
+                role = explicit_role
+            elif config_name == small_config:
                 role = "small"
             elif config_name == large_config:
                 role = "large"
             else:
                 role = "large" if model_envs.get("tasks") else "small"
+            provider = _infer_provider(config_name, model_envs)
 
             specs[config_name] = ModelSpec(
                 config_name=config_name,
                 model_name=model_envs.get("model", config_name),
                 role=role,
+                provider=provider,
+                api_format=str(model_envs.get("api_format", "openai") or "openai"),
+                thinking_adapter=str(
+                    model_envs.get("thinking_adapter", "auto") or "auto"
+                ),
                 description=model_envs.get("description", ""),
-                supports_tools=_supports_tools(model_envs),
+                supports_tools=_supports_tools(model_envs, provider),
                 supports_streaming=True,
+                supports_multimodal=_supports_multimodal(model_envs, provider),
+                supports_reasoning=_supports_reasoning(model_envs, provider),
                 max_iterations=4 if role == "large" else 2,
             )
 

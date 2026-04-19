@@ -79,6 +79,22 @@ def make_error_response(message: str) -> dict:
     }
 
 
+def make_reasoning_details_response(content: str, reasoning: str) -> dict:
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "reasoning_details": [{"type": "text", "text": reasoning}],
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 6, "total_tokens": 18},
+    }
+
+
 # ============================================================
 # Unit tests (mocked HTTP)
 # ============================================================
@@ -327,6 +343,87 @@ def test_chat_stream_uses_low_buffer_iter_lines_for_sse_latency():
     mock_response.iter_lines.assert_called_once_with(chunk_size=1)
 
     logger.success("[PASS] chat_stream low-buffer iter_lines")
+
+
+def test_parse_response_extracts_reasoning_details_from_minimax_payload():
+    logger.note("=" * 60)
+    logger.note("[TEST] parse minimax reasoning_details response")
+
+    client = LLMClient(
+        endpoint="https://api.minimaxi.com/v1/chat/completions",
+        api_key="test-key",
+        model="MiniMax-M2.7",
+    )
+
+    result = client._parse_response(
+        make_reasoning_details_response("4", "先确认 2+2 的结果。")
+    )
+
+    assert result.content == "4"
+    assert result.reasoning_content == "先确认 2+2 的结果。"
+
+    logger.success("[PASS] parse minimax reasoning_details response")
+
+
+def test_parse_response_splits_inline_thinking_tags_from_content():
+    logger.note("=" * 60)
+    logger.note("[TEST] split inline think tags")
+
+    client = LLMClient(
+        endpoint="http://test/chat/completions",
+        api_key="test-key",
+        model="test-model",
+    )
+
+    result = client._parse_response(
+        make_content_response("<think>先分析一下。</think>\n最终答案")
+    )
+
+    assert result.reasoning_content == "先分析一下。"
+    assert result.content == "最终答案"
+
+    logger.success("[PASS] split inline think tags")
+
+
+def test_chat_stream_normalizes_cumulative_minimax_deltas():
+    logger.note("=" * 60)
+    logger.note("[TEST] normalize cumulative minimax stream chunks")
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.iter_lines.return_value = iter(
+        [
+            'data: {"choices":[{"delta":{"reasoning_details":[{"text":"先"}]},"finish_reason":null}]}'.encode(
+                "utf-8"
+            ),
+            'data: {"choices":[{"delta":{"reasoning_details":[{"text":"先想"}]},"finish_reason":null}]}'.encode(
+                "utf-8"
+            ),
+            'data: {"choices":[{"delta":{"content":"答"},"finish_reason":null}]}'.encode(
+                "utf-8"
+            ),
+            'data: {"choices":[{"delta":{"content":"答案"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}'.encode(
+                "utf-8"
+            ),
+            b"data: [DONE]",
+        ]
+    )
+
+    client = LLMClient(
+        endpoint="https://api.minimaxi.com/v1/chat/completions",
+        api_key="test-key",
+        model="MiniMax-M2.7",
+    )
+    client.create_response = MagicMock(return_value=mock_response)
+
+    chunks = list(client.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+    assert chunks[0]["choices"][0]["delta"]["reasoning_content"] == "先"
+    assert chunks[1]["choices"][0]["delta"]["reasoning_content"] == "想"
+    assert chunks[2]["choices"][0]["delta"]["content"] == "答"
+    assert chunks[3]["choices"][0]["delta"]["content"] == "案"
+
+    logger.success("[PASS] normalize cumulative minimax stream chunks")
 
 
 def test_create_llm_client():

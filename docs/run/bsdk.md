@@ -39,28 +39,28 @@ curl -sS http://127.0.0.1:21001/capabilities | jq '.supports_transcript_lookup'
 
 ```bash
 # 本地前台调试
-bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # Docker 启动当前工作区代码
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 默认重启：同步代码，只重启容器内 app
-bsdk restart -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk restart -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 重建整个容器
-bsdk restart --restart-scope container -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk restart --restart-scope container -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 只做 docker restart，不同步代码、不重建镜像
-bsdk restart --restart-scope container --no-sync-code -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk restart --restart-scope container --no-sync-code -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 查看状态 / 列表 / 日志 / 健康
 bsdk status -p 21001
 bsdk ps --all
 bsdk logs -f -n 120 -p 21001
-bsdk check -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk check -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 查看本地受管服务
-bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 bsdk ps --runtime local --all
 bsdk prune
 ```
@@ -72,7 +72,7 @@ bsdk prune
 当前 `search.backend-local` 的受管重启底层实际调用的是：
 
 ```bash
-bsdk restart --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk restart --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 但日常操作推荐始终从 `blbl-dash` 入口执行。
@@ -163,11 +163,11 @@ cd /home/asimov/repos/blbl-dash
 bsdk build-base
 
 # 仅构建服务镜像
-bsdk build -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk build -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 使用主源 + 回退源
 bsdk build \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek \
+  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7 \
   --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple \
   --pip-extra-index-url https://pypi.org/simple
 ```
@@ -178,20 +178,20 @@ bsdk build \
 
 ```bash
 # 当前工作区
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 本地 Git 历史版本
 bsdk start \
   --source local-git \
   --git-ref HEAD~1 \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 远端 Git 仓库
 bsdk start \
   --source remote-git \
   --git-url https://github.com/hansimov/bili-search.git \
   --git-ref main \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 ## 运行说明
@@ -241,7 +241,7 @@ bsdk start \
 
 ```bash
 # 渲染 compose 配置
-bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 
 # 删除实例
 bsdk down -p 21001

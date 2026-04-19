@@ -7,31 +7,31 @@
 后台启动：
 
 ```bash
-bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 前台启动：
 
 ```bash
-bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 前台热重载：
 
 ```bash
-bsdk start --runtime local --foreground --reload -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start --runtime local --foreground --reload -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 如果端口已被旧进程占用，可以在启动前加上 `-k`：
 
 ```bash
-bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start --runtime local -k -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 ## Docker 启动服务
 
 ```bash
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 查看实例：
@@ -55,7 +55,7 @@ curl -sS http://127.0.0.1:21001/capabilities | jq
 {
   "status": "ok",
   "search_service": "integrated",
-  "llm_model": "deepseek-chat"
+  "llm_model": "MiniMax-M2.7"
 }
 ```
 
@@ -64,10 +64,10 @@ curl -sS http://127.0.0.1:21001/capabilities | jq
 本地服务：
 
 ```bash
-bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 bsdk ps --runtime local
-bsdk logs --runtime local -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
-bsdk logs --runtime local -n 80 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk logs --runtime local -f -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk logs --runtime local -n 80 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 Docker 服务：
@@ -182,7 +182,7 @@ conda run -n ai python debugs/profile_es_tok_exclusion_path.py
 停止本地后台实例：
 
 ```bash
-bsdk stop --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek
+bsdk stop --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
 ```
 
 停止 Docker 实例：

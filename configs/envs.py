@@ -29,4 +29,4 @@ try:
     GOOGLE_HUB_ENVS = SECRETS["google_hub"]
 except Exception:
     GOOGLE_HUB_ENVS = {}
-LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "deepseek")
+LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "minimax-m2.7")
