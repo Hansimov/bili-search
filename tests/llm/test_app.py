@@ -708,6 +708,24 @@ def test_search_app_env_helpers_support_service_overrides():
     logger.success("[PASS] search app env helpers")
 
 
+def test_resolve_search_app_envs_backfills_missing_fields_from_config():
+    """Test partial env dicts are completed from configs/envs.json."""
+    logger.note("=" * 60)
+    logger.note("[TEST] search app env resolution backfills config defaults")
+
+    from service.envs import resolve_search_app_envs
+
+    envs = resolve_search_app_envs({"port": 21011})
+
+    assert envs["port"] == 21011
+    assert envs["host"] == "0.0.0.0"
+    assert envs["elastic_index"] == "bili_videos_dev6"
+    assert envs["elastic_env_name"] == "elastic_dev"
+    assert envs["llm_config"] == "deepseek"
+
+    logger.success("[PASS] search app env resolution backfills config defaults")
+
+
 if __name__ == "__main__":
     tests = [
         ("health_endpoint", test_health_endpoint),

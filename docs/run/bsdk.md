@@ -14,6 +14,33 @@
 
 首次配置时，可以将 [docker/.env.example](/home/asimov/repos/bili-search/docker/.env.example) 的内容复制到 [docker/.env](/home/asimov/repos/bili-search/docker/.env) 再按需修改；敏感配置请单独填写到本地 `configs/secrets.json`。
 
+## 统一配置来源
+
+`bsdk`、`service.arg_parser`、本地受管 runtime、Docker runtime，以及默认的大模型选择，都会优先读取 `configs/envs.json` 的 `search_app` 段。当前统一收口的核心字段有：
+
+- `host`
+- `port`
+- `elastic_index`
+- `elastic_env_name`
+- `llm_config`
+
+实际优先级是：`CLI 参数 > BILI_SEARCH_APP_* 环境变量 > configs/envs.json.search_app`。
+
+推荐做法：
+
+- 日常调试、联调和正式运行时，优先直接修改 `configs/envs.json`。
+- 常规 `bsdk` 命令默认不要重复写 `-p/-ei/-ev/-lc`。
+- 只有临时开第二实例、切换索引环境，或者做一次性模型覆盖时，才显式传 override 参数。
+
+如果你想在 shell 里确认当前默认值，可以先执行：
+
+```bash
+APP_PORT=$(jq -r '.search_app.port' configs/envs.json)
+APP_INDEX=$(jq -r '.search_app.elastic_index' configs/envs.json)
+APP_ES_ENV=$(jq -r '.search_app.elastic_env_name' configs/envs.json)
+APP_LLM=$(jq -r '.search_app.llm_config' configs/envs.json)
+```
+
 ## 转写服务配置
 
 如果当前环境需要使用视频音频转写，请在本地 `configs/secrets.json` 中确保存在如下配置：
@@ -30,7 +57,7 @@
 重启完成后，用下面命令确认 transcript 能力已开启：
 
 ```bash
-curl -sS http://127.0.0.1:21001/capabilities | jq '.supports_transcript_lookup'
+curl -sS "http://127.0.0.1:${APP_PORT}/capabilities" | jq '.supports_transcript_lookup'
 ```
 
 期望返回 `true`。
@@ -39,30 +66,43 @@ curl -sS http://127.0.0.1:21001/capabilities | jq '.supports_transcript_lookup'
 
 ```bash
 # 本地前台调试
-bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk start --runtime local --foreground
 
 # Docker 启动当前工作区代码
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk start
 
 # 默认重启：同步代码，只重启容器内 app
-bsdk restart -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk restart
 
 # 重建整个容器
-bsdk restart --restart-scope container -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk restart --restart-scope container
 
 # 只做 docker restart，不同步代码、不重建镜像
-bsdk restart --restart-scope container --no-sync-code -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk restart --restart-scope container --no-sync-code
 
 # 查看状态 / 列表 / 日志 / 健康
-bsdk status -p 21001
+bsdk status
 bsdk ps --all
-bsdk logs -f -n 120 -p 21001
-bsdk check -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk logs -f -n 120
+bsdk check
 
 # 查看本地受管服务
-bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk status --runtime local
 bsdk ps --runtime local --all
+bsdk logs --runtime local -f -n 120
 bsdk prune
+```
+
+默认情况下，上面的命令会统一继承 `configs/envs.json.search_app` 中的 `port`、`elastic_index`、`elastic_env_name` 和 `llm_config`。只有临时覆盖时，才需要显式传 `-p/-ei/-ev/-lc`。
+
+例如：
+
+```bash
+# 临时在另一端口启动第二个实例
+bsdk start --runtime local -p 21011
+
+# 临时覆盖 ES 目标和大模型
+bsdk start -p 21011 -ei bili_videos_dev7 -ev elastic_test -lc deepseek
 ```
 
 ## 通过 blbl-dash 管理 local-dev 后端
@@ -72,7 +112,7 @@ bsdk prune
 当前 `search.backend-local` 的受管重启底层实际调用的是：
 
 ```bash
-bsdk restart --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk restart --runtime local
 ```
 
 但日常操作推荐始终从 `blbl-dash` 入口执行。
@@ -108,8 +148,8 @@ cd /home/asimov/repos/blbl-dash
 重启后验证：
 
 ```bash
-curl -sS http://127.0.0.1:21001/health | jq
-curl -sS http://127.0.0.1:21001/capabilities | jq
+curl -sS "http://127.0.0.1:${APP_PORT}/health" | jq
+curl -sS "http://127.0.0.1:${APP_PORT}/capabilities" | jq
 ```
 
 ### local-dev 整链重启
@@ -163,11 +203,10 @@ cd /home/asimov/repos/blbl-dash
 bsdk build-base
 
 # 仅构建服务镜像
-bsdk build -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk build
 
 # 使用主源 + 回退源
 bsdk build \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7 \
   --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple \
   --pip-extra-index-url https://pypi.org/simple
 ```
@@ -178,26 +217,27 @@ bsdk build \
 
 ```bash
 # 当前工作区
-bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk start
 
 # 本地 Git 历史版本
 bsdk start \
   --source local-git \
   --git-ref HEAD~1 \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+  -p 21011
 
 # 远端 Git 仓库
 bsdk start \
   --source remote-git \
   --git-url https://github.com/hansimov/bili-search.git \
   --git-ref main \
-  -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+  -p 21011
 ```
 
 ## 运行说明
 
 - `--runtime local`：管理当前主机上的 bili-search 本地服务进程，适合开发调试。
 - `--runtime docker`：管理 Docker 里的 bili-search 实例，适合部署和隔离运行。默认值是 `docker`。
+- 默认实例参数会继承 `configs/envs.json.search_app`；如果命令里又显式传了 `-p/-ei/-ev/-lc`，则以 CLI 为准。
 - `bsdk ps` 在 `docker` 模式下列出容器，在 `local` 模式下列出本地受管服务。
 - `bsdk prune` 会清理 stale 本地 PID 记录和 exited Docker 容器，但不会停止当前运行中的实例。
 - 对已启动的 Docker 实例，`stop`、`down`、`restart`、`status`、`logs` 这类命令通常只需要端口号就足够反查目标容器，其他运行参数无需重复输入。
@@ -218,10 +258,10 @@ bsdk start \
 ## 参数参考
 
 - `--runtime local|docker`：选择管理本地服务进程还是 Docker 实例，默认 `docker`。
-- `-p/--port`：实例端口。对已启动的 Docker 实例，通常只用端口就足够定位目标容器。
-- `-ei/--elastic-index`：搜索视频索引名。
-- `-ev/--elastic-env-name`：`configs/secrets.json` 中的 Elasticsearch 环境名。
-- `-lc/--llm-config`：LLM 配置名。
+- `-p/--port`：实例端口覆盖；省略时继承 `configs/envs.json.search_app.port`。对已启动的 Docker 实例，通常只用端口就足够定位目标容器。
+- `-ei/--elastic-index`：搜索视频索引覆盖；省略时继承 `configs/envs.json.search_app.elastic_index`。
+- `-ev/--elastic-env-name`：`configs/secrets.json` 中的 Elasticsearch 环境名覆盖；省略时继承 `configs/envs.json.search_app.elastic_env_name`。
+- `-lc/--llm-config`：可选的 LLM 配置覆盖；省略时继承 `configs/envs.json.search_app.llm_config`。
 - `--source workspace|local-git|remote-git`：Docker 构建使用的代码来源。
 - `--git-repo --git-ref --git-url`：Git 源相关参数。
 - `--restart-scope app|container`：重启 app 进程还是重启/重建整个容器。
@@ -241,10 +281,10 @@ bsdk start \
 
 ```bash
 # 渲染 compose 配置
-bsdk config -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc minimax-m2.7
+bsdk config
 
 # 删除实例
-bsdk down -p 21001
+bsdk down
 
 # 清理历史残留
 bsdk prune

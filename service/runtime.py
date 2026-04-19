@@ -74,6 +74,36 @@ def service_files_for_envs(app_envs: dict) -> tuple[Path, Path]:
     return DATA_DIR / f"{stem}.pid", DATA_DIR / f"{stem}.log"
 
 
+def service_alias_files_for_envs(app_envs: dict) -> tuple[Path, Path]:
+    parts = [
+        f"p{int(app_envs['port'])}",
+        f"ei-{safe_name(app_envs.get('elastic_index'))}",
+        f"ev-{safe_name(app_envs.get('elastic_env_name'))}",
+        "current",
+    ]
+    stem = "server." + ".".join(parts)
+    return DATA_DIR / f"{stem}.pid", DATA_DIR / f"{stem}.log"
+
+
+def _replace_file_alias(alias_path: Path, target_path: Path) -> None:
+    ensure_data_dir()
+    try:
+        alias_path.unlink(missing_ok=True)
+    except OSError:
+        return
+    try:
+        alias_path.symlink_to(target_path.name)
+    except OSError:
+        return
+
+
+def sync_service_file_aliases(app_envs: dict) -> None:
+    pid_file, log_file = service_files_for_envs(app_envs)
+    alias_pid_file, alias_log_file = service_alias_files_for_envs(app_envs)
+    _replace_file_alias(alias_pid_file, pid_file)
+    _replace_file_alias(alias_log_file, log_file)
+
+
 def build_service_manager(app_envs: dict) -> LocalServiceManager:
     pid_file, log_file = service_files_for_envs(app_envs)
     service_spec = LocalServiceSpec(

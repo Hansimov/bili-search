@@ -5,6 +5,18 @@ configs_root = Path(__file__).parents[1] / "configs"
 envs_path = configs_root / "envs.json"
 ENVS_ENVER = OSEnver(envs_path)
 SEARCH_APP_ENVS = ENVS_ENVER["search_app"]
+SEARCH_APP_RUNTIME_FIELDS = (
+    "host",
+    "port",
+    "elastic_index",
+    "elastic_env_name",
+    "llm_config",
+)
+SEARCH_APP_RUNTIME_ENVS = {
+    key: SEARCH_APP_ENVS.get(key)
+    for key in SEARCH_APP_RUNTIME_FIELDS
+    if key in SEARCH_APP_ENVS
+}
 LOGS_ENVS = ENVS_ENVER["logs"]
 
 secrets_path = configs_root / "secrets.json"
@@ -29,4 +41,5 @@ try:
     GOOGLE_HUB_ENVS = SECRETS["google_hub"]
 except Exception:
     GOOGLE_HUB_ENVS = {}
-LLM_CONFIG = SEARCH_APP_ENVS.get("llm_config", "minimax-m2.7")
+DEFAULT_LLM_CONFIG = "deepseek"
+LLM_CONFIG = SEARCH_APP_RUNTIME_ENVS.get("llm_config", DEFAULT_LLM_CONFIG)

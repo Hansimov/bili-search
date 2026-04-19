@@ -3,7 +3,7 @@
 ## 目标
 
 - 用“意图路由 + 多模型编排”替换旧的单体大提示词 + 单大模型循环。
-- 固定 `minimax-m2.7` 为大模型，固定 `doubao-seed-2-0-mini` 为小模型，并为后续模型扩展保留统一入口。
+- 大模型默认值从 `configs/envs.json` 的 `search_app.llm_config` 读取；小模型当前固定为 `doubao-seed-2-0-mini`，并为后续模型扩展保留统一入口。
 - 默认只加载当前任务最需要的提示资产，避免把整套长提示无差别塞进上下文。
 - 避免把大块原始工具结果直接回灌给大模型，只提供必要摘要、链接标识和 `result_id`。
 - 保持现有后端 OpenAI 兼容接口和前端 `tool_events` 契约基本不变。
@@ -52,9 +52,10 @@
 
 - `llms/models/registry.py` 中的 `ModelRegistry` 负责声明和公开当前可用模型。
 - 当前固定默认值：
-  - 大模型：`minimax-m2.7`
+  - 大模型：由 `configs/envs.json` 中的 `search_app.llm_config` 指定
   - 小模型：`doubao-seed-2-0-mini`
 - `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` 接口封装。
+- `bsdk`、`llms.runtime.cli` 和调试脚本在未显式传 `-lc/--llm-config` 时，都会继承这个配置默认值，避免切换模型时同步修改命令示例和脚本默认参数。
 - registry 会从 endpoint / model / api_format 推断 provider，并公开 `provider`、`api_format`、`supports_multimodal`、`supports_reasoning` 等能力元数据，便于后续切换和 live 验证。
 - 虽然 transport 层仍保留 `tool_calls` 兼容解析，但 bili-search active path 禁止使用它；真正的工具协议只认 inline XML。
 - `create_model_clients(...)` 会一次性构造大小模型 client，并把公开能力暴露给运行时和测试脚本。

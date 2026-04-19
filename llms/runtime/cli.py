@@ -283,7 +283,8 @@ if __name__ == "__main__":
 
     # Interactive mode:
     #   python -m llms.runtime.cli
-    #   python -m llms.runtime.cli --llm-config minimax-m2.7 --verbose
+    #   python -m llms.runtime.cli --verbose
+    #   python -m llms.runtime.cli --llm-config <config_name> --verbose
     #   python -m llms.runtime.cli --elastic-index bili_videos_dev6 --elastic-env-name elastic_dev
     #
     # Single-shot mode:

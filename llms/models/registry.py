@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from configs.envs import LLMS_ENVS
+from configs.envs import LLM_CONFIG, LLMS_ENVS
 
 from llms.contracts import ModelSpec
 
 
 DEFAULT_SMALL_MODEL_CONFIG = "doubao-seed-2-0-mini"
-DEFAULT_LARGE_MODEL_CONFIG = "minimax-m2.7"
+DEFAULT_LARGE_MODEL_CONFIG = LLM_CONFIG
 
 
 def _infer_provider(config_name: str, model_envs: dict) -> str:

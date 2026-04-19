@@ -683,7 +683,8 @@ def main():
     from llms.tools.executor import create_search_service
 
     elastic_index = args.elastic_index
-    elastic_env_name = args.elastic_env_name or "elastic_dev"
+    default_elastic_env_name = SEARCH_APP_ENVS.get("elastic_env_name") or "elastic_dev"
+    elastic_env_name = args.elastic_env_name or default_elastic_env_name
     if not elastic_index:
         idx = SEARCH_APP_ENVS.get("elastic_index", {})
         elastic_index = idx.get("prod", idx) if isinstance(idx, dict) else idx

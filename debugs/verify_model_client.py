@@ -9,10 +9,10 @@ import zlib
 
 from dataclasses import asdict
 
-from llms.models import ModelRegistry, create_llm_client
+from llms.models import DEFAULT_LARGE_MODEL_CONFIG, ModelRegistry, create_llm_client
 
 
-DEFAULT_MODEL_CONFIG = "minimax-m2.7"
+DEFAULT_MODEL_CONFIG = DEFAULT_LARGE_MODEL_CONFIG
 
 
 def build_solid_color_png_data_url(

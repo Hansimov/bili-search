@@ -5,6 +5,15 @@ import argparse
 from tclogger import chars_len, colored, dict_to_table_str, logstr, rows_to_table_str
 
 from service.envs import get_search_app_env_overrides_from_env, resolve_search_app_envs
+from service.envs import search_app_config_field_path, search_app_default_value
+
+
+def _runtime_override_help(key: str, label: str) -> str:
+    default_value = search_app_default_value(key)
+    return (
+        f"{label} override "
+        f"(default: {default_value} from {search_app_config_field_path(key)})"
+    )
 
 
 def explicit_runtime_filters_from_args(args) -> dict:
@@ -169,28 +178,42 @@ def add_shared_runtime_args(
     include_reload: bool = False,
     include_kill: bool = False,
 ):
-    parser.add_argument("-s", "--host", type=str, default=None, help="Host override")
-    parser.add_argument("-p", "--port", type=int, default=None, help="Port override")
+    parser.add_argument(
+        "-s",
+        "--host",
+        type=str,
+        default=None,
+        help=_runtime_override_help("host", "Host"),
+    )
+    parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
+        default=None,
+        help=_runtime_override_help("port", "Port"),
+    )
     parser.add_argument(
         "-ei",
         "--elastic-index",
         type=str,
         default=None,
-        help="Elastic videos index override",
+        help=_runtime_override_help("elastic_index", "Elastic videos index"),
     )
     parser.add_argument(
         "-ev",
         "--elastic-env-name",
         type=str,
         default=None,
-        help="Elastic env name in secrets.json",
+        help=_runtime_override_help(
+            "elastic_env_name", "Elastic env name in secrets.json"
+        ),
     )
     parser.add_argument(
         "-lc",
         "--llm-config",
         type=str,
         default=None,
-        help="LLM config override",
+        help=_runtime_override_help("llm_config", "LLM config"),
     )
     if include_foreground:
         parser.add_argument(

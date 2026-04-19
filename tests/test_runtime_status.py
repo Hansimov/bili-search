@@ -9,6 +9,9 @@ from service.runtime import (
     build_local_service_snapshot,
     list_managed_service_instances,
     prune_managed_service_history,
+    service_alias_files_for_envs,
+    service_files_for_envs,
+    sync_service_file_aliases,
 )
 
 
@@ -191,3 +194,26 @@ class LocalRuntimeStatusTestCase(unittest.TestCase):
         self.assertEqual(len(removed_items), 1)
         self.assertTrue(removed_items[0]["removed"])
         self.assertFalse(pid_file.exists())
+
+    def test_sync_service_file_aliases_tracks_current_runtime_files(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            app_envs = {
+                "port": 21001,
+                "elastic_index": "bili_videos_dev6",
+                "elastic_env_name": "elastic_dev",
+                "llm_config": "deepseek",
+            }
+
+            with patch("service.runtime.DATA_DIR", temp_root):
+                pid_file, log_file = service_files_for_envs(app_envs)
+                alias_pid_file, alias_log_file = service_alias_files_for_envs(app_envs)
+                pid_file.write_text("12345\n", encoding="utf-8")
+                log_file.write_text("hello\n", encoding="utf-8")
+
+                sync_service_file_aliases(app_envs)
+
+            self.assertTrue(alias_pid_file.is_symlink())
+            self.assertTrue(alias_log_file.is_symlink())
+            self.assertEqual(alias_pid_file.resolve(), pid_file.resolve())
+            self.assertEqual(alias_log_file.resolve(), log_file.resolve())

@@ -28,9 +28,12 @@ def test_local_start_passes_runtime_env_to_service():
     manager.status.return_value = {"status": "not_running", "pid": None}
     manager.start.return_value = {"status": "started", "pid": 4321}
     manager.log_file = Path("/tmp/server.dev.p21099.log")
-    with patch(
-        "cli.local_runtime._build_service_manager",
-        return_value=manager,
+    with (
+        patch(
+            "cli.local_runtime._build_service_manager",
+            return_value=manager,
+        ),
+        patch("cli.local_runtime.sync_service_file_aliases") as mock_sync,
     ):
         from cli.local_runtime import cmd_start
 
@@ -47,6 +50,60 @@ def test_local_start_passes_runtime_env_to_service():
     assert kwargs["extra_env"]["BILI_SEARCH_APP_ELASTIC_INDEX"] == "bili_videos_dev6"
     assert kwargs["extra_env"]["BILI_SEARCH_APP_ELASTIC_ENV_NAME"] == "elastic_dev"
     assert kwargs["extra_env"]["BILI_SEARCH_APP_LLM_CONFIG"] == "deepseek"
+    mock_sync.assert_called_once()
+    synced_envs = mock_sync.call_args.args[0]
+    assert synced_envs["host"] == "0.0.0.0"
+    assert synced_envs["port"] == 21099
+    assert synced_envs["elastic_index"] == "bili_videos_dev6"
+    assert synced_envs["elastic_env_name"] == "elastic_dev"
+    assert synced_envs["llm_config"] == "deepseek"
+
+
+def test_local_start_inherits_runtime_defaults_from_config():
+    manager = MagicMock()
+    manager.start.return_value = {"status": "started", "pid": 4321}
+    manager.log_file = Path("/tmp/server.dev.p21001.log")
+    with (
+        patch(
+            "cli.local_runtime._build_service_manager",
+            return_value=manager,
+        ),
+        patch(
+            "cli.local_runtime.build_local_service_snapshot",
+            return_value={
+                "runtime_state": "stopped",
+                "worker_status": "stopped",
+                "pid": None,
+            },
+        ),
+        patch("cli.local_runtime.sync_service_file_aliases") as mock_sync,
+    ):
+        from cli.local_runtime import cmd_start
+
+        args = make_runtime_args(
+            port=None,
+            elastic_index=None,
+            elastic_env_name=None,
+            llm_config=None,
+        )
+        args.foreground = False
+        args.reload = False
+        args.kill = False
+        cmd_start(args)
+
+    kwargs = manager.start.call_args.kwargs
+    assert kwargs["host"] == "0.0.0.0"
+    assert kwargs["port"] == 21001
+    assert kwargs["extra_env"]["BILI_SEARCH_APP_PORT"] == "21001"
+    assert kwargs["extra_env"]["BILI_SEARCH_APP_ELASTIC_INDEX"] == "bili_videos_dev6"
+    assert kwargs["extra_env"]["BILI_SEARCH_APP_ELASTIC_ENV_NAME"] == "elastic_dev"
+    assert kwargs["extra_env"]["BILI_SEARCH_APP_LLM_CONFIG"] == "deepseek"
+    mock_sync.assert_called_once()
+    synced_envs = mock_sync.call_args.args[0]
+    assert synced_envs["port"] == 21001
+    assert synced_envs["elastic_index"] == "bili_videos_dev6"
+    assert synced_envs["elastic_env_name"] == "elastic_dev"
+    assert synced_envs["llm_config"] == "deepseek"
 
 
 def test_local_status_cleans_stale_pid():
@@ -148,6 +205,7 @@ def test_local_restart_uses_runtime_specific_service_manager():
                 "worker_status": "running",
             },
         ),
+        patch("cli.local_runtime.sync_service_file_aliases") as mock_sync,
     ):
         from cli.local_runtime import cmd_restart
 
@@ -157,6 +215,13 @@ def test_local_restart_uses_runtime_specific_service_manager():
 
     manager.stop.assert_called_once_with()
     manager.start.assert_called_once()
+    mock_sync.assert_called_once()
+    synced_envs = mock_sync.call_args.args[0]
+    assert synced_envs["host"] == "0.0.0.0"
+    assert synced_envs["port"] == 21099
+    assert synced_envs["elastic_index"] == "bili_videos_dev6"
+    assert synced_envs["elastic_env_name"] == "elastic_dev"
+    assert synced_envs["llm_config"] == "deepseek"
 
 
 def test_list_managed_service_instances_reads_pid_files(tmp_path):

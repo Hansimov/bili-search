@@ -13,6 +13,11 @@ import time
 import urllib.error
 import urllib.request
 
+from configs.envs import SEARCH_APP_ENVS
+
+
+DEFAULT_BASE_URL = f"http://127.0.0.1:{SEARCH_APP_ENVS.get('port', 21001)}"
+
 
 CASES = {
     "hongjing_timeline": {
@@ -104,6 +109,14 @@ CASES = {
             {"role": "user", "content": "何同学和影视飓风最近都发了哪些视频？"},
         ],
     },
+    "known_video_summary_transcript": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "BV1YXZPB1Erc 这个视频主要讲了什么？顺便总结重点。",
+            },
+        ],
+    },
     "latent_semantic_topic": {
         "messages": [
             {"role": "user", "content": "来点擦边女"},
@@ -134,7 +147,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run live chat cases")
     parser.add_argument(
         "--base-url",
-        default="http://127.0.0.1:21001",
+        default=DEFAULT_BASE_URL,
         help="Chat service base URL",
     )
     parser.add_argument(

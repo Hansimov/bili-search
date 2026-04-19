@@ -83,6 +83,33 @@ def test_bsdk_start_dispatches_to_local_runtime():
     mock_local_start.assert_called_once()
 
 
+def test_bsdk_start_inherits_runtime_defaults_from_config():
+    base_result = MagicMock(stdout="base\n", stderr="", returncode=0)
+    result = MagicMock(stdout="ok\n", stderr="", returncode=0)
+    with (
+        patch("cli.bsdk.ensure_base_image", return_value=base_result),
+        patch("cli.bsdk.run_compose", return_value=result) as mock_run,
+        patch("cli.bsdk._report_compose_result"),
+    ):
+        from cli.bsdk import cmd_start
+
+        cmd_start(
+            make_runtime_args(
+                port=None,
+                elastic_index=None,
+                elastic_env_name=None,
+                llm_config=None,
+            )
+        )
+
+    app_envs = mock_run.call_args.args[2]
+    assert app_envs["host"] == "0.0.0.0"
+    assert app_envs["port"] == 21001
+    assert app_envs["elastic_index"] == "bili_videos_dev6"
+    assert app_envs["elastic_env_name"] == "elastic_dev"
+    assert app_envs["llm_config"] == "deepseek"
+
+
 def test_bsdk_start_can_skip_base_build():
     result = MagicMock(stdout="ok\n", stderr="", returncode=0)
     with (

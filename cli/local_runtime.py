@@ -23,6 +23,7 @@ from service.runtime import run_foreground
 from service.runtime import runtime_env_vars
 from service.runtime import sanitize_log_file as _sanitize_log_file
 from service.runtime import service_files_for_envs
+from service.runtime import sync_service_file_aliases
 
 
 def cmd_start(args):
@@ -67,6 +68,7 @@ def cmd_start(args):
         port=app_envs["port"],
         extra_env=runtime_env_vars(app_envs),
     )
+    sync_service_file_aliases(app_envs)
     logger.okay(f"  ✓ Search app started (PID: {result['pid']})")
     logger.mesg(f"  Log: {logstr.file(service_manager.log_file)}")
 
@@ -128,6 +130,7 @@ def cmd_restart(args):
         port=app_envs["port"],
         extra_env=runtime_env_vars(app_envs),
     )
+    sync_service_file_aliases(app_envs)
     if (
         stop_result
         and stop_result["status"] in ("stopped", "stale_pid")

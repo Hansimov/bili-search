@@ -1,3 +1,5 @@
+from configs.envs import LLM_CONFIG
+
 from llms.models import (
     DEFAULT_LARGE_MODEL_CONFIG,
     DEFAULT_SMALL_MODEL_CONFIG,
@@ -24,7 +26,10 @@ def test_model_registry_public_dict_exposes_available_models():
     assert DEFAULT_SMALL_MODEL_CONFIG in payload["available"]
     assert payload["available"][DEFAULT_LARGE_MODEL_CONFIG]["role"] == "large"
     assert payload["available"][DEFAULT_SMALL_MODEL_CONFIG]["role"] == "small"
-    assert payload["available"][DEFAULT_LARGE_MODEL_CONFIG]["provider"] == "minimax"
+    assert (
+        payload["available"][DEFAULT_LARGE_MODEL_CONFIG]["provider"]
+        == registry.primary("large").provider
+    )
     assert payload["available"][DEFAULT_SMALL_MODEL_CONFIG]["provider"] == "doubao"
 
 
@@ -32,5 +37,5 @@ def test_default_small_model_is_doubao_seed_2_0_mini():
     assert DEFAULT_SMALL_MODEL_CONFIG == "doubao-seed-2-0-mini"
 
 
-def test_default_large_model_is_minimax_m2_7():
-    assert DEFAULT_LARGE_MODEL_CONFIG == "minimax-m2.7"
+def test_default_large_model_tracks_search_app_llm_config():
+    assert DEFAULT_LARGE_MODEL_CONFIG == LLM_CONFIG

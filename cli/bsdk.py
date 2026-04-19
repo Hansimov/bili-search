@@ -24,6 +24,7 @@ from docker.manager import list_bili_search_containers
 from docker.manager import prune_bili_search_containers
 from docker.manager import read_container_app_state
 from docker.manager import run_base_build
+from service.envs import search_app_env_source_summary
 from service.runtime import ensure_process_timezone, fetch_health, health_url
 from service.runtime import list_managed_service_instances
 
@@ -627,20 +628,24 @@ def cmd_prune(args):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bili Search runtime CLI (bsdk)",
+        description=(
+            "Bili Search runtime CLI (bsdk). "
+            f"Runtime defaults follow {search_app_env_source_summary()}."
+        ),
         epilog=root_epilog(
             quick_start=[
-                "bsdk start --runtime local --foreground -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
-                "bsdk start -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
+                "bsdk start --runtime local --foreground",
+                "bsdk start",
             ],
             examples=[
-                "bsdk start --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
-                "bsdk restart -p 21001 --restart-scope app",
-                "bsdk restart -p 21001 --restart-scope container --no-sync-code",
-                "bsdk start --source local-git --git-ref HEAD~1 -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
-                "bsdk build -p 21001 --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple --pip-extra-index-url https://pypi.org/simple",
-                "bsdk status -p 21001",
-                "bsdk status --runtime local -p 21001 -ei bili_videos_dev6 -ev elastic_dev -lc deepseek",
+                "bsdk start --runtime local",
+                "bsdk restart --restart-scope app",
+                "bsdk restart --restart-scope container --no-sync-code",
+                "bsdk start --source local-git --git-ref HEAD~1 -p 21011",
+                "bsdk start -p 21011 -ei bili_videos_dev7 -ev elastic_test -lc deepseek",
+                "bsdk build --pip-index-url https://mirrors.ustc.edu.cn/pypi/simple --pip-extra-index-url https://pypi.org/simple",
+                "bsdk status",
+                "bsdk status --runtime local",
                 "bsdk ps --all",
                 "bsdk ps --runtime local --all",
                 "bsdk prune",

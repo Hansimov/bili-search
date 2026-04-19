@@ -6,6 +6,15 @@ from copy import deepcopy
 
 
 SEARCH_APP_ENV_PREFIX = "BILI_SEARCH_APP_"
+SEARCH_APP_CONFIG_PATH = "configs/envs.json"
+SEARCH_APP_CONFIG_SECTION = "search_app"
+SEARCH_APP_RUNTIME_FIELDS = (
+    "host",
+    "port",
+    "elastic_index",
+    "elastic_env_name",
+    "llm_config",
+)
 SEARCH_APP_ENV_KEYS = {
     "host": f"{SEARCH_APP_ENV_PREFIX}HOST",
     "port": f"{SEARCH_APP_ENV_PREFIX}PORT",
@@ -21,13 +30,34 @@ def _default_search_app_envs() -> dict:
     return SEARCH_APP_ENVS
 
 
+def default_search_app_envs() -> dict:
+    return deepcopy(_default_search_app_envs())
+
+
+def search_app_config_field_path(name: str) -> str:
+    return f"{SEARCH_APP_CONFIG_PATH}.{SEARCH_APP_CONFIG_SECTION}.{name}"
+
+
+def search_app_env_source_summary() -> str:
+    return (
+        f"CLI args > {SEARCH_APP_ENV_PREFIX}* environment variables > "
+        f"{SEARCH_APP_CONFIG_PATH}.{SEARCH_APP_CONFIG_SECTION}"
+    )
+
+
+def search_app_default_value(name: str):
+    return default_search_app_envs().get(name)
+
+
 def resolve_search_app_envs(
     app_envs: dict | None = None,
     *,
     overrides: dict | None = None,
 ) -> dict:
-    base_envs = app_envs or _default_search_app_envs()
-    resolved_envs = deepcopy(base_envs)
+    resolved_envs = default_search_app_envs()
+
+    for key, value in (app_envs or {}).items():
+        resolved_envs[key] = value
 
     for key, value in (overrides or {}).items():
         if value is not None:
