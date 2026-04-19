@@ -35,6 +35,7 @@ from service.envs import apply_search_app_envs_to_environment
 from service.envs import get_search_app_env_overrides_from_env
 from service.envs import resolve_search_app_envs
 from llms.tools.transcripts import BiliStoreTranscriptClient
+from service.chat_export import handle_export as export_chat_file
 
 
 logger = TCLogger()
@@ -527,6 +528,10 @@ class SearchApp:
             "/related_owners_by_owners",
             summary="Find related owners by seed owners",
         )(self.related_owners_by_owners)
+        self.app.post(
+            "/chat/export-file",
+            summary="Download generated chat export as attachment",
+        )(export_chat_file)
 
         if self.chat_handler is not None:
             self.app.post(

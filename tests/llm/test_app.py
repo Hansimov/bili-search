@@ -212,6 +212,32 @@ def test_chat_completions_accepts_multimodal_message_content():
     logger.success("[PASS] /chat/completions accepts multimodal content")
 
 
+def test_chat_export_file_endpoint_returns_attachment_response():
+    """The export endpoint should return the submitted content as a downloadable attachment."""
+    logger.note("=" * 60)
+    logger.note("[TEST] /chat/export-file endpoint")
+
+    search_app, _, _, _, _ = create_test_app()
+    client = TestClient(search_app.app)
+    resp = client.post(
+        "/chat/export-file",
+        data={
+            "fileName": "会话导出.md",
+            "mimeType": "text/markdown;charset=utf-8",
+            "content": "# 导出\n\n内容",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.text == "# 导出\n\n内容"
+    assert resp.headers["content-type"].startswith("text/markdown")
+    assert resp.headers["content-disposition"].startswith("attachment;")
+    assert "filename*=UTF-8''" in resp.headers["content-disposition"]
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+    logger.success("[PASS] /chat/export-file endpoint")
+
+
 def test_video_transcript_endpoint():
     """Test /video_transcript forwards to the transcript client."""
     logger.note("=" * 60)
