@@ -858,6 +858,84 @@ def test_execute_search_error():
     logger.success("[PASS] execute search error")
 
 
+def test_execute_search_videos_tries_fallback_when_primary_hits_fail_relevance_floor():
+    """Weak primary hits should not block the fallback query path."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_videos weak-hit fallback")
+
+    weak_primary = {
+        "query": "黑神话 更新",
+        "status": "finished",
+        "data": [
+            {
+                "step": 0,
+                "name": "most_relevant_search",
+                "output": {
+                    "hits": [
+                        {
+                            "bvid": "BV1weak1",
+                            "title": "低相关候选1",
+                            "owner": {"mid": 1, "name": "A"},
+                            "relevance_score": 0.12,
+                        },
+                        {
+                            "bvid": "BV1weak2",
+                            "title": "低相关候选2",
+                            "owner": {"mid": 2, "name": "B"},
+                            "relevance_score": 0.08,
+                        },
+                    ],
+                    "total_hits": 7,
+                },
+            }
+        ],
+    }
+    strong_fallback = {
+        "query": "黑神话",
+        "status": "finished",
+        "data": [
+            {
+                "step": 0,
+                "name": "most_relevant_search",
+                "output": {
+                    "hits": [
+                        {
+                            "bvid": "BV1strong",
+                            "title": "黑神话悟空全流程",
+                            "owner": {"mid": 100, "name": "游戏UP主"},
+                            "pubdate": 1708700000,
+                            "stat": {"view": 500000},
+                            "relevance_score": 0.84,
+                        }
+                    ],
+                    "total_hits": 12,
+                },
+            }
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.explore.side_effect = [weak_primary, strong_fallback]
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_test_fallback_weak_hits",
+        name="search_videos",
+        arguments=json.dumps({"queries": ["黑神话 更新"]}),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["query"] == "黑神话 更新"
+    assert result_data["fallback_applied"] is True
+    assert result_data["resolved_query"] == "黑神话"
+    assert result_data["hits"][0]["bvid"] == "BV1strong"
+    assert mock_client.explore.call_count == 2
+
+    logger.success("[PASS] execute search_videos weak-hit fallback")
+
+
 def test_execute_read_spec():
     """Test read_spec tool execution."""
     logger.note("=" * 60)

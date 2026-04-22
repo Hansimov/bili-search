@@ -101,6 +101,8 @@ def add_duration_str(hit: dict) -> dict:
 
 # Maximum number of tags to keep per hit (to limit token consumption)
 MAX_TAGS_PER_HIT = 5
+LLM_HIT_RELEVANCE_FLOOR = 0.20
+LLM_HIT_RELEVANCE_RATIO = 0.45
 
 
 def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
@@ -120,6 +122,37 @@ def format_hit_for_llm(hit: dict, fields: list[str] = None) -> dict:
         tags_list = [t.strip() for t in result["tags"].split(",") if t.strip()]
         result["tags"] = ",".join(tags_list[:MAX_TAGS_PER_HIT])
     return result
+
+
+def filter_relevant_hits_for_llm(hits: list[dict]) -> list[dict]:
+    """Drop weak tail hits before exposing them to the LLM.
+
+    Explore ranking may keep low-relevance tail candidates as a fallback to
+    avoid empty result pages. Those candidates are useful for recall/debugging,
+    but they are often harmful when surfaced directly as `search_videos` tool
+    results. When relevance scores are available, keep only hits that clear a
+    combined absolute + relative floor based on the best hit in the pool.
+    """
+    if not hits:
+        return []
+
+    scored_hits = []
+    for hit in hits:
+        try:
+            if hit.get("relevance_score") is not None:
+                scored_hits.append((hit, float(hit.get("relevance_score") or 0.0)))
+        except (TypeError, ValueError):
+            continue
+
+    if not scored_hits:
+        return list(hits)
+
+    best_score = max(score for _, score in scored_hits)
+    if best_score <= 0.0:
+        return []
+
+    min_score = max(LLM_HIT_RELEVANCE_FLOOR, best_score * LLM_HIT_RELEVANCE_RATIO)
+    return [hit for hit, score in scored_hits if score >= min_score]
 
 
 def format_hits_for_llm(

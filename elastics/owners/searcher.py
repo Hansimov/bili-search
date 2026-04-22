@@ -103,8 +103,6 @@ class OwnerSearcher:
                 name_hits=name_hits,
                 size=max(size * 2, 10),
             )
-            if relation_hits:
-                name_hits = []
             if not relation_hits:
                 topic_hits = self._search_topic_candidates(
                     prepared_query,

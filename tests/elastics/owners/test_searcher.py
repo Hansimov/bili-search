@@ -45,7 +45,7 @@ def test_search_topic_mode_skips_name_candidates():
     assert result["owners"][0]["sources"] == ["topic"]
 
 
-def test_search_relation_mode_prefers_relation_results_over_seed_name_hits():
+def test_search_relation_mode_keeps_seed_name_hit_ahead_of_relation_results():
     searcher = OwnerSearcher.__new__(OwnerSearcher)
 
     searcher._prepare_query = lambda query, mode: query
@@ -60,7 +60,10 @@ def test_search_relation_mode_prefers_relation_results_over_seed_name_hits():
 
     result = searcher.search("影视飓风有哪些关联账号", mode="relation", size=5)
 
-    assert [owner["name"] for owner in result["owners"]] == ["油管科技TV"]
+    assert [owner["name"] for owner in result["owners"]] == [
+        "影视飓风",
+        "油管科技TV",
+    ]
 
 
 def test_search_hydrates_owner_face_and_sample_from_metadata_lookup():

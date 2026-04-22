@@ -19,6 +19,7 @@ from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
 from llms.tools.names import canonical_tool_name
 from llms.tools.utils import (
     extract_explore_hits,
+    filter_relevant_hits_for_llm,
     format_google_results,
     format_hits_for_llm,
     format_related_owners,
@@ -1081,7 +1082,11 @@ class ToolExecutor:
                 }
 
             hits, total_hits = extract_explore_hits(explore_result)
-            formatted_hits = format_hits_for_llm(hits, max_hits=self.max_results)
+            filtered_hits = filter_relevant_hits_for_llm(hits)
+            formatted_hits = format_hits_for_llm(
+                filtered_hits,
+                max_hits=self.max_results,
+            )
 
             return {
                 "query": query_text,
@@ -1092,20 +1097,14 @@ class ToolExecutor:
         primary_result = run_query(query)
         if primary_result.get("error"):
             return primary_result
-        if (
-            primary_result.get("hits")
-            or int(primary_result.get("total_hits", 0) or 0) > 0
-        ):
+        if primary_result.get("hits"):
             return primary_result
 
         for fallback_query in _build_zero_hit_fallback_queries(query):
             fallback_result = run_query(fallback_query)
             if fallback_result.get("error"):
                 continue
-            if (
-                fallback_result.get("hits")
-                or int(fallback_result.get("total_hits", 0) or 0) > 0
-            ):
+            if fallback_result.get("hits"):
                 return {
                     "query": query,
                     "resolved_query": fallback_query,

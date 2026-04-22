@@ -12,6 +12,7 @@ from llms.tools.utils import (
     extract_field,
     shrink_hit,
     add_link,
+    filter_relevant_hits_for_llm,
     format_hit_for_llm,
     format_hits_for_llm,
     extract_explore_hits,
@@ -198,6 +199,41 @@ def test_format_hits_max():
     assert len(result_all) == 30
 
     logger.success("[PASS] format_hits_for_llm max_hits")
+
+
+def test_filter_relevant_hits_for_llm_uses_relative_floor_when_scores_exist():
+    """Low-relevance tail hits should be dropped before LLM exposure."""
+    logger.note("=" * 60)
+    logger.note("[TEST] filter_relevant_hits_for_llm relevance floor")
+
+    hits = [
+        {"bvid": "BV1strong", "title": "强相关", "relevance_score": 0.82},
+        {"bvid": "BV1okay", "title": "还相关", "relevance_score": 0.46},
+        {"bvid": "BV1weak", "title": "弱相关", "relevance_score": 0.18},
+    ]
+
+    result = filter_relevant_hits_for_llm(hits)
+
+    assert [hit["bvid"] for hit in result] == ["BV1strong", "BV1okay"]
+
+    logger.success("[PASS] filter_relevant_hits_for_llm relevance floor")
+
+
+def test_filter_relevant_hits_for_llm_preserves_hits_without_scores():
+    """Older explore payloads without relevance_score should remain unchanged."""
+    logger.note("=" * 60)
+    logger.note("[TEST] filter_relevant_hits_for_llm no score passthrough")
+
+    hits = [
+        {"bvid": "BV1a", "title": "A"},
+        {"bvid": "BV1b", "title": "B"},
+    ]
+
+    result = filter_relevant_hits_for_llm(hits)
+
+    assert result == hits
+
+    logger.success("[PASS] filter_relevant_hits_for_llm no score passthrough")
 
 
 def test_extract_explore_hits():
