@@ -11,6 +11,7 @@ from converters.query.dsl import ScriptScoreQueryDSLConstructor
 from dsl.rewrite import DslExprRewriter
 from dsl.elastic import DslExprToElasticConverter
 from dsl.filter import QueryDslDictFilterMerger
+from elastics.owners.searcher import OwnerSearcher
 from elastics.structure import get_highlight_settings, construct_boosted_fields
 from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
@@ -60,6 +61,7 @@ class VideoSearcherV2:
         index_name: str = ELASTIC_VIDEOS_PRO_INDEX,
         elastic_env_name: str = None,
         mongo_env_name: str = None,
+        owner_searcher: OwnerSearcher | None = None,
     ):
         """
         - index_name:
@@ -75,6 +77,7 @@ class VideoSearcherV2:
         self.index_name = index_name
         self.elastic_env_name = elastic_env_name
         self.mongo_env_name = mongo_env_name
+        self._owner_searcher = owner_searcher
         self.init_processors()
 
     def init_processors(self):
@@ -107,6 +110,15 @@ class VideoSearcherV2:
         if self._embed_client is None:
             self._embed_client = get_embed_client()
         return self._embed_client
+
+    @property
+    def owner_searcher(self) -> OwnerSearcher:
+        if self._owner_searcher is None:
+            self._owner_searcher = OwnerSearcher(
+                index_name=self.index_name,
+                elastic_env_name=self.elastic_env_name,
+            )
+        return self._owner_searcher
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
         try:
@@ -1448,6 +1460,10 @@ class VideoSearcherV2:
         verbose: bool = False,
     ) -> Union[dict, list[dict]]:
         logger.enter_quiet(not verbose)
+        effective_extra_filters = list(extra_filters)
+        owner_intent_info = self._resolve_owner_intent_info(query)
+        if owner_intent_info.get("owner_filter"):
+            effective_extra_filters.extend(owner_intent_info["owner_filter"])
 
         # Check if there are actual search keywords
         # If no keywords, fall back to filter-only search
@@ -1493,7 +1509,7 @@ class VideoSearcherV2:
             "boosted_match_fields": boosted_match_fields,
             "boosted_date_fields": boosted_date_fields,
             "match_type": match_type,
-            "extra_filters": extra_filters,
+            "extra_filters": effective_extra_filters,
         }
         query_info, rewrite_info, query_dsl_dict = self.get_info_of_query_rewrite_dsl(
             **query_rewrite_dsl_params
@@ -1559,8 +1575,61 @@ class VideoSearcherV2:
         return_res = self.post_process_return_res(parse_res)
         # Sanitize search_body to reduce network payload (removes large terms arrays)
         return_res["search_body"] = self.sanitize_search_body_for_client(search_body)
+        return_res["intent_info"] = owner_intent_info
         logger.exit_quiet(not verbose)
         return return_res
+
+    def _resolve_owner_intent_info(self, query: str) -> dict:
+        normalized_query = (query or "").strip()
+        if not normalized_query:
+            return {}
+        if any(marker in normalized_query for marker in [":", "=", '"', "'", "[", "]"]):
+            return {}
+        if any(char.isspace() for char in normalized_query):
+            return {}
+        if len(normalized_query) < 2 or len(normalized_query) > 24:
+            return {}
+
+        owners_result = self.owner_searcher.search(
+            normalized_query,
+            mode="name",
+            size=5,
+        )
+        owners = owners_result.get("owners") or []
+        candidate = self._select_confident_owner_intent_candidate(owners)
+        if not candidate:
+            return {}
+
+        owner_mid = candidate.get("mid")
+        owner_name = str(candidate.get("name") or "").strip()
+        if not owner_mid or not owner_name:
+            return {}
+
+        return {
+            "query": normalized_query,
+            "owner": {
+                "mid": int(owner_mid),
+                "name": owner_name,
+                "score": float(candidate.get("score") or 0.0),
+                "sources": list(candidate.get("sources") or []),
+            },
+            "owner_filter": [{"term": {"owner.mid": int(owner_mid)}}],
+        }
+
+    @staticmethod
+    def _select_confident_owner_intent_candidate(owners: list[dict]) -> dict | None:
+        if not owners:
+            return None
+
+        top = owners[0] or {}
+        top_score = float(top.get("score") or 0.0)
+        second_score = (
+            float((owners[1] or {}).get("score") or 0.0) if len(owners) > 1 else 0.0
+        )
+        gap = top_score - second_score
+        if top_score < 180.0 or gap < 30.0:
+            return None
+        return top
 
     def get_filters_from_query(
         self,
