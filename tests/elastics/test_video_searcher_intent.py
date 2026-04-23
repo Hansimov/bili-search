@@ -147,6 +147,46 @@ def test_search_builds_semantic_suggest_info_for_alias_query_relation_rewrite():
     assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教学"
 
 
+def test_search_avoids_owner_intent_for_alias_rewritten_spaced_query():
+    owner_result = {
+        "owners": [
+            {
+                "mid": 14813517,
+                "name": "康夫太太",
+                "score": 374.0,
+                "sample_view": 447,
+                "sources": ["name", "topic"],
+            },
+            {
+                "mid": 3494377187969081,
+                "name": "远康夫妇",
+                "score": 334.0,
+                "sample_view": 302857,
+                "sources": ["name", "topic"],
+            },
+        ]
+    }
+    searcher, captured = make_searcher(owner_result)
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        captured["extra_filters"] = kwargs["extra_filters"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+
+    result = searcher.search("康夫 UI 工作流", limit=5)
+
+    assert captured["dsl_query"] == "ComfyUI 工作流"
+    assert captured["extra_filters"] == []
+    assert result["intent_info"] == {}
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
+
+
 def make_explorer(
     owner_result: dict, qmod: list[str] | None = None
 ) -> tuple[VideoExplorer, dict]:
@@ -233,6 +273,187 @@ def test_search_skips_owner_mid_filter_for_ambiguous_owner_intent_query():
     result = searcher.search("红色警戒08", limit=5)
 
     assert result["intent_info"] == {}
+
+
+def test_search_uses_spaced_owner_intent_filter_and_context_query():
+    owner_result = {
+        "owners": [
+            {
+                "mid": 502925577,
+                "name": "袁启聪",
+                "score": 220.5,
+                "sample_view": 111411,
+                "sources": ["name"],
+            }
+        ]
+    }
+    searcher, captured = make_searcher(owner_result)
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        captured["extra_filters"] = kwargs["extra_filters"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    class _NonZeroParser:
+        @staticmethod
+        def parse(*args, **kwargs):
+            return {
+                "query_info": {},
+                "rewrite_info": {},
+                "hits": [{"title": "owner hit"}],
+                "total_hits": 1,
+                "return_hits": 1,
+            }
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+    searcher.hit_parser = _NonZeroParser()
+
+    result = searcher.search("袁启 采访", limit=5)
+
+    assert captured["dsl_query"] == "采访"
+    assert captured["extra_filters"] == [{"term": {"owner.mid": 502925577}}]
+    assert result["intent_info"]["query"] == "袁启"
+    assert result["intent_info"]["source_query"] == "袁启 采访"
+    assert result["intent_info"]["owner"]["mid"] == 502925577
+
+
+def test_search_uses_spaced_owner_candidate_terms_filter_when_owner_is_ambiguous():
+    owner_result = {
+        "owners": [
+            {
+                "mid": 3546588246968975,
+                "name": "袁启豪",
+                "score": 224.0,
+                "sample_view": 0,
+                "sources": ["name"],
+            },
+            {
+                "mid": 502925577,
+                "name": "袁启聪",
+                "score": 220.5,
+                "sample_view": 111411,
+                "sources": ["name"],
+            },
+            {
+                "mid": 374010007,
+                "name": "袁启俊H2O",
+                "score": 217.0,
+                "sample_view": 4843,
+                "sources": ["name"],
+            },
+        ]
+    }
+    searcher, captured = make_searcher(owner_result)
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        captured["extra_filters"] = kwargs["extra_filters"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    class _NonZeroParser:
+        @staticmethod
+        def parse(*args, **kwargs):
+            return {
+                "query_info": {},
+                "rewrite_info": {},
+                "hits": [{"title": "owner hit"}],
+                "total_hits": 1,
+                "return_hits": 1,
+            }
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+    searcher.hit_parser = _NonZeroParser()
+
+    result = searcher.search("袁启 采访", limit=5)
+
+    assert captured["dsl_query"] == "采访"
+    assert captured["extra_filters"] == [
+        {"terms": {"owner.mid": [502925577, 374010007, 3546588246968975]}}
+    ]
+    assert result["intent_info"]["query"] == "袁启"
+    assert result["intent_info"]["source_query"] == "袁启 采访"
+    assert "owner_filter" not in result["intent_info"]
+
+
+def test_search_retries_spaced_owner_context_with_original_query_on_zero_hits():
+    owner_result = {
+        "owners": [
+            {
+                "mid": 3546588246968975,
+                "name": "袁启豪",
+                "score": 224.0,
+                "sample_view": 0,
+                "sources": ["name"],
+            },
+            {
+                "mid": 502925577,
+                "name": "袁启聪",
+                "score": 220.5,
+                "sample_view": 111411,
+                "sources": ["name"],
+            },
+            {
+                "mid": 374010007,
+                "name": "袁启俊H2O",
+                "score": 217.0,
+                "sample_view": 4843,
+                "sources": ["name"],
+            },
+        ]
+    }
+    searcher, captured = make_searcher(owner_result)
+    captured["queries"] = []
+    captured["filters"] = []
+
+    def _capture_get_info(**kwargs):
+        captured["queries"].append(kwargs["query"])
+        captured["filters"].append(kwargs["extra_filters"])
+        captured["current_query"] = kwargs["query"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    class _RetryParser:
+        @staticmethod
+        def parse(*args, **kwargs):
+            if captured["current_query"] == "采访":
+                return {
+                    "query_info": {},
+                    "rewrite_info": {},
+                    "hits": [],
+                    "total_hits": 0,
+                    "return_hits": 0,
+                }
+            return {
+                "query_info": {},
+                "rewrite_info": {},
+                "hits": [{"title": "fallback hit"}],
+                "total_hits": 1,
+                "return_hits": 1,
+            }
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+    searcher.hit_parser = _RetryParser()
+
+    result = searcher.search("袁启 采访", limit=5)
+
+    assert captured["queries"] == ["采访", "袁启 采访"]
+    assert captured["filters"] == [
+        [{"terms": {"owner.mid": [502925577, 374010007, 3546588246968975]}}],
+        [{"terms": {"owner.mid": [502925577, 374010007, 3546588246968975]}}],
+    ]
+    assert result["total_hits"] == 1
+    assert result["retry_info"]["relaxed_spaced_owner_context"] is True
 
 
 def test_search_keeps_multi_owner_candidates_without_hard_filter_for_broad_query():

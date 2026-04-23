@@ -19,6 +19,22 @@ def test_search_service_client_explore(mock_post):
     assert mock_post.call_args.args[0] == "http://127.0.0.1:21001/explore"
 
 
+@patch("llms.tools.executor.requests.post")
+def test_search_service_client_search(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"hits": [{"title": "ComfyUI"}]}
+    mock_response.raise_for_status = MagicMock()
+    mock_post.return_value = mock_response
+
+    from llms.tools.executor import SearchServiceClient
+
+    client = SearchServiceClient("http://127.0.0.1:21001", timeout=5)
+    result = client.search("康夫 UI 工作流")
+
+    assert result["hits"][0]["title"] == "ComfyUI"
+    assert mock_post.call_args.args[0] == "http://127.0.0.1:21001/search"
+
+
 def test_create_search_service_prefers_http_client():
     from llms.tools.executor import SearchServiceClient, create_search_service
 

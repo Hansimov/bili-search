@@ -12,6 +12,7 @@ from tclogger import logger
 
 from configs.envs import GOOGLE_HUB_ENVS
 from llms.contracts import ToolCallRequest
+from llms.intent.focus import rewrite_known_term_aliases
 from llms.messages import extract_bvids, normalize_bvid_key
 from llms.models import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
@@ -355,6 +356,18 @@ class SearchService:
             logger.warn(f"× Search suggest error: {e}")
             return {"error": str(e), "hits": [], "total_hits": 0}
 
+    def search(self, query: str, limit: int = 25, verbose: bool = False) -> dict:
+        """Call direct search directly."""
+        try:
+            return self.video_searcher.search(
+                query,
+                limit=limit,
+                verbose=verbose,
+            )
+        except Exception as e:
+            logger.warn(f"× Search direct error: {e}")
+            return {"error": str(e), "hits": [], "total_hits": 0}
+
     def search_owners(self, **kwargs) -> dict:
         if self.owner_searcher is None:
             return {"error": "Owner search unavailable", "owners": []}
@@ -501,6 +514,14 @@ class SearchServiceClient:
             "verbose": verbose,
         }
         return self._post("/suggest", payload)
+
+    def search(self, query: str, limit: int = 25, verbose: bool = False) -> dict:
+        payload = {
+            "query": query,
+            "limit": limit,
+            "verbose": verbose,
+        }
+        return self._post("/search", payload)
 
     def search_owners(self, **kwargs) -> dict:
         return self._post("/search_owners", kwargs)
@@ -1126,18 +1147,7 @@ class ToolExecutor:
         if not query:
             return {"query": query, "error": "Empty query", "hits": [], "total_hits": 0}
 
-        def run_query(query_text: str) -> dict:
-            explore_result = self.search_client.explore(query=query_text)
-
-            if "error" in explore_result:
-                return {
-                    "query": query_text,
-                    "error": explore_result["error"],
-                    "hits": [],
-                    "total_hits": 0,
-                }
-
-            hits, total_hits = extract_explore_hits(explore_result)
+        def format_payload(query_text: str, hits: list[dict], total_hits: int) -> dict:
             filtered_hits = filter_relevant_hits_for_llm(hits)
             filtered_hits, theme_filter = _filter_hits_by_llm_theme(
                 query_text,
@@ -1158,6 +1168,43 @@ class ToolExecutor:
                 if theme_filter.get("warning"):
                     payload["warning"] = theme_filter["warning"]
             return payload
+
+        def run_query(query_text: str) -> dict:
+            search_method = self._search_client_method("search")
+            if search_method is not None:
+                search_result = search_method(
+                    query=query_text,
+                    limit=self.max_results,
+                    verbose=False,
+                )
+                if "error" not in search_result:
+                    payload = format_payload(
+                        query_text,
+                        search_result.get("hits") or [],
+                        int(search_result.get("total_hits") or 0),
+                    )
+                    if payload.get("hits"):
+                        return payload
+                elif self._search_client_method("explore") is None:
+                    return {
+                        "query": query_text,
+                        "error": search_result["error"],
+                        "hits": [],
+                        "total_hits": 0,
+                    }
+
+            explore_result = self.search_client.explore(query=query_text)
+
+            if "error" in explore_result:
+                return {
+                    "query": query_text,
+                    "error": explore_result["error"],
+                    "hits": [],
+                    "total_hits": 0,
+                }
+
+            hits, total_hits = extract_explore_hits(explore_result)
+            return format_payload(query_text, hits, total_hits)
 
         primary_result = run_query(query)
         if primary_result.get("error"):
@@ -1498,8 +1545,9 @@ class ToolExecutor:
             return {"text": text, "error": "Query expansion unavailable", "options": []}
         requested_mode = str(args.get("mode", "semantic") or "semantic")
         size = int(args.get("size", 8) or 8)
+        normalized_text = rewrite_known_term_aliases(text).strip() or text
         result = self.search_client.related_tokens_by_tokens(
-            text=text,
+            text=normalized_text,
             mode=requested_mode,
             size=size,
         )
@@ -1507,19 +1555,22 @@ class ToolExecutor:
             result
         ):
             result = self.search_client.related_tokens_by_tokens(
-                text=text,
+                text=normalized_text,
                 mode="auto",
                 size=size,
             )
         if result.get("error"):
             return {"text": text, "error": result["error"], "options": []}
         options = result.get("options", [])
-        return {
+        payload = {
             "text": text,
             "mode": result.get("mode", requested_mode),
             "total_options": len(options),
             "options": format_related_token_options(options, max_hits=self.max_results),
         }
+        if normalized_text != text:
+            payload["normalized_text"] = normalized_text
+        return payload
 
     @staticmethod
     def _should_retry_expand_query_with_auto(result: dict | None) -> bool:

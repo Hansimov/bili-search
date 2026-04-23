@@ -1671,11 +1671,13 @@ class VideoSearcherV2:
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
         _allow_short_han_retry: bool = True,
+        _allow_owner_context_retry: bool = True,
     ) -> Union[dict, list[dict]]:
         logger.enter_quiet(not verbose)
         effective_query = str(query or "")
         effective_suggest_info = dict(suggest_info or {})
         semantic_rewrite_info: dict = {}
+        owner_context_query = ""
         if request_type == SEARCH_REQUEST_TYPE_DEFAULT:
             (
                 effective_query,
@@ -1690,9 +1692,23 @@ class VideoSearcherV2:
                 effective_suggest_info = semantic_suggest_info
 
         effective_extra_filters = list(extra_filters)
-        owner_intent_info = self._resolve_owner_intent_info(query)
-        if owner_intent_info.get("owner_filter"):
-            effective_extra_filters.extend(owner_intent_info["owner_filter"])
+        owner_intent_query = effective_query
+        owner_intent_info = self._resolve_owner_intent_info(owner_intent_query)
+        if not owner_intent_info:
+            owner_intent_info = self._resolve_spaced_owner_intent_info(
+                owner_intent_query
+            )
+        owner_intent_filters = self._resolve_owner_intent_search_filters(
+            owner_intent_info
+        )
+        if owner_intent_filters:
+            effective_extra_filters.extend(owner_intent_filters)
+            if _allow_owner_context_retry:
+                owner_context_query = self._build_spaced_owner_context_query(
+                    owner_intent_info
+                )
+                if owner_context_query:
+                    effective_query = owner_context_query
 
         # Check if there are actual search keywords
         # If no keywords, fall back to filter-only search
@@ -1814,6 +1830,56 @@ class VideoSearcherV2:
             )
             return_res["semantic_rewrite_info"] = semantic_rewrite_info
 
+        if (
+            owner_context_query
+            and owner_intent_filters
+            and _allow_owner_context_retry
+            and not return_res.get("total_hits", 0)
+        ):
+            logger.warn(
+                "> Retry spaced owner-intent search with original query",
+                verbose=verbose,
+            )
+            retry_res = self.search(
+                query=query,
+                match_fields=match_fields,
+                source_fields=source_fields,
+                match_type=match_type,
+                match_bool=match_bool,
+                match_operator=match_operator,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                request_type=request_type,
+                parse_hits=parse_hits,
+                drop_no_highlights=drop_no_highlights,
+                add_region_info=add_region_info,
+                add_highlights_info=add_highlights_info,
+                is_explain=is_explain,
+                is_profile=is_profile,
+                is_highlight=is_highlight,
+                boost=boost,
+                boosted_fields=boosted_fields,
+                combined_fields_list=combined_fields_list,
+                use_script_score=use_script_score,
+                rank_method=rank_method,
+                score_threshold=score_threshold,
+                use_pinyin=use_pinyin,
+                detail_level=detail_level,
+                detail_levels=detail_levels,
+                limit=limit,
+                rank_top_k=rank_top_k,
+                terminate_after=terminate_after,
+                timeout=timeout,
+                verbose=verbose,
+                _allow_short_han_retry=_allow_short_han_retry,
+                _allow_owner_context_retry=False,
+            )
+            retry_info = dict(retry_res.get("retry_info") or {})
+            retry_info["relaxed_spaced_owner_context"] = True
+            retry_res["retry_info"] = retry_info
+            logger.exit_quiet(not verbose)
+            return retry_res
+
         if self._should_retry_without_short_han_exact(
             query,
             total_hits=return_res.get("total_hits", 0),
@@ -1858,6 +1924,7 @@ class VideoSearcherV2:
                     timeout=timeout,
                     verbose=verbose,
                     _allow_short_han_retry=False,
+                    _allow_owner_context_retry=_allow_owner_context_retry,
                 )
             retry_info = dict(retry_res.get("retry_info") or {})
             retry_info["relaxed_short_han_exact"] = True
@@ -1991,6 +2058,50 @@ class VideoSearcherV2:
             owner_intent_info.setdefault("source_query", normalized_query)
             owner_intent_info["query"] = anchor_query
         return owner_intent_info
+
+    @staticmethod
+    def _build_spaced_owner_context_query(owner_intent_info: dict | None) -> str:
+        source_query = str((owner_intent_info or {}).get("source_query") or "").strip()
+        anchor_query = str((owner_intent_info or {}).get("query") or "").strip()
+        if not source_query or not anchor_query:
+            return ""
+
+        source_terms = [term.strip() for term in source_query.split() if term.strip()]
+        anchor_terms = [term.strip() for term in anchor_query.split() if term.strip()]
+        if not source_terms or not anchor_terms:
+            return ""
+        if source_terms[: len(anchor_terms)] != anchor_terms:
+            return ""
+
+        return " ".join(
+            term for term in source_terms[len(anchor_terms) :] if len(term) >= 2
+        )
+
+    @staticmethod
+    def _resolve_owner_intent_search_filters(
+        owner_intent_info: dict | None,
+    ) -> list[dict]:
+        owner_filter = list((owner_intent_info or {}).get("owner_filter") or [])
+        if owner_filter:
+            return owner_filter
+
+        if not (owner_intent_info or {}).get("source_query"):
+            return []
+
+        owner_mids: list[int] = []
+        for owner in (owner_intent_info or {}).get("owners") or []:
+            owner_mid = owner.get("mid")
+            if not owner_mid:
+                continue
+            owner_mids.append(int(owner_mid))
+            if len(owner_mids) >= OWNER_INTENT_POLICY.max_candidates:
+                break
+
+        if not owner_mids:
+            return []
+        if len(owner_mids) == 1:
+            return [{"term": {"owner.mid": owner_mids[0]}}]
+        return [{"terms": {"owner.mid": owner_mids}}]
 
     def _resolve_owner_intent_info(self, query: str) -> dict:
         normalized_query = (query or "").strip()

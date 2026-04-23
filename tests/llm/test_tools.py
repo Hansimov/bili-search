@@ -202,6 +202,76 @@ def test_execute_search_videos():
     logger.success("[PASS] execute search_videos")
 
 
+def test_execute_search_videos_prefers_direct_search_when_available():
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_videos prefers direct search")
+
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
+        "hits": [
+            {
+                "bvid": "BV1direct",
+                "title": "ComfyUI 工作流讲解",
+                "owner": {"mid": 1, "name": "教程作者"},
+            }
+        ],
+        "total_hits": 12,
+    }
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_test_direct_search",
+        name="search_videos",
+        arguments=json.dumps({"queries": ["康夫 UI 工作流"]}),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["query"] == "康夫 UI 工作流"
+    assert result_data["total_hits"] == 12
+    assert result_data["hits"][0]["bvid"] == "BV1direct"
+    mock_client.search.assert_called_once_with(
+        query="康夫 UI 工作流",
+        limit=15,
+        verbose=False,
+    )
+    mock_client.explore.assert_not_called()
+
+    logger.success("[PASS] execute search_videos prefers direct search")
+
+
+def test_execute_search_videos_falls_back_to_explore_when_direct_search_has_no_hits():
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_videos falls back to explore")
+
+    mock_client = MagicMock()
+    mock_client.search.return_value = {"hits": [], "total_hits": 0}
+    mock_client.explore.return_value = MOCK_EXPLORE_RESULT
+
+    executor = ToolExecutor(search_client=mock_client)
+
+    tc = ToolCall(
+        id="call_test_direct_fallback",
+        name="search_videos",
+        arguments=json.dumps({"queries": ["黑神话"]}),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["query"] == "黑神话"
+    assert result_data["total_hits"] == 42
+    assert result_data["hits"][0]["bvid"] == "BV1abc"
+    mock_client.search.assert_called_once_with(
+        query="黑神话",
+        limit=15,
+        verbose=False,
+    )
+    mock_client.explore.assert_called_once_with(query="黑神话")
+
+    logger.success("[PASS] execute search_videos falls back to explore")
+
+
 def test_execute_search_videos_filters_off_topic_interview_hits_for_llm():
     """Interview-style queries should not expose off-topic hits without interview anchors."""
     logger.note("=" * 60)
@@ -1115,6 +1185,50 @@ def test_execute_expand_query_prefers_semantic_mode():
     )
 
     logger.success("[PASS] execute expand_query prefers semantic")
+
+    def test_execute_expand_query_normalizes_known_aliases_before_relation_lookup(self):
+        logger.note("=" * 60)
+        logger.note("[TEST] execute expand_query normalizes aliases")
+
+        mock_client = MagicMock()
+        mock_client.capabilities.return_value = {
+            "relation_endpoints": ["related_tokens_by_tokens"],
+            "supports_google_search": False,
+        }
+        mock_client.related_tokens_by_tokens.return_value = {
+            "text": "ComfyUI 工作流",
+            "mode": "semantic",
+            "options": [
+                {
+                    "text": "comfyui教程工作流",
+                    "doc_freq": 1,
+                    "score": 256.0,
+                    "type": "rewrite",
+                    "shard_count": 1,
+                }
+            ],
+        }
+
+        executor = ToolExecutor(search_client=mock_client)
+        tc = ToolCall(
+            id="call_expand_alias",
+            name="expand_query",
+            arguments=json.dumps({"text": "康夫 UI 工作流"}),
+        )
+
+        result_msg = executor.execute(tc)
+        result_data = json.loads(result_msg["content"])
+
+        assert result_data["text"] == "康夫 UI 工作流"
+        assert result_data["normalized_text"] == "ComfyUI 工作流"
+        assert result_data["options"][0]["text"] == "comfyui教程工作流"
+        mock_client.related_tokens_by_tokens.assert_called_once_with(
+            text="ComfyUI 工作流",
+            mode="semantic",
+            size=8,
+        )
+
+        logger.success("[PASS] execute expand_query normalizes aliases")
 
 
 def test_execute_expand_query_falls_back_to_auto_when_semantic_unsupported():
