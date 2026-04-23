@@ -67,3 +67,7 @@ exclude = [
     "logs*",
     "debugs*",
 ]
+
+[tool.setuptools.package-data]
+"llms.intent" = ["assets/*.json"]
+"elastics.videos" = ["assets/*.json"]

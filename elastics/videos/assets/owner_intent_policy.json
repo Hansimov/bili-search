@@ -1,0 +1,41 @@
+{
+    "resolve_size": 8,
+    "score_min": 180.0,
+    "filter_gap_min": 30.0,
+    "multi_owner_score_margin": 50.0,
+    "multi_owner_name_margin": 12.0,
+    "max_candidates": 5,
+    "spaced_rerank_score_gap": 8.0,
+    "query_length": {
+        "min": 2,
+        "max": 24
+    },
+    "prefix_candidate_max_extra_chars": 3,
+    "blocked_markers": [
+        ":",
+        "=",
+        "\"",
+        "'",
+        "[",
+        "]"
+    ],
+    "spaced_blocked_markers": [
+        ":",
+        "=",
+        "\"",
+        "'",
+        "[",
+        "]",
+        "(",
+        ")",
+        "|",
+        "&"
+    ],
+    "multi_owner_source_labels": [
+        "topic",
+        "relation"
+    ],
+    "model_code_patterns": [
+        "(?i)^[a-z]{1,2}\\d{2,}[a-z0-9]*$"
+    ]
+}

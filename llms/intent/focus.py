@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
 
+from llms.intent.semantic_assets import get_term_alias_rules
 from llms.intent.taxonomy import FACET_TAXONOMIES
 from llms.intent.taxonomy import FINAL_TARGET_LABELS
 from llms.intent.taxonomy import TASK_MODE_LABELS
@@ -14,7 +16,6 @@ from llms.intent.taxonomy import rank_final_target_matches
 from llms.intent.taxonomy import rank_task_mode_matches
 
 
-_TERM_ALIAS_MAP = {"康夫ui": "ComfyUI"}
 _EDGE_PUNCTUATION = " ，。！？?；;：:、()[]{}<>《》\"'`~!@#$%^&*-+=|\\/"
 _REFERENCE_FACETS: tuple[str, ...] = (
     "expected_payoff",
@@ -37,6 +38,17 @@ class TextUnit:
     start: int
     end: int
     kind: str
+
+
+@lru_cache(maxsize=1)
+def _term_alias_entries() -> tuple[tuple[tuple[str, ...], str], ...]:
+    entries: list[tuple[tuple[str, ...], str]] = []
+    for alias_key, replacement in get_term_alias_rules():
+        alias_units = _scan_text_units(alias_key)
+        if not alias_units:
+            continue
+        entries.append((tuple(unit.normalized for unit in alias_units), replacement))
+    return tuple(entries)
 
 
 def _is_cjk(char: str) -> bool:
@@ -432,18 +444,11 @@ def rewrite_known_term_aliases(text: str) -> str:
     if not units:
         return source
 
-    alias_keys = {
-        alias_key: (tuple(_scan_text_units(alias_key)), replacement)
-        for alias_key, replacement in _TERM_ALIAS_MAP.items()
-    }
     replacements: list[tuple[int, int, str]] = []
     index = 0
     while index < len(units):
         best_match: tuple[int, str] | None = None
-        for alias_key, (alias_units, replacement) in alias_keys.items():
-            if not alias_units:
-                continue
-            alias_tokens = tuple(unit.normalized for unit in alias_units)
+        for alias_tokens, replacement in _term_alias_entries():
             window_tokens: list[str] = []
             end_index = index
             while end_index < len(units) and len(window_tokens) < len(alias_tokens):

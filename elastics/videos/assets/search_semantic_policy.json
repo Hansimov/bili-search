@@ -1,0 +1,49 @@
+{
+    "enabled": true,
+    "alias_rewrite_enabled": true,
+    "relation_rewrite_enabled": true,
+    "relation_mode": "semantic",
+    "relation_fallback_mode": "auto",
+    "relation_size": 6,
+    "relation_scan_limit": 128,
+    "query_length": {
+        "min": 2,
+        "max": 48
+    },
+    "keyword_count": {
+        "min": 1,
+        "max": 6
+    },
+    "blocked_markers": [
+        ":",
+        "=",
+        "\"",
+        "'",
+        "[",
+        "]",
+        "(",
+        ")",
+        "|",
+        "&"
+    ],
+    "candidate_blocked_markers": [
+        ":",
+        "=",
+        "\"",
+        "'",
+        "[",
+        "]",
+        "(",
+        ")",
+        "|",
+        "&"
+    ],
+    "min_option_score": 80.0,
+    "min_option_score_ratio": 0.35,
+    "max_rewrite_options": 3,
+    "require_same_keyword_count": true,
+    "triggers": {
+        "mixed_script_keyword": true,
+        "alias_rewritten_query": true
+    }
+}

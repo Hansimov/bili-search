@@ -1,5 +1,7 @@
 from dsl.fields.word import get_auto_require_short_han_exact_mode
 from dsl.rewrite import DslExprRewriter
+from dsl.elastic import DslExprToElasticConverter
+from dsl.filter import QueryDslDictFilterMerger
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.constants import SEARCH_BOOSTED_FIELDS
 from elastics.videos.searcher_v2 import VideoSearcherV2
@@ -33,7 +35,15 @@ def make_searcher(owner_result: dict) -> tuple[VideoSearcherV2, dict]:
         def search(query, mode="name", size=5):
             return owner_result
 
+    class _StubRelationsClient:
+        @staticmethod
+        def related_tokens_by_tokens(**kwargs):
+            captured["relation_kwargs"] = kwargs
+            return {"mode": kwargs.get("mode", "semantic"), "options": []}
+
     searcher._owner_searcher = _StubOwnerSearcher()
+    searcher._relations_client = _StubRelationsClient()
+    searcher.query_rewriter = DslExprRewriter()
     searcher.has_search_keywords = lambda query: True
     searcher.get_info_of_query_rewrite_dsl = lambda **kwargs: (
         captured.setdefault("query_info", {}),
@@ -53,6 +63,88 @@ def make_searcher(owner_result: dict) -> tuple[VideoSearcherV2, dict]:
     searcher.post_process_return_res = lambda result: result
     searcher.sanitize_search_body_for_client = lambda body: body
     return searcher, captured
+
+
+def test_get_info_of_query_rewrite_dsl_uses_primary_rewrite_expr_tree():
+    searcher = VideoSearcherV2.__new__(VideoSearcherV2)
+    searcher.query_rewriter = DslExprRewriter()
+    searcher.elastic_converter = DslExprToElasticConverter()
+    searcher.filter_merger = QueryDslDictFilterMerger()
+
+    _, rewrite_info, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+        query="康夫ui 教程",
+        suggest_info={
+            "group_replaces_count": [
+                [["康夫ui", "ComfyUI"], 10],
+            ]
+        },
+    )
+
+    assert rewrite_info["rewrited"] is True
+    assert "ComfyUI" in str(query_dsl_dict)
+    assert "康夫ui" not in str(query_dsl_dict)
+
+
+def test_search_applies_alias_rewrite_before_building_query_dsl():
+    searcher, captured = make_searcher({"owners": []})
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        captured["suggest_info"] = kwargs["suggest_info"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+
+    result = searcher.search("康夫ui 教程", limit=5)
+
+    assert captured["dsl_query"] == "ComfyUI 教程"
+    assert captured["suggest_info"] == {}
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
+    assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教程"
+
+
+def test_search_builds_semantic_suggest_info_for_alias_query_relation_rewrite():
+    searcher, captured = make_searcher({"owners": []})
+
+    class _StubRelationsClient:
+        @staticmethod
+        def related_tokens_by_tokens(**kwargs):
+            captured["relation_kwargs"] = kwargs
+            return {
+                "mode": kwargs.get("mode", "semantic"),
+                "options": [
+                    {"text": "ComfyUI 教学", "score": 920.0},
+                    {"text": "__bad__|候选", "score": 910.0},
+                ],
+            }
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        captured["suggest_info"] = kwargs["suggest_info"]
+        return (
+            captured.setdefault("query_info", {}),
+            {"rewrited_word_exprs": ["ComfyUI 教学"]},
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    searcher._relations_client = _StubRelationsClient()
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+
+    result = searcher.search("康夫ui 教程", limit=5)
+
+    assert captured["relation_kwargs"]["text"] == "ComfyUI 教程"
+    assert captured["dsl_query"] == "ComfyUI 教程"
+    assert captured["suggest_info"] == {
+        "group_replaces_count": [
+            [["教程", "教学"], 920],
+        ]
+    }
+    assert result["semantic_rewrite_info"]["relation_rewritten"] is True
+    assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教学"
 
 
 def make_explorer(

@@ -12,11 +12,14 @@ from dsl.rewrite import DslExprRewriter
 from dsl.elastic import DslExprToElasticConverter
 from dsl.filter import QueryDslDictFilterMerger
 from elastics.owners.searcher import OwnerSearcher
+from elastics.relations import RelationsClient
 from elastics.structure import get_highlight_settings, construct_boosted_fields
 from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
 from elastics.structure import construct_knn_query, construct_knn_search_body
 from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
+from elastics.videos.owner_intent_policy import get_owner_intent_policy
+from elastics.videos.search_semantic_policy import get_search_semantic_policy
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
@@ -44,6 +47,7 @@ from converters.embed.embed_client import TextEmbedClient, get_embed_client
 from dsl.fields.qmod import extract_qmod_from_expr_tree
 from dsl.fields.scope import filter_fields_by_scope
 from dsl.fields.word import override_auto_require_short_han_exact, is_short_han_segment
+from llms.intent.focus import rewrite_known_term_aliases
 
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
@@ -57,14 +61,8 @@ from ranks.constants import (
 from ranks.ranker import VideoHitsRanker
 
 
-OWNER_INTENT_RESOLVE_SIZE = 8
-OWNER_INTENT_SCORE_MIN = 180.0
-OWNER_INTENT_FILTER_GAP_MIN = 30.0
-OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN = 50.0
-OWNER_INTENT_MULTI_OWNER_NAME_MARGIN = 12.0
-OWNER_INTENT_MAX_CANDIDATES = 5
-OWNER_INTENT_SPACED_RERANK_SCORE_GAP = 8.0
-OWNER_INTENT_MODEL_CODE_RE = re.compile(r"(?i)^[a-z]{1,2}\d{2,}[a-z0-9]*$")
+OWNER_INTENT_POLICY = get_owner_intent_policy()
+SEARCH_SEMANTIC_POLICY = get_search_semantic_policy()
 SHORT_HAN_QUERY_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,3}")
 RELAXED_SHORT_HAN_RETRY_BOOST_OVERRIDES = {
     "title": 5.0,
@@ -85,6 +83,7 @@ class VideoSearcherV2:
         elastic_env_name: str = None,
         mongo_env_name: str = None,
         owner_searcher: OwnerSearcher | None = None,
+        relations_client: RelationsClient | None = None,
     ):
         """
         - index_name:
@@ -101,6 +100,7 @@ class VideoSearcherV2:
         self.elastic_env_name = elastic_env_name
         self.mongo_env_name = mongo_env_name
         self._owner_searcher = owner_searcher
+        self._relations_client = relations_client
         self.init_processors()
 
     def init_processors(self):
@@ -142,6 +142,183 @@ class VideoSearcherV2:
                 elastic_env_name=self.elastic_env_name,
             )
         return self._owner_searcher
+
+    @property
+    def relations_client(self) -> RelationsClient:
+        if self._relations_client is None:
+            self._relations_client = RelationsClient(
+                index_name=self.index_name,
+                elastic_env_name=self.elastic_env_name,
+            )
+        return self._relations_client
+
+    @staticmethod
+    def _keyword_has_mixed_script(text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        has_cjk = any("\u4e00" <= char <= "\u9fff" for char in normalized)
+        has_ascii_alnum = any(char.isascii() and char.isalnum() for char in normalized)
+        return has_cjk and has_ascii_alnum
+
+    @classmethod
+    def _semantic_fallback_requires_auto(cls, result: dict | None) -> bool:
+        if not isinstance(result, dict):
+            return False
+        error = str(result.get("error", "") or "").lower()
+        if not error:
+            return False
+        return "mode must be" in error and "semantic" in error
+
+    def _build_semantic_group_replaces_count(
+        self,
+        query: str,
+        options: list[dict],
+    ) -> tuple[list[list[object]], list[dict]]:
+        query_info = self.query_rewriter.get_query_info(query)
+        keywords = list(query_info.get("keywords_body") or [])
+        if not keywords:
+            return [], []
+
+        accepted_groups: list[list[object]] = []
+        accepted_options: list[dict] = []
+        top_score = float((options[0] or {}).get("score") or 0.0) if options else 0.0
+        for option in options:
+            text = str((option or {}).get("text") or "").strip()
+            if not text:
+                continue
+            if SEARCH_SEMANTIC_POLICY.has_candidate_blocked_marker(text):
+                continue
+            score = float((option or {}).get("score") or 0.0)
+            if score < SEARCH_SEMANTIC_POLICY.min_option_score:
+                continue
+            if (
+                top_score
+                and score / top_score < SEARCH_SEMANTIC_POLICY.min_option_score_ratio
+            ):
+                continue
+
+            option_query_info = self.query_rewriter.get_query_info(text)
+            option_keywords = list(option_query_info.get("keywords_body") or [])
+            if not option_keywords:
+                continue
+            if SEARCH_SEMANTIC_POLICY.require_same_keyword_count and len(
+                option_keywords
+            ) != len(keywords):
+                continue
+
+            group_replaces: list[str] = []
+            for qword, hword in zip(keywords, option_keywords):
+                if qword == hword:
+                    continue
+                group_replaces.extend([qword, hword])
+            if not group_replaces:
+                continue
+
+            accepted_groups.append([group_replaces, int(round(score))])
+            accepted_options.append(
+                {
+                    "text": text,
+                    "score": score,
+                    "keywords": option_keywords,
+                }
+            )
+            if len(accepted_groups) >= SEARCH_SEMANTIC_POLICY.max_rewrite_options:
+                break
+
+        return accepted_groups, accepted_options
+
+    def _resolve_search_semantic_rewrite(
+        self,
+        query: str,
+        suggest_info: dict | None = None,
+        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
+    ) -> tuple[str, dict, dict]:
+        semantic_rewrite_info = {
+            "input_query": str(query or ""),
+            "applied": False,
+            "alias_rewritten": False,
+            "relation_rewritten": False,
+        }
+        if (
+            request_type != SEARCH_REQUEST_TYPE_DEFAULT
+            or suggest_info
+            or not SEARCH_SEMANTIC_POLICY.enabled
+        ):
+            semantic_rewrite_info["applied_query"] = str(query or "")
+            return str(query or ""), {}, semantic_rewrite_info
+
+        base_query = str(query or "").strip()
+        if not base_query:
+            semantic_rewrite_info["applied_query"] = base_query
+            return base_query, {}, semantic_rewrite_info
+
+        if SEARCH_SEMANTIC_POLICY.alias_rewrite_enabled:
+            alias_query = rewrite_known_term_aliases(base_query).strip()
+            if alias_query and alias_query != base_query:
+                semantic_rewrite_info["alias_rewritten"] = True
+                semantic_rewrite_info["alias_query"] = alias_query
+                base_query = alias_query
+
+        semantic_suggest_info: dict = {}
+        query_info = self.query_rewriter.get_query_info(base_query)
+        keywords = list(query_info.get("keywords_body") or [])
+        should_attempt_relation_rewrite = (
+            SEARCH_SEMANTIC_POLICY.relation_rewrite_enabled
+            and SEARCH_SEMANTIC_POLICY.query_length_ok(base_query)
+            and SEARCH_SEMANTIC_POLICY.keyword_count_ok(keywords)
+            and not SEARCH_SEMANTIC_POLICY.has_blocked_marker(base_query)
+            and (
+                (
+                    SEARCH_SEMANTIC_POLICY.trigger_alias_rewritten_query
+                    and semantic_rewrite_info["alias_rewritten"]
+                )
+                or (
+                    SEARCH_SEMANTIC_POLICY.trigger_mixed_script_keyword
+                    and any(
+                        self._keyword_has_mixed_script(keyword) for keyword in keywords
+                    )
+                )
+            )
+        )
+        if should_attempt_relation_rewrite:
+            relation_result = self.relations_client.related_tokens_by_tokens(
+                text=base_query,
+                mode=SEARCH_SEMANTIC_POLICY.relation_mode,
+                size=SEARCH_SEMANTIC_POLICY.relation_size,
+                scan_limit=SEARCH_SEMANTIC_POLICY.relation_scan_limit,
+                use_pinyin=True,
+            )
+            if self._semantic_fallback_requires_auto(relation_result):
+                relation_result = self.relations_client.related_tokens_by_tokens(
+                    text=base_query,
+                    mode=SEARCH_SEMANTIC_POLICY.relation_fallback_mode,
+                    size=SEARCH_SEMANTIC_POLICY.relation_size,
+                    scan_limit=SEARCH_SEMANTIC_POLICY.relation_scan_limit,
+                    use_pinyin=True,
+                )
+
+            options = list(relation_result.get("options") or [])
+            group_replaces_count, accepted_options = (
+                self._build_semantic_group_replaces_count(base_query, options)
+            )
+            if group_replaces_count:
+                semantic_suggest_info = {"group_replaces_count": group_replaces_count}
+                semantic_rewrite_info["relation_rewritten"] = True
+                semantic_rewrite_info["relation_mode"] = relation_result.get(
+                    "mode",
+                    SEARCH_SEMANTIC_POLICY.relation_mode,
+                )
+                semantic_rewrite_info["accepted_options"] = accepted_options
+            elif relation_result.get("error"):
+                semantic_rewrite_info["relation_error"] = relation_result.get("error")
+
+        semantic_rewrite_info["applied"] = bool(
+            semantic_rewrite_info["alias_rewritten"]
+            or semantic_rewrite_info["relation_rewritten"]
+        )
+        semantic_rewrite_info["applied_query"] = base_query
+        return base_query, semantic_suggest_info, semantic_rewrite_info
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
         try:
@@ -1265,7 +1442,8 @@ class VideoSearcherV2:
         query_info["effective_match_fields"] = effective_match_fields
         query_info["effective_date_match_fields"] = effective_date_match_fields
         # get expr_tree, and construct query_dsl_dict from expr_tree
-        expr_tree = rewrite_info.get("rewrited_expr_tree", None)
+        rewrited_expr_trees = list(rewrite_info.get("rewrited_expr_trees") or [])
+        expr_tree = rewrited_expr_trees[0] if rewrited_expr_trees else None
         expr_tree = expr_tree or query_info.get("query_expr_tree", None)
         self.elastic_converter.word_converter.switch_mode(
             match_fields=effective_match_fields,
@@ -1495,6 +1673,22 @@ class VideoSearcherV2:
         _allow_short_han_retry: bool = True,
     ) -> Union[dict, list[dict]]:
         logger.enter_quiet(not verbose)
+        effective_query = str(query or "")
+        effective_suggest_info = dict(suggest_info or {})
+        semantic_rewrite_info: dict = {}
+        if request_type == SEARCH_REQUEST_TYPE_DEFAULT:
+            (
+                effective_query,
+                semantic_suggest_info,
+                semantic_rewrite_info,
+            ) = self._resolve_search_semantic_rewrite(
+                query=query,
+                suggest_info=suggest_info,
+                request_type=request_type,
+            )
+            if semantic_suggest_info and not effective_suggest_info:
+                effective_suggest_info = semantic_suggest_info
+
         effective_extra_filters = list(extra_filters)
         owner_intent_info = self._resolve_owner_intent_info(query)
         if owner_intent_info.get("owner_filter"):
@@ -1539,8 +1733,8 @@ class VideoSearcherV2:
             use_pinyin=use_pinyin,
         )
         query_rewrite_dsl_params = {
-            "query": query,
-            "suggest_info": suggest_info,
+            "query": effective_query,
+            "suggest_info": effective_suggest_info,
             "boosted_match_fields": boosted_match_fields,
             "boosted_date_fields": boosted_date_fields,
             "match_type": match_type,
@@ -1602,7 +1796,7 @@ class VideoSearcherV2:
         # rewrite_by_suggest, only apply for "suggest" request_type
         return_res = self.rewrite_by_suggest(
             query_info,
-            suggest_info=suggest_info,
+            suggest_info=effective_suggest_info,
             rewrite_info=rewrite_info,
             request_type=request_type,
             return_res=parse_res,
@@ -1611,6 +1805,14 @@ class VideoSearcherV2:
         # Sanitize search_body to reduce network payload (removes large terms arrays)
         return_res["search_body"] = self.sanitize_search_body_for_client(search_body)
         return_res["intent_info"] = owner_intent_info
+        if semantic_rewrite_info:
+            semantic_rewrite_info = dict(semantic_rewrite_info)
+            semantic_rewrite_info["applied_query"] = (
+                list(rewrite_info.get("rewrited_word_exprs") or [effective_query])[0]
+                if rewrite_info.get("rewrited_word_exprs")
+                else semantic_rewrite_info.get("applied_query", effective_query)
+            )
+            return_res["semantic_rewrite_info"] = semantic_rewrite_info
 
         if self._should_retry_without_short_han_exact(
             query,
@@ -1715,23 +1917,25 @@ class VideoSearcherV2:
             return False
 
         score = float((owner or {}).get("score") or 0.0)
-        if score < OWNER_INTENT_SCORE_MIN:
+        if score < OWNER_INTENT_POLICY.score_min:
             return False
-        if top_score - score > OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN:
+        if top_score - score > OWNER_INTENT_POLICY.multi_owner_score_margin:
             return False
         if not owner_name.startswith(normalized_token):
             return False
 
-        max_owner_name_len = len(normalized_token) + 3
+        max_owner_name_len = (
+            len(normalized_token) + OWNER_INTENT_POLICY.prefix_candidate_max_extra_chars
+        )
         return len(owner_name) <= max_owner_name_len
 
     def _resolve_vector_auto_constraint_query(self, query: str) -> str:
         normalized_query = str(query or "").strip()
         if not normalized_query:
             return normalized_query
-        if any(
-            marker in normalized_query
-            for marker in [":", "=", '"', "'", "[", "]", "(", ")", "|", "&"]
+        if OWNER_INTENT_POLICY.has_blocked_marker(
+            normalized_query,
+            allow_whitespace=False,
         ):
             return normalized_query
 
@@ -1749,7 +1953,7 @@ class VideoSearcherV2:
             owners_result = self.owner_searcher.search(
                 anchor,
                 mode="name",
-                size=OWNER_INTENT_RESOLVE_SIZE,
+                size=OWNER_INTENT_POLICY.resolve_size,
             )
         except Exception as e:
             logger.warn(f"> Failed to resolve vector auto-constraint owner anchor: {e}")
@@ -1760,10 +1964,10 @@ class VideoSearcherV2:
             return normalized_query
 
         top_score = float((owners[0] or {}).get("score") or 0.0)
-        if top_score < OWNER_INTENT_SCORE_MIN:
+        if top_score < OWNER_INTENT_POLICY.score_min:
             return normalized_query
 
-        for owner in owners[:OWNER_INTENT_MAX_CANDIDATES]:
+        for owner in owners[: OWNER_INTENT_POLICY.max_candidates]:
             if self._is_compact_owner_prefix_candidate(anchor, owner, top_score):
                 return anchor
 
@@ -1792,11 +1996,14 @@ class VideoSearcherV2:
         normalized_query = (query or "").strip()
         if not normalized_query:
             return {}
-        if any(marker in normalized_query for marker in [":", "=", '"', "'", "[", "]"]):
+        if OWNER_INTENT_POLICY.has_blocked_marker(
+            normalized_query,
+            allow_whitespace=True,
+        ):
             return {}
         if any(char.isspace() for char in normalized_query):
             return {}
-        if len(normalized_query) < 2 or len(normalized_query) > 24:
+        if not OWNER_INTENT_POLICY.query_length_ok(normalized_query):
             return {}
         if self._looks_like_model_code_query(normalized_query):
             return {}
@@ -1804,7 +2011,7 @@ class VideoSearcherV2:
         owners_result = self.owner_searcher.search(
             normalized_query,
             mode="name",
-            size=OWNER_INTENT_RESOLVE_SIZE,
+            size=OWNER_INTENT_POLICY.resolve_size,
         )
         owners = owners_result.get("owners") or []
         owner_candidates = self._select_owner_intent_candidates(owners)
@@ -1826,16 +2033,7 @@ class VideoSearcherV2:
 
     @staticmethod
     def _looks_like_model_code_query(text: str) -> bool:
-        normalized = re.sub(r"[\s._-]+", "", str(text or "")).strip()
-        if not normalized:
-            return False
-        if any("\u4e00" <= char <= "\u9fff" for char in normalized):
-            return False
-        if not any(char.isalpha() for char in normalized):
-            return False
-        if not any(char.isdigit() for char in normalized):
-            return False
-        return bool(OWNER_INTENT_MODEL_CODE_RE.fullmatch(normalized))
+        return OWNER_INTENT_POLICY.looks_like_model_code_query(text)
 
     @staticmethod
     def _build_owner_filter(owner: dict) -> list[dict]:
@@ -1876,7 +2074,9 @@ class VideoSearcherV2:
         def _sort_key(candidate: dict) -> tuple[int, float, int, int]:
             score = float(candidate.get("score") or 0.0)
             score_gap = top_score - score
-            near_top = 0 if score_gap <= OWNER_INTENT_SPACED_RERANK_SCORE_GAP else 1
+            near_top = (
+                0 if score_gap <= OWNER_INTENT_POLICY.spaced_rerank_score_gap else 1
+            )
             sample_view = int(candidate.get("sample_view") or 0)
             return (
                 near_top,
@@ -1889,8 +2089,7 @@ class VideoSearcherV2:
 
     @staticmethod
     def _candidate_supports_multi_owner_intent(candidate: dict) -> bool:
-        sources = set(candidate.get("sources") or [])
-        return bool(sources.intersection({"topic", "relation"}))
+        return OWNER_INTENT_POLICY.supports_multi_owner_sources(candidate)
 
     @classmethod
     def _select_owner_intent_candidates(cls, owners: list[dict]) -> list[dict]:
@@ -1898,7 +2097,7 @@ class VideoSearcherV2:
             return []
 
         top_score = float((owners[0] or {}).get("score") or 0.0)
-        if top_score < OWNER_INTENT_SCORE_MIN:
+        if top_score < OWNER_INTENT_POLICY.score_min:
             return []
 
         candidates: list[dict] = []
@@ -1908,21 +2107,21 @@ class VideoSearcherV2:
                 continue
 
             score = normalized["score"]
-            if score < OWNER_INTENT_SCORE_MIN:
+            if score < OWNER_INTENT_POLICY.score_min:
                 continue
 
             if index > 0:
                 score_gap = top_score - score
-                if score_gap > OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN:
+                if score_gap > OWNER_INTENT_POLICY.multi_owner_score_margin:
                     continue
                 if (
                     not cls._candidate_supports_multi_owner_intent(normalized)
-                    and score_gap > OWNER_INTENT_MULTI_OWNER_NAME_MARGIN
+                    and score_gap > OWNER_INTENT_POLICY.multi_owner_name_margin
                 ):
                     continue
 
             candidates.append(normalized)
-            if len(candidates) >= OWNER_INTENT_MAX_CANDIDATES:
+            if len(candidates) >= OWNER_INTENT_POLICY.max_candidates:
                 break
 
         return candidates
@@ -1953,7 +2152,10 @@ class VideoSearcherV2:
             float((owners[1] or {}).get("score") or 0.0) if len(owners) > 1 else 0.0
         )
         gap = top_score - second_score
-        if top_score < OWNER_INTENT_SCORE_MIN or gap < OWNER_INTENT_FILTER_GAP_MIN:
+        if (
+            top_score < OWNER_INTENT_POLICY.score_min
+            or gap < OWNER_INTENT_POLICY.filter_gap_min
+        ):
             return None
         if top["mid"] != candidates[0]["mid"]:
             return None

@@ -1,0 +1,8 @@
+{
+    "aliases": [
+        {
+            "source": "康夫ui",
+            "target": "ComfyUI"
+        }
+    ]
+}
