@@ -192,6 +192,36 @@ def test_search_name_mode_uses_stable_name_recall_floor_for_owner_intent():
     assert result["owners"][0]["name"] == "老师好我叫何同学"
 
 
+def test_search_name_mode_uses_stable_topic_recall_floor_for_owner_intent():
+    searcher = OwnerSearcher.__new__(OwnerSearcher)
+
+    searcher._prepare_query = lambda query, mode: query
+    searcher._search_name_candidates = lambda query, size: [
+        {"mid": 1, "name": "红警土豆_", "score": 151.5, "sources": ["name"]},
+        {"mid": 2, "name": "红警HBK08", "score": 150.0, "sources": ["name"]},
+    ]
+
+    def fake_topic_candidates(query: str, size: int) -> list[dict]:
+        hits = [
+            {"mid": 2, "name": "红警HBK08", "score": 140.0, "sources": ["topic"]},
+            {"mid": 1, "name": "红警土豆_", "score": 134.0, "sources": ["topic"]},
+        ]
+        if size >= 16:
+            hits.insert(
+                0,
+                {"mid": 3, "name": "红警360", "score": 155.0, "sources": ["topic"]},
+            )
+        return hits
+
+    searcher._search_topic_candidates = fake_topic_candidates
+    searcher._search_relation_candidates = lambda query, name_hits, size: []
+    searcher._load_owner_metadata = lambda mids: {}
+
+    result = searcher.search("红警", mode="name", size=5)
+
+    assert any(owner["name"] == "红警360" for owner in result["owners"])
+
+
 def test_search_hydrates_owner_face_and_sample_from_metadata_lookup():
     searcher = OwnerSearcher.__new__(OwnerSearcher)
 

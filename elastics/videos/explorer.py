@@ -14,6 +14,7 @@ from dsl.fields.qmod import (
     is_hybrid_qmod,
     has_rerank_qmod,
 )
+from dsl.fields.scope import get_scope_constraint_fields
 
 from ranks.constants import (
     RANK_METHOD_TYPE,
@@ -30,6 +31,7 @@ from ranks.constants import (
 )
 from ranks.reranker import get_reranker
 from ranks.grouper import AuthorGrouper
+from recalls.base import RecallPool
 from recalls.manager import RecallManager
 
 STEP_ZH_NAMES = {
@@ -54,6 +56,12 @@ STEP_ZH_NAMES = {
         "output_type": "info",
     },
 }
+
+OWNER_INTENT_RECALL_MIN = 8
+OWNER_INTENT_RECALL_MAX = 16
+OWNER_INTENT_BLEND_WINDOW = 12
+OWNER_INTENT_BLEND_VISIBLE_HITS = 2
+OWNER_INTENT_BLEND_SLOTS = (3, 7)
 
 
 class StepBuilder:
@@ -173,6 +181,281 @@ class VideoExplorer(VideoSearcherV2):
         grouper.add_user_faces_to_list(authors_list, user_docs)
 
         return authors_list
+
+    @staticmethod
+    def _owner_intent_recall_limit(rank_top_k: int) -> int:
+        if rank_top_k <= 0:
+            return OWNER_INTENT_RECALL_MIN
+        return min(
+            max(rank_top_k // 20, OWNER_INTENT_RECALL_MIN),
+            OWNER_INTENT_RECALL_MAX,
+        )
+
+    def _supplement_with_owner_intent_hits(
+        self,
+        pool: RecallPool,
+        query: str,
+        owner_intent_info: dict | None,
+        source_fields: list[str] = None,
+        extra_filters: list[dict] = None,
+        timeout: float = EXPLORE_TIMEOUT,
+        rank_top_k: int = EXPLORE_RANK_TOP_K,
+        verbose: bool = False,
+    ) -> RecallPool:
+        owner_filter = list((owner_intent_info or {}).get("owner_filter") or [])
+        if not owner_filter:
+            return pool
+
+        effective_source_fields = list(
+            source_fields
+            or [
+                "bvid",
+                "title",
+                "tags",
+                "desc",
+                "owner",
+                "stat",
+                "pubdate",
+                "duration",
+                "stat_score",
+            ]
+        )
+        if "owner" not in effective_source_fields:
+            effective_source_fields.append("owner")
+
+        owner_info = owner_intent_info.get("owner", {}) if owner_intent_info else {}
+        owner_limit = self._owner_intent_recall_limit(rank_top_k)
+        if verbose:
+            logger.hint(
+                f"> Supplement owner-intent recall: {owner_info.get('name')}"
+                f" ({owner_info.get('mid')}) limit={owner_limit}",
+                verbose=verbose,
+            )
+
+        start = time.perf_counter()
+        owner_res = self.search(
+            query=query,
+            source_fields=effective_source_fields,
+            extra_filters=list(extra_filters or []) + owner_filter,
+            parse_hits=True,
+            add_region_info=False,
+            add_highlights_info=False,
+            is_highlight=False,
+            boost=True,
+            rank_method="heads",
+            limit=owner_limit,
+            rank_top_k=owner_limit,
+            timeout=timeout,
+            verbose=False,
+        )
+        owner_hits = owner_res.get("hits", [])
+        if not owner_hits:
+            return pool
+
+        took_ms = round((time.perf_counter() - start) * 1000, 2)
+        merged_hits = list(pool.hits)
+        merged_tags = {bvid: set(tags) for bvid, tags in (pool.lane_tags or {}).items()}
+        seen_bvids = {
+            hit.get("bvid"): idx
+            for idx, hit in enumerate(merged_hits)
+            if hit.get("bvid")
+        }
+        new_hits = 0
+
+        for rank, hit in enumerate(owner_hits):
+            bvid = hit.get("bvid")
+            if not bvid:
+                continue
+
+            hit["owner_intent_rank"] = rank
+            if bvid in seen_bvids:
+                merged_hit = merged_hits[seen_bvids[bvid]]
+                merged_hit["owner_intent_rank"] = rank
+                merged_tags.setdefault(bvid, set()).add("owner_intent")
+                existing_score = merged_hit.get("score", 0) or 0
+                new_score = hit.get("score", 0) or 0
+                if new_score > existing_score:
+                    merged_hit["score"] = new_score
+            else:
+                merged_hits.append(hit)
+                seen_bvids[bvid] = len(merged_hits) - 1
+                merged_tags[bvid] = {"owner_intent"}
+                new_hits += 1
+
+        for hit in merged_hits:
+            bvid = hit.get("bvid")
+            if bvid and bvid in merged_tags:
+                hit["_recall_lanes"] = merged_tags[bvid]
+
+        return RecallPool(
+            hits=merged_hits,
+            lanes_info={
+                **pool.lanes_info,
+                "owner_intent": {
+                    "hit_count": len(owner_hits),
+                    "new_hits": new_hits,
+                    "owner_mid": owner_info.get("mid"),
+                    "owner_name": owner_info.get("name"),
+                    "took_ms": took_ms,
+                },
+            },
+            total_hits=max(pool.total_hits, owner_res.get("total_hits", 0)),
+            took_ms=pool.took_ms,
+            timed_out=pool.timed_out or owner_res.get("timed_out", False),
+            lane_tags=merged_tags,
+            pool_hints=pool.pool_hints,
+        )
+
+    @staticmethod
+    def _blend_owner_intent_hits(
+        search_res: dict,
+        owner_intent_info: dict | None,
+    ) -> dict:
+        hits = list(search_res.get("hits") or [])
+        owner_mid = (owner_intent_info or {}).get("owner", {}).get("mid")
+        if not hits or not owner_mid:
+            return search_res
+
+        owner_mid = str(owner_mid)
+
+        def _is_owner_hit(hit: dict) -> bool:
+            return str((hit.get("owner") or {}).get("mid") or "") == owner_mid
+
+        owner_candidates = []
+        visible_owner_hits = 0
+        for idx, hit in enumerate(hits):
+            if not _is_owner_hit(hit):
+                continue
+            hit["intent_match_video"] = True
+            if idx < OWNER_INTENT_BLEND_WINDOW:
+                visible_owner_hits += 1
+                continue
+            owner_candidates.append((idx, hit))
+
+        if (
+            visible_owner_hits >= OWNER_INTENT_BLEND_VISIBLE_HITS
+            or not owner_candidates
+        ):
+            return search_res
+
+        owner_candidates.sort(
+            key=lambda item: (
+                item[1].get("owner_intent_rank", 10**9),
+                item[0],
+            )
+        )
+        needed_hits = min(
+            OWNER_INTENT_BLEND_VISIBLE_HITS - visible_owner_hits,
+            len(OWNER_INTENT_BLEND_SLOTS),
+            len(owner_candidates),
+        )
+        if needed_hits <= 0:
+            return search_res
+
+        selected_hits = [hit for _, hit in owner_candidates[:needed_hits]]
+        selected_bvids = {hit.get("bvid") for hit in selected_hits if hit.get("bvid")}
+        if not selected_bvids:
+            return search_res
+
+        base_hits = [hit for hit in hits if hit.get("bvid") not in selected_bvids]
+        visible_owner_hits = sum(
+            1 for hit in base_hits[:OWNER_INTENT_BLEND_WINDOW] if _is_owner_hit(hit)
+        )
+
+        inserted_hits = 0
+        remaining_selected = list(selected_hits)
+        for slot in OWNER_INTENT_BLEND_SLOTS:
+            if visible_owner_hits >= OWNER_INTENT_BLEND_VISIBLE_HITS:
+                break
+            if not remaining_selected:
+                break
+
+            bounded_slot = min(slot, len(base_hits))
+            if bounded_slot < len(base_hits) and _is_owner_hit(base_hits[bounded_slot]):
+                visible_owner_hits += 1
+                continue
+
+            hit = remaining_selected.pop(0)
+            hit["owner_intent_blended"] = True
+            base_hits.insert(bounded_slot, hit)
+            visible_owner_hits += 1
+            inserted_hits += 1
+
+        if inserted_hits:
+            total = max(len(base_hits), 1)
+            for idx, hit in enumerate(base_hits):
+                hit["rank_score"] = round(1.0 - (idx / total), 6)
+            search_res["hits"] = base_hits
+            search_res["owner_intent_blend"] = {
+                "owner_mid": owner_mid,
+                "inserted_hits": inserted_hits,
+                "visible_owner_hits": visible_owner_hits,
+            }
+
+        return search_res
+
+    @staticmethod
+    def _get_owner_intent_candidates(owner_intent_info: dict | None) -> list[dict]:
+        if not owner_intent_info:
+            return []
+
+        owners = [
+            owner
+            for owner in (owner_intent_info.get("owners") or [])
+            if owner.get("mid") and owner.get("name")
+        ]
+        if owners:
+            return owners
+
+        owner = owner_intent_info.get("owner") or {}
+        if owner.get("mid") and owner.get("name"):
+            return [owner]
+        return []
+
+    @staticmethod
+    def _promote_owner_intent_author_group(
+        authors_list: list[dict], owner_intent_info: dict | None
+    ) -> list[dict]:
+        owner_candidates = VideoExplorer._get_owner_intent_candidates(owner_intent_info)
+        if not owner_candidates or not authors_list:
+            return authors_list
+
+        candidate_by_mid = {
+            str(candidate.get("mid")): {
+                **candidate,
+                "intent_owner_rank": index,
+            }
+            for index, candidate in enumerate(owner_candidates)
+        }
+
+        reranked_authors: list[dict] = []
+        for author in authors_list:
+            author_mid = str(author.get("mid") or "")
+            candidate = candidate_by_mid.get(author_mid)
+            intent_author_score = (
+                float(author.get("sum_rank_score") or 0.0)
+                + min(float(author.get("sum_count") or 0.0), 20.0) * 0.2
+                + float(author.get("top_rank_score") or 0.0) * 2.0
+            )
+            if candidate:
+                author["intent_match"] = True
+                author["intent_owner_score"] = float(candidate.get("score") or 0.0)
+                author["intent_owner_rank"] = candidate["intent_owner_rank"]
+                intent_author_score += author["intent_owner_score"] / 80.0
+            author["intent_author_score"] = round(intent_author_score, 4)
+            reranked_authors.append(author)
+
+        reranked_authors.sort(
+            key=lambda author: (
+                float(author.get("intent_author_score") or 0.0),
+                float(author.get("sum_rank_score") or 0.0),
+                float(author.get("sum_count") or 0.0),
+                float(author.get("top_rank_score") or 0.0),
+                -(int(author.get("first_appear_order") or 0)),
+            ),
+            reverse=True,
+        )
+        return reranked_authors
 
     def merge_scores_into_hits(
         self,
@@ -445,6 +728,7 @@ class VideoExplorer(VideoSearcherV2):
         search_res: dict,
         group_owner_limit: int,
         group_sort_field: str = "first_appear_order",
+        owner_intent_info: dict | None = None,
     ) -> tuple[list[dict], dict]:
         """Build author group step result.
 
@@ -456,12 +740,23 @@ class VideoExplorer(VideoSearcherV2):
         Returns:
             Tuple of (authors_list, group_step_output).
         """
+        owner_candidates = self._get_owner_intent_candidates(owner_intent_info)
+        initial_limit = group_owner_limit
+        if owner_candidates:
+            initial_limit = max(
+                group_owner_limit * 2, group_owner_limit + len(owner_candidates)
+            )
+
         group_res = self.group_hits_by_owner(
             search_res=search_res,
             sort_field=group_sort_field,
-            limit=group_owner_limit,
+            limit=initial_limit,
         )
-        return group_res
+        group_res = self._promote_owner_intent_author_group(
+            group_res,
+            owner_intent_info,
+        )
+        return group_res[:group_owner_limit]
 
     def _run_explore_pipeline(
         self,
@@ -483,6 +778,7 @@ class VideoExplorer(VideoSearcherV2):
         knn_field: str = KNN_TEXT_EMB_FIELD,
         recall_source_fields: list[str] = None,
         recall_timeout: float = EXPLORE_TIMEOUT,
+        owner_intent_info: dict | None = None,
     ) -> dict:
         """Shared pipeline for all explore variants.
 
@@ -570,6 +866,16 @@ class VideoExplorer(VideoSearcherV2):
             recall_kwargs["knn_field"] = knn_field
 
         recall_pool = self.recall_manager.recall(**recall_kwargs)
+        recall_pool = self._supplement_with_owner_intent_hits(
+            pool=recall_pool,
+            query=query,
+            owner_intent_info=owner_intent_info,
+            source_fields=recall_source_fields,
+            extra_filters=extra_filters,
+            timeout=recall_timeout,
+            rank_top_k=rank_top_k,
+            verbose=verbose,
+        )
         perf["recall_ms"] = round((time.perf_counter() - recall_start) * 1000, 2)
 
         if not recall_pool.hits:
@@ -604,6 +910,7 @@ class VideoExplorer(VideoSearcherV2):
             verbose=verbose,
             pool_hints=recall_pool.pool_hints,
         )
+        search_res = self._blend_owner_intent_hits(search_res, owner_intent_info)
         search_res["total_hits"] = recall_pool.total_hits
         search_res["recall_info"] = recall_pool.lanes_info
         perf["fetch_ms"] = search_res.get("fetch_ms", 0)
@@ -622,7 +929,11 @@ class VideoExplorer(VideoSearcherV2):
 
         # Step 2: Group by owner
         logger.hint("> [step 2] Group by owner ...", verbose=verbose)
-        group_res = self._build_group_step(search_res, group_owner_limit)
+        group_res = self._build_group_step(
+            search_res,
+            group_owner_limit,
+            owner_intent_info=owner_intent_info,
+        )
         steps.add_step(
             "group_hits_by_owner",
             output={"authors": group_res},
@@ -639,6 +950,7 @@ class VideoExplorer(VideoSearcherV2):
         extra_filters: list[dict] = [],
         suggest_info: dict = {},
         verbose: bool = False,
+        owner_intent_info: dict | None = None,
         # Recall & ranking params
         rank_method: RANK_METHOD_TYPE = RANK_METHOD,
         rank_top_k: int = EXPLORE_RANK_TOP_K,
@@ -675,6 +987,7 @@ class VideoExplorer(VideoSearcherV2):
             rerank_max_hits=rerank_max_hits,
             rerank_keyword_boost=rerank_keyword_boost,
             rerank_title_keyword_boost=rerank_title_keyword_boost,
+            owner_intent_info=owner_intent_info,
             recall_source_fields=[
                 "bvid",
                 "title",
@@ -693,6 +1006,7 @@ class VideoExplorer(VideoSearcherV2):
         extra_filters: list[dict] = [],
         constraint_filter: dict = None,
         verbose: bool = False,
+        owner_intent_info: dict | None = None,
         # KNN params
         knn_field: str = KNN_TEXT_EMB_FIELD,
         # Rerank params
@@ -722,6 +1036,7 @@ class VideoExplorer(VideoSearcherV2):
             rerank_max_hits=rerank_max_hits,
             rerank_keyword_boost=rerank_keyword_boost,
             rerank_title_keyword_boost=rerank_title_keyword_boost,
+            owner_intent_info=owner_intent_info,
             knn_field=knn_field,
             recall_timeout=KNN_TIMEOUT,
         )
@@ -733,6 +1048,7 @@ class VideoExplorer(VideoSearcherV2):
         constraint_filter: dict = None,
         suggest_info: dict = {},
         verbose: bool = False,
+        owner_intent_info: dict | None = None,
         # KNN params
         knn_field: str = KNN_TEXT_EMB_FIELD,
         # Rerank params
@@ -763,6 +1079,7 @@ class VideoExplorer(VideoSearcherV2):
             rerank_max_hits=rerank_max_hits,
             rerank_keyword_boost=rerank_keyword_boost,
             rerank_title_keyword_boost=rerank_title_keyword_boost,
+            owner_intent_info=owner_intent_info,
             knn_field=knn_field,
             recall_source_fields=[
                 "bvid",
@@ -847,6 +1164,8 @@ class VideoExplorer(VideoSearcherV2):
         """
         from dsl.fields.qmod import normalize_qmod
 
+        owner_intent_info = self._resolve_owner_intent_info(query)
+
         # Extract query mode from query if not provided
         if qmod is None:
             qmod = self.get_qmod_from_query(query)
@@ -896,7 +1215,10 @@ class VideoExplorer(VideoSearcherV2):
                             es_client=self.es.client,
                             index_name=self.index_name,
                             query=raw_query,
-                            fields=CONSTRAINT_FIELDS_DEFAULT,
+                            fields=get_scope_constraint_fields(
+                                query_info.get("scope_info"),
+                                CONSTRAINT_FIELDS_DEFAULT,
+                            ),
                         )
                         if constraint_filter:
                             logger.hint(
@@ -914,6 +1236,7 @@ class VideoExplorer(VideoSearcherV2):
                 constraint_filter=constraint_filter,
                 suggest_info=suggest_info,
                 verbose=verbose,
+                owner_intent_info=owner_intent_info,
                 knn_field=knn_field,
                 rank_method=rank_method,
                 rank_top_k=rank_top_k,
@@ -923,6 +1246,7 @@ class VideoExplorer(VideoSearcherV2):
             )
             if result.get("data") and len(result["data"]) > 0:
                 result["data"][0]["output"]["qmod"] = qmod
+            result["intent_info"] = owner_intent_info
             return result
 
         elif has_vector:
@@ -932,6 +1256,7 @@ class VideoExplorer(VideoSearcherV2):
                 extra_filters=extra_filters,
                 constraint_filter=constraint_filter,
                 verbose=verbose,
+                owner_intent_info=owner_intent_info,
                 knn_field=knn_field,
                 rank_method=rank_method,
                 rank_top_k=rank_top_k,
@@ -941,6 +1266,7 @@ class VideoExplorer(VideoSearcherV2):
             )
             if result.get("data") and len(result["data"]) > 0:
                 result["data"][0]["output"]["qmod"] = qmod
+            result["intent_info"] = owner_intent_info
             return result
 
         else:
@@ -950,6 +1276,7 @@ class VideoExplorer(VideoSearcherV2):
                 extra_filters=extra_filters,
                 suggest_info=suggest_info,
                 verbose=verbose,
+                owner_intent_info=owner_intent_info,
                 rank_method=rank_method,
                 rank_top_k=rank_top_k,
                 group_owner_limit=group_owner_limit,
@@ -958,4 +1285,5 @@ class VideoExplorer(VideoSearcherV2):
             )
             if result.get("data") and len(result["data"]) > 0:
                 result["data"][0]["output"]["qmod"] = qmod
+            result["intent_info"] = owner_intent_info
             return result

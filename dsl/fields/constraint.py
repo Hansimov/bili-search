@@ -97,9 +97,11 @@ class ConstraintTreeConverter:
         from dsl.constants import FILTER_EXPRS
 
         filter_nodes = node.find_all_childs_with_key(FILTER_EXPRS)
-        # qmod_expr is OK in constraint subtrees (it's a mode flag, not a filter)
-        non_qmod_filters = [n for n in filter_nodes if not n.is_key("qmod_expr")]
-        if non_qmod_filters:
+        # qmod_expr/scope_expr are control expressions, not real filters.
+        non_control_filters = [
+            n for n in filter_nodes if not n.is_key(["qmod_expr", "scope_expr"])
+        ]
+        if non_control_filters:
             return False
         return True
 

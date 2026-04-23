@@ -14,6 +14,7 @@ from dsl.fields.umid import UmidExprElasticConverter
 from dsl.fields.word import WordExprElasticConverter
 from dsl.fields.word import WordNodeToExprConstructor
 from dsl.fields.bool import BoolElasticReducer
+from dsl.fields.scope import ScopeExprElasticConverter
 from dsl.fields.qmod import QmodExprElasticConverter
 from elastics.videos.constants import SEARCH_MATCH_TYPE, QUERY_TYPE_DEFAULT
 
@@ -35,6 +36,7 @@ class DslExprToElasticConverter:
         self.stat_converter = StatExprElasticConverter()
         self.dura_converter = DuraExprElasticConverter()
         self.word_converter = WordExprElasticConverter()
+        self.scope_converter = ScopeExprElasticConverter()
         self.qmod_converter = QmodExprElasticConverter()
         self.verbose = verbose
 
@@ -54,6 +56,8 @@ class DslExprToElasticConverter:
             return self.umid_converter.convert(node)
         elif expr_node.is_key("word_expr"):
             return self.word_converter.convert(node)
+        elif expr_node.is_key("scope_expr"):
+            return self.scope_converter.convert(node)
         elif expr_node.is_key("qmod_expr"):
             # qmod_expr doesn't produce ES filters, returns empty dict
             return self.qmod_converter.convert(node)

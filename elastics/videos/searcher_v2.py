@@ -42,6 +42,7 @@ from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
 from elastics.es_logger import get_es_debug_logger
 from converters.embed.embed_client import TextEmbedClient, get_embed_client
 from dsl.fields.qmod import extract_qmod_from_expr_tree
+from dsl.fields.scope import filter_fields_by_scope
 
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
@@ -53,6 +54,14 @@ from ranks.constants import (
     HYBRID_RRF_K,
 )
 from ranks.ranker import VideoHitsRanker
+
+
+OWNER_INTENT_RESOLVE_SIZE = 8
+OWNER_INTENT_SCORE_MIN = 180.0
+OWNER_INTENT_FILTER_GAP_MIN = 30.0
+OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN = 50.0
+OWNER_INTENT_MULTI_OWNER_NAME_MARGIN = 12.0
+OWNER_INTENT_MAX_CANDIDATES = 5
 
 
 class VideoSearcherV2:
@@ -1230,12 +1239,23 @@ class VideoSearcherV2:
         rewrite_info = self.query_rewriter.rewrite_query_info_by_suggest_info(
             query_info, suggest_info
         )
+        scope_info = query_info.get("scope_info") or {}
+        effective_match_fields = filter_fields_by_scope(
+            boosted_match_fields,
+            scope_info,
+        )
+        effective_date_match_fields = filter_fields_by_scope(
+            boosted_date_fields,
+            scope_info,
+        )
+        query_info["effective_match_fields"] = effective_match_fields
+        query_info["effective_date_match_fields"] = effective_date_match_fields
         # get expr_tree, and construct query_dsl_dict from expr_tree
         expr_tree = rewrite_info.get("rewrited_expr_tree", None)
         expr_tree = expr_tree or query_info.get("query_expr_tree", None)
         self.elastic_converter.word_converter.switch_mode(
-            match_fields=boosted_match_fields,
-            date_match_fields=boosted_date_fields,
+            match_fields=effective_match_fields,
+            date_match_fields=effective_date_match_fields,
             match_type=match_type,
         )
         query_dsl_dict = self.elastic_converter.expr_tree_to_dict(expr_tree)
@@ -1593,41 +1613,115 @@ class VideoSearcherV2:
         owners_result = self.owner_searcher.search(
             normalized_query,
             mode="name",
-            size=5,
+            size=OWNER_INTENT_RESOLVE_SIZE,
         )
         owners = owners_result.get("owners") or []
-        candidate = self._select_confident_owner_intent_candidate(owners)
-        if not candidate:
+        owner_candidates = self._select_owner_intent_candidates(owners)
+        candidate = self._select_confident_owner_intent_candidate(
+            owners,
+            candidates=owner_candidates,
+        )
+        if not owner_candidates and not candidate:
             return {}
 
+        owner_intent_info = {
+            "query": normalized_query,
+            "owners": owner_candidates,
+        }
+        if candidate:
+            owner_intent_info["owner"] = candidate
+            owner_intent_info["owner_filter"] = self._build_owner_filter(candidate)
+        return owner_intent_info
+
+    @staticmethod
+    def _build_owner_filter(owner: dict) -> list[dict]:
+        owner_mid = owner.get("mid")
+        if not owner_mid:
+            return []
+        return [{"term": {"owner.mid": int(owner_mid)}}]
+
+    @staticmethod
+    def _normalize_owner_intent_candidate(candidate: dict) -> dict | None:
         owner_mid = candidate.get("mid")
         owner_name = str(candidate.get("name") or "").strip()
         if not owner_mid or not owner_name:
-            return {}
-
+            return None
         return {
-            "query": normalized_query,
-            "owner": {
-                "mid": int(owner_mid),
-                "name": owner_name,
-                "score": float(candidate.get("score") or 0.0),
-                "sources": list(candidate.get("sources") or []),
-            },
-            "owner_filter": [{"term": {"owner.mid": int(owner_mid)}}],
+            "mid": int(owner_mid),
+            "name": owner_name,
+            "score": float(candidate.get("score") or 0.0),
+            "sources": list(candidate.get("sources") or []),
         }
 
     @staticmethod
-    def _select_confident_owner_intent_candidate(owners: list[dict]) -> dict | None:
+    def _candidate_supports_multi_owner_intent(candidate: dict) -> bool:
+        sources = set(candidate.get("sources") or [])
+        return bool(sources.intersection({"topic", "relation"}))
+
+    @classmethod
+    def _select_owner_intent_candidates(cls, owners: list[dict]) -> list[dict]:
+        if not owners:
+            return []
+
+        top_score = float((owners[0] or {}).get("score") or 0.0)
+        if top_score < OWNER_INTENT_SCORE_MIN:
+            return []
+
+        candidates: list[dict] = []
+        for index, owner in enumerate(owners):
+            normalized = cls._normalize_owner_intent_candidate(owner)
+            if not normalized:
+                continue
+
+            score = normalized["score"]
+            if score < OWNER_INTENT_SCORE_MIN:
+                continue
+
+            if index > 0:
+                score_gap = top_score - score
+                if score_gap > OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN:
+                    continue
+                if (
+                    not cls._candidate_supports_multi_owner_intent(normalized)
+                    and score_gap > OWNER_INTENT_MULTI_OWNER_NAME_MARGIN
+                ):
+                    continue
+
+            candidates.append(normalized)
+            if len(candidates) >= OWNER_INTENT_MAX_CANDIDATES:
+                break
+
+        return candidates
+
+    @classmethod
+    def _select_confident_owner_intent_candidate(
+        cls,
+        owners: list[dict],
+        candidates: list[dict] | None = None,
+    ) -> dict | None:
         if not owners:
             return None
 
-        top = owners[0] or {}
+        candidates = (
+            candidates
+            if candidates is not None
+            else cls._select_owner_intent_candidates(owners)
+        )
+        if len(candidates) != 1:
+            return None
+
+        top = cls._normalize_owner_intent_candidate(owners[0] or {})
+        if not top:
+            return None
+
         top_score = float(top.get("score") or 0.0)
         second_score = (
             float((owners[1] or {}).get("score") or 0.0) if len(owners) > 1 else 0.0
         )
         gap = top_score - second_score
-        if top_score < 180.0 or gap < 30.0:
+        if top_score < OWNER_INTENT_SCORE_MIN or gap < OWNER_INTENT_FILTER_GAP_MIN:
+            return None
+        if top["mid"] != candidates[0]["mid"]:
             return None
         return top
 

@@ -149,6 +149,27 @@ Controls search method. Default is hybrid (`wv`).
 | `q=vr` | vector+rerank | Vector search with reranking |
 | `q=wvr` | full | Hybrid search with reranking |
 
+## Search Scope (scope_expr)
+
+Controls which text fields participate in keyword matching.
+
+| Syntax | Description |
+|--------|-------------|
+| `scope=t` | Search title only |
+| `scope=tg` | Search title + tags |
+| `scope=n` | Search owner name only |
+| `scope=d` | Search description only |
+| `scope!=d` | Search default fields except description |
+
+Field codes:
+
+- `t` = `title`
+- `g` = `tags`
+- `n` = `owner.name`
+- `d` = `desc`
+- `u` = alias of `n`
+- `v` = alias of `tg`
+
 ## Boolean Operators
 
 | Operator | Description | Example |

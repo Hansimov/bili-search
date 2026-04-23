@@ -2,6 +2,7 @@ from tclogger import tcdatetime, get_now
 
 from dsl.node import DslExprNode
 from dsl.elastic import DslExprToElasticConverter, DslTreeToExprConstructor
+from dsl.fields.scope import extract_scope_from_expr_tree
 from dsl.fields.word import WordNodeToExprConstructor
 from converters.times import DateFormatChecker
 
@@ -189,6 +190,7 @@ class DslExprRewriter:
         #ANCHOR[id=query_info]
         """
         expr_tree = self.expr_to_tree(expr)
+        scope_info = extract_scope_from_expr_tree(expr_tree)
         words_expr_tree = expr_tree.filter_atoms_by_keys(include_keys=["word_expr"])
         words_body, words_date, constraint_texts = self.get_words_from_expr_tree(
             words_expr_tree
@@ -201,6 +203,8 @@ class DslExprRewriter:
             "keywords_body": words_body,
             "keywords_date": words_date,
             "constraint_texts": constraint_texts,
+            "scope_info": scope_info,
+            "scope_fields": list(scope_info.get("fields") or []),
             "query_expr_tree": expr_tree,
             "constraint_filter": constraint_filter,
         }
