@@ -15,7 +15,7 @@ _PROMPT_TOOL_EXAMPLES = {
     "get_video_transcript": "<get_video_transcript video_id='BV1YXZPB1Erc' head_chars='6000' include_segments='true'/>",
     "search_google": "<search_google query='Gemini 2.5 更新 site:bilibili.com/video' num='5'/>",
     "search_owners": "<search_owners text='黑神话悟空' size='8'/>",
-    "expand_query": "<expand_query text='康夫UI' mode='correction' size='8'/>",
+    "expand_query": "<expand_query text='袁启 专访' mode='semantic' size='8'/>",
     "read_spec": "<read_spec name='search_syntax'/>",
     "read_prompt_assets": "<read_prompt_assets tool_names='[\"search_videos\"]' levels='[\"examples\"]'/>",
     "inspect_tool_result": "<inspect_tool_result result_ids='[\"R1\"]' focus='只看最相关 BV' max_items='5'/>",
@@ -325,13 +325,14 @@ def build_expand_query_tool(capabilities: dict | None = None) -> dict:
                     "mode": {
                         "type": "string",
                         "enum": [
+                            "semantic",
                             "auto",
                             "prefix",
                             "associate",
                             "next_token",
                             "correction",
                         ],
-                        "description": "展开模式，默认 auto",
+                        "description": "展开模式，默认 semantic；旧环境不支持时会自动回退到 auto",
                     },
                     "size": {
                         "type": "integer",

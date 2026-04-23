@@ -32,6 +32,7 @@ from ranks.constants import (
 from ranks.reranker import get_reranker
 from ranks.grouper import AuthorGrouper
 from recalls.base import RecallPool
+from dsl.fields.word import override_auto_require_short_han_exact
 from recalls.manager import RecallManager
 
 STEP_ZH_NAMES = {
@@ -61,7 +62,7 @@ OWNER_INTENT_RECALL_MIN = 8
 OWNER_INTENT_RECALL_MAX = 16
 OWNER_INTENT_BLEND_WINDOW = 12
 OWNER_INTENT_BLEND_VISIBLE_HITS = 2
-OWNER_INTENT_BLEND_SLOTS = (3, 7)
+OWNER_INTENT_BLEND_SLOTS = (1, 4)
 
 
 class StepBuilder:
@@ -191,6 +192,133 @@ class VideoExplorer(VideoSearcherV2):
             OWNER_INTENT_RECALL_MAX,
         )
 
+    @classmethod
+    def _resolve_owner_intent_supplement_filters(
+        cls,
+        owner_intent_info: dict | None,
+    ) -> list[dict]:
+        owner_filter = list((owner_intent_info or {}).get("owner_filter") or [])
+        if owner_filter:
+            return owner_filter
+
+        if not (owner_intent_info or {}).get("source_query"):
+            return []
+
+        owner_candidates = cls._get_owner_intent_candidates(owner_intent_info)
+        owner_mids = []
+        for candidate in owner_candidates[:OWNER_INTENT_RECALL_MAX]:
+            owner_mid = candidate.get("mid")
+            if not owner_mid:
+                continue
+            owner_mids.append(int(owner_mid))
+
+        if not owner_mids:
+            return []
+
+        if len(owner_mids) == 1:
+            return [{"term": {"owner.mid": owner_mids[0]}}]
+        return [{"terms": {"owner.mid": owner_mids}}]
+
+    @staticmethod
+    def _get_spaced_owner_context_terms(
+        owner_intent_info: dict | None,
+    ) -> list[str]:
+        source_query = str((owner_intent_info or {}).get("source_query") or "").strip()
+        anchor_query = str((owner_intent_info or {}).get("query") or "").strip()
+        if not source_query or not anchor_query:
+            return []
+
+        source_terms = [term.strip() for term in source_query.split() if term.strip()]
+        anchor_terms = [term.strip() for term in anchor_query.split() if term.strip()]
+        if not source_terms or not anchor_terms:
+            return []
+        if source_terms[: len(anchor_terms)] != anchor_terms:
+            return []
+
+        return [term for term in source_terms[len(anchor_terms) :] if len(term) >= 2]
+
+    @classmethod
+    def _hit_matches_owner_context(
+        cls,
+        hit: dict,
+        context_terms: list[str],
+    ) -> bool:
+        if not context_terms:
+            return True
+
+        searchable_parts = [
+            str(hit.get("title") or ""),
+            str(hit.get("tags") or ""),
+            str(hit.get("desc") or ""),
+        ]
+        searchable_text = "\n".join(part for part in searchable_parts if part)
+        if not searchable_text:
+            return False
+
+        return any(term in searchable_text for term in context_terms)
+
+    def _ensure_owner_intent_author_groups(
+        self,
+        authors_list: list[dict],
+        owner_intent_info: dict | None,
+    ) -> list[dict]:
+        owner_candidates = self._get_owner_intent_candidates(owner_intent_info)
+        if not owner_candidates:
+            return authors_list
+
+        existing_mids = {
+            str(author.get("mid") or "") for author in authors_list if author.get("mid")
+        }
+        missing_candidates = [
+            candidate
+            for candidate in owner_candidates
+            if str(candidate.get("mid") or "") not in existing_mids
+        ]
+        if not missing_candidates:
+            return authors_list
+
+        user_docs = self.get_user_docs(
+            [candidate.get("mid") for candidate in missing_candidates]
+        )
+        if isinstance(user_docs, dict):
+            user_docs_iter = user_docs.values()
+        else:
+            user_docs_iter = user_docs or []
+        user_docs_by_mid = {
+            str(doc.get("mid") or ""): doc
+            for doc in user_docs_iter
+            if isinstance(doc, dict) and doc.get("mid")
+        }
+
+        first_appear_base = (
+            max(
+                [int(author.get("first_appear_order") or 0) for author in authors_list]
+                or [0]
+            )
+            + 1
+        )
+        extended_authors = list(authors_list)
+        for offset, candidate in enumerate(missing_candidates):
+            candidate_mid = str(candidate.get("mid") or "")
+            user_doc = user_docs_by_mid.get(candidate_mid, {})
+            extended_authors.append(
+                {
+                    "mid": candidate.get("mid"),
+                    "name": candidate.get("name"),
+                    "latest_pubdate": 0,
+                    "sum_view": 0,
+                    "sum_sort_score": 0,
+                    "sum_rank_score": 0,
+                    "top_rank_score": 0,
+                    "first_appear_order": first_appear_base + offset,
+                    "sum_count": 0,
+                    "hits": [],
+                    "face": user_doc.get("face", ""),
+                }
+            )
+
+        return extended_authors
+
     def _supplement_with_owner_intent_hits(
         self,
         pool: RecallPool,
@@ -202,7 +330,7 @@ class VideoExplorer(VideoSearcherV2):
         rank_top_k: int = EXPLORE_RANK_TOP_K,
         verbose: bool = False,
     ) -> RecallPool:
-        owner_filter = list((owner_intent_info or {}).get("owner_filter") or [])
+        owner_filter = self._resolve_owner_intent_supplement_filters(owner_intent_info)
         if not owner_filter:
             return pool
 
@@ -224,17 +352,22 @@ class VideoExplorer(VideoSearcherV2):
             effective_source_fields.append("owner")
 
         owner_info = owner_intent_info.get("owner", {}) if owner_intent_info else {}
+        owner_candidates = self._get_owner_intent_candidates(owner_intent_info)
+        owner_label = owner_info.get("name") or ", ".join(
+            candidate.get("name") or "" for candidate in owner_candidates[:3]
+        )
+        owner_query = str((owner_intent_info or {}).get("query") or query or "").strip()
         owner_limit = self._owner_intent_recall_limit(rank_top_k)
         if verbose:
             logger.hint(
-                f"> Supplement owner-intent recall: {owner_info.get('name')}"
+                f"> Supplement owner-intent recall: {owner_label}"
                 f" ({owner_info.get('mid')}) limit={owner_limit}",
                 verbose=verbose,
             )
 
         start = time.perf_counter()
         owner_res = self.search(
-            query=query,
+            query=owner_query,
             source_fields=effective_source_fields,
             extra_filters=list(extra_filters or []) + owner_filter,
             parse_hits=True,
@@ -249,6 +382,13 @@ class VideoExplorer(VideoSearcherV2):
             verbose=False,
         )
         owner_hits = owner_res.get("hits", [])
+        context_terms = self._get_spaced_owner_context_terms(owner_intent_info)
+        if context_terms:
+            owner_hits = [
+                hit
+                for hit in owner_hits
+                if self._hit_matches_owner_context(hit, context_terms)
+            ]
         if not owner_hits:
             return pool
 
@@ -296,6 +436,7 @@ class VideoExplorer(VideoSearcherV2):
                     "new_hits": new_hits,
                     "owner_mid": owner_info.get("mid"),
                     "owner_name": owner_info.get("name"),
+                    "owner_count": len(owner_candidates),
                     "took_ms": took_ms,
                 },
             },
@@ -420,6 +561,8 @@ class VideoExplorer(VideoSearcherV2):
         if not owner_candidates or not authors_list:
             return authors_list
 
+        has_spaced_source_query = bool((owner_intent_info or {}).get("source_query"))
+
         candidate_by_mid = {
             str(candidate.get("mid")): {
                 **candidate,
@@ -442,6 +585,13 @@ class VideoExplorer(VideoSearcherV2):
                 author["intent_owner_score"] = float(candidate.get("score") or 0.0)
                 author["intent_owner_rank"] = candidate["intent_owner_rank"]
                 intent_author_score += author["intent_owner_score"] / 80.0
+                if has_spaced_source_query and not float(
+                    author.get("sum_count") or 0.0
+                ):
+                    intent_author_score = max(
+                        intent_author_score,
+                        4.0 - float(candidate["intent_owner_rank"]) * 0.05,
+                    )
             author["intent_author_score"] = round(intent_author_score, 4)
             reranked_authors.append(author)
 
@@ -751,6 +901,10 @@ class VideoExplorer(VideoSearcherV2):
             search_res=search_res,
             sort_field=group_sort_field,
             limit=initial_limit,
+        )
+        group_res = self._ensure_owner_intent_author_groups(
+            group_res,
+            owner_intent_info,
         )
         group_res = self._promote_owner_intent_author_group(
             group_res,
@@ -1114,6 +1268,7 @@ class VideoExplorer(VideoSearcherV2):
         knn_field: str = KNN_TEXT_EMB_FIELD,
         knn_k: int = KNN_K,
         knn_num_candidates: int = KNN_NUM_CANDIDATES,
+        _allow_short_han_retry: bool = True,
     ) -> dict:
         """Unified explore that automatically selects search method based on query mode.
 
@@ -1165,6 +1320,8 @@ class VideoExplorer(VideoSearcherV2):
         from dsl.fields.qmod import normalize_qmod
 
         owner_intent_info = self._resolve_owner_intent_info(query)
+        if not owner_intent_info:
+            owner_intent_info = self._resolve_spaced_owner_intent_info(query)
 
         # Extract query mode from query if not provided
         if qmod is None:
@@ -1179,6 +1336,31 @@ class VideoExplorer(VideoSearcherV2):
         has_word = "word" in qmod
         has_vector = "vector" in qmod
         enable_rerank = has_rerank_qmod(qmod)
+        query_info = None
+
+        if has_vector or enable_rerank:
+            try:
+                query_info = self.query_rewriter.get_query_info(query)
+            except Exception as e:
+                logger.warn(f"> Failed to parse query info for scope fallback: {e}")
+
+        if not owner_intent_info and query_info:
+            keywords_body = query_info.get("keywords_body") or []
+            body_query = " ".join(keywords_body).strip()
+            if body_query and body_query != query:
+                owner_intent_info = self._resolve_spaced_owner_intent_info(body_query)
+
+        scope_fields = list((query_info or {}).get("scope_fields") or [])
+        if scope_fields and (has_vector or enable_rerank):
+            logger.warn(
+                f"> Scope-limited search requested but qmod={qmod} uses shared "
+                f"full-document embeddings; falling back to word-only mode"
+            )
+            qmod = ["word"]
+            is_hybrid = False
+            has_word = True
+            has_vector = False
+            enable_rerank = False
 
         # Graceful fallback: if vector/hybrid mode but embed client is
         # unavailable, degrade to word-only to avoid hanging
@@ -1196,7 +1378,8 @@ class VideoExplorer(VideoSearcherV2):
         if constraint_filter is None and auto_constraint and has_vector:
             try:
                 # Extract raw keywords (without DSL modifiers like q=v)
-                query_info = self.query_rewriter.get_query_info(query)
+                if query_info is None:
+                    query_info = self.query_rewriter.get_query_info(query)
 
                 # Use DSL-specified constraint_filter (+/-tokens) if available
                 dsl_constraint = query_info.get("constraint_filter", {})
@@ -1211,10 +1394,18 @@ class VideoExplorer(VideoSearcherV2):
                     keywords_body = query_info.get("keywords_body", [])
                     raw_query = " ".join(keywords_body) if keywords_body else ""
                     if raw_query:
+                        constraint_query = self._resolve_vector_auto_constraint_query(
+                            raw_query
+                        )
+                        if constraint_query != raw_query:
+                            logger.hint(
+                                f"> Relax auto-constraint to owner anchor: {constraint_query}",
+                                verbose=verbose,
+                            )
                         constraint_filter = build_auto_constraint_filter(
                             es_client=self.es.client,
                             index_name=self.index_name,
-                            query=raw_query,
+                            query=constraint_query,
                             fields=get_scope_constraint_fields(
                                 query_info.get("scope_info"),
                                 CONSTRAINT_FIELDS_DEFAULT,
@@ -1247,6 +1438,38 @@ class VideoExplorer(VideoSearcherV2):
             if result.get("data") and len(result["data"]) > 0:
                 result["data"][0]["output"]["qmod"] = qmod
             result["intent_info"] = owner_intent_info
+            if self._should_retry_without_short_han_exact(
+                query,
+                total_hits=self._get_unified_explore_total_hits(result),
+                allow_retry=_allow_short_han_retry,
+            ):
+                logger.warn(
+                    "> Retry unified explore without auto-exact short Han segments",
+                    verbose=verbose,
+                )
+                with override_auto_require_short_han_exact("first"):
+                    retry_res = self.unified_explore(
+                        query=query,
+                        qmod=qmod,
+                        extra_filters=extra_filters,
+                        constraint_filter=constraint_filter,
+                        auto_constraint=auto_constraint,
+                        suggest_info=suggest_info,
+                        verbose=verbose,
+                        most_relevant_limit=most_relevant_limit,
+                        rank_method=rank_method,
+                        rank_top_k=rank_top_k,
+                        group_owner_limit=group_owner_limit,
+                        prefer=prefer,
+                        knn_field=knn_field,
+                        knn_k=knn_k,
+                        knn_num_candidates=knn_num_candidates,
+                        _allow_short_han_retry=False,
+                    )
+                retry_info = dict(retry_res.get("retry_info") or {})
+                retry_info["relaxed_short_han_exact"] = True
+                retry_res["retry_info"] = retry_info
+                return retry_res
             return result
 
         elif has_vector:
@@ -1267,6 +1490,38 @@ class VideoExplorer(VideoSearcherV2):
             if result.get("data") and len(result["data"]) > 0:
                 result["data"][0]["output"]["qmod"] = qmod
             result["intent_info"] = owner_intent_info
+            if self._should_retry_without_short_han_exact(
+                query,
+                total_hits=self._get_unified_explore_total_hits(result),
+                allow_retry=_allow_short_han_retry,
+            ):
+                logger.warn(
+                    "> Retry unified explore without auto-exact short Han segments",
+                    verbose=verbose,
+                )
+                with override_auto_require_short_han_exact("first"):
+                    retry_res = self.unified_explore(
+                        query=query,
+                        qmod=qmod,
+                        extra_filters=extra_filters,
+                        constraint_filter=constraint_filter,
+                        auto_constraint=auto_constraint,
+                        suggest_info=suggest_info,
+                        verbose=verbose,
+                        most_relevant_limit=most_relevant_limit,
+                        rank_method=rank_method,
+                        rank_top_k=rank_top_k,
+                        group_owner_limit=group_owner_limit,
+                        prefer=prefer,
+                        knn_field=knn_field,
+                        knn_k=knn_k,
+                        knn_num_candidates=knn_num_candidates,
+                        _allow_short_han_retry=False,
+                    )
+                retry_info = dict(retry_res.get("retry_info") or {})
+                retry_info["relaxed_short_han_exact"] = True
+                retry_res["retry_info"] = retry_info
+                return retry_res
             return result
 
         else:
@@ -1286,4 +1541,45 @@ class VideoExplorer(VideoSearcherV2):
             if result.get("data") and len(result["data"]) > 0:
                 result["data"][0]["output"]["qmod"] = qmod
             result["intent_info"] = owner_intent_info
+            if self._should_retry_without_short_han_exact(
+                query,
+                total_hits=self._get_unified_explore_total_hits(result),
+                allow_retry=_allow_short_han_retry,
+            ):
+                logger.warn(
+                    "> Retry unified explore without auto-exact short Han segments",
+                    verbose=verbose,
+                )
+                with override_auto_require_short_han_exact("first"):
+                    retry_res = self.unified_explore(
+                        query=query,
+                        qmod=qmod,
+                        extra_filters=extra_filters,
+                        constraint_filter=constraint_filter,
+                        auto_constraint=auto_constraint,
+                        suggest_info=suggest_info,
+                        verbose=verbose,
+                        most_relevant_limit=most_relevant_limit,
+                        rank_method=rank_method,
+                        rank_top_k=rank_top_k,
+                        group_owner_limit=group_owner_limit,
+                        prefer=prefer,
+                        knn_field=knn_field,
+                        knn_k=knn_k,
+                        knn_num_candidates=knn_num_candidates,
+                        _allow_short_han_retry=False,
+                    )
+                retry_info = dict(retry_res.get("retry_info") or {})
+                retry_info["relaxed_short_han_exact"] = True
+                retry_res["retry_info"] = retry_info
+                return retry_res
             return result
+
+    @staticmethod
+    def _get_unified_explore_total_hits(result: dict) -> int:
+        output = ((result or {}).get("data") or [{}])[0].get("output") or {}
+        total_hits = output.get("total_hits")
+        if total_hits is not None:
+            return int(total_hits)
+        hits = output.get("hits") or []
+        return len(hits)

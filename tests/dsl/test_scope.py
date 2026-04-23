@@ -1,4 +1,5 @@
 from dsl.elastic import DslExprToElasticConverter
+from dsl.fields.word import override_auto_require_short_han_exact
 from dsl.filter import QueryDslDictFilterMerger
 from dsl.rewrite import DslExprRewriter
 from dsl.fields.scope import get_scope_constraint_fields
@@ -52,7 +53,21 @@ def test_scope_limits_match_fields_in_query_dsl():
 
     assert fields == ["owner.name.words^2"]
     assert query_info["effective_match_fields"] == ["owner.name.words^2"]
-    assert query_info["effective_date_match_fields"] == ["title.words"]
+    assert query_info["effective_date_match_fields"] == []
+
+
+def test_scope_empty_filtered_lane_does_not_fall_back_to_default_fields():
+    searcher = make_scope_searcher()
+
+    query_info, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+        query="红警 :scope=n",
+        boosted_match_fields=["title.words^5", "tags.words^3"],
+        boosted_date_fields=["title.words"],
+        extra_filters=[],
+    )
+
+    assert query_info["effective_match_fields"] == []
+    assert query_dsl_dict == {"bool": {"must": {"match_none": {}}}}
 
 
 def test_scope_exclusion_filters_constraint_fields():
@@ -64,3 +79,96 @@ def test_scope_exclusion_filters_constraint_fields():
         query_info["scope_info"],
         CONSTRAINT_FIELDS_DEFAULT,
     ) == ["title.words", "tags.words", "owner.name.words"]
+
+
+def test_exact_like_mixed_ascii_segment_is_auto_promoted_to_required_exact():
+    searcher = make_scope_searcher()
+
+    _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+        query="b200",
+        boosted_match_fields=["title.words^3"],
+        boosted_date_fields=[],
+        extra_filters=[],
+    )
+
+    assert query_dsl_dict == {
+        "bool": {
+            "must": {
+                "es_tok_query_string": {
+                    "query": "+b200",
+                    "fields": ["title.words^3"],
+                    "max_freq": 1000000,
+                }
+            }
+        }
+    }
+
+
+def test_short_cjk_segment_is_auto_promoted_to_required_exact():
+    searcher = make_scope_searcher()
+
+    _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+        query="袁启",
+        boosted_match_fields=["owner.name.words^2"],
+        boosted_date_fields=[],
+        extra_filters=[],
+    )
+
+    assert query_dsl_dict == {
+        "bool": {
+            "must": {
+                "es_tok_query_string": {
+                    "query": "+袁启",
+                    "fields": ["owner.name.words^2"],
+                    "max_freq": 1000000,
+                }
+            }
+        }
+    }
+
+
+def test_plain_longer_chinese_segment_keeps_loose_query_semantics():
+    searcher = make_scope_searcher()
+
+    _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+        query="影视飓风",
+        boosted_match_fields=["title.words^3"],
+        boosted_date_fields=[],
+        extra_filters=[],
+    )
+
+    assert query_dsl_dict == {
+        "bool": {
+            "must": {
+                "es_tok_query_string": {
+                    "query": "影视飓风",
+                    "fields": ["title.words^3"],
+                    "max_freq": 1000000,
+                }
+            }
+        }
+    }
+
+
+def test_short_cjk_retry_mode_keeps_first_segment_exact_only():
+    searcher = make_scope_searcher()
+
+    with override_auto_require_short_han_exact("first"):
+        _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+            query="袁启 采访",
+            boosted_match_fields=["title.words^3"],
+            boosted_date_fields=[],
+            extra_filters=[],
+        )
+
+    assert query_dsl_dict == {
+        "bool": {
+            "must": {
+                "es_tok_query_string": {
+                    "query": "+袁启 采访",
+                    "fields": ["title.words^3"],
+                    "max_freq": 1000000,
+                }
+            }
+        }
+    }

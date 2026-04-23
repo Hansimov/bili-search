@@ -70,7 +70,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Routing Examples",
         "ROUTING_EXAMPLES",
         "brief",
-        "共享路由样例：找某类 UP 主时优先 search_owners，它会自动聚合名字、主题、关系和空间页线索，不要先 search_videos；只问官网更新时优先 search_google 且拿到一轮官方结果后直接收口；同时要官网更新和 B 站解读时各跑一轮 search_google 与 search_videos 后直接回答；别名、错写或中英混写缩写先 expand_query 再 search_videos；作者关系追问代表作时，先确认作者，再用 :user / :uid 定向 search_videos。",
+        "共享路由样例：找某类 UP 主时优先 search_owners，它会自动聚合名字、主题、关系和空间页线索，不要先 search_videos；只问官网更新时优先 search_google 且拿到一轮官方结果后直接收口；同时要官网更新和 B 站解读时各跑一轮 search_google 与 search_videos 后直接回答；别名、错写或中英混写缩写先 expand_query，再用规范词执行 search_videos；expand_query 默认直接用 semantic，只有明确拼写纠错时才指定 correction。作者关系追问代表作时，先确认作者，再用 :user / :uid 定向 search_videos。",
         tags=("base", "routing"),
     ),
     _asset(
@@ -78,7 +78,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Video Route",
         "ROUTE_VIDEOS",
         "brief",
-        "目标是视频时，终局工具优先 search_videos。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query（通常用 correction / associate 思路）再 search_videos；拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid。不要把疑似错写直接当作者名去 search_owners。",
+        "目标是视频时，终局工具优先 search_videos。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query，再 search_videos；expand_query 默认直接用 semantic，只有明确拼写纠错时才指定 correction，旧环境不支持 semantic 时会自动回退到 auto。拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid。不要把疑似错写直接当作者名去 search_owners。若结果只满足作者约束、但标题/标签不体现用户要的核心主题词或其语义展开词（如采访 / 专访 / 访谈），不要把这些结果当作已命中；应明确说明当前语料缺少高置信结果。",
         tags=("route", "videos"),
     ),
     _asset(

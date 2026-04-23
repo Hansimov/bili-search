@@ -125,7 +125,7 @@ def filter_fields_by_scope(fields: list[str], scope_info: dict | None) -> list[s
             for scope_field in scope_fields
         ):
             filtered.append(field)
-    return filtered or list(fields)
+    return filtered
 
 
 def get_scope_constraint_fields(
@@ -142,4 +142,4 @@ def get_scope_constraint_fields(
         constraint_field = SCOPE_CONSTRAINT_FIELD_MAP.get(field)
         if constraint_field and constraint_field not in constraint_fields:
             constraint_fields.append(constraint_field)
-    return constraint_fields or default_fields
+    return constraint_fields

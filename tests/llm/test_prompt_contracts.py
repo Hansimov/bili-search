@@ -62,6 +62,9 @@ def test_build_system_prompt_mentions_internal_prompt_loading_and_result_isolati
     assert "不要重复扩搜" in prompt
     assert "若摘要里已有 BV、mid 或链接，就直接回答" in prompt
     assert "共享路由样例" in prompt
+    assert "expand_query 默认直接用 semantic" in prompt
+    assert "correction / associate" not in prompt
+    assert "当前语料缺少高置信结果" in prompt
 
 
 def test_build_system_prompt_profile_tracks_new_sections():

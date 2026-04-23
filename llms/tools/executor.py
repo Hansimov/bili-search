@@ -43,6 +43,11 @@ _ZERO_HIT_SOFT_TERMS = (
     "changelog",
 )
 
+_EXPAND_QUERY_UNSUPPORTED_SEMANTIC_MARKERS = (
+    "mode must be",
+    "semantic",
+)
+
 _OWNER_SOURCE_LABELS = {
     "name": "名字匹配",
     "topic": "主题发现",
@@ -64,6 +69,11 @@ _BVID_LOOKUP_QUERY_RE = re.compile(
 _MID_LOOKUP_QUERY_RE = re.compile(
     r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
     re.IGNORECASE,
+)
+_LLM_INTERVIEW_THEME_TOKENS = (
+    "采访",
+    "专访",
+    "访谈",
 )
 
 
@@ -176,6 +186,52 @@ def _build_zero_hit_fallback_queries(query: str) -> list[str]:
             candidates.append(f"{candidate_text} q=vwr")
 
     return candidates
+
+
+def _llm_theme_tokens_for_query(query: str) -> list[str]:
+    normalized_query = _normalize_query_spaces(query)
+    if any(token in normalized_query for token in _LLM_INTERVIEW_THEME_TOKENS):
+        return list(_LLM_INTERVIEW_THEME_TOKENS)
+    return []
+
+
+def _hit_contains_llm_theme_token(hit: dict, theme_tokens: list[str]) -> bool:
+    if not theme_tokens:
+        return True
+    searchable_text = "\n".join(
+        [
+            str(hit.get("title") or ""),
+            str(hit.get("desc") or ""),
+            (
+                " ".join(hit.get("tags") or [])
+                if isinstance(hit.get("tags"), list)
+                else str(hit.get("tags") or "")
+            ),
+        ]
+    )
+    return any(token in searchable_text for token in theme_tokens)
+
+
+def _filter_hits_by_llm_theme(
+    query: str, hits: list[dict]
+) -> tuple[list[dict], dict | None]:
+    theme_tokens = _llm_theme_tokens_for_query(query)
+    if not theme_tokens or not hits:
+        return list(hits), None
+
+    themed_hits = [
+        hit for hit in hits if _hit_contains_llm_theme_token(hit, theme_tokens)
+    ]
+    if themed_hits:
+        return themed_hits, {
+            "theme_tokens": theme_tokens,
+            "dropped_hits": len(hits) - len(themed_hits),
+        }
+    return [], {
+        "theme_tokens": theme_tokens,
+        "dropped_hits": len(hits),
+        "warning": "No hit titles or tags matched the requested interview-style theme",
+    }
 
 
 def _normalize_owner_identity_key(owner: dict) -> str:
@@ -1083,16 +1139,25 @@ class ToolExecutor:
 
             hits, total_hits = extract_explore_hits(explore_result)
             filtered_hits = filter_relevant_hits_for_llm(hits)
+            filtered_hits, theme_filter = _filter_hits_by_llm_theme(
+                query_text,
+                filtered_hits,
+            )
             formatted_hits = format_hits_for_llm(
                 filtered_hits,
                 max_hits=self.max_results,
             )
 
-            return {
+            payload = {
                 "query": query_text,
                 "total_hits": total_hits,
                 "hits": formatted_hits,
             }
+            if theme_filter:
+                payload["theme_filter"] = theme_filter
+                if theme_filter.get("warning"):
+                    payload["warning"] = theme_filter["warning"]
+            return payload
 
         primary_result = run_query(query)
         if primary_result.get("error"):
@@ -1431,20 +1496,41 @@ class ToolExecutor:
             return {"error": "Missing text parameter", "options": []}
         if not self._supports_relation_endpoint("related_tokens_by_tokens"):
             return {"text": text, "error": "Query expansion unavailable", "options": []}
+        requested_mode = str(args.get("mode", "semantic") or "semantic")
+        size = int(args.get("size", 8) or 8)
         result = self.search_client.related_tokens_by_tokens(
             text=text,
-            mode=args.get("mode", "auto"),
-            size=int(args.get("size", 8) or 8),
+            mode=requested_mode,
+            size=size,
         )
+        if requested_mode == "semantic" and self._should_retry_expand_query_with_auto(
+            result
+        ):
+            result = self.search_client.related_tokens_by_tokens(
+                text=text,
+                mode="auto",
+                size=size,
+            )
         if result.get("error"):
             return {"text": text, "error": result["error"], "options": []}
         options = result.get("options", [])
         return {
             "text": text,
-            "mode": result.get("mode", args.get("mode", "auto")),
+            "mode": result.get("mode", requested_mode),
             "total_options": len(options),
             "options": format_related_token_options(options, max_hits=self.max_results),
         }
+
+    @staticmethod
+    def _should_retry_expand_query_with_auto(result: dict | None) -> bool:
+        if not isinstance(result, dict):
+            return False
+        error = str(result.get("error", "") or "").lower()
+        if not error:
+            return False
+        return all(
+            marker in error for marker in _EXPAND_QUERY_UNSUPPORTED_SEMANTIC_MARKERS
+        )
 
     def _format_relation_video_result(
         self, result: dict, seed_key: str, seed_values: list

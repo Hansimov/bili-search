@@ -202,6 +202,105 @@ def test_execute_search_videos():
     logger.success("[PASS] execute search_videos")
 
 
+def test_execute_search_videos_filters_off_topic_interview_hits_for_llm():
+    """Interview-style queries should not expose off-topic hits without interview anchors."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_videos filters off-topic interview hits")
+
+    mock_client = MagicMock()
+    mock_client.explore.return_value = {
+        "query": "袁启 专访",
+        "status": "finished",
+        "data": [
+            {
+                "step": 0,
+                "name": "most_relevant_search",
+                "output": {
+                    "hits": [
+                        {
+                            "bvid": "BV1offtopic",
+                            "title": "雪王看袁启聪《看了就知道，老头乐到底有多么危险》",
+                            "desc": "搞笑 reaction",
+                            "owner": {"mid": 100, "name": "雪绘Yukie"},
+                            "pubdate": 1708700000,
+                            "stat": {"view": 46000},
+                        }
+                    ],
+                    "total_hits": 40,
+                },
+            },
+        ],
+    }
+
+    executor = ToolExecutor(search_client=mock_client)
+    tc = ToolCall(
+        id="call_test_interview_filter",
+        name="search_videos",
+        arguments=json.dumps({"queries": ["袁启 专访"]}),
+    )
+
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert result_data["query"] == "袁启 专访"
+    assert result_data["total_hits"] == 40
+    assert result_data["hits"] == []
+    assert result_data["theme_filter"]["theme_tokens"] == ["采访", "专访", "访谈"]
+    assert "warning" in result_data
+
+    logger.success("[PASS] execute search_videos filters off-topic interview hits")
+
+
+def test_execute_search_videos_keeps_on_topic_interview_hits_for_llm():
+    """Interview-style queries should keep hits whose title carries interview anchors."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_videos keeps on-topic interview hits")
+
+    mock_client = MagicMock()
+    mock_client.explore.return_value = {
+        "query": "袁启 专访",
+        "status": "finished",
+        "data": [
+            {
+                "step": 0,
+                "name": "most_relevant_search",
+                "output": {
+                    "hits": [
+                        {
+                            "bvid": "BV1topic",
+                            "title": "袁启聪专访：聊聊汽车媒体行业",
+                            "desc": "真正的专访内容",
+                            "owner": {"mid": 100, "name": "采访频道"},
+                            "pubdate": 1708700000,
+                            "stat": {"view": 120000},
+                        }
+                    ],
+                    "total_hits": 3,
+                },
+            },
+        ],
+    }
+
+    executor = ToolExecutor(search_client=mock_client)
+    tc = ToolCall(
+        id="call_test_interview_keep",
+        name="search_videos",
+        arguments=json.dumps({"queries": ["袁启 专访"]}),
+    )
+
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert result_data["query"] == "袁启 专访"
+    assert result_data["total_hits"] == 3
+    assert len(result_data["hits"]) == 1
+    assert result_data["hits"][0]["bvid"] == "BV1topic"
+    assert result_data["theme_filter"]["dropped_hits"] == 0
+    assert "warning" not in result_data
+
+    logger.success("[PASS] execute search_videos keeps on-topic interview hits")
+
+
 def test_execute_search_videos_explicit_bv_query_uses_lookup():
     """Explicit BV-only video queries should be coerced into exact lookup."""
     logger.note("=" * 60)
@@ -974,6 +1073,107 @@ def test_execute_read_spec():
     logger.success("[PASS] execute read_spec")
 
 
+def test_execute_expand_query_prefers_semantic_mode():
+    logger.note("=" * 60)
+    logger.note("[TEST] execute expand_query prefers semantic")
+
+    mock_client = MagicMock()
+    mock_client.capabilities.return_value = {
+        "relation_endpoints": ["related_tokens_by_tokens"],
+        "supports_google_search": False,
+    }
+    mock_client.related_tokens_by_tokens.return_value = {
+        "text": "袁启 专访",
+        "mode": "semantic",
+        "options": [
+            {
+                "text": "袁启 采访",
+                "doc_freq": 1,
+                "score": 128.0,
+                "type": "rewrite",
+                "shard_count": 1,
+            }
+        ],
+    }
+
+    executor = ToolExecutor(search_client=mock_client)
+    tc = ToolCall(
+        id="call_expand_semantic",
+        name="expand_query",
+        arguments=json.dumps({"text": "袁启 专访"}),
+    )
+
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert result_data["mode"] == "semantic"
+    assert result_data["options"][0]["text"] == "袁启 采访"
+    mock_client.related_tokens_by_tokens.assert_called_once_with(
+        text="袁启 专访",
+        mode="semantic",
+        size=8,
+    )
+
+    logger.success("[PASS] execute expand_query prefers semantic")
+
+
+def test_execute_expand_query_falls_back_to_auto_when_semantic_unsupported():
+    logger.note("=" * 60)
+    logger.note("[TEST] execute expand_query fallback to auto")
+
+    mock_client = MagicMock()
+    mock_client.capabilities.return_value = {
+        "relation_endpoints": ["related_tokens_by_tokens"],
+        "supports_google_search": False,
+    }
+    mock_client.related_tokens_by_tokens.side_effect = [
+        {
+            "text": "袁启 专访",
+            "error": "mode must be 'prefix', 'associate', 'correction' or 'auto'; semantic unsupported",
+            "options": [],
+        },
+        {
+            "text": "袁启 专访",
+            "mode": "auto",
+            "options": [
+                {
+                    "text": "袁启 采访",
+                    "doc_freq": 1,
+                    "score": 96.0,
+                    "type": "associate",
+                    "shard_count": 1,
+                }
+            ],
+        },
+    ]
+
+    executor = ToolExecutor(search_client=mock_client)
+    tc = ToolCall(
+        id="call_expand_fallback",
+        name="expand_query",
+        arguments=json.dumps({"text": "袁启 专访"}),
+    )
+
+    result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert result_data["mode"] == "auto"
+    assert result_data["options"][0]["text"] == "袁启 采访"
+    assert mock_client.related_tokens_by_tokens.call_count == 2
+    assert mock_client.related_tokens_by_tokens.call_args_list[0].kwargs == {
+        "text": "袁启 专访",
+        "mode": "semantic",
+        "size": 8,
+    }
+    assert mock_client.related_tokens_by_tokens.call_args_list[1].kwargs == {
+        "text": "袁启 专访",
+        "mode": "auto",
+        "size": 8,
+    }
+
+    logger.success("[PASS] execute expand_query fallback to auto")
+
+
 def test_max_results_limit():
     """Test that executor limits the number of results."""
     logger.note("=" * 60)
@@ -1093,6 +1293,14 @@ if __name__ == "__main__":
             test_tool_executor_merges_google_capability,
         ),
         ("execute_read_spec", test_execute_read_spec),
+        (
+            "execute_expand_query_prefers_semantic_mode",
+            test_execute_expand_query_prefers_semantic_mode,
+        ),
+        (
+            "execute_expand_query_falls_back_to_auto_when_semantic_unsupported",
+            test_execute_expand_query_falls_back_to_auto_when_semantic_unsupported,
+        ),
         ("execute_unknown_tool", test_execute_unknown_tool),
         ("execute_empty_query", test_execute_empty_query),
         ("execute_search_error", test_execute_search_error),

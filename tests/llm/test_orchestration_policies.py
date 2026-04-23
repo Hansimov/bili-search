@@ -228,6 +228,8 @@ def test_select_pre_execution_nudge_prefers_term_normalization_before_video_sear
 
     assert rule is not None
     assert rule[0] == "prefer_term_normalization_before_video_search"
+    assert "默认直接用 semantic" in rule[1]
+    assert "associate" not in rule[1]
 
 
 def test_select_pre_execution_nudge_prefers_video_search_after_token_expansion():
@@ -333,6 +335,73 @@ def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
 
     assert rule is not None
     assert rule[0] == "video_zero_hit_google_fallback"
+
+
+def test_select_post_execution_nudge_flags_weak_interview_video_evidence():
+    store = FakeResultStore()
+    store.add(
+        "expand_query",
+        {
+            "text": "袁启 采访",
+            "options": [
+                {"text": "袁启 专访", "score": 0.95},
+                {"text": "袁启 访谈", "score": 0.9},
+            ],
+        },
+    )
+    store.add(
+        "search_videos",
+        {
+            "results": [
+                {
+                    "query": "袁启 专访",
+                    "total_hits": 2,
+                    "hits": [
+                        {"title": "雪王看袁启聪《看了就知道，老头乐到底有多么危险》"},
+                        {"title": "用《喜鹊谋杀案》的方式介绍袁启聪（子）"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    rule = select_post_execution_nudge(
+        store,
+        _intent(final_target="videos"),
+        "袁启 采访",
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "weak_interview_video_evidence"
+    assert "不要把这些结果包装成采访命中" in rule[1]
+
+
+def test_select_post_execution_nudge_skips_when_interview_anchor_exists_in_hits():
+    store = FakeResultStore()
+    store.add(
+        "search_videos",
+        {
+            "results": [
+                {
+                    "query": "袁启 专访",
+                    "total_hits": 1,
+                    "hits": [
+                        {"title": "袁启聪专访：聊聊汽车媒体行业"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    rule = select_post_execution_nudge(
+        store,
+        _intent(final_target="videos"),
+        "袁启 采访",
+        set(),
+    )
+
+    assert rule is None
 
 
 def test_select_post_execution_nudge_requests_recent_followup_after_explicit_bv_lookup():

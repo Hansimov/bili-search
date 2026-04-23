@@ -13,6 +13,7 @@ from dsl.fields.user import UserExprElasticConverter
 from dsl.fields.umid import UmidExprElasticConverter
 from dsl.fields.word import WordExprElasticConverter
 from dsl.fields.word import WordNodeToExprConstructor
+from dsl.fields.word import get_auto_require_short_han_exact_mode, is_short_han_segment
 from dsl.fields.bool import BoolElasticReducer
 from dsl.fields.scope import ScopeExprElasticConverter
 from dsl.fields.qmod import QmodExprElasticConverter
@@ -81,6 +82,20 @@ class DslExprToElasticConverter:
                 dict_get(word_match_clause, BMMQ)
                 for word_match_clause in word_match_clauses
             ]
+            if get_auto_require_short_han_exact_mode() == "first":
+                seen_short_han_exact = False
+                normalized_query_words = []
+                for query_word in query_words:
+                    normalized_query_word = str(query_word or "").strip()
+                    if normalized_query_word.startswith("+") and is_short_han_segment(
+                        normalized_query_word[1:]
+                    ):
+                        if seen_short_han_exact:
+                            normalized_query_word = normalized_query_word[1:]
+                        else:
+                            seen_short_han_exact = True
+                    normalized_query_words.append(normalized_query_word)
+                query_words = normalized_query_words
             merged_query_words = " ".join(query_words)
             merged_word_match_clause = word_match_clauses[0]
             dict_set(merged_word_match_clause, BMMQ, merged_query_words)

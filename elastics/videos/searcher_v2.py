@@ -43,6 +43,7 @@ from elastics.es_logger import get_es_debug_logger
 from converters.embed.embed_client import TextEmbedClient, get_embed_client
 from dsl.fields.qmod import extract_qmod_from_expr_tree
 from dsl.fields.scope import filter_fields_by_scope
+from dsl.fields.word import override_auto_require_short_han_exact, is_short_han_segment
 
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
@@ -62,6 +63,19 @@ OWNER_INTENT_FILTER_GAP_MIN = 30.0
 OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN = 50.0
 OWNER_INTENT_MULTI_OWNER_NAME_MARGIN = 12.0
 OWNER_INTENT_MAX_CANDIDATES = 5
+OWNER_INTENT_SPACED_RERANK_SCORE_GAP = 8.0
+OWNER_INTENT_MODEL_CODE_RE = re.compile(r"(?i)^[a-z]{1,2}\d{2,}[a-z0-9]*$")
+SHORT_HAN_QUERY_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,3}")
+RELAXED_SHORT_HAN_RETRY_BOOST_OVERRIDES = {
+    "title": 5.0,
+    "title.words": 5.0,
+    "owner.name": 4.0,
+    "owner.name.words": 4.0,
+    "tags": 1.2,
+    "tags.words": 1.2,
+    "desc": 0.02,
+    "desc.words": 0.02,
+}
 
 
 class VideoSearcherV2:
@@ -1478,6 +1492,7 @@ class VideoSearcherV2:
         terminate_after: int = TERMINATE_AFTER,
         timeout: Union[int, float, str] = SEARCH_TIMEOUT,
         verbose: bool = False,
+        _allow_short_han_retry: bool = True,
     ) -> Union[dict, list[dict]]:
         logger.enter_quiet(not verbose)
         effective_extra_filters = list(extra_filters)
@@ -1596,8 +1611,182 @@ class VideoSearcherV2:
         # Sanitize search_body to reduce network payload (removes large terms arrays)
         return_res["search_body"] = self.sanitize_search_body_for_client(search_body)
         return_res["intent_info"] = owner_intent_info
+
+        if self._should_retry_without_short_han_exact(
+            query,
+            total_hits=return_res.get("total_hits", 0),
+            allow_retry=_allow_short_han_retry,
+        ):
+            logger.warn(
+                "> Retry word search without auto-exact short Han segments",
+                verbose=verbose,
+            )
+            with override_auto_require_short_han_exact("first"):
+                retry_res = self.search(
+                    query=query,
+                    match_fields=match_fields,
+                    source_fields=source_fields,
+                    match_type=match_type,
+                    match_bool=match_bool,
+                    match_operator=match_operator,
+                    extra_filters=extra_filters,
+                    suggest_info=suggest_info,
+                    request_type=request_type,
+                    parse_hits=parse_hits,
+                    drop_no_highlights=drop_no_highlights,
+                    add_region_info=add_region_info,
+                    add_highlights_info=add_highlights_info,
+                    is_explain=is_explain,
+                    is_profile=is_profile,
+                    is_highlight=is_highlight,
+                    boost=boost,
+                    boosted_fields=self._get_relaxed_short_han_retry_boosted_fields(
+                        boosted_fields
+                    ),
+                    combined_fields_list=combined_fields_list,
+                    use_script_score=use_script_score,
+                    rank_method=rank_method,
+                    score_threshold=score_threshold,
+                    use_pinyin=use_pinyin,
+                    detail_level=detail_level,
+                    detail_levels=detail_levels,
+                    limit=limit,
+                    rank_top_k=rank_top_k,
+                    terminate_after=terminate_after,
+                    timeout=timeout,
+                    verbose=verbose,
+                    _allow_short_han_retry=False,
+                )
+            retry_info = dict(retry_res.get("retry_info") or {})
+            retry_info["relaxed_short_han_exact"] = True
+            retry_res["retry_info"] = retry_info
+            logger.exit_quiet(not verbose)
+            return retry_res
+
         logger.exit_quiet(not verbose)
         return return_res
+
+    @staticmethod
+    def _get_relaxed_short_han_retry_boosted_fields(
+        boosted_fields: dict | None,
+    ) -> dict:
+        retry_boosted_fields = dict(boosted_fields or SEARCH_BOOSTED_FIELDS)
+        retry_boosted_fields.update(RELAXED_SHORT_HAN_RETRY_BOOST_OVERRIDES)
+        return retry_boosted_fields
+
+    @staticmethod
+    def _has_relaxable_short_han_terms(query: str) -> bool:
+        normalized_query = str(query or "").strip()
+        if not normalized_query or not any(char.isspace() for char in normalized_query):
+            return False
+        if any(
+            marker in normalized_query
+            for marker in [":", "=", '"', "'", "[", "]", "(", ")", "|", "&"]
+        ):
+            return False
+        tokens = [token.strip() for token in normalized_query.split() if token.strip()]
+        if len(tokens) < 2:
+            return False
+        return any(SHORT_HAN_QUERY_TOKEN_RE.fullmatch(token) for token in tokens)
+
+    @classmethod
+    def _should_retry_without_short_han_exact(
+        cls,
+        query: str,
+        total_hits: int | None,
+        allow_retry: bool = True,
+    ) -> bool:
+        if not allow_retry:
+            return False
+        if total_hits not in (None, 0):
+            return False
+        return cls._has_relaxable_short_han_terms(query)
+
+    @classmethod
+    def _is_compact_owner_prefix_candidate(
+        cls,
+        token: str,
+        owner: dict,
+        top_score: float,
+    ) -> bool:
+        normalized_token = str(token or "").strip()
+        owner_name = str((owner or {}).get("name") or "").strip()
+        if not normalized_token or not owner_name:
+            return False
+
+        score = float((owner or {}).get("score") or 0.0)
+        if score < OWNER_INTENT_SCORE_MIN:
+            return False
+        if top_score - score > OWNER_INTENT_MULTI_OWNER_SCORE_MARGIN:
+            return False
+        if not owner_name.startswith(normalized_token):
+            return False
+
+        max_owner_name_len = len(normalized_token) + 3
+        return len(owner_name) <= max_owner_name_len
+
+    def _resolve_vector_auto_constraint_query(self, query: str) -> str:
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            return normalized_query
+        if any(
+            marker in normalized_query
+            for marker in [":", "=", '"', "'", "[", "]", "(", ")", "|", "&"]
+        ):
+            return normalized_query
+
+        segments = [
+            segment.strip() for segment in normalized_query.split() if segment.strip()
+        ]
+        if len(segments) < 2:
+            return normalized_query
+
+        anchor = segments[0]
+        if not is_short_han_segment(anchor):
+            return normalized_query
+
+        try:
+            owners_result = self.owner_searcher.search(
+                anchor,
+                mode="name",
+                size=OWNER_INTENT_RESOLVE_SIZE,
+            )
+        except Exception as e:
+            logger.warn(f"> Failed to resolve vector auto-constraint owner anchor: {e}")
+            return normalized_query
+
+        owners = owners_result.get("owners") or []
+        if not owners:
+            return normalized_query
+
+        top_score = float((owners[0] or {}).get("score") or 0.0)
+        if top_score < OWNER_INTENT_SCORE_MIN:
+            return normalized_query
+
+        for owner in owners[:OWNER_INTENT_MAX_CANDIDATES]:
+            if self._is_compact_owner_prefix_candidate(anchor, owner, top_score):
+                return anchor
+
+        return normalized_query
+
+    def _resolve_spaced_owner_intent_info(self, query: str) -> dict:
+        normalized_query = str(query or "").strip()
+        if not normalized_query or not any(char.isspace() for char in normalized_query):
+            return {}
+
+        anchor_query = self._resolve_vector_auto_constraint_query(normalized_query)
+        if not anchor_query or anchor_query == normalized_query:
+            return {}
+
+        owner_intent_info = self._resolve_owner_intent_info(anchor_query)
+        if owner_intent_info:
+            owner_intent_info = dict(owner_intent_info)
+            owner_intent_info["owners"] = self._rerank_spaced_owner_intent_candidates(
+                owner_intent_info.get("owners") or []
+            )
+            owner_intent_info.setdefault("source_query", normalized_query)
+            owner_intent_info["query"] = anchor_query
+        return owner_intent_info
 
     def _resolve_owner_intent_info(self, query: str) -> dict:
         normalized_query = (query or "").strip()
@@ -1608,6 +1797,8 @@ class VideoSearcherV2:
         if any(char.isspace() for char in normalized_query):
             return {}
         if len(normalized_query) < 2 or len(normalized_query) > 24:
+            return {}
+        if self._looks_like_model_code_query(normalized_query):
             return {}
 
         owners_result = self.owner_searcher.search(
@@ -1634,6 +1825,19 @@ class VideoSearcherV2:
         return owner_intent_info
 
     @staticmethod
+    def _looks_like_model_code_query(text: str) -> bool:
+        normalized = re.sub(r"[\s._-]+", "", str(text or "")).strip()
+        if not normalized:
+            return False
+        if any("\u4e00" <= char <= "\u9fff" for char in normalized):
+            return False
+        if not any(char.isalpha() for char in normalized):
+            return False
+        if not any(char.isdigit() for char in normalized):
+            return False
+        return bool(OWNER_INTENT_MODEL_CODE_RE.fullmatch(normalized))
+
+    @staticmethod
     def _build_owner_filter(owner: dict) -> list[dict]:
         owner_mid = owner.get("mid")
         if not owner_mid:
@@ -1650,8 +1854,38 @@ class VideoSearcherV2:
             "mid": int(owner_mid),
             "name": owner_name,
             "score": float(candidate.get("score") or 0.0),
+            "sample_view": int(candidate.get("sample_view") or 0),
             "sources": list(candidate.get("sources") or []),
         }
+
+    @classmethod
+    def _rerank_spaced_owner_intent_candidates(
+        cls,
+        candidates: list[dict],
+    ) -> list[dict]:
+        normalized_candidates = [
+            dict(candidate or {})
+            for candidate in candidates
+            if candidate and candidate.get("mid") and candidate.get("name")
+        ]
+        if len(normalized_candidates) <= 1:
+            return normalized_candidates
+
+        top_score = float(normalized_candidates[0].get("score") or 0.0)
+
+        def _sort_key(candidate: dict) -> tuple[int, float, int, int]:
+            score = float(candidate.get("score") or 0.0)
+            score_gap = top_score - score
+            near_top = 0 if score_gap <= OWNER_INTENT_SPACED_RERANK_SCORE_GAP else 1
+            sample_view = int(candidate.get("sample_view") or 0)
+            return (
+                near_top,
+                -sample_view,
+                -score,
+                int(candidate.get("mid") or 0),
+            )
+
+        return sorted(normalized_candidates, key=_sort_key)
 
     @staticmethod
     def _candidate_supports_multi_owner_intent(candidate: dict) -> bool:

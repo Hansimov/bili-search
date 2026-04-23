@@ -26,6 +26,11 @@ _RECENT_TIMELINE_TOKENS = (
     "还发了哪些视频",
     "还发了什么视频",
 )
+_INTERVIEW_THEME_TOKENS = (
+    "采访",
+    "专访",
+    "访谈",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +246,54 @@ def has_video_coverage(result_store) -> bool:
     ) or has_google_video_result(result_store)
 
 
+def _iter_search_video_items(result_store):
+    for record in _iter_successful_tool_records(result_store, "search_videos"):
+        result = record.result or {}
+        nested_results = result.get("results") or []
+        if nested_results:
+            for item in nested_results:
+                if not isinstance(item, dict) or item.get("error"):
+                    continue
+                yield item
+            continue
+        yield result
+
+
+def _has_interview_intent(result_store, latest_user_message: str) -> bool:
+    if any(
+        token in str(latest_user_message or "") for token in _INTERVIEW_THEME_TOKENS
+    ):
+        return True
+    for record in _iter_successful_tool_records(result_store, "expand_query"):
+        result = record.result or {}
+        for option in result.get("options") or []:
+            text = str(option.get("text") or "")
+            if any(token in text for token in _INTERVIEW_THEME_TOKENS):
+                return True
+    return False
+
+
+def _search_video_results_lack_interview_anchor(result_store) -> bool:
+    saw_hits = False
+    for item in _iter_search_video_items(result_store):
+        for hit in item.get("hits") or []:
+            saw_hits = True
+            searchable_text = "\n".join(
+                [
+                    str(hit.get("title") or ""),
+                    str(hit.get("desc") or ""),
+                    (
+                        " ".join(hit.get("tags") or [])
+                        if isinstance(hit.get("tags"), list)
+                        else str(hit.get("tags") or "")
+                    ),
+                ]
+            )
+            if any(token in searchable_text for token in _INTERVIEW_THEME_TOKENS):
+                return False
+    return saw_hits
+
+
 def has_internal_answer_ready_result(result_store) -> bool:
     return has_successful_tool_result(result_store, "run_small_llm_task")
 
@@ -333,8 +386,9 @@ PRE_EXECUTION_NUDGE_RULES = (
             and "expand_query" not in user_tool_names
         ),
         message=(
-            "当前请求更像别名、错写或中英混写缩写。请先调用 expand_query "
-            "用 correction 或 associate 思路把原词归一化，再基于纠正后的规范词执行 search_videos；"
+            "当前请求更像别名、错写或中英混写缩写。请先调用 expand_query，"
+            "默认直接用 semantic 做归一化；只有明确拼写纠错时才指定 correction。"
+            "拿到规范词后再执行 search_videos；"
             "不要直接把原始错写整句塞进 search_videos。"
         ),
     ),
@@ -407,6 +461,20 @@ PRE_EXECUTION_NUDGE_RULES = (
 
 
 POST_EXECUTION_NUDGE_RULES = (
+    ResultNudgeRule(
+        name="weak_interview_video_evidence",
+        predicate=lambda store, intent, latest_user_message: (
+            intent.final_target == "videos"
+            and has_video_coverage(store)
+            and _has_interview_intent(store, latest_user_message)
+            and _search_video_results_lack_interview_anchor(store)
+        ),
+        message=(
+            "当前 search_videos 返回的标题里没有出现采访 / 专访 / 访谈等主题锚点。"
+            "不要把这些结果包装成采访命中；应明确说明当前语料里缺少高置信采访结果，"
+            "现有结果最多只能当旁证或相关人物线索。"
+        ),
+    ),
     ResultNudgeRule(
         name="explicit_video_lookup_recent_followup",
         predicate=lambda store, intent, latest_user_message: (
