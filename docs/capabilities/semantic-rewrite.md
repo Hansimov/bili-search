@@ -1,115 +1,105 @@
-# Semantic Rewrite And Intent Architecture
+# 语义改写与意图识别架构说明
 
-## Scope
+## 范围
 
-This document describes the current semantic rewrite and intent-recognition
-architecture shared across bili-search and es-tok after the recent refactor.
+本文说明本轮重构后 bili-search 与 es-tok 共享的语义改写、意图识别与语义状态架构。
 
-The goal is to stop growing search quality through scattered code constants,
-and instead move deterministic knowledge into versioned assets and index-time
-semantic state.
+核心目标不是继续在代码里堆局部常量和特判，而是把确定性知识迁移到可版本化的资产文件，把动态语义证据迁移到索引期增量维护的语义快照中。
 
-## What Moved Out Of Code
+## 哪些规则已经移出代码
 
-### 1. Term alias normalization in bili-search
+### 1. bili-search 的术语别名归一化
 
-- Local alias rewrite is no longer embedded as `_TERM_ALIAS_MAP` in Python.
-- Alias rules now live in `llms/intent/assets/term_aliases.json`.
-- `llms/intent/semantic_assets.py` is the stable loader boundary.
-- `llms.intent.focus.rewrite_known_term_aliases()` only performs token-aware
-  matching and replacement; it no longer owns the alias data itself.
+- 术语别名不再以内嵌 `_TERM_ALIAS_MAP` 的形式写死在 Python 逻辑里。
+- 别名规则统一放在 `llms/intent/assets/term_aliases.json`。
+- `llms/intent/semantic_assets.py` 是稳定的加载边界。
+- `llms.intent.focus.rewrite_known_term_aliases()` 只负责按 token 感知地匹配和替换，不再持有别名数据本体。
 
-### 2. Owner intent policy in bili-search
+### 2. bili-search 的作者意图策略
 
-- Owner intent thresholds, blocked markers, source-label rules, and model-code
-  patterns no longer live as searcher-local constants.
-- They now live in `elastics/videos/assets/owner_intent_policy.json`.
-- `elastics/videos/owner_intent_policy.py` exposes a cached
-  `OwnerIntentPolicy` object used by `VideoSearcherV2`.
-- The searcher keeps the control flow, but policy values are now external and
-  testable without editing the main retrieval pipeline.
+- 作者意图相关的阈值、屏蔽词、来源标签规则、模型名模式等，不再散落在 searcher 私有常量中。
+- 这些规则现在统一放在 `elastics/videos/assets/owner_intent_policy.json`。
+- `elastics/videos/owner_intent_policy.py` 对外提供缓存后的 `OwnerIntentPolicy`，由 `VideoSearcherV2` 消费。
+- 这样一来，检索流程仍然保留在 searcher 中，但策略值已经变成了可独立审阅、可单测、可扩展的数据资产。
 
-## es-tok Semantic Store
+## es-tok 的语义存储层
 
-### 1. Query-time abstraction
+### 1. 查询期抽象层
 
-es-tok semantic expansion no longer depends directly on a single static tuning
-loader. The semantic branch now flows through a common interface:
+es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而是统一走抽象存储接口：
 
 - `SemanticExpansionStore`
 - `SemanticExpansionRule`
 - `SemanticQueryExpansionSuggester`
 
-The default resource-backed rule set is still provided by
-`QueryExpansionTuning`, but it now implements the same store contract as any
-future snapshot-backed or hybrid provider.
+默认的资源文件规则仍由 `QueryExpansionTuning` 提供，但它现在和未来的快照型、混合型语义提供者共享同一套存储契约。
 
-### 2. Index-time incremental semantic snapshot
+### 2. 索引期增量 semantic snapshot
 
-es-tok now includes a first index-time semantic snapshot pipeline:
+es-tok 目前已经接入第一版索引期增量语义快照链路：
 
 - `SemanticSnapshotManager`
 - `SemanticSnapshotIndexListener`
 - `IndexSemanticExpansionSnapshot`
 
-Current behavior:
+当前行为如下：
 
-1. Successful `postIndex` events decode the indexed `_source`.
-2. Only `title`, `tags`, and `rtags` are used for the first snapshot stage.
-3. Each document gets a lightweight fingerprint derived from normalized
-   `title + tags`.
-4. Re-indexing the same document with an unchanged fingerprint is skipped.
-5. Changed documents remove their old contribution before adding the new one.
-6. Successful deletes remove the document contribution from the snapshot.
-7. Query-time `semantic` expansion merges static rule expansions with dynamic
-   `doc_cooccurrence` expansions from the live snapshot.
+1. 成功的 `postIndex` 事件会读取本次写入文档的 `_source`。
+2. 第一阶段只使用 `title`、`tags`、`rtags` 三类字段构造语义档案。
+3. 每个文档都会生成一个基于归一化 `title + tags + rtags` 的轻量指纹。
+4. 若同一文档再次写入且指纹未变，则跳过快照更新。
+5. 若文档内容变更，会先移除旧贡献，再写入新贡献。
+6. 成功的删除事件会把该文档对快照的贡献移除。
+7. 查询期的 `semantic` 模式会把静态规则扩展和运行中快照产生的 `doc_cooccurrence` 扩展合并返回。
 
-### 3. Noise control in the first snapshot version
+### 3. 第一版噪声控制策略
 
-The first snapshot version deliberately treats title-derived terms as anchors,
-not primary expansion targets.
+第一版 snapshot 有意把标题中抽出的词更多视为“语义锚点”，而不是无条件的主扩展目标。
 
-This keeps useful mappings such as:
+这样可以保留有价值的关系，例如：
 
 - `ComfyUI -> 教程`
 - `教程 -> 讲解`
 
-while avoiding low-value expansions such as:
+同时尽量避免低价值扩展，例如：
 
 - `教程 -> ComfyUI 教程`
 - `教程 -> ComfyUI`
 
-## Why This Matters
+## 为什么这样拆分
 
-Before this refactor, semantic knowledge was split across three unrelated
-surfaces:
+在本轮重构前，语义知识主要分散在三块互不对齐的面：
 
-- static es-tok query expansion tuning
-- local bili-search alias rewrites
-- searcher-local owner intent thresholds and regexes
+- es-tok 的静态 query expansion 调优
+- bili-search 本地的 alias rewrite
+- searcher 内部的作者意图阈值与正则
 
-That meant search quality drifted whenever one surface changed and the others
-did not.
+这会导致一个面改了，另外两个面不跟进，搜索质量就开始漂移。
 
-The new structure makes the boundaries explicit:
+现在边界被明确拆开了：
 
-- deterministic rules belong in asset files
-- dynamic semantic evidence belongs in the semantic snapshot store
-- retrieval/orchestration code should consume policy/store objects instead of
-  embedding rule tables inline
+- 确定性规则属于资产文件
+- 动态语义证据属于 semantic snapshot store
+- 检索和编排代码只消费策略对象和存储对象，不再内嵌规则表
 
-## Next Steps
+## 本轮验证结论
 
-The current implementation is the first operational slice, not the final form.
+围绕索引期 semantic snapshot，本轮已经完成一次真实写入验证，结论如下：
 
-Planned follow-ups:
+1. 直接用 `workers.elastic_videos.commander` 做目标时间窗的大批量回灌时，ES bulk 阶段容易超时，不适合作为窄窗口语义链路的首选验证入口。
+2. 更稳定的做法是使用小量真实文档回放：先从 Mongo 中取目标时间窗文档，再少量写入 `bili_videos_dev6`，然后立刻对同一时间窗做 semantic probe。
+3. 该验证方式已经确认 `postIndex -> semantic snapshot -> semantic query` 这条链路可以真实生效。
+4. 在目标窗口 `2026-04-22 12:00:00` 到 `2026-04-22 18:00:00` 的小样本真实回放后，已经观测到新的 `doc_cooccurrence` 扩展，例如：
+  - `鬼畜 -> 搞笑`
+  - `汽车 -> 汽车知识`
+5. semantic relation 探测需要给足超时预算。5 秒会产生假阴性，30 秒可以稳定观察到结果，因此 live probe 不应使用过短超时。
 
-1. Persist semantic snapshots across node restarts instead of rebuilding only
-   from live index traffic.
-2. Rebuild snapshot state on shard start for existing docs, not just new writes.
-3. Improve document semantic extraction beyond `title/tags/rtags`, especially
-   for long Chinese titles and multi-part topics.
-4. Feed snapshot-backed semantic evidence into owner intent and query planning,
-   not only token expansion.
-5. Evaluate whether some of the remaining owner intent heuristics should move
-   from policy assets into learned or corpus-driven priors.
+## 下一步
+
+当前实现已经可运行，但仍然只是第一阶段，不是最终形态。后续重点包括：
+
+1. 让 semantic snapshot 支持跨节点重启持久化，而不只依赖重启后的新写流量重新积累。
+2. 在 shard 启动时重建已有文档的 snapshot 状态，而不是只依赖新增写入。
+3. 扩展文档语义抽取范围，不再局限于 `title/tags/rtags`，尤其要提升长中文标题、多段主题和弱结构文本的建模能力。
+4. 把 snapshot 产生的语义证据进一步反馈给作者意图识别和 query planning，而不只是 token 扩展。
+5. 继续评估作者意图中剩余的启发式规则，哪些可以从策略资产进一步演进为语料驱动或学习型先验。
