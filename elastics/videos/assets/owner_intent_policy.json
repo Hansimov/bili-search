@@ -10,6 +10,10 @@
         "min": 2,
         "max": 24
     },
+    "short_query": {
+        "max": 4,
+        "owner_name_max_extra_chars": 1
+    },
     "prefix_candidate_max_extra_chars": 3,
     "blocked_markers": [
         ":",
@@ -34,6 +38,15 @@
     "multi_owner_source_labels": [
         "topic",
         "relation"
+    ],
+    "name_source_labels": [
+        "name"
+    ],
+    "title_like_owner_name_max_extra_chars": 0,
+    "title_like_patterns": [
+        ".*[《》【】（）()].*",
+        ".*\\d{4}[./-]\\d{1,2}[./-]\\d{1,2}.*",
+        ".*\\d{1,2}[:：]\\d{2}.*"
     ],
     "model_code_patterns": [
         "(?i)^[a-z]{1,2}\\d{2,}[a-z0-9]*$"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -929,9 +930,17 @@ class ChatOrchestrator:
             value = None
             if source[index].isdigit():
                 start = index
+                digits: list[str] = []
                 while index < len(source) and source[index].isdigit():
+                    try:
+                        digits.append(str(unicodedata.digit(source[index])))
+                    except (TypeError, ValueError):
+                        break
                     index += 1
-                value = int(source[start:index])
+                if not digits:
+                    index = start + 1
+                    continue
+                value = int("".join(digits))
             elif source[index] in chinese_digits:
                 value = chinese_digits[source[index]]
                 index += 1

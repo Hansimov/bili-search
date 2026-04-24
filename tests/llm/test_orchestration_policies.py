@@ -173,6 +173,19 @@ def test_has_target_coverage_accepts_recent_followup_after_mid_lookup():
     )
 
 
+def test_extract_recent_window_ignores_circled_index_in_title_query():
+    assert (
+        ChatOrchestrator._extract_recent_window(
+            "2026.04.21 T.赵俊杰个播录屏④（22：50—23：42）"
+        )
+        == "30d"
+    )
+
+
+def test_extract_recent_window_supports_unicode_digit_day_window():
+    assert ChatOrchestrator._extract_recent_window("最近④天赵俊杰视频") == "4d"
+
+
 def test_select_pre_execution_nudge_blocks_repeating_mixed_searches():
     store = FakeResultStore()
     store.add(

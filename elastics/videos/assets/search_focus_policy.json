@@ -1,0 +1,25 @@
+{
+    "enabled": true,
+    "query_length": {
+        "min": 6,
+        "max": 96
+    },
+    "min_segment_chars": 2,
+    "max_segments": 2,
+    "trigger_patterns": [
+        ".*[《》【】（）()].*",
+        ".*\\d{4}[./-]\\d{1,2}[./-]\\d{1,2}.*",
+        ".*\\d{1,2}[:：]\\d{2}.*",
+        ".*[｜|，,。！？!?~～].*"
+    ],
+    "segment_split_pattern": "[｜|，,。！？!?~～]+",
+    "prefix_strip_patterns": [
+        "^\\s*\\d{4}[./-]\\d{1,2}[./-]\\d{1,2}\\s*",
+        "^\\s*[A-Za-z]\\.\\s*"
+    ],
+    "suffix_strip_patterns": [
+        "[（(]\\s*\\d{1,2}[:：]\\d{2}[^)）]*[)）]\\s*$",
+        "[~～]+\\s*$"
+    ],
+    "bracket_prefix_pattern": "^\\s*[【\\[](?P<prefix>[^】\\]]{2,48})[】\\]]\\s*(?P<body>.+?)\\s*$"
+}

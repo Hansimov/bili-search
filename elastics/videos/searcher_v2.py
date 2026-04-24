@@ -19,6 +19,7 @@ from elastics.structure import set_timeout, set_profile
 from elastics.structure import construct_knn_query, construct_knn_search_body
 from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
 from elastics.videos.owner_intent_policy import get_owner_intent_policy
+from elastics.videos.search_focus_policy import get_search_focus_policy
 from elastics.videos.search_semantic_policy import get_search_semantic_policy
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
@@ -47,7 +48,7 @@ from converters.embed.embed_client import TextEmbedClient, get_embed_client
 from dsl.fields.qmod import extract_qmod_from_expr_tree
 from dsl.fields.scope import filter_fields_by_scope
 from dsl.fields.word import override_auto_require_short_han_exact, is_short_han_segment
-from llms.intent.focus import rewrite_known_term_aliases
+from llms.intent.focus import compact_focus_key, rewrite_known_term_aliases
 
 # Import from ranks module (use direct submodule imports)
 from ranks.constants import (
@@ -62,6 +63,7 @@ from ranks.ranker import VideoHitsRanker
 
 
 OWNER_INTENT_POLICY = get_owner_intent_policy()
+SEARCH_FOCUS_POLICY = get_search_focus_policy()
 SEARCH_SEMANTIC_POLICY = get_search_semantic_policy()
 SHORT_HAN_QUERY_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,3}")
 RELAXED_SHORT_HAN_RETRY_BOOST_OVERRIDES = {
@@ -319,6 +321,114 @@ class VideoSearcherV2:
         )
         semantic_rewrite_info["applied_query"] = base_query
         return base_query, semantic_suggest_info, semantic_rewrite_info
+
+    @staticmethod
+    def _normalize_search_focus_segment(text: str) -> str:
+        normalized = " ".join(str(text or "").split()).strip()
+        normalized = normalized.strip("，。！？!?、|/:：<>\"'`~·#")
+        return " ".join(normalized.split())
+
+    @classmethod
+    def _strip_search_focus_noise(cls, text: str) -> str:
+        normalized = cls._normalize_search_focus_segment(text)
+        previous = None
+        while normalized and normalized != previous:
+            previous = normalized
+            for pattern in SEARCH_FOCUS_POLICY.prefix_strip_patterns:
+                normalized = pattern.sub("", normalized).strip()
+            for pattern in SEARCH_FOCUS_POLICY.suffix_strip_patterns:
+                normalized = pattern.sub("", normalized).strip()
+            normalized = cls._normalize_search_focus_segment(normalized)
+        return normalized
+
+    @classmethod
+    def _resolve_search_focus_query(cls, query: str) -> tuple[str, dict]:
+        normalized_query = str(query or "").strip()
+        focus_info = {
+            "input_query": normalized_query,
+            "applied": False,
+        }
+        if not normalized_query or not SEARCH_FOCUS_POLICY.enabled:
+            focus_info["applied_query"] = normalized_query
+            return normalized_query, focus_info
+        if not SEARCH_FOCUS_POLICY.should_focus(normalized_query):
+            focus_info["applied_query"] = normalized_query
+            return normalized_query, focus_info
+
+        candidate_texts: list[str] = []
+
+        bracket_match = SEARCH_FOCUS_POLICY.bracket_prefix_pattern.match(
+            normalized_query
+        )
+        if bracket_match:
+            prefix = cls._strip_search_focus_noise(bracket_match.group("prefix"))
+            body = cls._strip_search_focus_noise(bracket_match.group("body"))
+            if prefix and body:
+                candidate_texts.append(f"{prefix} {body}")
+            if body:
+                candidate_texts.append(body)
+
+        stripped_query = cls._strip_search_focus_noise(normalized_query)
+        if stripped_query:
+            candidate_texts.append(stripped_query)
+
+        indexed_segments: list[tuple[int, str]] = []
+        for index, raw_segment in enumerate(
+            SEARCH_FOCUS_POLICY.segment_split_pattern.split(
+                stripped_query or normalized_query
+            )
+        ):
+            segment = cls._strip_search_focus_noise(raw_segment)
+            if len(compact_focus_key(segment)) < SEARCH_FOCUS_POLICY.min_segment_chars:
+                continue
+            indexed_segments.append((index, segment))
+
+        if indexed_segments:
+            ranked_segments = sorted(
+                indexed_segments,
+                key=lambda item: (-len(compact_focus_key(item[1])), item[0]),
+            )
+            selected_segments = sorted(
+                ranked_segments[: SEARCH_FOCUS_POLICY.max_segments],
+                key=lambda item: item[0],
+            )
+            candidate_texts.append(
+                " ".join(segment for _, segment in selected_segments).strip()
+            )
+
+        candidates: list[str] = []
+        seen_keys: set[str] = set()
+        for candidate in candidate_texts:
+            normalized_candidate = cls._normalize_search_focus_segment(candidate)
+            candidate_key = compact_focus_key(normalized_candidate)
+            if len(candidate_key) < SEARCH_FOCUS_POLICY.min_segment_chars:
+                continue
+            if normalized_candidate == normalized_query:
+                continue
+            if candidate_key in seen_keys:
+                continue
+            seen_keys.add(candidate_key)
+            candidates.append(normalized_candidate)
+
+        if not candidates:
+            focus_info["applied_query"] = normalized_query
+            return normalized_query, focus_info
+
+        def _score(candidate: str) -> tuple[int, int, int, str]:
+            key_len = len(compact_focus_key(candidate))
+            segment_count = len(candidate.split())
+            return (
+                1 if segment_count >= 2 else 0,
+                key_len,
+                -abs(len(candidate) - len(normalized_query)),
+                candidate,
+            )
+
+        focused_query = sorted(candidates, key=_score, reverse=True)[0]
+        focus_info["applied"] = focused_query != normalized_query
+        focus_info["candidates"] = candidates
+        focus_info["applied_query"] = focused_query
+        return focused_query, focus_info
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
         try:
@@ -1677,14 +1787,18 @@ class VideoSearcherV2:
         effective_query = str(query or "")
         effective_suggest_info = dict(suggest_info or {})
         semantic_rewrite_info: dict = {}
+        query_focus_info: dict = {}
         owner_context_query = ""
         if request_type == SEARCH_REQUEST_TYPE_DEFAULT:
+            effective_query, query_focus_info = self._resolve_search_focus_query(
+                effective_query
+            )
             (
                 effective_query,
                 semantic_suggest_info,
                 semantic_rewrite_info,
             ) = self._resolve_search_semantic_rewrite(
-                query=query,
+                query=effective_query,
                 suggest_info=suggest_info,
                 request_type=request_type,
             )
@@ -1821,8 +1935,16 @@ class VideoSearcherV2:
         # Sanitize search_body to reduce network payload (removes large terms arrays)
         return_res["search_body"] = self.sanitize_search_body_for_client(search_body)
         return_res["intent_info"] = owner_intent_info
+        if query_focus_info:
+            return_res["query_focus_info"] = query_focus_info
         if semantic_rewrite_info:
             semantic_rewrite_info = dict(semantic_rewrite_info)
+            semantic_rewrite_info["input_query"] = str(query or "")
+            if query_focus_info.get("applied"):
+                semantic_rewrite_info["focus_query"] = query_focus_info.get(
+                    "applied_query",
+                    effective_query,
+                )
             semantic_rewrite_info["applied_query"] = (
                 list(rewrite_info.get("rewrited_word_exprs") or [effective_query])[0]
                 if rewrite_info.get("rewrited_word_exprs")
@@ -2103,6 +2225,39 @@ class VideoSearcherV2:
             return [{"term": {"owner.mid": owner_mids[0]}}]
         return [{"terms": {"owner.mid": owner_mids}}]
 
+    @staticmethod
+    def _should_suppress_title_like_owner_filter(
+        query: str,
+        candidate: dict | None,
+    ) -> bool:
+        if not candidate:
+            return False
+        if not OWNER_INTENT_POLICY.looks_like_title_query(query):
+            return False
+        if not OWNER_INTENT_POLICY.supports_name_sources(candidate):
+            return True
+
+        owner_name = str((candidate or {}).get("name") or "").strip()
+        return not OWNER_INTENT_POLICY.is_title_like_owner_query(query, owner_name)
+
+    @staticmethod
+    def _should_suppress_short_query_owner_filter(
+        query: str,
+        candidate: dict | None,
+    ) -> bool:
+        if not candidate:
+            return False
+        if not OWNER_INTENT_POLICY.is_short_query(query):
+            return False
+        if not OWNER_INTENT_POLICY.supports_name_sources(candidate):
+            return True
+
+        owner_name = str((candidate or {}).get("name") or "").strip()
+        return not OWNER_INTENT_POLICY.is_short_query_owner_name_match(
+            query,
+            owner_name,
+        )
+
     def _resolve_owner_intent_info(self, query: str) -> dict:
         normalized_query = (query or "").strip()
         if not normalized_query:
@@ -2139,7 +2294,18 @@ class VideoSearcherV2:
         }
         if candidate:
             owner_intent_info["owner"] = candidate
-            owner_intent_info["owner_filter"] = self._build_owner_filter(candidate)
+            if self._should_suppress_title_like_owner_filter(
+                normalized_query,
+                candidate,
+            ):
+                owner_intent_info["filter_suppressed_reason"] = "title_like_query"
+            elif self._should_suppress_short_query_owner_filter(
+                normalized_query,
+                candidate,
+            ):
+                owner_intent_info["filter_suppressed_reason"] = "broad_short_query"
+            else:
+                owner_intent_info["owner_filter"] = self._build_owner_filter(candidate)
         return owner_intent_info
 
     @staticmethod
