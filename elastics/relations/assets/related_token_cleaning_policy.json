@@ -1,0 +1,26 @@
+{
+    "blocked_markers": [
+        "__pyf__",
+        "|关注不错过"
+    ],
+    "boilerplate_tail_patterns": [
+        "\\s*点点关注不错过(?:\\s*持续更新(?:系列)?中)?\\s*$",
+        "\\s*持续更新(?:系列)?中\\s*$",
+        "\\s*欢迎收看求三连\\s*$",
+        "\\s*求三连\\s*$"
+    ],
+    "punctuation_pattern": "[，。！？?；;：:、~]+",
+    "normalize_strip_chars": " 【】[]()<>\"'`",
+    "dedupe_min_key_len": 2,
+    "short_prefix_noise": {
+        "source_min_len": 6,
+        "option_min_len": 2,
+        "option_max_len": 3,
+        "candidate_types": [
+            "prefix"
+        ],
+        "min_doc_freq": 1000,
+        "shared_prefix_min": 2
+    },
+    "digit_suffix_noise_pattern": "^[\\u4e00-\\u9fffA-Za-z]{1,2}\\d{1,2}$"
+}

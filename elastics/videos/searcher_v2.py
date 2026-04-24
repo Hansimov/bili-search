@@ -120,6 +120,8 @@ class VideoSearcherV2:
         self.suggest_parser = SuggestInfoParser("v2")
         # Lazy-initialized embed client for KNN search
         self._embed_client = None
+        self._query_understanding = None
+        self._owner_query_intent_resolver = None
 
     @property
     def embed_client(self) -> TextEmbedClient:
@@ -134,7 +136,8 @@ class VideoSearcherV2:
 
     @property
     def owner_searcher(self) -> OwnerSearcher:
-        if self._owner_searcher is None:
+        owner_searcher = getattr(self, "_owner_searcher", None)
+        if owner_searcher is None:
             self._owner_searcher = OwnerSearcher(
                 index_name=self.index_name,
                 elastic_env_name=self.elastic_env_name,
@@ -143,33 +146,36 @@ class VideoSearcherV2:
 
     @property
     def relations_client(self) -> RelationsClient:
-        if self._relations_client is None:
+        relations_client = getattr(self, "_relations_client", None)
+        if relations_client is None:
             self._relations_client = RelationsClient(
                 index_name=self.index_name,
                 elastic_env_name=self.elastic_env_name,
             )
         return self._relations_client
 
-    def _build_query_understanding(self) -> VideoQueryUnderstanding:
-        owner_searcher = getattr(self, "_owner_searcher", None)
-        if owner_searcher is None:
-            owner_searcher = self.owner_searcher
+    @property
+    def query_understanding(self) -> VideoQueryUnderstanding:
+        query_understanding = getattr(self, "_query_understanding", None)
+        if query_understanding is None:
+            relations_client = getattr(self, "_relations_client", None)
+            if relations_client is None and hasattr(self, "elastic_env_name"):
+                relations_client = self.relations_client
+            query_understanding = VideoQueryUnderstanding(
+                query_rewriter=self.query_rewriter,
+                owner_searcher=self.owner_searcher,
+                relations_client=relations_client,
+            )
+            self._query_understanding = query_understanding
+        return query_understanding
 
-        relations_client = getattr(self, "_relations_client", None)
-        if relations_client is None and hasattr(self, "elastic_env_name"):
-            relations_client = self.relations_client
-
-        return VideoQueryUnderstanding(
-            query_rewriter=self.query_rewriter,
-            owner_searcher=owner_searcher,
-            relations_client=relations_client,
-        )
-
-    def _build_owner_query_intent_resolver(self) -> OwnerQueryIntentResolver:
-        owner_searcher = getattr(self, "_owner_searcher", None)
-        if owner_searcher is None:
-            owner_searcher = self.owner_searcher
-        return OwnerQueryIntentResolver(owner_searcher=owner_searcher)
+    @property
+    def owner_query_intent_resolver(self) -> OwnerQueryIntentResolver:
+        resolver = getattr(self, "_owner_query_intent_resolver", None)
+        if resolver is None:
+            resolver = OwnerQueryIntentResolver(owner_searcher=self.owner_searcher)
+            self._owner_query_intent_resolver = resolver
+        return resolver
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
         try:
@@ -1530,7 +1536,7 @@ class VideoSearcherV2:
         semantic_rewrite_info: dict = {}
         query_focus_info: dict = {}
         owner_context_query = ""
-        query_understanding = self._build_query_understanding()
+        query_understanding = self.query_understanding
         if request_type == SEARCH_REQUEST_TYPE_DEFAULT:
             prepared_query = query_understanding.prepare_search_query(
                 effective_query,
@@ -1854,16 +1860,12 @@ class VideoSearcherV2:
         )
 
     def _resolve_vector_auto_constraint_query(self, query: str) -> str:
-        return self._build_owner_query_intent_resolver()._resolve_vector_auto_constraint_query(
+        return self.owner_query_intent_resolver._resolve_vector_auto_constraint_query(
             query
         )
 
     def _resolve_spaced_owner_intent_info(self, query: str) -> dict:
-        return (
-            self._build_owner_query_intent_resolver()._resolve_spaced_owner_intent_info(
-                query
-            )
-        )
+        return self.owner_query_intent_resolver._resolve_spaced_owner_intent_info(query)
 
     @staticmethod
     def _build_spaced_owner_context_query(owner_intent_info: dict | None) -> str:
@@ -1900,9 +1902,7 @@ class VideoSearcherV2:
         )
 
     def _resolve_owner_intent_info(self, query: str) -> dict:
-        return self._build_owner_query_intent_resolver()._resolve_owner_intent_info(
-            query
-        )
+        return self.owner_query_intent_resolver._resolve_owner_intent_info(query)
 
     @staticmethod
     def _looks_like_model_code_query(text: str) -> bool:

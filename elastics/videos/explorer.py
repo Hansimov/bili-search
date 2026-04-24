@@ -985,7 +985,7 @@ class VideoExplorer(VideoSearcherV2):
         """
         from dsl.fields.qmod import normalize_qmod
 
-        query_understanding = self._build_query_understanding()
+        query_understanding = self.query_understanding
         owner_intent_info = query_understanding.resolve_owner_intent(query).info
 
         # Extract query mode from query if not provided

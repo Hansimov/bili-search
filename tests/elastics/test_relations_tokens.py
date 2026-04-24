@@ -47,3 +47,28 @@ def test_sanitize_related_token_options_filters_short_prefix_noise_for_long_quer
     assert options == [
         {"text": "寄明月 翻唱", "type": "rewrite", "doc_freq": 9, "score": 220.0}
     ]
+
+
+def test_sanitize_related_token_options_filters_short_digit_prefix_noise():
+    options = sanitize_related_token_options(
+        "月栖乐序 高能音乐挑战赛",
+        [
+            {"text": "月1", "type": "prefix", "doc_freq": 285925, "score": 1051.5},
+            {"text": "月2", "type": "prefix", "doc_freq": 214521, "score": 843.8},
+            {
+                "text": "全能音乐挑战赛",
+                "type": "cooccurrence",
+                "doc_freq": 465,
+                "score": 708.3,
+            },
+        ],
+    )
+
+    assert options == [
+        {
+            "text": "全能音乐挑战赛",
+            "type": "cooccurrence",
+            "doc_freq": 465,
+            "score": 708.3,
+        }
+    ]
