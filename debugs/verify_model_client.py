@@ -88,48 +88,26 @@ def run_stream_text_check(client) -> dict:
     }
 
 
-def run_tool_check(client) -> dict:
+def run_xml_markup_check(client) -> dict:
     response = client.chat(
         messages=[
             {
-                "role": "user",
-                "content": "不要直接回答，必须调用 echo_city 工具，并把 city 设置为北京。",
-            }
-        ],
-        tools=[
+                "role": "system",
+                "content": "你是 XML 工具协议测试器。只输出一个自闭合 XML 工具标签，不要附加解释。",
+            },
             {
-                "type": "function",
-                "function": {
-                    "name": "echo_city",
-                    "description": "回显用户指定的城市。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "city": {"type": "string"},
-                        },
-                        "required": ["city"],
-                    },
-                },
-            }
+                "role": "user",
+                "content": "请输出一个 search_videos XML 标签，queries 只包含 黑神话。",
+            },
         ],
         temperature=0,
     )
-    tool_calls = []
-    for tool_call in response.tool_calls:
-        tool_calls.append(
-            {
-                "name": tool_call.name,
-                "arguments": tool_call.parse_arguments(),
-            }
-        )
-    first_arguments = tool_calls[0]["arguments"] if tool_calls else {}
+    content = str(response.content or "").strip()
     return {
-        "name": "tool_call",
-        "ok": bool(tool_calls)
-        and tool_calls[0]["name"] == "echo_city"
-        and first_arguments.get("city") == "北京"
-        and "<think>" not in str(response.content or "").lower(),
-        "tool_calls": tool_calls,
+        "name": "xml_markup",
+        "ok": "<search_videos" in content
+        and "黑神话" in content
+        and "tool_calls" not in content.lower(),
         **_response_payload(response),
     }
 
@@ -165,7 +143,7 @@ def run_multimodal_check(client, image_url: str) -> dict:
 
 
 def _enabled_checks(spec, force_multimodal: bool) -> list[str]:
-    checks = ["text", "stream_text", "tool_call"]
+    checks = ["text", "stream_text", "xml_markup"]
     if force_multimodal or getattr(spec, "supports_multimodal", False):
         checks.append("multimodal")
     return checks
@@ -196,7 +174,7 @@ def main(default_model_config: str | None = None) -> int:
     check_map = {
         "text": lambda: run_text_check(client),
         "stream_text": lambda: run_stream_text_check(client),
-        "tool_call": lambda: run_tool_check(client),
+        "xml_markup": lambda: run_xml_markup_check(client),
         "multimodal": lambda: run_multimodal_check(client, image_url),
     }
     enabled_checks = _enabled_checks(spec, args.force_multimodal)

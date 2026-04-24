@@ -57,7 +57,7 @@
 - `llms/models/client.py` 提供 `LLMClient` / `ChatResponse` / `ToolCall` 接口封装。
 - `bsdk`、`llms.runtime.cli` 和调试脚本在未显式传 `-lc/--llm-config` 时，都会继承这个配置默认值，避免切换模型时同步修改命令示例和脚本默认参数。
 - registry 会从 endpoint / model / api_format 推断 provider，并公开 `provider`、`api_format`、`supports_multimodal`、`supports_reasoning` 等能力元数据，便于后续切换和 live 验证。
-- 虽然 transport 层仍保留 `tool_calls` 兼容解析，但 bili-search active path 禁止使用它；真正的工具协议只认 inline XML。
+- transport 层已经完全移除 provider `tools/tool_calls` 兼容；bili-search 真正的工具协议只认 inline XML。
 - `create_model_clients(...)` 会一次性构造大小模型 client，并把公开能力暴露给运行时和测试脚本。
 
 ### 意图路由

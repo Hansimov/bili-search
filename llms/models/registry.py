@@ -37,10 +37,6 @@ def _infer_provider(config_name: str, model_envs: dict) -> str:
     return "openai"
 
 
-def _supports_tools(model_envs: dict, provider: str) -> bool:
-    return model_envs.get("api_format", "openai") in {"openai", "ollama"}
-
-
 def _supports_multimodal(model_envs: dict, provider: str) -> bool:
     if "supports_multimodal" in model_envs:
         return bool(model_envs.get("supports_multimodal"))
@@ -100,7 +96,6 @@ class ModelRegistry:
                     model_envs.get("thinking_adapter", "auto") or "auto"
                 ),
                 description=model_envs.get("description", ""),
-                supports_tools=_supports_tools(model_envs, provider),
                 supports_streaming=True,
                 supports_multimodal=_supports_multimodal(model_envs, provider),
                 supports_reasoning=_supports_reasoning(model_envs, provider),

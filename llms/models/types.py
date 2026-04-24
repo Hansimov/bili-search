@@ -43,26 +43,17 @@ class ChatResponse:
         self,
         content: str = None,
         reasoning_content: str = None,
-        tool_calls: list[ToolCall] | None = None,
         finish_reason: str = None,
         usage: dict | None = None,
     ):
         self.content = content
         self.reasoning_content = reasoning_content
-        self.tool_calls = tool_calls or []
         self.finish_reason = finish_reason
         self.usage = usage or {}
 
-    @property
-    def has_tool_calls(self) -> bool:
-        return bool(self.tool_calls)
-
     def to_message_dict(self) -> dict:
         msg = {"role": "assistant"}
-        if self.tool_calls:
-            msg["content"] = self.content
-            msg["tool_calls"] = [tool_call.to_dict() for tool_call in self.tool_calls]
-        elif self.content is not None:
+        if self.content is not None:
             msg["content"] = self.content
         return msg
 

@@ -120,7 +120,6 @@ class ModelSpec:
     api_format: str = "openai"
     thinking_adapter: str = "auto"
     description: str = ""
-    supports_tools: bool = True
     supports_streaming: bool = True
     supports_multimodal: bool = False
     supports_reasoning: bool = False
