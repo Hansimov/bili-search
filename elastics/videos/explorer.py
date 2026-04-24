@@ -1102,42 +1102,26 @@ class VideoExplorer(VideoSearcherV2):
                 enable_rerank=enable_rerank,
                 prefer=prefer,
             )
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = qmod
-            result["intent_info"] = owner_intent_info
-            if self._should_retry_without_short_han_exact(
-                query,
-                total_hits=self._get_unified_explore_total_hits(result),
-                allow_retry=_allow_short_han_retry,
-            ):
-                logger.warn(
-                    "> Retry unified explore without auto-exact short Han segments",
-                    verbose=verbose,
-                )
-                with override_auto_require_short_han_exact("first"):
-                    retry_res = self.unified_explore(
-                        query=query,
-                        qmod=qmod,
-                        extra_filters=extra_filters,
-                        constraint_filter=constraint_filter,
-                        auto_constraint=auto_constraint,
-                        suggest_info=suggest_info,
-                        verbose=verbose,
-                        most_relevant_limit=most_relevant_limit,
-                        rank_method=rank_method,
-                        rank_top_k=rank_top_k,
-                        group_owner_limit=group_owner_limit,
-                        prefer=prefer,
-                        knn_field=knn_field,
-                        knn_k=knn_k,
-                        knn_num_candidates=knn_num_candidates,
-                        _allow_short_han_retry=False,
-                    )
-                retry_info = dict(retry_res.get("retry_info") or {})
-                retry_info["relaxed_short_han_exact"] = True
-                retry_res["retry_info"] = retry_info
-                return retry_res
-            return result
+            return self._finalize_unified_explore_result(
+                result=result,
+                query=query,
+                qmod=qmod,
+                owner_intent_info=owner_intent_info,
+                constraint_filter=constraint_filter,
+                auto_constraint=auto_constraint,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+                prefer=prefer,
+                knn_field=knn_field,
+                knn_k=knn_k,
+                knn_num_candidates=knn_num_candidates,
+                allow_short_han_retry=_allow_short_han_retry,
+            )
 
         elif has_vector:
             # Vector-only mode: KNN recall + rerank + diversified ranking
@@ -1154,42 +1138,26 @@ class VideoExplorer(VideoSearcherV2):
                 enable_rerank=True,  # Always rerank for vector search
                 prefer=prefer,
             )
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = qmod
-            result["intent_info"] = owner_intent_info
-            if self._should_retry_without_short_han_exact(
-                query,
-                total_hits=self._get_unified_explore_total_hits(result),
-                allow_retry=_allow_short_han_retry,
-            ):
-                logger.warn(
-                    "> Retry unified explore without auto-exact short Han segments",
-                    verbose=verbose,
-                )
-                with override_auto_require_short_han_exact("first"):
-                    retry_res = self.unified_explore(
-                        query=query,
-                        qmod=qmod,
-                        extra_filters=extra_filters,
-                        constraint_filter=constraint_filter,
-                        auto_constraint=auto_constraint,
-                        suggest_info=suggest_info,
-                        verbose=verbose,
-                        most_relevant_limit=most_relevant_limit,
-                        rank_method=rank_method,
-                        rank_top_k=rank_top_k,
-                        group_owner_limit=group_owner_limit,
-                        prefer=prefer,
-                        knn_field=knn_field,
-                        knn_k=knn_k,
-                        knn_num_candidates=knn_num_candidates,
-                        _allow_short_han_retry=False,
-                    )
-                retry_info = dict(retry_res.get("retry_info") or {})
-                retry_info["relaxed_short_han_exact"] = True
-                retry_res["retry_info"] = retry_info
-                return retry_res
-            return result
+            return self._finalize_unified_explore_result(
+                result=result,
+                query=query,
+                qmod=qmod,
+                owner_intent_info=owner_intent_info,
+                constraint_filter=constraint_filter,
+                auto_constraint=auto_constraint,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+                prefer=prefer,
+                knn_field=knn_field,
+                knn_k=knn_k,
+                knn_num_candidates=knn_num_candidates,
+                allow_short_han_retry=_allow_short_han_retry,
+            )
 
         else:
             # Word-only mode: multi-lane recall + diversified ranking
@@ -1205,42 +1173,142 @@ class VideoExplorer(VideoSearcherV2):
                 enable_rerank=enable_rerank,
                 prefer=prefer,
             )
-            if result.get("data") and len(result["data"]) > 0:
-                result["data"][0]["output"]["qmod"] = qmod
-            result["intent_info"] = owner_intent_info
-            if self._should_retry_without_short_han_exact(
-                query,
-                total_hits=self._get_unified_explore_total_hits(result),
-                allow_retry=_allow_short_han_retry,
-            ):
-                logger.warn(
-                    "> Retry unified explore without auto-exact short Han segments",
-                    verbose=verbose,
-                )
-                with override_auto_require_short_han_exact("first"):
-                    retry_res = self.unified_explore(
-                        query=query,
-                        qmod=qmod,
-                        extra_filters=extra_filters,
-                        constraint_filter=constraint_filter,
-                        auto_constraint=auto_constraint,
-                        suggest_info=suggest_info,
-                        verbose=verbose,
-                        most_relevant_limit=most_relevant_limit,
-                        rank_method=rank_method,
-                        rank_top_k=rank_top_k,
-                        group_owner_limit=group_owner_limit,
-                        prefer=prefer,
-                        knn_field=knn_field,
-                        knn_k=knn_k,
-                        knn_num_candidates=knn_num_candidates,
-                        _allow_short_han_retry=False,
-                    )
-                retry_info = dict(retry_res.get("retry_info") or {})
-                retry_info["relaxed_short_han_exact"] = True
-                retry_res["retry_info"] = retry_info
-                return retry_res
-            return result
+            return self._finalize_unified_explore_result(
+                result=result,
+                query=query,
+                qmod=qmod,
+                owner_intent_info=owner_intent_info,
+                constraint_filter=constraint_filter,
+                auto_constraint=auto_constraint,
+                extra_filters=extra_filters,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+                prefer=prefer,
+                knn_field=knn_field,
+                knn_k=knn_k,
+                knn_num_candidates=knn_num_candidates,
+                allow_short_han_retry=_allow_short_han_retry,
+            )
+
+    @staticmethod
+    def _annotate_unified_explore_result(
+        result: dict,
+        qmod: list[str] | str | None,
+        owner_intent_info: dict | None,
+    ) -> dict:
+        if result.get("data"):
+            output = result["data"][0].setdefault("output", {})
+            output["qmod"] = qmod
+        result["intent_info"] = owner_intent_info
+        return result
+
+    def _retry_unified_explore_without_short_han_exact(
+        self,
+        result: dict,
+        *,
+        query: str,
+        qmod: list[str] | str | None,
+        constraint_filter: dict | None,
+        auto_constraint: bool,
+        extra_filters: list[dict],
+        suggest_info: dict,
+        verbose: bool,
+        most_relevant_limit: int,
+        rank_method: RANK_METHOD_TYPE,
+        rank_top_k: int,
+        group_owner_limit: int,
+        prefer: RANK_PREFER_TYPE,
+        knn_field: str,
+        knn_k: int,
+        knn_num_candidates: int,
+        allow_retry: bool,
+    ) -> dict | None:
+        if not self._should_retry_without_short_han_exact(
+            query,
+            total_hits=self._get_unified_explore_total_hits(result),
+            allow_retry=allow_retry,
+        ):
+            return None
+
+        logger.warn(
+            "> Retry unified explore without auto-exact short Han segments",
+            verbose=verbose,
+        )
+        with override_auto_require_short_han_exact("first"):
+            retry_res = self.unified_explore(
+                query=query,
+                qmod=qmod,
+                extra_filters=extra_filters,
+                constraint_filter=constraint_filter,
+                auto_constraint=auto_constraint,
+                suggest_info=suggest_info,
+                verbose=verbose,
+                most_relevant_limit=most_relevant_limit,
+                rank_method=rank_method,
+                rank_top_k=rank_top_k,
+                group_owner_limit=group_owner_limit,
+                prefer=prefer,
+                knn_field=knn_field,
+                knn_k=knn_k,
+                knn_num_candidates=knn_num_candidates,
+                _allow_short_han_retry=False,
+            )
+        retry_info = dict(retry_res.get("retry_info") or {})
+        retry_info["relaxed_short_han_exact"] = True
+        retry_res["retry_info"] = retry_info
+        return retry_res
+
+    def _finalize_unified_explore_result(
+        self,
+        result: dict,
+        *,
+        query: str,
+        qmod: list[str] | str | None,
+        owner_intent_info: dict | None,
+        constraint_filter: dict | None,
+        auto_constraint: bool,
+        extra_filters: list[dict],
+        suggest_info: dict,
+        verbose: bool,
+        most_relevant_limit: int,
+        rank_method: RANK_METHOD_TYPE,
+        rank_top_k: int,
+        group_owner_limit: int,
+        prefer: RANK_PREFER_TYPE,
+        knn_field: str,
+        knn_k: int,
+        knn_num_candidates: int,
+        allow_short_han_retry: bool,
+    ) -> dict:
+        result = self._annotate_unified_explore_result(
+            result,
+            qmod=qmod,
+            owner_intent_info=owner_intent_info,
+        )
+        retry_res = self._retry_unified_explore_without_short_han_exact(
+            result,
+            query=query,
+            qmod=qmod,
+            constraint_filter=constraint_filter,
+            auto_constraint=auto_constraint,
+            extra_filters=extra_filters,
+            suggest_info=suggest_info,
+            verbose=verbose,
+            most_relevant_limit=most_relevant_limit,
+            rank_method=rank_method,
+            rank_top_k=rank_top_k,
+            group_owner_limit=group_owner_limit,
+            prefer=prefer,
+            knn_field=knn_field,
+            knn_k=knn_k,
+            knn_num_candidates=knn_num_candidates,
+            allow_retry=allow_short_han_retry,
+        )
+        return retry_res or result
 
     @staticmethod
     def _get_unified_explore_total_hits(result: dict) -> int:

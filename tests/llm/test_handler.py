@@ -551,13 +551,6 @@ def test_alias_like_video_query_rewrites_to_known_canonical_term():
                 arguments={"text": "康夫UI", "mode": "correction"},
             )
         ),
-        make_function_call_response(
-            ToolCall(
-                id="call_alias_video_1",
-                name="search_videos",
-                arguments={"queries": ["康夫UI 教程 :date>=2024"]},
-            )
-        ),
         make_content_response("ComfyUI 入门可看 https://www.bilibili.com/video/BV1abc"),
     ]
 
@@ -611,7 +604,7 @@ def test_alias_like_video_query_rewrites_to_known_canonical_term():
         assistant_content(result)
         == "ComfyUI 入门可看 https://www.bilibili.com/video/BV1abc"
     )
-    mock_search.explore.assert_called_once_with(query="ComfyUI 教程 :date>=2024")
+    mock_search.explore.assert_called_once_with(query="ComfyUI 入门教程")
 
 
 def test_ensure_primary_subject_context_prefixes_missing_external_subject():

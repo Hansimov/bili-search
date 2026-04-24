@@ -79,6 +79,50 @@ def is_digit_suffix_prefix_noise(source_text: str, option: dict) -> bool:
     return source_key.startswith(stem)
 
 
+def is_source_echo_noise(source_text: str, option: dict) -> bool:
+    option_text = normalize_related_token_text((option or {}).get("text") or "")
+    if not option_text or " " not in option_text:
+        return False
+
+    source_echo_policy = POLICY.source_echo_noise
+    if (
+        str((option or {}).get("type") or "").lower()
+        not in source_echo_policy.candidate_types
+    ):
+        return False
+    if int((option or {}).get("doc_freq") or 0) > source_echo_policy.max_doc_freq:
+        return False
+
+    source_terms = [
+        term.strip()
+        for term in normalize_related_token_text(source_text).split()
+        if term.strip()
+    ]
+    if len(source_terms) < source_echo_policy.source_min_terms:
+        return False
+
+    source_term_keys = {compact_related_token_key(term) for term in source_terms}
+    for source_term in source_terms:
+        source_term_key = compact_related_token_key(source_term)
+        if (
+            len(source_term_key) < source_echo_policy.source_term_min_len
+            or len(source_term_key) > source_echo_policy.source_term_max_len
+        ):
+            continue
+        prefix = f"{source_term} "
+        if not option_text.startswith(prefix):
+            continue
+        tail_text = option_text[len(prefix) :].strip()
+        tail_key = compact_related_token_key(tail_text)
+        if not tail_key:
+            continue
+        if tail_key in source_term_keys:
+            return False
+        if tail_text.lower() in source_echo_policy.generic_tails:
+            return True
+    return False
+
+
 def sanitize_related_token_options(
     source_text: str,
     options: list[dict] | None,
@@ -90,6 +134,8 @@ def sanitize_related_token_options(
         if not text:
             continue
         if is_digit_suffix_prefix_noise(source_text, {**option, "text": text}):
+            continue
+        if is_source_echo_noise(source_text, {**option, "text": text}):
             continue
         if is_short_prefix_noise(source_text, option):
             continue

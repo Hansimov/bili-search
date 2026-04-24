@@ -30,7 +30,7 @@ from llms.intent.focus import build_focus_query
 from llms.intent.focus import compact_focus_key
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
-from llms.messages import extract_bvids, extract_message_text, normalize_bvid_key
+from llms.messages import extract_message_text
 from llms.orchestration import ChatOrchestrator
 from llms.orchestration.tool_markup import EXTERNAL_TOOL_NAMES
 from llms.orchestration.tool_markup import EXTERNAL_TOOL_PREFIXES
@@ -41,6 +41,7 @@ from llms.orchestration.tool_markup import strip_tool_commands
 from llms.models import LLMClient, ChatResponse, create_llm_client
 from llms.planning import OwnerResolutionMixin, ToolPlanningMixin
 from llms.tools.executor import ToolExecutor
+from llms.tools.video_lookup import coerce_search_video_lookup_arguments
 from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
 from llms.runtime.usage import accumulate_usage, compute_perf_stats, normalize_usage
 
@@ -91,11 +92,6 @@ _THINKING_PROMPT = (
 # When these appear in content, it means the LLM is issuing a tool call rather than
 # producing a final answer, so we must stop streaming content to the client.
 _TOOL_PREFIXES: tuple[str, ...] = EXTERNAL_TOOL_PREFIXES
-_BVID_LOOKUP_QUERY_RE = re.compile(r"^(?:bv\s*=\s*)?(BV[0-9A-Za-z]{10})$", re.IGNORECASE)
-_MID_LOOKUP_QUERY_RE = re.compile(
-    r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
-    re.IGNORECASE,
-)
 
 
 def _find_tool_command_start(text: str) -> int | None:
@@ -679,139 +675,6 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             tokens.append(token)
         return tokens
 
-    @staticmethod
-    def _normalize_lookup_seed_values(values: object) -> list[str]:
-        if isinstance(values, str):
-            text = values.strip()
-            return [text] if text else []
-        if isinstance(values, (list, tuple, set)):
-            return [str(item).strip() for item in values if str(item or "").strip()]
-        return []
-
-    @classmethod
-    def _normalize_lookup_mid_values(cls, values: object) -> list[str]:
-        normalized: list[str] = []
-        for value in cls._normalize_lookup_seed_values(values):
-            try:
-                normalized_value = str(int(value))
-            except (TypeError, ValueError):
-                continue
-            if normalized_value not in normalized:
-                normalized.append(normalized_value)
-        return normalized
-
-    @staticmethod
-    def _parse_search_video_lookup_query(
-        query: str,
-    ) -> tuple[str, str, str | None] | None:
-        query_text = str(query or "").strip()
-        if not query_text:
-            return None
-
-        bvid_match = _BVID_LOOKUP_QUERY_RE.fullmatch(query_text)
-        if bvid_match:
-            return ("bvid", bvid_match.group(1), None)
-
-        mid_match = _MID_LOOKUP_QUERY_RE.fullmatch(query_text)
-        if mid_match:
-            return ("mid", str(int(mid_match.group(1))), mid_match.group(2) or None)
-
-        return None
-
-    @classmethod
-    def _normalize_search_video_lookup_args(cls, args: dict) -> dict | None:
-        normalized = dict(args or {})
-        mode = str(normalized.get("mode", "auto") or "auto").lower()
-        if mode == "discover":
-            return None
-
-        raw_queries = normalized.get("queries")
-        if isinstance(raw_queries, str):
-            raw_queries = [raw_queries]
-        elif not isinstance(raw_queries, list):
-            single_query = str(normalized.get("query", "") or "").strip()
-            raw_queries = [single_query] if single_query else []
-
-        explicit_bvids: list[str] = []
-        explicit_bvid_keys: set[str] = set()
-        explicit_mids: list[str] = []
-        date_window = str(normalized.get("date_window", "") or "").strip() or None
-
-        for key in ("bv", "bvid"):
-            for value in cls._normalize_lookup_seed_values(normalized.get(key)):
-                matches = extract_bvids({"content": value})
-                for match in matches:
-                    match_key = normalize_bvid_key(match)
-                    if match_key not in explicit_bvid_keys:
-                        explicit_bvid_keys.add(match_key)
-                        explicit_bvids.append(match)
-
-        for value in cls._normalize_lookup_seed_values(normalized.get("bvids")):
-            matches = extract_bvids({"content": value})
-            for match in matches:
-                match_key = normalize_bvid_key(match)
-                if match_key not in explicit_bvid_keys:
-                    explicit_bvid_keys.add(match_key)
-                    explicit_bvids.append(match)
-
-        for key in ("mid", "uid"):
-            for value in cls._normalize_lookup_mid_values(normalized.get(key)):
-                if value not in explicit_mids:
-                    explicit_mids.append(value)
-
-        for value in cls._normalize_lookup_mid_values(normalized.get("mids")):
-            if value not in explicit_mids:
-                explicit_mids.append(value)
-
-        remaining_queries: list[str] = []
-        for query in raw_queries:
-            parsed = cls._parse_search_video_lookup_query(query)
-            if parsed is None:
-                remaining_queries.append(str(query or "").strip())
-                continue
-            lookup_kind, lookup_value, query_window = parsed
-            if (
-                lookup_kind == "bvid"
-                and normalize_bvid_key(lookup_value) not in explicit_bvid_keys
-            ):
-                explicit_bvid_keys.add(normalize_bvid_key(lookup_value))
-                explicit_bvids.append(lookup_value)
-            elif lookup_kind == "mid" and lookup_value not in explicit_mids:
-                explicit_mids.append(lookup_value)
-            if query_window and not date_window:
-                date_window = query_window
-
-        if remaining_queries or not (explicit_bvids or explicit_mids):
-            return None
-
-        normalized.pop("query", None)
-        normalized.pop("queries", None)
-        normalized["mode"] = "lookup"
-        if date_window:
-            normalized["date_window"] = date_window
-
-        if explicit_bvids:
-            if len(explicit_bvids) == 1:
-                normalized["bv"] = explicit_bvids[0]
-                normalized.pop("bvid", None)
-                normalized.pop("bvids", None)
-            else:
-                normalized["bvids"] = explicit_bvids
-                normalized.pop("bv", None)
-                normalized.pop("bvid", None)
-
-        if explicit_mids:
-            if len(explicit_mids) == 1:
-                normalized["mid"] = explicit_mids[0]
-                normalized.pop("uid", None)
-                normalized.pop("mids", None)
-            else:
-                normalized["mids"] = explicit_mids
-                normalized.pop("mid", None)
-                normalized.pop("uid", None)
-
-        return normalized
-
     @classmethod
     def _normalize_search_video_query(cls, query: str) -> str | None:
         text = (query or "").strip()
@@ -855,7 +718,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 continue
 
             args = dict(command.get("args") or {})
-            lookup_args = cls._normalize_search_video_lookup_args(args)
+            lookup_args = coerce_search_video_lookup_arguments(args)
             if lookup_args is not None:
                 normalized_commands.append(
                     {

@@ -22,5 +22,21 @@
         "min_doc_freq": 1000,
         "shared_prefix_min": 2
     },
-    "digit_suffix_noise_pattern": "^[\\u4e00-\\u9fffA-Za-z]{1,2}\\d{1,2}$"
+    "digit_suffix_noise_pattern": "^[\\u4e00-\\u9fffA-Za-z]{1,2}\\d{1,2}$",
+    "source_echo_noise": {
+        "candidate_types": [
+            "doc_cooccurrence"
+        ],
+        "source_min_terms": 2,
+        "source_term_min_len": 2,
+        "source_term_max_len": 16,
+        "max_doc_freq": 16,
+        "generic_tails": [
+            "live",
+            "现场",
+            "音乐",
+            "音乐现场",
+            "演唱会"
+        ]
+    }
 }

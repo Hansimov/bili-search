@@ -26,9 +26,19 @@ _VIDEO_QUERY_BRACKET_RE = re.compile(
 _VIDEO_QUERY_QUOTED_TITLE_RE = re.compile(
     r"(?P<prefix>[\u4e00-\u9fffA-Za-z0-9\s._+#/-]{0,32})[《\"](?P<title>[^》\"]{2,64})[》\"]"
 )
+_FOLLOWUP_META_QUERY_RE = re.compile(
+    r"^(?:请|帮我|给我|麻烦你?)?(?:总结|概括|梳理|整理|分析)(?:一下|下)?$"
+)
 
 
 class VideoQueryNormalizer:
+    @staticmethod
+    def _is_meta_followup_query(text: str) -> bool:
+        compact_text = "".join(str(text or "").split())
+        if not compact_text:
+            return False
+        return bool(_FOLLOWUP_META_QUERY_RE.fullmatch(compact_text))
+
     @staticmethod
     def clean_subject_text(text: str) -> str:
         return " ".join(str(text or "").split()).strip(
@@ -137,6 +147,7 @@ class VideoQueryNormalizer:
                 len(normalized_key) < 2
                 or len(normalized_key) > 24
                 or normalized_key in seen_keys
+                or cls._is_meta_followup_query(cleaned)
                 or _VIDEO_QUERY_NOISE_RE.search(cleaned)
             ):
                 continue
@@ -144,6 +155,8 @@ class VideoQueryNormalizer:
             candidate_parts.append(cleaned)
         if candidate_parts:
             normalized = " ".join(candidate_parts[:4]).strip()
+            if cls._is_meta_followup_query(normalized):
+                return ""
             return rewrite_known_term_aliases(normalized) or normalized
 
         focused = build_focus_query(latest_user_text)
@@ -153,6 +166,8 @@ class VideoQueryNormalizer:
             " ，。！？?；;：:"
         )
         normalized = cls.clean_video_query_body(normalized)
+        if cls._is_meta_followup_query(normalized):
+            return ""
         return rewrite_known_term_aliases(normalized) or normalized
 
 

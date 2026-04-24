@@ -13,11 +13,12 @@ from tclogger import logger
 from configs.envs import GOOGLE_HUB_ENVS
 from llms.contracts import ToolCallRequest
 from llms.intent.focus import rewrite_known_term_aliases
-from llms.messages import extract_bvids, normalize_bvid_key
+from llms.messages import normalize_bvid_key
 from llms.models import ToolCall
 from llms.prompts.syntax import SEARCH_SYNTAX
 from llms.tools.defs import DEFAULT_SEARCH_CAPABILITIES, build_tool_definitions
 from llms.tools.names import canonical_tool_name
+from llms.tools.video_lookup import coerce_search_video_lookup_arguments
 from llms.tools.utils import (
     extract_explore_hits,
     filter_relevant_hits_for_llm,
@@ -64,13 +65,6 @@ _OWNER_SOURCE_WEIGHTS = {
     "related_tokens": 1.1,
     "google_space": 0.85,
 }
-_BVID_LOOKUP_QUERY_RE = re.compile(
-    r"^(?:bv\s*=\s*)?(BV[0-9A-Za-z]{10})$", re.IGNORECASE
-)
-_MID_LOOKUP_QUERY_RE = re.compile(
-    r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
-    re.IGNORECASE,
-)
 _LLM_INTERVIEW_THEME_TOKENS = (
     "采访",
     "专访",
@@ -753,92 +747,33 @@ class ToolExecutor:
                 return None
         return method
 
-    @staticmethod
-    def _normalize_mid_values(values: object) -> list[str]:
-        normalized: list[str] = []
-        for value in _normalize_seed_values(values):
-            try:
-                normalized_value = str(int(value))
-            except (TypeError, ValueError):
-                continue
-            if normalized_value not in normalized:
-                normalized.append(normalized_value)
-        return normalized
-
-    @staticmethod
-    def _parse_lookup_query(query: str) -> tuple[str, str, str | None] | None:
-        query_text = str(query or "").strip()
-        if not query_text:
-            return None
-
-        bvid_match = _BVID_LOOKUP_QUERY_RE.fullmatch(query_text)
-        if bvid_match:
-            return ("bvid", bvid_match.group(1), None)
-
-        mid_match = _MID_LOOKUP_QUERY_RE.fullmatch(query_text)
-        if mid_match:
-            return ("mid", str(int(mid_match.group(1))), mid_match.group(2) or None)
-
-        return None
-
     def _extract_video_lookup_request(self, args: dict) -> dict | None:
-        normalized_args = dict(args or {})
-        mode = str(normalized_args.get("mode", "auto") or "auto").lower()
-        if mode == "discover":
+        normalized_args = coerce_search_video_lookup_arguments(args)
+        if normalized_args is None:
             return None
-
-        raw_queries = normalized_args.get("queries")
-        if isinstance(raw_queries, str):
-            raw_queries = [raw_queries]
-        elif not isinstance(raw_queries, list):
-            query_text = str(normalized_args.get("query", "") or "").strip()
-            raw_queries = [query_text] if query_text else []
 
         bvids: list[str] = []
         bvid_keys: set[str] = set()
         mids: list[str] = []
         for key in ("bv", "bvid"):
             for value in _normalize_seed_values(normalized_args.get(key)):
-                for match in extract_bvids({"content": value}):
-                    match_key = normalize_bvid_key(match)
-                    if match_key not in bvid_keys:
-                        bvid_keys.add(match_key)
-                        bvids.append(match)
-        for value in _normalize_seed_values(normalized_args.get("bvids")):
-            for match in extract_bvids({"content": value}):
-                match_key = normalize_bvid_key(match)
-                if match_key not in bvid_keys:
+                match_key = normalize_bvid_key(value)
+                if match_key and match_key not in bvid_keys:
                     bvid_keys.add(match_key)
-                    bvids.append(match)
+                    bvids.append(value)
+        for value in _normalize_seed_values(normalized_args.get("bvids")):
+            match_key = normalize_bvid_key(value)
+            if match_key and match_key not in bvid_keys:
+                bvid_keys.add(match_key)
+                bvids.append(value)
 
-        for key in ("mid", "uid"):
-            for value in self._normalize_mid_values(normalized_args.get(key)):
+        for key in ("mid", "uid", "mids"):
+            for value in _normalize_seed_values(normalized_args.get(key)):
                 if value not in mids:
                     mids.append(value)
-        for value in self._normalize_mid_values(normalized_args.get("mids")):
-            if value not in mids:
-                mids.append(value)
 
         date_window = str(normalized_args.get("date_window", "") or "").strip() or None
-        remaining_queries: list[str] = []
-        for query in raw_queries:
-            parsed = self._parse_lookup_query(query)
-            if parsed is None:
-                remaining_queries.append(str(query or "").strip())
-                continue
-            lookup_kind, lookup_value, query_window = parsed
-            if (
-                lookup_kind == "bvid"
-                and normalize_bvid_key(lookup_value) not in bvid_keys
-            ):
-                bvid_keys.add(normalize_bvid_key(lookup_value))
-                bvids.append(lookup_value)
-            elif lookup_kind == "mid" and lookup_value not in mids:
-                mids.append(lookup_value)
-            if query_window and not date_window:
-                date_window = query_window
-
-        if remaining_queries or not (bvids or mids):
+        if not (bvids or mids):
             return None
 
         return {
@@ -1193,7 +1128,16 @@ class ToolExecutor:
                         "total_hits": 0,
                     }
 
-            explore_result = self.search_client.explore(query=query_text)
+            explore_method = self._search_client_method("explore")
+            if explore_method is None:
+                return {
+                    "query": query_text,
+                    "error": "Search explore unavailable",
+                    "hits": [],
+                    "total_hits": 0,
+                }
+
+            explore_result = explore_method(query=query_text)
 
             if "error" in explore_result:
                 return {

@@ -72,3 +72,61 @@ def test_sanitize_related_token_options_filters_short_digit_prefix_noise():
             "score": 708.3,
         }
     ]
+
+
+def test_sanitize_related_token_options_filters_low_freq_source_echo_noise():
+    options = sanitize_related_token_options(
+        "月栖乐序 高能音乐挑战赛",
+        [
+            {
+                "text": "月栖乐序 音乐现场",
+                "type": "doc_cooccurrence",
+                "doc_freq": 8,
+                "score": 816.6,
+            },
+            {
+                "text": "月栖乐序 演唱会",
+                "type": "doc_cooccurrence",
+                "doc_freq": 8,
+                "score": 690.6,
+            },
+            {
+                "text": "全能音乐挑战赛",
+                "type": "cooccurrence",
+                "doc_freq": 465,
+                "score": 708.3,
+            },
+        ],
+    )
+
+    assert options == [
+        {
+            "text": "全能音乐挑战赛",
+            "type": "cooccurrence",
+            "doc_freq": 465,
+            "score": 708.3,
+        }
+    ]
+
+
+def test_sanitize_related_token_options_keeps_tail_already_present_in_source_query():
+    options = sanitize_related_token_options(
+        "周杰伦 演唱会",
+        [
+            {
+                "text": "周杰伦 演唱会",
+                "type": "doc_cooccurrence",
+                "doc_freq": 8,
+                "score": 420.0,
+            }
+        ],
+    )
+
+    assert options == [
+        {
+            "text": "周杰伦 演唱会",
+            "type": "doc_cooccurrence",
+            "doc_freq": 8,
+            "score": 420.0,
+        }
+    ]
