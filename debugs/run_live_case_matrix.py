@@ -3,16 +3,19 @@
 Usage:
     python debugs/run_live_case_matrix.py
     python debugs/run_live_case_matrix.py --case comfyui_alias_tutorial --skip-chat
-    python debugs/run_live_case_matrix.py --output-json /tmp/live-matrix.json
+    python debugs/run_live_case_matrix.py --output-json debugs/live_case_reports/live-matrix.json
 """
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +24,7 @@ from configs.envs import SEARCH_APP_ENVS
 
 DEFAULT_BASE_URL = f"http://127.0.0.1:{SEARCH_APP_ENVS.get('port', 21001)}"
 DEFAULT_CASES_PATH = Path(__file__).with_name("live_case_matrix.json")
+DEFAULT_REPORTS_DIR = Path(__file__).with_name("live_case_reports")
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
@@ -98,6 +102,11 @@ def summarize_chat(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def should_retry_chat_error(message: str) -> bool:
+    normalized = str(message or "").lower()
+    return "timed out" in normalized or normalized.startswith("http 5")
+
+
 def select_cases(
     cases: list[dict[str, Any]],
     case_ids: list[str] | None,
@@ -111,6 +120,157 @@ def select_cases(
             raise ValueError(f"Unknown case id: {case_id}")
         selected.append(matched)
     return selected
+
+
+def resolve_output_path(path: Path | None) -> Path:
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    DEFAULT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return DEFAULT_REPORTS_DIR / f"live-case-matrix-{timestamp}.json"
+
+
+def run_case(
+    case: dict[str, Any],
+    *,
+    base_url: str,
+    limit: int,
+    timeout: int,
+    max_iterations: int,
+    thinking: bool,
+    skip_search: bool,
+    skip_related: bool,
+    skip_chat: bool,
+    chat_retries: int,
+    chat_semaphore: threading.Semaphore | None,
+) -> tuple[dict[str, Any], str]:
+    case_result: dict[str, Any] = {
+        "id": case.get("id"),
+        "tags": case.get("tags") or [],
+        "search_query": case.get("search_query") or "",
+    }
+    log_lines = [f"\n=== {case_result['id']} ==="]
+    if case_result["tags"]:
+        log_lines.append(f"tags: {', '.join(case_result['tags'])}")
+    log_lines.append(f"search_query: {case_result['search_query']}")
+
+    if not skip_search and case_result["search_query"]:
+        started = time.perf_counter()
+        try:
+            search_result = post_json(
+                base_url,
+                "/search",
+                {"query": case_result["search_query"], "limit": limit},
+                timeout=timeout,
+            )
+            case_result["search"] = summarize_search(search_result, limit)
+            case_result["search_elapsed_s"] = round(time.perf_counter() - started, 2)
+            log_lines.append("search:")
+            log_lines.append(
+                json.dumps(case_result["search"], ensure_ascii=False, indent=2)
+            )
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            case_result["search_error"] = f"HTTP {exc.code}: {body}"
+            log_lines.append(f"search_error: {case_result['search_error']}")
+        except Exception as exc:
+            case_result["search_error"] = str(exc)
+            log_lines.append(f"search_error: {case_result['search_error']}")
+
+    if not skip_related and case_result["search_query"]:
+        started = time.perf_counter()
+        try:
+            related_result = post_json(
+                base_url,
+                "/related_tokens_by_tokens",
+                {
+                    "text": case_result["search_query"],
+                    "mode": case.get("related_mode") or "auto",
+                    "size": limit,
+                    "scan_limit": 128,
+                    "use_pinyin": True,
+                },
+                timeout=timeout,
+            )
+            case_result["related"] = summarize_related(related_result, limit)
+            case_result["related_elapsed_s"] = round(
+                time.perf_counter() - started,
+                2,
+            )
+            log_lines.append("related_tokens:")
+            log_lines.append(
+                json.dumps(case_result["related"], ensure_ascii=False, indent=2)
+            )
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            case_result["related_error"] = f"HTTP {exc.code}: {body}"
+            log_lines.append(f"related_error: {case_result['related_error']}")
+        except Exception as exc:
+            case_result["related_error"] = str(exc)
+            log_lines.append(f"related_error: {case_result['related_error']}")
+
+    if not skip_chat and case.get("chat_messages"):
+        started = time.perf_counter()
+        attempts = 0
+        semaphore = chat_semaphore or threading.Semaphore(1)
+        while True:
+            attempts += 1
+            try:
+                with semaphore:
+                    chat_result = post_json(
+                        base_url,
+                        "/chat/completions",
+                        {
+                            "messages": case["chat_messages"],
+                            "stream": False,
+                            "thinking": thinking,
+                            "max_iterations": max_iterations,
+                        },
+                        timeout=timeout,
+                    )
+                case_result["chat"] = summarize_chat(chat_result)
+                case_result["chat_elapsed_s"] = round(
+                    time.perf_counter() - started,
+                    2,
+                )
+                if attempts > 1:
+                    case_result["chat_attempts"] = attempts
+                log_lines.append("chat:")
+                log_lines.append(
+                    json.dumps(case_result["chat"], ensure_ascii=False, indent=2)
+                )
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                message = f"HTTP {exc.code}: {body}"
+                if attempts <= chat_retries and should_retry_chat_error(message):
+                    log_lines.append(
+                        f"chat_retry[{attempts}/{chat_retries}] error: {message}"
+                    )
+                    time.sleep(min(2.0, 0.5 * attempts))
+                    continue
+                case_result["chat_error"] = message
+                if attempts > 1:
+                    case_result["chat_attempts"] = attempts
+                log_lines.append(f"chat_error: {case_result['chat_error']}")
+                break
+            except Exception as exc:
+                message = str(exc)
+                if attempts <= chat_retries and should_retry_chat_error(message):
+                    log_lines.append(
+                        f"chat_retry[{attempts}/{chat_retries}] error: {message}"
+                    )
+                    time.sleep(min(2.0, 0.5 * attempts))
+                    continue
+                case_result["chat_error"] = message
+                if attempts > 1:
+                    case_result["chat_attempts"] = attempts
+                log_lines.append(f"chat_error: {case_result['chat_error']}")
+                break
+
+    return case_result, "\n".join(log_lines)
 
 
 def main() -> int:
@@ -163,115 +323,71 @@ def main() -> int:
     parser.add_argument(
         "--output-json",
         type=Path,
-        help="Optional path to save the summarized results as JSON",
+        help="Optional path to save the summarized results as JSON (defaults under debugs/live_case_reports)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=10,
+        help="Number of cases to run concurrently",
+    )
+    parser.add_argument(
+        "--chat-workers",
+        type=int,
+        default=1,
+        help="Cap for concurrent /chat/completions probes (default: 1 for stable live runs)",
+    )
+    parser.add_argument(
+        "--chat-retries",
+        type=int,
+        default=1,
+        help="Retry count for transient chat 5xx/timeout failures",
     )
     args = parser.parse_args()
 
     cases = select_cases(load_cases(args.cases_path), args.case)
-    matrix_results: list[dict[str, Any]] = []
+    output_path = resolve_output_path(args.output_json)
+    worker_count = max(1, args.workers)
+    chat_worker_count = max(1, args.chat_workers)
+    chat_semaphore = None if args.skip_chat else threading.Semaphore(chat_worker_count)
+    matrix_results: list[dict[str, Any] | None] = [None] * len(cases)
+    print(
+        f"Running {len(cases)} cases with workers={worker_count}, chat_workers={chat_worker_count}; report -> {output_path}"
+    )
 
-    for case in cases:
-        case_result: dict[str, Any] = {
-            "id": case.get("id"),
-            "tags": case.get("tags") or [],
-            "search_query": case.get("search_query") or "",
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_index = {
+            executor.submit(
+                run_case,
+                case,
+                base_url=args.base_url,
+                limit=args.limit,
+                timeout=args.timeout,
+                max_iterations=args.max_iterations,
+                thinking=args.thinking,
+                skip_search=args.skip_search,
+                skip_related=args.skip_related,
+                skip_chat=args.skip_chat,
+                chat_retries=max(0, args.chat_retries),
+                chat_semaphore=chat_semaphore,
+            ): index
+            for index, case in enumerate(cases)
         }
-        print(f"\n=== {case_result['id']} ===")
-        if case_result["tags"]:
-            print(f"tags: {', '.join(case_result['tags'])}")
-        print(f"search_query: {case_result['search_query']}")
 
-        if not args.skip_search and case_result["search_query"]:
-            started = time.perf_counter()
-            try:
-                search_result = post_json(
-                    args.base_url,
-                    "/search",
-                    {"query": case_result["search_query"], "limit": args.limit},
-                    timeout=args.timeout,
-                )
-                case_result["search"] = summarize_search(search_result, args.limit)
-                case_result["search_elapsed_s"] = round(
-                    time.perf_counter() - started,
-                    2,
-                )
-                print("search:")
-                print(json.dumps(case_result["search"], ensure_ascii=False, indent=2))
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                case_result["search_error"] = f"HTTP {exc.code}: {body}"
-                print(f"search_error: {case_result['search_error']}")
-            except Exception as exc:
-                case_result["search_error"] = str(exc)
-                print(f"search_error: {case_result['search_error']}")
+        for completed_count, future in enumerate(
+            as_completed(future_to_index), start=1
+        ):
+            index = future_to_index[future]
+            case_result, case_log = future.result()
+            matrix_results[index] = case_result
+            print(f"[{completed_count}/{len(cases)}] completed {case_result['id']}")
+            print(case_log)
 
-        if not args.skip_related and case_result["search_query"]:
-            started = time.perf_counter()
-            try:
-                related_result = post_json(
-                    args.base_url,
-                    "/related_tokens_by_tokens",
-                    {
-                        "text": case_result["search_query"],
-                        "mode": case.get("related_mode") or "auto",
-                        "size": args.limit,
-                        "scan_limit": 128,
-                        "use_pinyin": True,
-                    },
-                    timeout=args.timeout,
-                )
-                case_result["related"] = summarize_related(related_result, args.limit)
-                case_result["related_elapsed_s"] = round(
-                    time.perf_counter() - started,
-                    2,
-                )
-                print("related_tokens:")
-                print(json.dumps(case_result["related"], ensure_ascii=False, indent=2))
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                case_result["related_error"] = f"HTTP {exc.code}: {body}"
-                print(f"related_error: {case_result['related_error']}")
-            except Exception as exc:
-                case_result["related_error"] = str(exc)
-                print(f"related_error: {case_result['related_error']}")
-
-        if not args.skip_chat and case.get("chat_messages"):
-            started = time.perf_counter()
-            try:
-                chat_result = post_json(
-                    args.base_url,
-                    "/chat/completions",
-                    {
-                        "messages": case["chat_messages"],
-                        "stream": False,
-                        "thinking": args.thinking,
-                        "max_iterations": args.max_iterations,
-                    },
-                    timeout=args.timeout,
-                )
-                case_result["chat"] = summarize_chat(chat_result)
-                case_result["chat_elapsed_s"] = round(
-                    time.perf_counter() - started,
-                    2,
-                )
-                print("chat:")
-                print(json.dumps(case_result["chat"], ensure_ascii=False, indent=2))
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                case_result["chat_error"] = f"HTTP {exc.code}: {body}"
-                print(f"chat_error: {case_result['chat_error']}")
-            except Exception as exc:
-                case_result["chat_error"] = str(exc)
-                print(f"chat_error: {case_result['chat_error']}")
-
-        matrix_results.append(case_result)
-
-    if args.output_json:
-        args.output_json.write_text(
-            json.dumps(matrix_results, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        print(f"\nSaved JSON report to: {args.output_json}")
+    output_path.write_text(
+        json.dumps(matrix_results, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"\nSaved JSON report to: {output_path}")
 
     return 0
 

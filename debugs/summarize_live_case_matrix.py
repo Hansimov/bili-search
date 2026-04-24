@@ -48,7 +48,8 @@ def summarize_case(case: dict, case_index: dict[str, dict]) -> dict:
     )
     has_owner_filter = bool(intent_info.get("owner_filter"))
     has_owner_candidates = bool(intent_info.get("owners"))
-    has_chat_case = bool(source_case.get("chat_messages")) or bool(case.get("chat"))
+    has_chat_probe = "chat" in case or bool(case.get("chat_error"))
+    has_chat_case = bool(source_case.get("chat_messages"))
     top1_match = bool(expected and top_bvids[:1] == [expected])
     top3_match = bool(expected and expected in top_bvids[:3])
 
@@ -91,6 +92,7 @@ def summarize_case(case: dict, case_index: dict[str, dict]) -> dict:
         "search_error": bool(case.get("search_error")),
         "related_error": bool(case.get("related_error")),
         "chat_error": bool(case.get("chat_error")),
+        "has_chat_probe": has_chat_probe,
         "has_chat_case": has_chat_case,
         "chat_tools": list((case.get("chat") or {}).get("tools") or []),
         "has_owner_filter": has_owner_filter,
@@ -176,7 +178,7 @@ def print_failures(summary_cases: list[dict], limit: int) -> None:
 
 
 def print_chat_summary(summary_cases: list[dict], limit: int) -> None:
-    chat_cases = [case for case in summary_cases if case["has_chat_case"]]
+    chat_cases = [case for case in summary_cases if case["has_chat_probe"]]
     if not chat_cases:
         return
 
