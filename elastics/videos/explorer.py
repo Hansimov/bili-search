@@ -9,7 +9,7 @@ from elastics.videos.constants import CONSTRAINT_FIELDS_DEFAULT, EXPLORE_TIMEOUT
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
 from elastics.videos.constants import QMOD
-from elastics.videos.explore_owner_intent import ExploreOwnerIntentCoordinator
+from elastics.videos.intent.explore_owner_intent import ExploreOwnerIntentCoordinator
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from dsl.fields.qmod import (
     is_hybrid_qmod,

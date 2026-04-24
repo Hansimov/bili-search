@@ -18,7 +18,8 @@ from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
 from elastics.structure import construct_knn_query, construct_knn_search_body
 from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
-from elastics.videos.query_understanding import VideoQueryUnderstanding
+from elastics.videos.query.understanding import VideoQueryUnderstanding
+from elastics.videos.results.reranking import rerank_focused_title_hits
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.constants import SOURCE_FIELDS, DOC_EXCLUDED_SOURCE_FIELDS
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SEARCH_BOOSTED_FIELDS
@@ -40,7 +41,7 @@ from elastics.videos.constants import TERMINATE_AFTER
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD, KNN_K, KNN_NUM_CANDIDATES
 from elastics.videos.constants import KNN_TIMEOUT
 from elastics.videos.constants import QMOD_SINGLE_TYPE, QMOD
-from elastics.videos.hits import VideoHitsParser, SuggestInfoParser
+from elastics.videos.results.parsing import VideoHitsParser, SuggestInfoParser
 from elastics.es_logger import get_es_debug_logger
 from converters.embed.embed_client import TextEmbedClient, get_embed_client
 from dsl.fields.qmod import extract_qmod_from_expr_tree
@@ -1688,6 +1689,20 @@ class VideoSearcherV2:
                 parse_res = self.hit_ranker.heads(parse_res, top_k=rank_top_k)
         else:
             parse_res = es_res_dict
+
+        title_rerank_info: dict = {}
+        if parse_hits and isinstance(parse_res, dict):
+            reranked_hits, rerank_info = rerank_focused_title_hits(
+                list(parse_res.get("hits") or []),
+                query=query_focus_info.get("applied_query") or effective_query,
+                focus_applied=bool(query_focus_info.get("applied")),
+                relation_rewritten=bool(
+                    semantic_rewrite_info.get("relation_rewritten")
+                ),
+            )
+            if rerank_info.applied:
+                parse_res["hits"] = reranked_hits
+                title_rerank_info = rerank_info.to_dict()
         # rewrite_by_suggest, only apply for "suggest" request_type
         return_res = self.rewrite_by_suggest(
             query_info,
@@ -1716,6 +1731,8 @@ class VideoSearcherV2:
                 else semantic_rewrite_info.get("applied_query", effective_query)
             )
             return_res["semantic_rewrite_info"] = semantic_rewrite_info
+        if title_rerank_info:
+            return_res["title_rerank_info"] = title_rerank_info
 
         if (
             owner_context_query

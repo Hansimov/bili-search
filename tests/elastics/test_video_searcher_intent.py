@@ -4,6 +4,7 @@ from dsl.elastic import DslExprToElasticConverter
 from dsl.filter import QueryDslDictFilterMerger
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.constants import SEARCH_BOOSTED_FIELDS
+from elastics.videos.result_reranker import rerank_focused_title_hits
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from recalls.base import RecallPool
 
@@ -403,6 +404,91 @@ def test_search_focus_rewrites_bracketed_owner_title_query_before_dsl():
     assert captured["dsl_query"] == "一只小雪莉ovo 寄明月"
     assert result["query_focus_info"]["applied"] is True
     assert result["query_focus_info"]["applied_query"] == "一只小雪莉ovo 寄明月"
+
+
+def test_search_focus_strips_boilerplate_suffix_before_dsl():
+    searcher, captured = make_searcher({"owners": []})
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+
+    result = searcher.search(
+        "【一只小雪莉ovo】寄明月~ 点点关注不错过 持续更新系列中",
+        limit=5,
+    )
+
+    assert captured["dsl_query"] == "一只小雪莉ovo 寄明月"
+    assert result["query_focus_info"]["applied"] is True
+    assert result["query_focus_info"]["applied_query"] == "一只小雪莉ovo 寄明月"
+    assert "relation_kwargs" not in captured
+    assert result["semantic_rewrite_info"]["relation_rewritten"] is False
+
+
+def test_search_focus_keeps_bracket_prefix_when_body_is_creator_boilerplate():
+    searcher, captured = make_searcher({"owners": []})
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+
+    result = searcher.search("【大毛-小厨】Up主探索中，欢迎收看求三连！", limit=5)
+
+    assert captured["dsl_query"] == "大毛-小厨 Up主探索中，欢迎收看求三连"
+    assert result["query_focus_info"]["applied"] is True
+    assert (
+        result["query_focus_info"]["applied_query"]
+        == "大毛-小厨 Up主探索中，欢迎收看求三连"
+    )
+    assert "relation_kwargs" not in captured
+    assert result["semantic_rewrite_info"]["relation_rewritten"] is False
+
+
+def test_focused_title_reranker_promotes_near_exact_typo_match():
+    hits = [
+        {"title": "【大毛小样儿】Up主探索中，欢迎收看求三连！", "score": 248.47},
+        {"title": "【大毛毛球儿】Up主探索中，欢迎收看求三连！", "score": 246.67},
+        {"title": "【大猫-小厨】Up主探索中，欢迎收看求三连！", "score": 246.05},
+    ]
+
+    reranked, info = rerank_focused_title_hits(
+        hits,
+        query="大毛-小厨 Up主探索中，欢迎收看求三连",
+        focus_applied=True,
+        relation_rewritten=False,
+    )
+
+    assert reranked[0]["title"] == "【大猫-小厨】Up主探索中，欢迎收看求三连！"
+    assert info.applied is True
+
+
+def test_focused_title_reranker_skips_relation_rewritten_queries():
+    hits = [
+        {"title": "A", "score": 10.0},
+        {"title": "B", "score": 9.0},
+    ]
+
+    reranked, info = rerank_focused_title_hits(
+        hits,
+        query="一只小雪莉ovo 寄明月",
+        focus_applied=True,
+        relation_rewritten=True,
+    )
+
+    assert reranked == hits
+    assert info.applied is False
 
 
 def test_search_focus_rewrites_date_recording_query_before_dsl():

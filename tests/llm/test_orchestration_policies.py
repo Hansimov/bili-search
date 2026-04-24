@@ -582,6 +582,66 @@ def test_normalize_request_rewrites_explicit_bv_query_to_lookup():
     }
 
 
+def test_normalize_request_rewrites_title_like_search_video_queries_from_raw_user_text():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    request = ToolCallRequest(
+        id="call_title_query_1",
+        name="search_videos",
+        arguments={
+            "queries": [
+                "可能打错了字，想找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关 找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关的视频"
+            ]
+        },
+    )
+
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="我可能打错了字，想找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关的视频。",
+            normalized_query="我可能打错了字 想找 大毛-小厨 up主探索中 欢迎收看求三连 相关的视频",
+            final_target="videos",
+        ),
+        {"supports_transcript_lookup": True},
+        prefer_transcript_lookup=False,
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {"queries": ["大毛-小厨 Up主探索中 欢迎收看求三连"]}
+
+
+def test_normalize_request_converts_title_like_owner_probe_to_video_search():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    request = ToolCallRequest(
+        id="call_title_owner_1",
+        name="search_owners",
+        arguments={"text": "一只小雪莉ovo", "size": 5},
+    )
+
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="忽略口播和套话，帮我找和 【一只小雪莉ovo】寄明月~ 真正相关的视频。",
+            normalized_query="忽略口播和套话 帮我找和 一只小雪莉ovo 寄明月 真正相关的视频",
+            final_target="videos",
+        ),
+        {"supports_transcript_lookup": True},
+        prefer_transcript_lookup=False,
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {"queries": ["一只小雪莉ovo 寄明月"]}
+
+
 def test_run_blocks_search_detour_when_transcript_is_unavailable():
     llm = MagicMock()
     llm.chat.side_effect = [
@@ -1084,6 +1144,100 @@ def test_run_recovers_explicit_bv_query_after_planner_rate_limit():
         "mode": "lookup",
     }
     assert result.tool_events[0]["calls"][1]["args"]["mid"] == "39627524"
+
+
+def test_build_deterministic_followup_adds_owner_scoped_video_query_for_owner_topic():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    store = FakeResultStore()
+    store.add(
+        "search_owners",
+        {
+            "text": "月栖乐序",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 31572735,
+                    "name": "月栖乐序",
+                    "score": 280.0,
+                    "sources": ["name", "topic"],
+                }
+            ],
+        },
+        arguments={"text": "月栖乐序", "mode": "name"},
+    )
+
+    requests = orchestrator._build_deterministic_followup_requests(
+        store,
+        _intent(
+            raw_query="月栖乐序 关于 高能音乐挑战赛 有哪些值得看的视频？",
+            normalized_query="月栖乐序 关于 高能音乐挑战赛 有哪些值得看的视频",
+            final_target="videos",
+            explicit_entities=["月栖乐序"],
+            explicit_topics=["月栖乐序", "高能音乐挑战赛"],
+        ),
+        messages=[
+            {
+                "role": "user",
+                "content": "月栖乐序 关于 高能音乐挑战赛 有哪些值得看的视频？",
+            }
+        ],
+    )
+
+    assert len(requests) == 1
+    assert requests[0].name == "search_videos"
+    assert requests[0].arguments["queries"][0] == ":uid=31572735 高能音乐挑战赛"
+    assert requests[0].arguments["queries"][1] == "月栖乐序 高能音乐挑战赛"
+
+
+def test_build_deterministic_followup_uses_focus_query_when_owner_results_are_not_confident():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    store = FakeResultStore()
+    store.add(
+        "search_owners",
+        {
+            "text": "大毛-小厨",
+            "mode": "name",
+            "owners": [
+                {
+                    "mid": 437053628,
+                    "name": "大毛猴猴",
+                    "score": 245.0,
+                    "sources": ["name", "topic"],
+                }
+            ],
+        },
+        arguments={"text": "大毛-小厨", "mode": "name"},
+    )
+
+    requests = orchestrator._build_deterministic_followup_requests(
+        store,
+        _intent(
+            raw_query="我可能打错了字，想找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关的视频。",
+            normalized_query="我可能打错了字 想找 大毛-小厨 up主探索中 欢迎收看求三连 相关的视频",
+            final_target="videos",
+            explicit_topics=["大毛-小厨", "Up主探索中", "欢迎收看求三连"],
+        ),
+        messages=[
+            {
+                "role": "user",
+                "content": "我可能打错了字，想找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关的视频。",
+            }
+        ],
+    )
+
+    assert len(requests) == 1
+    assert requests[0].name == "search_videos"
+    assert requests[0].arguments == {"queries": ["大毛-小厨 Up主探索中 欢迎收看求三连"]}
 
 
 def _drain_orchestration_stream(stream):

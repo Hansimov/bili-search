@@ -19,6 +19,8 @@ from llms.contracts import (
     ToolExecutionRecord,
 )
 from llms.intent import build_intent_profile
+from llms.intent.focus import build_focus_query
+from llms.intent.focus import compact_focus_key
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
 from llms.messages import (
@@ -90,6 +92,25 @@ _RECENT_OWNER_QUERY_PATTERNS = (
 _RECENT_OWNER_SUBJECT_STOP_RE = re.compile(
     r"(最近|近期|近况|视频|作品|作者|发了|发布了|上传了|更新了|还发了|什么|哪些|谁|是谁)",
     re.IGNORECASE,
+)
+_VIDEO_QUERY_PREFIX_RE = re.compile(
+    r"^(?:我可能打错了字，?想找|忽略口播和套话，?帮我找和|帮我找和|帮我找|想找)\s*"
+)
+_VIDEO_QUERY_SUFFIX_RE = re.compile(
+    r"(?:有哪些(?:值得看|适合直接上手看)?的视频|真\s*正?相关(?:的)?视频|相关(?:的)?视频|有关的视频|有哪些视频).*$"
+)
+_VIDEO_QUERY_NOISE_RE = re.compile(
+    r"(?:忽略口播|套话|帮我找|想找|打错了字|真正相关|相关的视频|有关的视频|有哪些视频|值得看的视频)",
+    re.IGNORECASE,
+)
+_VIDEO_QUERY_BODY_CUT_RE = re.compile(
+    r"(?:\s+真\s*正相关.*|\s+相关.*|\s+有哪些.*|\s+有啥.*|\s+忽略口播.*|\s+套话.*|\s+帮我找.*|\s+想找.*)$"
+)
+_VIDEO_QUERY_BRACKET_RE = re.compile(
+    r"^\s*[【\[](?P<prefix>[^】\]]{1,48})[】\]]\s*(?P<body>.+?)\s*$"
+)
+_VIDEO_QUERY_QUOTED_TITLE_RE = re.compile(
+    r"(?P<prefix>[\u4e00-\u9fffA-Za-z0-9\s._+#/-]{0,32})[《\"](?P<title>[^》\"]{2,64})[》\"]"
 )
 
 
@@ -344,6 +365,11 @@ class ChatOrchestrator:
     ) -> ToolCallRequest:
         name = canonical_tool_name(request.name)
         arguments = dict(request.arguments or {})
+        title_like_video_query = ""
+        if intent.final_target == "videos":
+            title_like_video_query = self._extract_title_like_video_query(
+                intent.raw_query
+            )
         if name == "run_small_llm_task" and request.visibility == "internal":
             arguments = self._normalize_small_task_arguments(arguments)
         if request.visibility != "user":
@@ -372,7 +398,20 @@ class ChatOrchestrator:
                 )
         if name == "search_videos":
             arguments = self._normalize_search_video_lookup_arguments(arguments, intent)
+            if title_like_video_query:
+                arguments = self._normalize_title_like_video_search_arguments(
+                    arguments,
+                    intent,
+                )
         if name == "search_owners":
+            if title_like_video_query:
+                return ToolCallRequest(
+                    id=request.id,
+                    name="search_videos",
+                    arguments={"queries": [title_like_video_query]},
+                    visibility=request.visibility,
+                    source=request.source,
+                )
             owner_text = self._owner_request_text(arguments)
             if not owner_text:
                 owner_seed = self._owner_resolution_seed(intent)
@@ -977,6 +1016,84 @@ class ChatOrchestrator:
         )
 
     @classmethod
+    def _clean_video_query_body(cls, text: str) -> str:
+        normalized = " ".join(str(text or "").split()).strip()
+        normalized = normalized.split("【", 1)[0].split("[", 1)[0].strip()
+        normalized = _VIDEO_QUERY_BODY_CUT_RE.sub("", normalized).strip()
+        normalized = _VIDEO_QUERY_SUFFIX_RE.sub("", normalized).strip(
+            " ，。！？?；;：:、~"
+        )
+        normalized = re.sub(r"[，。！？?；;：:、~]+", " ", normalized)
+        return cls._clean_subject_text(normalized)
+
+    @classmethod
+    def _dedupe_focus_parts(cls, parts: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen_keys: set[str] = set()
+        for part in parts:
+            cleaned = cls._clean_subject_text(part)
+            key = compact_focus_key(cleaned)
+            if len(key) < 2 or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(cleaned)
+        return deduped
+
+    @classmethod
+    def _extract_title_like_video_query(cls, text: str) -> str:
+        normalized = " ".join(str(text or "").split()).strip()
+        normalized = _VIDEO_QUERY_PREFIX_RE.sub("", normalized).strip()
+        normalized = _VIDEO_QUERY_SUFFIX_RE.sub("", normalized).strip(
+            " ，。！？?；;：:"
+        )
+        if not normalized:
+            return ""
+
+        bracket_match = _VIDEO_QUERY_BRACKET_RE.match(normalized)
+        if bracket_match:
+            parts = cls._dedupe_focus_parts(
+                [
+                    bracket_match.group("prefix"),
+                    cls._clean_video_query_body(bracket_match.group("body")),
+                ]
+            )
+            if parts:
+                title_query = " ".join(parts)
+                return rewrite_known_term_aliases(title_query) or title_query
+
+        quoted_match = _VIDEO_QUERY_QUOTED_TITLE_RE.search(normalized)
+        if quoted_match:
+            parts = cls._dedupe_focus_parts(
+                [
+                    cls._clean_video_query_body(quoted_match.group("prefix")),
+                    quoted_match.group("title"),
+                ]
+            )
+            if parts:
+                title_query = " ".join(parts)
+                return rewrite_known_term_aliases(title_query) or title_query
+        return ""
+
+    @classmethod
+    def _normalize_title_like_video_search_arguments(
+        cls,
+        arguments: dict,
+        intent: IntentProfile,
+    ) -> dict:
+        title_query = cls._extract_title_like_video_query(intent.raw_query)
+        normalized = dict(arguments or {})
+        if not title_query:
+            return normalized
+        if str(normalized.get("mode") or "").lower() == "lookup":
+            return normalized
+        if any(normalized.get(key) for key in ("bv", "bvid", "bvids", "mid", "mids")):
+            return normalized
+
+        normalized.pop("query", None)
+        normalized["queries"] = [title_query]
+        return normalized
+
+    @classmethod
     def _extract_leading_subject_phrase(cls, latest_user_text: str) -> str:
         source = str(latest_user_text or "").strip()
         if not source:
@@ -1143,6 +1260,168 @@ class ChatOrchestrator:
                 break
 
         return subject, best_owner
+
+    @classmethod
+    def _build_video_followup_focus_query(
+        cls,
+        latest_user_text: str,
+        intent: IntentProfile,
+    ) -> str:
+        title_query = cls._extract_title_like_video_query(latest_user_text)
+        if title_query:
+            return title_query
+
+        candidate_parts: list[str] = []
+        seen_keys: set[str] = set()
+        for candidate in [
+            *(intent.explicit_entities or []),
+            *(intent.explicit_topics or []),
+        ]:
+            cleaned = cls._clean_subject_text(candidate)
+            normalized_key = "".join(cleaned.split()).lower()
+            if (
+                len(normalized_key) < 2
+                or len(normalized_key) > 24
+                or normalized_key in seen_keys
+                or _VIDEO_QUERY_NOISE_RE.search(cleaned)
+            ):
+                continue
+            seen_keys.add(normalized_key)
+            candidate_parts.append(cleaned)
+        if candidate_parts:
+            normalized = " ".join(candidate_parts[:4]).strip()
+            return rewrite_known_term_aliases(normalized) or normalized
+
+        focused = build_focus_query(latest_user_text)
+        normalized = " ".join(str(focused or "").split()).strip()
+        normalized = _VIDEO_QUERY_PREFIX_RE.sub("", normalized).strip()
+        normalized = _VIDEO_QUERY_SUFFIX_RE.sub("", normalized).strip(
+            " ，。！？?；;：:"
+        )
+        normalized = cls._clean_video_query_body(normalized)
+        return rewrite_known_term_aliases(normalized) or normalized
+
+    @classmethod
+    def _trim_owner_from_focus_query(
+        cls,
+        focus_query: str,
+        owner_texts: list[str],
+    ) -> str:
+        trimmed = " ".join(str(focus_query or "").split()).strip()
+        if not trimmed:
+            return ""
+
+        for owner_text in owner_texts:
+            normalized_owner = " ".join(str(owner_text or "").split()).strip()
+            if not normalized_owner:
+                continue
+            if trimmed.startswith(normalized_owner):
+                candidate = trimmed[len(normalized_owner) :].strip(" ，。！？?；;：:")
+                if candidate:
+                    trimmed = candidate
+        return trimmed
+
+    @classmethod
+    def _select_video_followup_owner_candidate(
+        cls,
+        result_store: ResultStore,
+        intent: IntentProfile,
+    ) -> tuple[str, dict | None]:
+        topic_hints = [
+            hint
+            for hint in (intent.explicit_topics or [])
+            if len(cls._clean_subject_text(hint)) >= 2
+        ]
+        best_source = ""
+        best_owner: dict | None = None
+        best_rank = float("-inf")
+
+        for result_id in result_store.order:
+            record = result_store.get(result_id)
+            if (
+                record is None
+                or canonical_tool_name(record.request.name) != "search_owners"
+            ):
+                continue
+
+            result = record.result or {}
+            owners = result.get("owners") or []
+            source_text = cls._owner_request_text(result) or cls._owner_request_text(
+                record.request.arguments or {}
+            )
+            source_text = cls._clean_subject_text(source_text)
+            if not source_text:
+                continue
+
+            candidate = OwnerResolutionMixin._select_best_owner_candidate(
+                source_text,
+                owners,
+                hint_tokens=topic_hints,
+            )
+            if not OwnerResolutionMixin._is_confident_owner_candidate(
+                source_text,
+                candidate,
+                hint_tokens=topic_hints,
+                owners=owners,
+            ):
+                continue
+
+            try:
+                service_score = float((candidate or {}).get("score") or 0.0)
+            except (TypeError, ValueError):
+                service_score = 0.0
+            if service_score > best_rank:
+                best_rank = service_score
+                best_source = source_text
+                best_owner = candidate
+
+        return best_source, best_owner
+
+    def _build_video_gap_followup_requests(
+        self,
+        result_store: ResultStore,
+        intent: IntentProfile,
+        messages: list[dict] | None = None,
+    ) -> list[ToolCallRequest]:
+        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
+            return []
+        if is_recent_timeline_request(intent):
+            return []
+        if has_successful_tool_result(result_store, "search_videos"):
+            return []
+
+        latest_user_text = self._latest_user_text(list(messages or []))
+        focus_query = self._build_video_followup_focus_query(latest_user_text, intent)
+        if not focus_query:
+            return []
+
+        owner_source, owner_candidate = self._select_video_followup_owner_candidate(
+            result_store,
+            intent,
+        )
+        queries: list[str] = []
+        if owner_candidate and owner_candidate.get("mid"):
+            owner_texts = [owner_source, str(owner_candidate.get("name") or "")]
+            scoped_topic = self._trim_owner_from_focus_query(focus_query, owner_texts)
+            scoped_query = f":uid={int(owner_candidate['mid'])}"
+            if scoped_topic:
+                scoped_query = f"{scoped_query} {scoped_topic}".strip()
+            queries.append(scoped_query)
+
+        if focus_query and focus_query not in queries:
+            queries.append(focus_query)
+        if not queries:
+            return []
+
+        return [
+            ToolCallRequest(
+                id=f"auto_video_gap_{len(result_store.order) + 1}",
+                name="search_videos",
+                arguments={"queries": queries[:2]},
+                visibility="user",
+                source="deterministic_followup",
+            )
+        ]
 
     def _build_owner_recent_timeline_followup_requests(
         self,
@@ -1484,6 +1763,13 @@ class ChatOrchestrator:
 
         followup_requests.extend(
             self._build_owner_recent_timeline_followup_requests(
+                result_store,
+                intent,
+                messages=messages,
+            )
+        )
+        followup_requests.extend(
+            self._build_video_gap_followup_requests(
                 result_store,
                 intent,
                 messages=messages,

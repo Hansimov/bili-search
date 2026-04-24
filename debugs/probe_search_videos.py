@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("--elastic-env", default=ELASTIC_DEV)
     parser.add_argument("--show-intent", action="store_true")
     parser.add_argument("--show-search-body", action="store_true")
+    parser.add_argument("--show-debug-info", action="store_true")
     args = parser.parse_args()
 
     searcher = VideoSearcherV2(
@@ -38,6 +39,27 @@ def main() -> None:
     if args.show_intent:
         print("intent_info=")
         print(json.dumps(result.get("intent_info") or {}, ensure_ascii=False, indent=2))
+    if args.show_debug_info:
+        print("query_focus_info=")
+        print(
+            json.dumps(
+                result.get("query_focus_info") or {}, ensure_ascii=False, indent=2
+            )
+        )
+        print("semantic_rewrite_info=")
+        print(
+            json.dumps(
+                result.get("semantic_rewrite_info") or {},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        print("title_rerank_info=")
+        print(
+            json.dumps(
+                result.get("title_rerank_info") or {}, ensure_ascii=False, indent=2
+            )
+        )
     if args.show_search_body:
         print("search_body=")
         print(json.dumps(result.get("search_body") or {}, ensure_ascii=False, indent=2))
