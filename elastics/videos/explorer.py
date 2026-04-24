@@ -10,18 +10,15 @@ from elastics.videos.explore import (
     UnifiedExploreFinalizeConfig,
     finalize_unified_explore_result,
     run_explore_pipeline,
+    UnifiedExploreRequest,
+    prepare_unified_explore_request,
 )
-from elastics.videos.constants import CONSTRAINT_FIELDS_DEFAULT, EXPLORE_TIMEOUT
+from elastics.videos.constants import EXPLORE_TIMEOUT
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
 from elastics.videos.constants import QMOD
 from elastics.videos.intent.explore_owner_intent import ExploreOwnerIntentCoordinator
 from elastics.videos.searcher_v2 import VideoSearcherV2
-from dsl.fields.qmod import (
-    is_hybrid_qmod,
-    has_rerank_qmod,
-)
-from dsl.fields.scope import get_scope_constraint_fields
 
 from ranks.constants import (
     RANK_METHOD_TYPE,
@@ -795,108 +792,22 @@ class VideoExplorer(VideoSearcherV2):
         Returns:
             Explore results dict (qmod is in first step_result's output).
         """
-        from dsl.fields.qmod import normalize_qmod
-
-        query_understanding = self.query_understanding
-        owner_intent_info = query_understanding.resolve_owner_intent(query).info
-
-        # Extract query mode from query if not provided
-        if qmod is None:
-            qmod = self.get_qmod_from_query(query)
-        else:
-            qmod = normalize_qmod(qmod)
-
-        logger.hint(f"> Query mode (qmod): {qmod}", verbose=verbose)
-
-        # Check mode flags
-        is_hybrid = is_hybrid_qmod(qmod)
-        has_word = "word" in qmod
-        has_vector = "vector" in qmod
-        enable_rerank = has_rerank_qmod(qmod)
-        query_info = None
-
-        if has_vector or enable_rerank:
-            try:
-                query_info = self.query_rewriter.get_query_info(query)
-            except Exception as e:
-                logger.warn(f"> Failed to parse query info for scope fallback: {e}")
-
-        if not owner_intent_info and query_info:
-            keywords_body = query_info.get("keywords_body") or []
-            body_query = " ".join(keywords_body).strip()
-            if body_query and body_query != query:
-                owner_intent_info = query_understanding.resolve_owner_intent(
-                    body_query
-                ).info
-
-        scope_fields = list((query_info or {}).get("scope_fields") or [])
-        if scope_fields and (has_vector or enable_rerank):
-            logger.warn(
-                f"> Scope-limited search requested but qmod={qmod} uses shared "
-                f"full-document embeddings; falling back to word-only mode"
-            )
-            qmod = ["word"]
-            is_hybrid = False
-            has_word = True
-            has_vector = False
-            enable_rerank = False
-
-        # Graceful fallback: if vector/hybrid mode but embed client is
-        # unavailable, degrade to word-only to avoid hanging
-        if has_vector and not self.embed_client.is_available():
-            logger.warn(
-                f"> Embed client unavailable, falling back from "
-                f"qmod={qmod} to word-only mode"
-            )
-            qmod = ["word"]
-            is_hybrid = False
-            has_word = True
-            has_vector = False
-
-        # Auto-build constraint filter for vector/hybrid modes
-        if constraint_filter is None and auto_constraint and has_vector:
-            try:
-                # Extract raw keywords (without DSL modifiers like q=v)
-                if query_info is None:
-                    query_info = self.query_rewriter.get_query_info(query)
-
-                # Use DSL-specified constraint_filter (+/-tokens) if available
-                dsl_constraint = query_info.get("constraint_filter", {})
-                if dsl_constraint:
-                    constraint_filter = dsl_constraint
-                    logger.hint(
-                        f"> DSL constraint: {constraint_filter}",
-                        verbose=verbose,
-                    )
-                else:
-                    # Fall back to auto-building from keywords
-                    keywords_body = query_info.get("keywords_body", [])
-                    raw_query = " ".join(keywords_body) if keywords_body else ""
-                    if raw_query:
-                        constraint_query = self._resolve_vector_auto_constraint_query(
-                            raw_query
-                        )
-                        if constraint_query != raw_query:
-                            logger.hint(
-                                f"> Relax auto-constraint to owner anchor: {constraint_query}",
-                                verbose=verbose,
-                            )
-                        constraint_filter = build_auto_constraint_filter(
-                            es_client=self.es.client,
-                            index_name=self.index_name,
-                            query=constraint_query,
-                            fields=get_scope_constraint_fields(
-                                query_info.get("scope_info"),
-                                CONSTRAINT_FIELDS_DEFAULT,
-                            ),
-                        )
-                        if constraint_filter:
-                            logger.hint(
-                                f"> Auto-constraint: {constraint_filter}",
-                                verbose=verbose,
-                            )
-            except Exception as e:
-                logger.warn(f"Auto-constraint build failed: {e}")
+        explore_request = prepare_unified_explore_request(
+            self,
+            query=query,
+            qmod=qmod,
+            constraint_filter=constraint_filter,
+            auto_constraint=auto_constraint,
+            verbose=verbose,
+            build_auto_constraint_filter_fn=build_auto_constraint_filter,
+        )
+        qmod = explore_request.qmod
+        owner_intent_info = explore_request.owner_intent_info
+        constraint_filter = explore_request.constraint_filter
+        is_hybrid = explore_request.is_hybrid
+        has_word = explore_request.has_word
+        has_vector = explore_request.has_vector
+        enable_rerank = explore_request.enable_rerank
 
         if is_hybrid:
             # Hybrid mode: combined word+vector recall + diversified ranking
