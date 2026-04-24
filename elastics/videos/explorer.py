@@ -5,7 +5,12 @@ from typing import Union
 
 from converters.highlight.char_match import get_char_highlighter
 from elastics.structure import build_auto_constraint_filter
-from elastics.videos.explore import StepBuilder
+from elastics.videos.explore import (
+    ExplorePipelineConfig,
+    UnifiedExploreFinalizeConfig,
+    finalize_unified_explore_result,
+    run_explore_pipeline,
+)
 from elastics.videos.constants import CONSTRAINT_FIELDS_DEFAULT, EXPLORE_TIMEOUT
 from elastics.videos.constants import KNN_K, KNN_NUM_CANDIDATES, KNN_TIMEOUT
 from elastics.videos.constants import KNN_TEXT_EMB_FIELD
@@ -34,7 +39,6 @@ from ranks.constants import (
 from ranks.reranker import get_reranker
 from ranks.grouper import AuthorGrouper
 from recalls.base import RecallPool
-from dsl.fields.word import override_auto_require_short_han_exact
 from recalls.manager import RecallManager
 
 
@@ -549,137 +553,28 @@ class VideoExplorer(VideoSearcherV2):
         Returns:
             dict: {"query": str, "status": str, "data": list[dict]}
         """
-        logger.enter_quiet(not verbose)
-        perf = {"total_ms": 0}
-        explore_start = time.perf_counter()
-        steps = StepBuilder()
-
-        # Check for keywords → fallback to filter-only
-        if not self.has_search_keywords(query):
-            logger.exit_quiet(not verbose)
-            result = self._filter_only_explore(
-                query=query,
-                extra_filters=extra_filters,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-            )
-            # Tag result with recall mode if needed
-            if recall_mode != "word" and result.get("data") and len(result["data"]) > 0:
-                qmod_map = {
-                    "vector": ["vector"],
-                    "hybrid": ["word", "vector"],
-                }
-                result["data"][0]["output"]["qmod"] = qmod_map.get(recall_mode, [])
-                result["data"][0]["output"]["filter_only"] = True
-            return result
-
-        # Step 0: Recall
-        step = steps.add_step(
-            step_name,
-            status="running",
-            input_data={"query": query, "recall_mode": recall_mode},
-        )
-        logger.hint(f"> [step 0] {recall_mode} recall ...", verbose=verbose)
-        recall_start = time.perf_counter()
-
-        # Build recall kwargs
-        recall_kwargs = dict(
-            searcher=self,
+        config = ExplorePipelineConfig(
             query=query,
-            mode=recall_mode,
-            extra_filters=extra_filters,
-            timeout=recall_timeout,
+            recall_mode=recall_mode,
+            step_name=step_name,
+            extra_filters=list(extra_filters or []),
+            constraint_filter=constraint_filter,
+            suggest_info=dict(suggest_info or {}),
             verbose=verbose,
-        )
-        if constraint_filter:
-            recall_kwargs["constraint_filter"] = constraint_filter
-        if recall_source_fields:
-            recall_kwargs["source_fields"] = recall_source_fields
-        if suggest_info:
-            recall_kwargs["suggest_info"] = suggest_info
-        if recall_mode in ("vector", "hybrid"):
-            recall_kwargs["knn_field"] = knn_field
-
-        recall_pool = self.recall_manager.recall(**recall_kwargs)
-        recall_pool = self._supplement_with_owner_intent_hits(
-            pool=recall_pool,
-            query=query,
-            owner_intent_info=owner_intent_info,
-            source_fields=recall_source_fields,
-            extra_filters=extra_filters,
-            timeout=recall_timeout,
-            rank_top_k=rank_top_k,
-            verbose=verbose,
-        )
-        perf["recall_ms"] = round((time.perf_counter() - recall_start) * 1000, 2)
-
-        if not recall_pool.hits:
-            steps.update_step(
-                step,
-                {"hits": [], "total_hits": 0, "recall_info": recall_pool.lanes_info},
-            )
-            steps.add_step(
-                "group_hits_by_owner",
-                output={"authors": []},
-                comment="无搜索结果",
-            )
-            logger.exit_quiet(not verbose)
-            return steps.finalize(query, perf=perf)
-
-        # Step 1: Fetch full docs + rank
-        logger.hint(
-            f"> [step 1] Fetch & rank {len(recall_pool.hits)} candidates ...",
-            verbose=verbose,
-        )
-        search_res, rerank_info = self._fetch_and_rank(
-            recall_hits=recall_pool.hits,
-            query=query,
             rank_method=rank_method,
             rank_top_k=rank_top_k,
+            group_owner_limit=group_owner_limit,
             prefer=prefer,
             enable_rerank=enable_rerank,
             rerank_max_hits=rerank_max_hits,
             rerank_keyword_boost=rerank_keyword_boost,
             rerank_title_keyword_boost=rerank_title_keyword_boost,
-            extra_filters=extra_filters,
-            verbose=verbose,
-            pool_hints=recall_pool.pool_hints,
-        )
-        search_res = self._blend_owner_intent_hits(search_res, owner_intent_info)
-        search_res["total_hits"] = recall_pool.total_hits
-        search_res["recall_info"] = recall_pool.lanes_info
-        perf["fetch_ms"] = search_res.get("fetch_ms", 0)
-        perf["highlight_ms"] = search_res.get("highlight_ms", 0)
-        perf["recall_candidates"] = len(recall_pool.hits)
-        steps.update_step(step, search_res)
-
-        if rerank_info:
-            perf["rerank_ms"] = rerank_info.get("rerank_ms", 0)
-            perf["reranked_count"] = rerank_info.get("reranked_count", 0)
-            steps.add_step(
-                "rerank",
-                output=rerank_info,
-                comment=f"重排了 {rerank_info.get('reranked_count', 0)} 个结果",
-            )
-
-        # Step 2: Group by owner
-        logger.hint("> [step 2] Group by owner ...", verbose=verbose)
-        group_res = self._build_group_step(
-            search_res,
-            group_owner_limit,
+            knn_field=knn_field,
+            recall_source_fields=list(recall_source_fields or []),
+            recall_timeout=recall_timeout,
             owner_intent_info=owner_intent_info,
         )
-        steps.add_step(
-            "group_hits_by_owner",
-            output={"authors": group_res},
-            input_data={"limit": group_owner_limit},
-        )
-
-        perf["total_ms"] = round((time.perf_counter() - explore_start) * 1000, 2)
-        logger.exit_quiet(not verbose)
-        return steps.finalize(query, perf=perf)
+        return run_explore_pipeline(self, config)
 
     def explore_v2(
         self,
@@ -1019,25 +914,28 @@ class VideoExplorer(VideoSearcherV2):
                 enable_rerank=enable_rerank,
                 prefer=prefer,
             )
-            return self._finalize_unified_explore_result(
-                result=result,
-                query=query,
-                qmod=qmod,
-                owner_intent_info=owner_intent_info,
-                constraint_filter=constraint_filter,
-                auto_constraint=auto_constraint,
-                extra_filters=extra_filters,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-                prefer=prefer,
-                knn_field=knn_field,
-                knn_k=knn_k,
-                knn_num_candidates=knn_num_candidates,
-                allow_short_han_retry=_allow_short_han_retry,
+            return finalize_unified_explore_result(
+                self,
+                result,
+                config=UnifiedExploreFinalizeConfig(
+                    query=query,
+                    qmod=qmod,
+                    owner_intent_info=owner_intent_info,
+                    constraint_filter=constraint_filter,
+                    auto_constraint=auto_constraint,
+                    extra_filters=list(extra_filters or []),
+                    suggest_info=dict(suggest_info or {}),
+                    verbose=verbose,
+                    most_relevant_limit=most_relevant_limit,
+                    rank_method=rank_method,
+                    rank_top_k=rank_top_k,
+                    group_owner_limit=group_owner_limit,
+                    prefer=prefer,
+                    knn_field=knn_field,
+                    knn_k=knn_k,
+                    knn_num_candidates=knn_num_candidates,
+                    allow_short_han_retry=_allow_short_han_retry,
+                ),
             )
 
         elif has_vector:
@@ -1055,25 +953,28 @@ class VideoExplorer(VideoSearcherV2):
                 enable_rerank=True,  # Always rerank for vector search
                 prefer=prefer,
             )
-            return self._finalize_unified_explore_result(
-                result=result,
-                query=query,
-                qmod=qmod,
-                owner_intent_info=owner_intent_info,
-                constraint_filter=constraint_filter,
-                auto_constraint=auto_constraint,
-                extra_filters=extra_filters,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-                prefer=prefer,
-                knn_field=knn_field,
-                knn_k=knn_k,
-                knn_num_candidates=knn_num_candidates,
-                allow_short_han_retry=_allow_short_han_retry,
+            return finalize_unified_explore_result(
+                self,
+                result,
+                config=UnifiedExploreFinalizeConfig(
+                    query=query,
+                    qmod=qmod,
+                    owner_intent_info=owner_intent_info,
+                    constraint_filter=constraint_filter,
+                    auto_constraint=auto_constraint,
+                    extra_filters=list(extra_filters or []),
+                    suggest_info=dict(suggest_info or {}),
+                    verbose=verbose,
+                    most_relevant_limit=most_relevant_limit,
+                    rank_method=rank_method,
+                    rank_top_k=rank_top_k,
+                    group_owner_limit=group_owner_limit,
+                    prefer=prefer,
+                    knn_field=knn_field,
+                    knn_k=knn_k,
+                    knn_num_candidates=knn_num_candidates,
+                    allow_short_han_retry=_allow_short_han_retry,
+                ),
             )
 
         else:
@@ -1090,148 +991,26 @@ class VideoExplorer(VideoSearcherV2):
                 enable_rerank=enable_rerank,
                 prefer=prefer,
             )
-            return self._finalize_unified_explore_result(
-                result=result,
-                query=query,
-                qmod=qmod,
-                owner_intent_info=owner_intent_info,
-                constraint_filter=constraint_filter,
-                auto_constraint=auto_constraint,
-                extra_filters=extra_filters,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-                prefer=prefer,
-                knn_field=knn_field,
-                knn_k=knn_k,
-                knn_num_candidates=knn_num_candidates,
-                allow_short_han_retry=_allow_short_han_retry,
+            return finalize_unified_explore_result(
+                self,
+                result,
+                config=UnifiedExploreFinalizeConfig(
+                    query=query,
+                    qmod=qmod,
+                    owner_intent_info=owner_intent_info,
+                    constraint_filter=constraint_filter,
+                    auto_constraint=auto_constraint,
+                    extra_filters=list(extra_filters or []),
+                    suggest_info=dict(suggest_info or {}),
+                    verbose=verbose,
+                    most_relevant_limit=most_relevant_limit,
+                    rank_method=rank_method,
+                    rank_top_k=rank_top_k,
+                    group_owner_limit=group_owner_limit,
+                    prefer=prefer,
+                    knn_field=knn_field,
+                    knn_k=knn_k,
+                    knn_num_candidates=knn_num_candidates,
+                    allow_short_han_retry=_allow_short_han_retry,
+                ),
             )
-
-    @staticmethod
-    def _annotate_unified_explore_result(
-        result: dict,
-        qmod: list[str] | str | None,
-        owner_intent_info: dict | None,
-    ) -> dict:
-        if result.get("data"):
-            output = result["data"][0].setdefault("output", {})
-            output["qmod"] = qmod
-        result["intent_info"] = owner_intent_info
-        return result
-
-    def _retry_unified_explore_without_short_han_exact(
-        self,
-        result: dict,
-        *,
-        query: str,
-        qmod: list[str] | str | None,
-        constraint_filter: dict | None,
-        auto_constraint: bool,
-        extra_filters: list[dict],
-        suggest_info: dict,
-        verbose: bool,
-        most_relevant_limit: int,
-        rank_method: RANK_METHOD_TYPE,
-        rank_top_k: int,
-        group_owner_limit: int,
-        prefer: RANK_PREFER_TYPE,
-        knn_field: str,
-        knn_k: int,
-        knn_num_candidates: int,
-        allow_retry: bool,
-    ) -> dict | None:
-        if not self._should_retry_without_short_han_exact(
-            query,
-            total_hits=self._get_unified_explore_total_hits(result),
-            allow_retry=allow_retry,
-        ):
-            return None
-
-        logger.warn(
-            "> Retry unified explore without auto-exact short Han segments",
-            verbose=verbose,
-        )
-        with override_auto_require_short_han_exact("first"):
-            retry_res = self.unified_explore(
-                query=query,
-                qmod=qmod,
-                extra_filters=extra_filters,
-                constraint_filter=constraint_filter,
-                auto_constraint=auto_constraint,
-                suggest_info=suggest_info,
-                verbose=verbose,
-                most_relevant_limit=most_relevant_limit,
-                rank_method=rank_method,
-                rank_top_k=rank_top_k,
-                group_owner_limit=group_owner_limit,
-                prefer=prefer,
-                knn_field=knn_field,
-                knn_k=knn_k,
-                knn_num_candidates=knn_num_candidates,
-                _allow_short_han_retry=False,
-            )
-        retry_info = dict(retry_res.get("retry_info") or {})
-        retry_info["relaxed_short_han_exact"] = True
-        retry_res["retry_info"] = retry_info
-        return retry_res
-
-    def _finalize_unified_explore_result(
-        self,
-        result: dict,
-        *,
-        query: str,
-        qmod: list[str] | str | None,
-        owner_intent_info: dict | None,
-        constraint_filter: dict | None,
-        auto_constraint: bool,
-        extra_filters: list[dict],
-        suggest_info: dict,
-        verbose: bool,
-        most_relevant_limit: int,
-        rank_method: RANK_METHOD_TYPE,
-        rank_top_k: int,
-        group_owner_limit: int,
-        prefer: RANK_PREFER_TYPE,
-        knn_field: str,
-        knn_k: int,
-        knn_num_candidates: int,
-        allow_short_han_retry: bool,
-    ) -> dict:
-        result = self._annotate_unified_explore_result(
-            result,
-            qmod=qmod,
-            owner_intent_info=owner_intent_info,
-        )
-        retry_res = self._retry_unified_explore_without_short_han_exact(
-            result,
-            query=query,
-            qmod=qmod,
-            constraint_filter=constraint_filter,
-            auto_constraint=auto_constraint,
-            extra_filters=extra_filters,
-            suggest_info=suggest_info,
-            verbose=verbose,
-            most_relevant_limit=most_relevant_limit,
-            rank_method=rank_method,
-            rank_top_k=rank_top_k,
-            group_owner_limit=group_owner_limit,
-            prefer=prefer,
-            knn_field=knn_field,
-            knn_k=knn_k,
-            knn_num_candidates=knn_num_candidates,
-            allow_retry=allow_short_han_retry,
-        )
-        return retry_res or result
-
-    @staticmethod
-    def _get_unified_explore_total_hits(result: dict) -> int:
-        output = ((result or {}).get("data") or [{}])[0].get("output") or {}
-        total_hits = output.get("total_hits")
-        if total_hits is not None:
-            return int(total_hits)
-        hits = output.get("hits") or []
-        return len(hits)

@@ -104,15 +104,15 @@ def main() -> int:
         thinking=False,
     )
 
-    tool_calls = []
+    used_tools = []
     for event in result.tool_events:
         for call in event.get("calls") or []:
-            tool_calls.append(call.get("type"))
+            used_tools.append(call.get("type"))
 
     payload = {
         "query": query,
         "answer": result.content,
-        "tool_calls": tool_calls,
+        "used_tools": used_tools,
         "usage_trace": result.usage_trace,
         "planner_model": (result.usage_trace.get("models") or {})
         .get("planner", {})
@@ -121,7 +121,7 @@ def main() -> int:
         .get("response", {})
         .get("config"),
         "transcript_capability_enabled": transcript_client is not None,
-        "transcript_tool_used": "get_video_transcript" in tool_calls,
+        "transcript_tool_used": "get_video_transcript" in used_tools,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
