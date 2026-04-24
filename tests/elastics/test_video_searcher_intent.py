@@ -4,7 +4,7 @@ from dsl.elastic import DslExprToElasticConverter
 from dsl.filter import QueryDslDictFilterMerger
 from elastics.videos.explorer import VideoExplorer
 from elastics.videos.constants import SEARCH_BOOSTED_FIELDS
-from elastics.videos.result_reranker import rerank_focused_title_hits
+from elastics.videos.results.reranking import rerank_focused_title_hits
 from elastics.videos.searcher_v2 import VideoSearcherV2
 from recalls.base import RecallPool
 

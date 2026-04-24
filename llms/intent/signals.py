@@ -67,6 +67,12 @@ _ALIAS_TOKEN_MAX_LEN = 6
 _QUESTION_TAIL_RE = re.compile(
     r"(是谁|是什么|讲了什么|讲啥|说了什么|说啥|最近还?发了哪些视频|最近还有哪些视频|最近视频|代表作有哪些?)"
 )
+_OWNER_TOPIC_QUERY_RE = re.compile(
+    r"^\s*(?P<owner>[\u4e00-\u9fffA-Za-z0-9_.\-]{2,24})\s*(?:关于|有关|相关|聊聊|讲讲|说说)\s*(?P<topic>.+?)\s*$"
+)
+_VIDEO_TOPIC_TAIL_RE = re.compile(
+    r"(?:有哪些(?:值得看|推荐|相关)?(?:的)?视频.*|有什么(?:值得看|推荐|相关)?(?:的)?视频.*|值得看的视频.*|相关的视频.*|视频.*)$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +130,46 @@ def build_conversation_window(messages: list[dict]) -> ConversationWindow:
     )
 
 
+def has_distinct_video_topic(
+    explicit_entities: list[str],
+    explicit_topics: list[str],
+) -> bool:
+    entity_keys = {
+        compact_focus_key(entity)
+        for entity in explicit_entities or []
+        if compact_focus_key(entity)
+    }
+    for topic in explicit_topics or []:
+        topic_key = compact_focus_key(topic)
+        if len(topic_key) < 4 or topic_key in entity_keys:
+            continue
+        return True
+    return False
+
+
+def is_stable_owner_topic_video_query(
+    *,
+    final_target: str,
+    task_mode: str,
+    window: ConversationWindow,
+    explicit_entities: list[str],
+    explicit_topics: list[str],
+    explicit_video_anchors: list[str],
+    explicit_owner_ids: list[str],
+    needs_term_normalization: bool,
+) -> bool:
+    return bool(
+        final_target == "videos"
+        and task_mode == "exploration"
+        and not window.is_followup
+        and explicit_entities
+        and not explicit_video_anchors
+        and not explicit_owner_ids
+        and not needs_term_normalization
+        and has_distinct_video_topic(explicit_entities, explicit_topics)
+    )
+
+
 def collect_facet_scores(
     text: str,
     facet_name: str,
@@ -144,6 +190,19 @@ def collect_facet_scores(
         if len(labels) >= limit:
             break
     return labels
+
+
+def extract_owner_topic_pair(text: str) -> tuple[str, str] | None:
+    normalized = normalize_text(text)
+    match = _OWNER_TOPIC_QUERY_RE.match(normalized)
+    if not match:
+        return None
+    owner = str(match.group("owner") or "").strip()
+    topic = str(match.group("topic") or "").strip()
+    topic = _VIDEO_TOPIC_TAIL_RE.sub("", topic).strip(" ，。！？?；;：:")
+    if len(compact_focus_key(owner)) < 2 or len(compact_focus_key(topic)) < 4:
+        return None
+    return owner, topic
 
 
 def extract_topic_candidates(
@@ -245,6 +304,11 @@ def extract_topics(
     final_target_matches: list[SemanticMatch] | None = None,
     task_mode_matches: list[SemanticMatch] | None = None,
 ) -> list[str]:
+    structured_topics: list[str] = []
+    owner_topic_pair = extract_owner_topic_pair(latest_user_text)
+    if owner_topic_pair:
+        structured_topics.append(owner_topic_pair[1])
+
     topics = merge_followup_candidates(
         messages,
         extract_topic_candidates(
@@ -254,7 +318,11 @@ def extract_topics(
             task_mode_matches=task_mode_matches,
         ),
     )
-    return _merge_anchor_tokens(topics, latest_user_text)[:10]
+    merged_topics: list[str] = []
+    for topic in [*structured_topics, *_merge_anchor_tokens(topics, latest_user_text)]:
+        if topic not in merged_topics:
+            merged_topics.append(topic)
+    return merged_topics[:10]
 
 
 def _looks_entity_like(
@@ -284,6 +352,7 @@ def extract_entities(
     final_target_matches: list[SemanticMatch] | None = None,
     task_mode_matches: list[SemanticMatch] | None = None,
 ) -> list[str]:
+    owner_topic_pair = extract_owner_topic_pair(latest_user_text)
     latest_topics = _merge_anchor_tokens(
         extract_topic_candidates(
             latest_user_text,
@@ -300,6 +369,8 @@ def extract_entities(
         if compact_focus_key(token)
     }
     entities: list[str] = []
+    if owner_topic_pair:
+        entities.append(owner_topic_pair[0])
     for topic in topics:
         if compact_focus_key(topic) in explicit_anchor_keys:
             if topic not in entities:
@@ -535,8 +606,19 @@ def derive_intent_signals(
         explicit_entities,
         explicit_topics,
     )
+    stable_owner_topic_video_query = is_stable_owner_topic_video_query(
+        final_target=final_target,
+        task_mode=task_mode,
+        window=window,
+        explicit_entities=explicit_entities,
+        explicit_topics=explicit_topics,
+        explicit_video_anchors=explicit_video_anchors,
+        explicit_owner_ids=explicit_owner_ids,
+        needs_term_normalization=needs_term_normalization_flag,
+    )
     needs_keyword_expansion = bool(
         final_target == "videos"
+        and not stable_owner_topic_video_query
         and task_mode == "exploration"
         and not explicit_video_anchors
         and not explicit_owner_ids
@@ -556,6 +638,7 @@ def derive_intent_signals(
             or (
                 explicit_entities
                 and not explicit_owner_ids
+                and not stable_owner_topic_video_query
                 and (
                     window.is_followup
                     or task_mode in {"repeat", "known_item"}

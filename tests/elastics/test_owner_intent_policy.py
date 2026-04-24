@@ -1,4 +1,4 @@
-from elastics.videos.owner_intent_policy import get_owner_intent_policy
+from elastics.videos.policies.owner import get_owner_intent_policy
 
 
 def test_owner_intent_policy_loads_asset_defaults():

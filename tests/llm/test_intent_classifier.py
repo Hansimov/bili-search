@@ -101,3 +101,22 @@ def test_build_intent_profile_preserves_explicit_bv_anchor_for_author_recent_que
     assert "BV1e9cfz5EKj" in profile.explicit_entities
     assert all("作者是谁" not in topic for topic in profile.explicit_topics)
     assert all("最近还发了哪些视频" not in topic for topic in profile.explicit_topics)
+
+
+def test_build_intent_profile_does_not_force_owner_resolution_for_owner_topic_video_query():
+    profile = build_intent_profile(
+        [
+            {
+                "role": "user",
+                "content": "月栖乐序 关于 高能音乐挑战赛 有哪些值得看的视频？",
+            }
+        ]
+    )
+
+    assert profile.final_target == "videos"
+    assert profile.task_mode == "exploration"
+    assert profile.needs_keyword_expansion is False
+    assert profile.needs_term_normalization is False
+    assert profile.needs_owner_resolution is False
+    assert "月栖乐序" in profile.explicit_entities
+    assert "高能音乐挑战赛" in profile.explicit_topics

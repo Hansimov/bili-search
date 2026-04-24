@@ -4,6 +4,7 @@ from sedb.elastic import ElasticOperator
 from tclogger import logger
 
 from configs.envs import ELASTIC_PRO_ENVS, SECRETS
+from elastics.relations.tokens import sanitize_related_token_result
 from elastics.videos.constants import SEARCH_MATCH_FIELDS, SUGGEST_MATCH_FIELDS
 
 
@@ -101,7 +102,10 @@ class RelationsClient:
         payload.update(
             {key: value for key, value in kwargs.items() if value is not None}
         )
-        return self._request("related_tokens_by_tokens", payload)
+        return sanitize_related_token_result(
+            text,
+            self._request("related_tokens_by_tokens", payload),
+        )
 
     def related_owners_by_tokens(
         self,

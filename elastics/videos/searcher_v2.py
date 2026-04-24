@@ -18,6 +18,7 @@ from elastics.structure import set_min_score, set_terminate_after
 from elastics.structure import set_timeout, set_profile
 from elastics.structure import construct_knn_query, construct_knn_search_body
 from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
+from elastics.videos.intent.owner_query import OwnerQueryIntentResolver
 from elastics.videos.query.understanding import VideoQueryUnderstanding
 from elastics.videos.results.reranking import rerank_focused_title_hits
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
@@ -164,47 +165,11 @@ class VideoSearcherV2:
             relations_client=relations_client,
         )
 
-    @staticmethod
-    def _keyword_has_mixed_script(text: str) -> bool:
-        return VideoQueryUnderstanding._keyword_has_mixed_script(text)
-
-    @classmethod
-    def _semantic_fallback_requires_auto(cls, result: dict | None) -> bool:
-        return VideoQueryUnderstanding._semantic_fallback_requires_auto(result)
-
-    def _build_semantic_group_replaces_count(
-        self,
-        query: str,
-        options: list[dict],
-    ) -> tuple[list[list[object]], list[dict]]:
-        return self._build_query_understanding()._build_semantic_group_replaces_count(
-            query,
-            options,
-        )
-
-    def _resolve_search_semantic_rewrite(
-        self,
-        query: str,
-        suggest_info: dict | None = None,
-        request_type: SEARCH_REQUEST_TYPE = SEARCH_REQUEST_TYPE_DEFAULT,
-    ) -> tuple[str, dict, dict]:
-        return self._build_query_understanding()._resolve_search_semantic_rewrite(
-            query=query,
-            suggest_info=suggest_info,
-            request_type=request_type,
-        )
-
-    @staticmethod
-    def _normalize_search_focus_segment(text: str) -> str:
-        return VideoQueryUnderstanding._normalize_search_focus_segment(text)
-
-    @classmethod
-    def _strip_search_focus_noise(cls, text: str) -> str:
-        return VideoQueryUnderstanding._strip_search_focus_noise(text)
-
-    @classmethod
-    def _resolve_search_focus_query(cls, query: str) -> tuple[str, dict]:
-        return VideoQueryUnderstanding._resolve_search_focus_query(query)
+    def _build_owner_query_intent_resolver(self) -> OwnerQueryIntentResolver:
+        owner_searcher = getattr(self, "_owner_searcher", None)
+        if owner_searcher is None:
+            owner_searcher = self.owner_searcher
+        return OwnerQueryIntentResolver(owner_searcher=owner_searcher)
 
     def submit_to_es(self, body: dict, context: str = None) -> dict:
         try:
@@ -1882,25 +1847,27 @@ class VideoSearcherV2:
         owner: dict,
         top_score: float,
     ) -> bool:
-        return VideoQueryUnderstanding._is_compact_owner_prefix_candidate(
+        return OwnerQueryIntentResolver._is_compact_owner_prefix_candidate(
             token,
             owner,
             top_score,
         )
 
     def _resolve_vector_auto_constraint_query(self, query: str) -> str:
-        return self._build_query_understanding()._resolve_vector_auto_constraint_query(
+        return self._build_owner_query_intent_resolver()._resolve_vector_auto_constraint_query(
             query
         )
 
     def _resolve_spaced_owner_intent_info(self, query: str) -> dict:
-        return self._build_query_understanding()._resolve_spaced_owner_intent_info(
-            query
+        return (
+            self._build_owner_query_intent_resolver()._resolve_spaced_owner_intent_info(
+                query
+            )
         )
 
     @staticmethod
     def _build_spaced_owner_context_query(owner_intent_info: dict | None) -> str:
-        return VideoQueryUnderstanding._build_spaced_owner_context_query(
+        return OwnerQueryIntentResolver._build_spaced_owner_context_query(
             owner_intent_info
         )
 
@@ -1908,7 +1875,7 @@ class VideoSearcherV2:
     def _resolve_owner_intent_search_filters(
         owner_intent_info: dict | None,
     ) -> list[dict]:
-        return VideoQueryUnderstanding._resolve_owner_intent_search_filters(
+        return OwnerQueryIntentResolver._resolve_owner_intent_search_filters(
             owner_intent_info
         )
 
@@ -1917,7 +1884,7 @@ class VideoSearcherV2:
         query: str,
         candidate: dict | None,
     ) -> bool:
-        return VideoQueryUnderstanding._should_suppress_title_like_owner_filter(
+        return OwnerQueryIntentResolver._should_suppress_title_like_owner_filter(
             query,
             candidate,
         )
@@ -1927,42 +1894,46 @@ class VideoSearcherV2:
         query: str,
         candidate: dict | None,
     ) -> bool:
-        return VideoQueryUnderstanding._should_suppress_short_query_owner_filter(
+        return OwnerQueryIntentResolver._should_suppress_short_query_owner_filter(
             query,
             candidate,
         )
 
     def _resolve_owner_intent_info(self, query: str) -> dict:
-        return self._build_query_understanding()._resolve_owner_intent_info(query)
+        return self._build_owner_query_intent_resolver()._resolve_owner_intent_info(
+            query
+        )
 
     @staticmethod
     def _looks_like_model_code_query(text: str) -> bool:
-        return VideoQueryUnderstanding._looks_like_model_code_query(text)
+        return OwnerQueryIntentResolver._looks_like_model_code_query(text)
 
     @staticmethod
     def _build_owner_filter(owner: dict) -> list[dict]:
-        return VideoQueryUnderstanding._build_owner_filter(owner)
+        return OwnerQueryIntentResolver._build_owner_filter(owner)
 
     @staticmethod
     def _normalize_owner_intent_candidate(candidate: dict) -> dict | None:
-        return VideoQueryUnderstanding._normalize_owner_intent_candidate(candidate)
+        return OwnerQueryIntentResolver._normalize_owner_intent_candidate(candidate)
 
     @classmethod
     def _rerank_spaced_owner_intent_candidates(
         cls,
         candidates: list[dict],
     ) -> list[dict]:
-        return VideoQueryUnderstanding._rerank_spaced_owner_intent_candidates(
+        return OwnerQueryIntentResolver._rerank_spaced_owner_intent_candidates(
             candidates
         )
 
     @staticmethod
     def _candidate_supports_multi_owner_intent(candidate: dict) -> bool:
-        return VideoQueryUnderstanding._candidate_supports_multi_owner_intent(candidate)
+        return OwnerQueryIntentResolver._candidate_supports_multi_owner_intent(
+            candidate
+        )
 
     @classmethod
     def _select_owner_intent_candidates(cls, owners: list[dict]) -> list[dict]:
-        return VideoQueryUnderstanding._select_owner_intent_candidates(owners)
+        return OwnerQueryIntentResolver._select_owner_intent_candidates(owners)
 
     @classmethod
     def _select_confident_owner_intent_candidate(
@@ -1970,7 +1941,7 @@ class VideoSearcherV2:
         owners: list[dict],
         candidates: list[dict] | None = None,
     ) -> dict | None:
-        return VideoQueryUnderstanding._select_confident_owner_intent_candidate(
+        return OwnerQueryIntentResolver._select_confident_owner_intent_candidate(
             owners,
             candidates=candidates,
         )

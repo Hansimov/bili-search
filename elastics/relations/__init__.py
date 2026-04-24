@@ -4,3 +4,5 @@ from elastics.relations.client import (
     RELATED_ENDPOINTS,
     RelationsClient,
 )
+from elastics.relations.tokens import sanitize_related_token_options
+from elastics.relations.tokens import sanitize_related_token_result
