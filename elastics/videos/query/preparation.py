@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
@@ -11,6 +12,7 @@ from llms.intent.focus import compact_focus_key, rewrite_known_term_aliases
 
 SEARCH_FOCUS_POLICY = get_search_focus_policy()
 SEARCH_SEMANTIC_POLICY = get_search_semantic_policy()
+MODEL_CODE_RE = re.compile(r"^(?=.*[a-z])(?=.*\d)[a-z0-9][a-z0-9._+-]{1,31}$", re.I)
 
 
 @dataclass(slots=True)
@@ -34,6 +36,22 @@ class SearchQueryPreparer:
         has_cjk = any("\u4e00" <= char <= "\u9fff" for char in normalized)
         has_ascii_alnum = any(char.isascii() and char.isalnum() for char in normalized)
         return has_cjk and has_ascii_alnum
+
+    @staticmethod
+    def _keyword_is_model_code(text: str) -> bool:
+        return bool(MODEL_CODE_RE.match(str(text or "").strip()))
+
+    @staticmethod
+    def _keyword_has_cjk(text: str) -> bool:
+        return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
+    @classmethod
+    def _keywords_have_model_code_attribute(cls, keywords: list[str]) -> bool:
+        if len(keywords) < 2:
+            return False
+        return any(cls._keyword_is_model_code(keyword) for keyword in keywords) and any(
+            cls._keyword_has_cjk(keyword) for keyword in keywords
+        )
 
     @classmethod
     def _semantic_fallback_requires_auto(cls, result: dict | None) -> bool:
@@ -138,13 +156,14 @@ class SearchQueryPreparer:
         semantic_suggest_info: dict = {}
         query_info = self.query_rewriter.get_query_info(base_query)
         keywords = list(query_info.get("keywords_body") or [])
+        relation_query = " ".join(str(keyword) for keyword in keywords).strip()
         should_attempt_relation_rewrite = (
             SEARCH_SEMANTIC_POLICY.relation_rewrite_enabled
             and allow_relation_rewrite
             and self.relations_client is not None
-            and SEARCH_SEMANTIC_POLICY.query_length_ok(base_query)
+            and SEARCH_SEMANTIC_POLICY.query_length_ok(relation_query)
             and SEARCH_SEMANTIC_POLICY.keyword_count_ok(keywords)
-            and not SEARCH_SEMANTIC_POLICY.has_blocked_marker(base_query)
+            and not SEARCH_SEMANTIC_POLICY.has_blocked_marker(relation_query)
             and (
                 (
                     SEARCH_SEMANTIC_POLICY.trigger_alias_rewritten_query
@@ -156,11 +175,15 @@ class SearchQueryPreparer:
                         self._keyword_has_mixed_script(keyword) for keyword in keywords
                     )
                 )
+                or (
+                    SEARCH_SEMANTIC_POLICY.trigger_model_code_attribute_keywords
+                    and self._keywords_have_model_code_attribute(keywords)
+                )
             )
         )
         if should_attempt_relation_rewrite:
             relation_result = self.relations_client.related_tokens_by_tokens(
-                text=base_query,
+                text=relation_query,
                 mode=SEARCH_SEMANTIC_POLICY.relation_mode,
                 size=SEARCH_SEMANTIC_POLICY.relation_size,
                 scan_limit=SEARCH_SEMANTIC_POLICY.relation_scan_limit,
@@ -168,7 +191,7 @@ class SearchQueryPreparer:
             )
             if self._semantic_fallback_requires_auto(relation_result):
                 relation_result = self.relations_client.related_tokens_by_tokens(
-                    text=base_query,
+                    text=relation_query,
                     mode=SEARCH_SEMANTIC_POLICY.relation_fallback_mode,
                     size=SEARCH_SEMANTIC_POLICY.relation_size,
                     scan_limit=SEARCH_SEMANTIC_POLICY.relation_scan_limit,
@@ -177,11 +200,12 @@ class SearchQueryPreparer:
 
             options = list(relation_result.get("options") or [])
             group_replaces_count, accepted_options = (
-                self._build_semantic_group_replaces_count(base_query, options)
+                self._build_semantic_group_replaces_count(relation_query, options)
             )
             if group_replaces_count:
                 semantic_suggest_info = {"group_replaces_count": group_replaces_count}
                 semantic_rewrite_info["relation_rewritten"] = True
+                semantic_rewrite_info["relation_query"] = relation_query
                 semantic_rewrite_info["relation_mode"] = relation_result.get(
                     "mode",
                     SEARCH_SEMANTIC_POLICY.relation_mode,

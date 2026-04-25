@@ -198,6 +198,13 @@ def _anchor_subject_key(text: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", compact_focus_key(text))
 
 
+def _canonical_response_subject(text: str) -> str:
+    subject = " ".join(str(text or "").split()).strip()
+    if not subject:
+        return ""
+    return rewrite_known_term_aliases(subject) or subject
+
+
 class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
     """Main chat handler with tool-calling loop.
 
@@ -620,6 +627,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             subject = leading_subject
         if resolved_intent.needs_term_normalization and subject:
             subject = rewrite_known_term_aliases(subject) or subject
+            subject = _canonical_response_subject(subject)
         subject = " ".join(str(subject or "").split()).strip()
         subject_key = _anchor_subject_key(subject)
         if not subject_key or len(subject) > 48:
@@ -651,7 +659,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
 
     @staticmethod
     def _normalize_entity_focused_query_text(text: str) -> str:
-        return build_focus_query(text)
+        return _canonical_response_subject(build_focus_query(text))
 
     @staticmethod
     def _split_search_query_tokens(text: str) -> list[str]:

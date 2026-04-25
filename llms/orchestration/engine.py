@@ -96,6 +96,33 @@ def _shared_prefix_len(left: str, right: str) -> int:
     return idx
 
 
+def _rewrite_known_aliases_in_video_search_arguments(arguments: dict) -> dict:
+    normalized = dict(arguments or {})
+    raw_queries = normalized.get("queries")
+    if isinstance(raw_queries, str):
+        raw_queries = [raw_queries]
+    elif raw_queries is None and isinstance(normalized.get("query"), str):
+        raw_queries = [normalized.get("query")]
+    elif not isinstance(raw_queries, list):
+        raw_queries = []
+
+    rewritten: list[str] = []
+    changed = False
+    for query in raw_queries:
+        original_query = str(query or "")
+        rewritten_query = rewrite_known_term_aliases(original_query) or original_query
+        if rewritten_query != original_query:
+            changed = True
+        if rewritten_query and rewritten_query not in rewritten:
+            rewritten.append(rewritten_query)
+    if not changed or not rewritten:
+        return normalized
+
+    normalized.pop("query", None)
+    normalized["queries"] = rewritten
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ModelDecision:
     client: object
@@ -206,9 +233,13 @@ class ChatOrchestrator:
         name = canonical_tool_name(request.name)
         arguments = dict(request.arguments or {})
         title_like_video_query = ""
+        explicit_dsl_video_query = ""
         if intent.final_target == "videos":
             title_like_video_query = (
                 VideoQueryNormalizer.extract_title_like_video_query(intent.raw_query)
+            )
+            explicit_dsl_video_query = (
+                VideoQueryNormalizer.extract_explicit_dsl_query(intent.raw_query)
             )
         if name == "run_small_llm_task" and request.visibility == "internal":
             arguments = self._normalize_small_task_arguments(arguments)
@@ -238,13 +269,14 @@ class ChatOrchestrator:
                 )
         if name == "search_videos":
             arguments = normalize_search_video_lookup_arguments(arguments)
-            if title_like_video_query:
+            if title_like_video_query or explicit_dsl_video_query:
                 arguments = (
                     VideoQueryNormalizer.normalize_title_like_video_search_arguments(
                         arguments,
                         intent.raw_query,
                     )
                 )
+            arguments = _rewrite_known_aliases_in_video_search_arguments(arguments)
         if name == "search_owners":
             if title_like_video_query:
                 return ToolCallRequest(
@@ -274,7 +306,7 @@ class ChatOrchestrator:
             query_changed = False
             for query in raw_queries:
                 original_query = str(query or "")
-                rewritten_query = rewrite_known_term_aliases(original_query)
+                rewritten_query = rewrite_known_term_aliases(original_query) or original_query
                 if rewritten_query != original_query:
                     query_changed = True
                 if rewritten_query and rewritten_query not in rewritten_queries:
@@ -295,6 +327,34 @@ class ChatOrchestrator:
             arguments=arguments,
             visibility=request.visibility,
             source=request.source,
+        )
+
+    def _build_direct_explicit_dsl_video_search_request(
+        self,
+        messages: list[dict],
+        intent: IntentProfile,
+        *,
+        prefer_transcript_lookup: bool = False,
+    ) -> ToolCallRequest | None:
+        if prefer_transcript_lookup or intent.final_target != "videos":
+            return None
+        if has_explicit_video_anchor(intent) or is_recent_timeline_request(intent):
+            return None
+
+        latest_user_text = self._latest_user_text(messages)
+        explicit_query = (
+            VideoQueryNormalizer.extract_explicit_dsl_query(latest_user_text)
+            or VideoQueryNormalizer.extract_explicit_dsl_query(intent.raw_query)
+        )
+        if not explicit_query:
+            return None
+
+        return ToolCallRequest(
+            id="auto_explicit_dsl_video_search_1",
+            name="search_videos",
+            arguments={"queries": [explicit_query]},
+            visibility="user",
+            source="deterministic_direct",
         )
 
     @staticmethod
@@ -1515,12 +1575,72 @@ class ChatOrchestrator:
         intent: IntentProfile,
         messages: list[dict],
     ) -> str | None:
-        return self._build_explicit_video_lookup_answer(
+        return self._build_explicit_dsl_video_search_answer(
+            intent
+        ) or self._build_explicit_video_lookup_answer(
             intent
         ) or self._build_owner_recent_timeline_answer(
             intent,
             messages,
         )
+
+    def _build_explicit_dsl_video_search_answer(
+        self,
+        intent: IntentProfile,
+    ) -> str | None:
+        if intent.final_target != "videos":
+            return None
+        explicit_query = VideoQueryNormalizer.extract_explicit_dsl_query(
+            intent.raw_query
+        )
+        if not explicit_query:
+            return None
+
+        best_result: dict | None = None
+        for result_id in self.result_store.order:
+            record = self.result_store.get(result_id)
+            if (
+                record is None
+                or canonical_tool_name(record.request.name) != "search_videos"
+            ):
+                continue
+            args = record.request.arguments or {}
+            queries = args.get("queries")
+            if isinstance(queries, str):
+                query_values = [queries]
+            elif isinstance(queries, list):
+                query_values = [str(item or "") for item in queries]
+            else:
+                query_values = []
+            if explicit_query not in query_values:
+                continue
+            best_result = record.result or {}
+            break
+
+        if not best_result:
+            return None
+        hits = list(best_result.get("hits") or [])
+        total_hits = int(best_result.get("total_hits") or len(hits))
+        if not hits:
+            return f"按 `{explicit_query}` 搜索后，当前没有找到可展示的视频结果。"
+
+        lines = [f"按 `{explicit_query}` 找到这些相关视频："]
+        for index, hit in enumerate(hits[:5], start=1):
+            title = str(hit.get("title") or "").strip() or "未命名视频"
+            bvid = str(hit.get("bvid") or "").strip()
+            owner = hit.get("owner") or {}
+            owner_name = owner.get("name", "") if isinstance(owner, dict) else ""
+            suffix_parts = []
+            if owner_name:
+                suffix_parts.append(f"UP：{owner_name}")
+            if bvid:
+                suffix_parts.append(f"https://www.bilibili.com/video/{bvid}")
+            suffix = f"（{'，'.join(suffix_parts)}）" if suffix_parts else ""
+            lines.append(f"{index}. 《{title}》{suffix}")
+
+        if total_hits > len(hits):
+            lines.append(f"当前展示前 {len(hits)} 条，可检索总命中约 {total_hits} 条。")
+        return "\n".join(lines).strip()
 
     def _build_explicit_video_lookup_answer(
         self,
@@ -2237,6 +2357,52 @@ class ChatOrchestrator:
         final_content = ""
         final_reasoning = ""
 
+        direct_request = self._build_direct_explicit_dsl_video_search_request(
+            messages,
+            intent,
+            prefer_transcript_lookup=prefer_transcript_lookup,
+        )
+        if direct_request is not None:
+            records = self._execute_requests(self.result_store, [direct_request], intent)
+            tool_events.append(self._build_tool_events(1, records))
+            final_content = (
+                self._build_deterministic_final_answer(intent, messages)
+                or "已完成搜索，但这次没有整理出可展示的视频结果。"
+            )
+            elapsed_seconds = time.perf_counter() - start_time
+            return OrchestrationResult(
+                content=final_content,
+                reasoning_content="",
+                usage={},
+                tool_events=tool_events,
+                usage_trace={
+                    "prompt": prompt_profile,
+                    "intent": {
+                        "final_target": intent.final_target,
+                        "task_mode": intent.task_mode,
+                        "route_reason": intent.route_reason,
+                        "deterministic_direct": "explicit_dsl_video_search",
+                    },
+                    "iterations": [
+                        {
+                            "phase": "deterministic_direct",
+                            "tool_calls": [direct_request.name],
+                        }
+                    ],
+                    "elapsed_seconds": elapsed_seconds,
+                    "result_ids": self.result_store.latest_ids(limit=32),
+                    "summary": {
+                        "llm_calls": 0,
+                        "tool_iterations": len(tool_events),
+                        "peak_prompt_tokens": 0,
+                        "peak_context_chars": len(prompt),
+                    },
+                },
+                prompt_profile=prompt_profile,
+                thinking=thinking,
+                content_streamed=False,
+            )
+
         for iteration in range(1, resolved_iterations + 1):
             if cancelled is not None and getattr(cancelled, "is_set", lambda: False)():
                 break
@@ -2335,6 +2501,15 @@ class ChatOrchestrator:
                             messages=messages,
                         )
                     )
+                    recovery_followup_requests = [
+                        self._normalize_request(
+                            request,
+                            intent,
+                            search_capabilities,
+                            prefer_transcript_lookup=prefer_transcript_lookup,
+                        )
+                        for request in recovery_followup_requests
+                    ]
                     deduped_recovery_followups: list[ToolCallRequest] = []
                     for request in recovery_followup_requests:
                         signature = command_signature(request)
@@ -2433,6 +2608,15 @@ class ChatOrchestrator:
                 intent,
                 messages=messages,
             )
+            followup_requests = [
+                self._normalize_request(
+                    request,
+                    intent,
+                    search_capabilities,
+                    prefer_transcript_lookup=prefer_transcript_lookup,
+                )
+                for request in followup_requests
+            ]
             deduped_followup_requests: list[ToolCallRequest] = []
             for request in followup_requests:
                 signature = command_signature(request)
@@ -2698,6 +2882,61 @@ class ChatOrchestrator:
         final_reasoning = ""
         content_streamed = False
 
+        direct_request = self._build_direct_explicit_dsl_video_search_request(
+            messages,
+            intent,
+            prefer_transcript_lookup=prefer_transcript_lookup,
+        )
+        if direct_request is not None:
+            records = yield from self._execute_requests_with_stream_events(
+                self.result_store,
+                [direct_request],
+                intent,
+                iteration=1,
+                cancelled=cancelled,
+            )
+            completed_event = self._build_tool_events(1, records)
+            tool_events.append(completed_event)
+            final_content = (
+                self._build_deterministic_final_answer(intent, messages)
+                or "已完成搜索，但这次没有整理出可展示的视频结果。"
+            )
+            content_streamed = True
+            yield {"delta": {"content": final_content}}
+            elapsed_seconds = time.perf_counter() - start_time
+            return OrchestrationResult(
+                content=final_content,
+                reasoning_content="",
+                usage={},
+                tool_events=tool_events,
+                usage_trace={
+                    "prompt": prompt_profile,
+                    "intent": {
+                        "final_target": intent.final_target,
+                        "task_mode": intent.task_mode,
+                        "route_reason": intent.route_reason,
+                        "deterministic_direct": "explicit_dsl_video_search",
+                    },
+                    "iterations": [
+                        {
+                            "phase": "deterministic_direct",
+                            "tool_calls": [direct_request.name],
+                        }
+                    ],
+                    "elapsed_seconds": elapsed_seconds,
+                    "result_ids": self.result_store.latest_ids(limit=32),
+                    "summary": {
+                        "llm_calls": 0,
+                        "tool_iterations": len(tool_events),
+                        "peak_prompt_tokens": 0,
+                        "peak_context_chars": len(prompt),
+                    },
+                },
+                prompt_profile=prompt_profile,
+                thinking=thinking,
+                content_streamed=content_streamed,
+            )
+
         for iteration in range(1, resolved_iterations + 1):
             if cancelled is not None and getattr(cancelled, "is_set", lambda: False)():
                 break
@@ -2917,6 +3156,15 @@ class ChatOrchestrator:
                 intent,
                 messages=messages,
             )
+            followup_requests = [
+                self._normalize_request(
+                    request,
+                    intent,
+                    search_capabilities,
+                    prefer_transcript_lookup=prefer_transcript_lookup,
+                )
+                for request in followup_requests
+            ]
             deduped_followup_requests: list[ToolCallRequest] = []
             for request in followup_requests:
                 signature = command_signature(request)

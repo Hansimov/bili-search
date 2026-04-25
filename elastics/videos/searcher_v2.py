@@ -1559,11 +1559,21 @@ class VideoSearcherV2:
         effective_extra_filters = list(extra_filters)
         owner_intent_query = effective_query
         owner_resolution = query_understanding.resolve_owner_intent(owner_intent_query)
+        owner_resolution_from_rewritten_query = True
+        if (
+            not owner_resolution.filters
+            and semantic_rewrite_info.get("applied")
+            and effective_query != str(query or "")
+        ):
+            fallback_owner_resolution = query_understanding.resolve_owner_intent(query)
+            if fallback_owner_resolution.filters:
+                owner_resolution = fallback_owner_resolution
+                owner_resolution_from_rewritten_query = False
         owner_intent_info = owner_resolution.info
         owner_intent_filters = owner_resolution.filters
         if owner_intent_filters:
             effective_extra_filters.extend(owner_intent_filters)
-            if _allow_owner_context_retry:
+            if _allow_owner_context_retry and owner_resolution_from_rewritten_query:
                 owner_context_query = owner_resolution.context_query
                 if owner_context_query:
                     effective_query = owner_context_query
@@ -1712,6 +1722,15 @@ class VideoSearcherV2:
         if title_rerank_info:
             return_res["title_rerank_info"] = title_rerank_info
 
+        recall_retry_query = str(query_info.get("words_expr") or effective_query)
+        score_cliff_info = self._apply_model_code_score_cliff_filter(
+            return_res,
+            query=recall_retry_query,
+            relation_rewritten=bool(semantic_rewrite_info.get("relation_rewritten")),
+        )
+        if score_cliff_info:
+            return_res["score_cliff_filter_info"] = score_cliff_info
+
         if (
             owner_context_query
             and owner_intent_filters
@@ -1762,7 +1781,6 @@ class VideoSearcherV2:
             logger.exit_quiet(not verbose)
             return retry_res
 
-        recall_retry_query = str(query_info.get("words_expr") or effective_query)
         if self._should_retry_without_auto_exact_segments(
             recall_retry_query,
             total_hits=return_res.get("total_hits", 0),
@@ -1819,6 +1837,17 @@ class VideoSearcherV2:
             retry_info["relaxed_auto_exact_segments"] = True
             retry_info["kept_model_code_exact"] = True
             retry_res["retry_info"] = retry_info
+            score_cliff_info = self._apply_model_code_score_cliff_filter(
+                retry_res,
+                query=recall_retry_query,
+                relation_rewritten=bool(
+                    (retry_res.get("semantic_rewrite_info") or {}).get(
+                        "relation_rewritten"
+                    )
+                ),
+            )
+            if score_cliff_info:
+                retry_res["score_cliff_filter_info"] = score_cliff_info
             logger.exit_quiet(not verbose)
             return retry_res
 
@@ -1884,6 +1913,48 @@ class VideoSearcherV2:
         retry_boosted_fields = dict(boosted_fields or SEARCH_BOOSTED_FIELDS)
         retry_boosted_fields.update(RELAXED_SHORT_HAN_RETRY_BOOST_OVERRIDES)
         return retry_boosted_fields
+
+    @classmethod
+    def _apply_model_code_score_cliff_filter(
+        cls,
+        result: dict,
+        *,
+        query: str,
+        relation_rewritten: bool,
+    ) -> dict:
+        policy = SEARCH_EMBEDDING_DENOISE_POLICY
+        if (
+            relation_rewritten
+            or not policy.enabled
+            or not policy.score_cliff_filter_enabled
+            or not cls._has_relaxable_model_code_attribute_terms(query)
+        ):
+            return {}
+        hits = list(result.get("hits") or [])
+        if len(hits) < 2:
+            return {}
+        top_score = float(hits[0].get("score") or 0.0)
+        if top_score < policy.score_cliff_min_top_score:
+            return {}
+        threshold = top_score * policy.score_cliff_ratio
+        kept = [hit for hit in hits if float(hit.get("score") or 0.0) >= threshold]
+        min_keep = max(1, int(policy.score_cliff_min_keep or 1))
+        if len(kept) < min_keep and len(hits) >= min_keep:
+            kept = hits[:min_keep]
+        if not kept or len(kept) >= len(hits):
+            return {}
+        result["hits"] = kept
+        result["return_hits"] = len(kept)
+        return {
+            "applied": True,
+            "query": query,
+            "top_score": round(top_score, 6),
+            "threshold": round(threshold, 6),
+            "before": len(hits),
+            "after": len(kept),
+            "ratio": policy.score_cliff_ratio,
+            "min_keep": min_keep,
+        }
 
     @classmethod
     def _get_embedding_denoise_candidate_limit(cls, limit: int | None) -> int:

@@ -134,7 +134,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "DSL Quickref",
         "DSL_QUICKREF",
         "brief",
-        "search_videos query 只保留关键实体和检索条件。常用过滤器：:view>=1w :date<=7d :t>5m :user=名字 :uid=数字。需要高相关性时加 q=vwr。",
+        "search_videos query 只保留关键实体和检索条件。常用过滤器：:view>=1w :date<=7d :t>5m :user=名字 :uid=数字。q=wv 是默认混合，q=vr 是向量+重排，q=vwr 是混合+重排；用户原话里已有 q=vr/q=vwr 时必须原样保留，不能把 vr 理解成虚拟现实。",
         tags=("dsl",),
     ),
     _asset(

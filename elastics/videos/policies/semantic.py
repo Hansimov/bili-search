@@ -40,6 +40,7 @@ class SearchSemanticRewritePolicy:
     require_same_keyword_count: bool
     trigger_mixed_script_keyword: bool
     trigger_alias_rewritten_query: bool
+    trigger_model_code_attribute_keywords: bool
 
     def query_length_ok(self, text: str) -> bool:
         length = len(str(text or "").strip())
@@ -101,6 +102,9 @@ def get_search_semantic_policy() -> SearchSemanticRewritePolicy:
         ),
         trigger_mixed_script_keyword=bool(triggers.get("mixed_script_keyword", True)),
         trigger_alias_rewritten_query=bool(triggers.get("alias_rewritten_query", True)),
+        trigger_model_code_attribute_keywords=bool(
+            triggers.get("model_code_attribute_keywords", True)
+        ),
     )
 
 

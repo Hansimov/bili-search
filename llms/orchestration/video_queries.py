@@ -29,6 +29,7 @@ _VIDEO_QUERY_QUOTED_TITLE_RE = re.compile(
 _FOLLOWUP_META_QUERY_RE = re.compile(
     r"^(?:请|帮我|给我|麻烦你?)?(?:总结|概括|梳理|整理|分析)(?:一下|下)?$"
 )
+_EXPLICIT_QMODE_RE = re.compile(r"(?<![\w])q=(?:w|v|r){1,3}(?![\w])", re.IGNORECASE)
 
 
 class VideoQueryNormalizer:
@@ -105,13 +106,36 @@ class VideoQueryNormalizer:
         return ""
 
     @classmethod
+    def extract_explicit_dsl_query(cls, text: str) -> str:
+        normalized = " ".join(str(text or "").split()).strip()
+        if not normalized:
+            return ""
+        match = _EXPLICIT_QMODE_RE.search(normalized)
+        if not match:
+            return ""
+
+        query = normalized[: match.end()].strip()
+        query = _VIDEO_QUERY_PREFIX_RE.sub("", query).strip()
+        query = re.sub(r"^(?:请|麻烦|帮忙|给我|找一下|搜索一下)\s*", "", query)
+        query = query.strip(" ，。！？?；;：:、()[]{}<>《》\"'`~")
+        query = " ".join(query.split())
+        if not query or query.lower() == match.group(0).lower():
+            return ""
+        return rewrite_known_term_aliases(query) or query
+
+    @classmethod
     def normalize_title_like_video_search_arguments(
         cls,
         arguments: dict,
         raw_query: str,
     ) -> dict:
         title_query = cls.extract_title_like_video_query(raw_query)
+        explicit_dsl_query = cls.extract_explicit_dsl_query(raw_query)
         normalized = dict(arguments or {})
+        if explicit_dsl_query:
+            normalized.pop("query", None)
+            normalized["queries"] = [explicit_dsl_query]
+            return normalized
         if not title_query:
             return normalized
         if str(normalized.get("mode") or "").lower() == "lookup":

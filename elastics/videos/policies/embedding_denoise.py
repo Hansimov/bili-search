@@ -38,6 +38,10 @@ class SearchEmbeddingDenoisePolicy:
     max_attribute_evidence_terms: int
     missing_attribute_penalty: float
     attribute_evidence_boost: float
+    score_cliff_filter_enabled: bool
+    score_cliff_min_top_score: float
+    score_cliff_ratio: float
+    score_cliff_min_keep: int
 
 
 @lru_cache(maxsize=1)
@@ -72,6 +76,12 @@ def get_search_embedding_denoise_policy() -> SearchEmbeddingDenoisePolicy:
         ),
         missing_attribute_penalty=float(payload.get("missing_attribute_penalty", 0.25)),
         attribute_evidence_boost=float(payload.get("attribute_evidence_boost", 3.0)),
+        score_cliff_filter_enabled=bool(
+            payload.get("score_cliff_filter_enabled", True)
+        ),
+        score_cliff_min_top_score=float(payload.get("score_cliff_min_top_score", 5.0)),
+        score_cliff_ratio=float(payload.get("score_cliff_ratio", 0.12)),
+        score_cliff_min_keep=int(payload.get("score_cliff_min_keep", 3)),
     )
 
 

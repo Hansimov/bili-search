@@ -75,7 +75,8 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                 "像“BV... 这期视频的作者是谁，他最近还发了什么”这类请求，第一步应该先用 bv lookup，再根据返回的 owner.mid 继续。"
                 "作者关系问题通常不该直接用它；作者名不稳时先 search_owners。"
                 "抽象偏好、口语标签、黑话或 vibe 请求，通常先 expand_query 再回到本工具。"
-                f"搜索模式：默认q={default_mode}（泛搜热门），精确主题匹配用q={rerank_mode}。"
+                f"搜索模式：默认q={default_mode}（泛搜热门），q=vr 表示向量+重排，精确主题匹配可用q={rerank_mode}。"
+                "如果用户原话已经包含 q=vr/q=vwr/q=wv，必须把它当搜索 DSL 保留，不要把 vr 当成虚拟现实。"
                 f"示例queries：['黑神话 :view>=1w :date<=30d', 'Stable Diffusion 教程 q={rerank_mode}']；"
                 "示例lookup：bv='BV1e9cfz5EKj'；mid='946974' date_window='30d'。"
             ),
@@ -95,6 +96,7 @@ def build_search_videos_tool(capabilities: dict | None = None) -> dict:
                             "搜索语句列表。每个语句可包含关键词和/或DSL过滤器。"
                             "关键词用空格分隔，过滤器以冒号':'起始。"
                             "每个 query 都应是整理后的检索语句，尽量只保留关键实体和检索条件，而不是用户对话原句。"
+                            "用户已写出的 q= 搜索模式必须原样保留。"
                             "如果原始需求比较抽象，可以把它拆成多条并行 query，分别覆盖不同的具体搜索假设。"
                             f"精确主题搜索时在末尾添加 q={rerank_mode}。"
                         ),

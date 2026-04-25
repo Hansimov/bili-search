@@ -100,6 +100,8 @@ def test_build_search_videos_tool_exposes_explicit_bv_lookup_mode():
     ]
 
     assert "优先用 bv/bvids 或 mid/mids 做 exact lookup" in description
+    assert "q=vr 表示向量+重排" in description
+    assert "不要把 vr 当成虚拟现实" in description
     assert "lookup" in mode_property["enum"]
     assert "明确 BV 号" in bv_description
     assert "mode=lookup 时做 exact lookup" in bvids_description

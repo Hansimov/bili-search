@@ -44,6 +44,7 @@
     "require_same_keyword_count": true,
     "triggers": {
         "mixed_script_keyword": true,
-        "alias_rewritten_query": true
+        "alias_rewritten_query": true,
+        "model_code_attribute_keywords": true
     }
 }

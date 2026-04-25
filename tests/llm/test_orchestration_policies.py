@@ -72,6 +72,74 @@ def test_has_target_coverage_for_mixed_route_requires_external_and_video_signals
     assert has_target_coverage(store, _intent(final_target="mixed")) is True
 
 
+def test_orchestrator_normalize_request_preserves_explicit_q_vr_dsl():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+    )
+    request = ToolCallRequest(
+        id="call_1",
+        name="search_videos",
+        arguments={"queries": ["h20 英伟达 vr 相关视频 :view>=500"]},
+        visibility="user",
+    )
+
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="帮我找 h20 显卡 q=vr 的相关视频，列出最相关的几个",
+            normalized_query="帮我找 h20 显卡 q=vr 的相关视频 列出最相关的几个",
+            final_target="videos",
+        ),
+        {"default_query_mode": "wv", "rerank_query_mode": "vwr"},
+    )
+
+    assert normalized.arguments == {"queries": ["h20 显卡 q=vr"]}
+
+
+def test_orchestrator_run_shortcuts_explicit_q_vr_search_without_planner():
+    llm_client = MagicMock()
+    llm_client.chat.side_effect = AssertionError("planner should be skipped")
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+    }
+    tool_executor.execute_request.return_value = {
+        "query": "h20 显卡 q=vr",
+        "total_hits": 3,
+        "hits": [
+            {
+                "title": "华为昇腾到底行不行？",
+                "bvid": "BV1Ced5BQEWG",
+                "owner": {"name": "科技龙门阵TechTalk"},
+            }
+        ],
+    }
+    orchestrator = ChatOrchestrator(
+        llm_client=llm_client,
+        tool_executor=tool_executor,
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "帮我找 h20 显卡 q=vr 的相关视频，列出最相关的几个",
+            }
+        ],
+    )
+
+    tool_executor.execute_request.assert_called_once()
+    request = tool_executor.execute_request.call_args.args[0]
+    assert request.name == "search_videos"
+    assert request.arguments == {"queries": ["h20 显卡 q=vr"]}
+    assert result.reasoning_content == ""
+    assert result.usage_trace["summary"]["llm_calls"] == 0
+    assert "按 `h20 显卡 q=vr` 找到这些相关视频" in result.content
+    assert "BV1Ced5BQEWG" in result.content
+
+
 def test_has_target_coverage_for_videos_accepts_internal_small_task_results():
     store = FakeResultStore()
     store.add(

@@ -86,7 +86,7 @@ def test_get_info_of_query_rewrite_dsl_uses_primary_rewrite_expr_tree():
     assert "康夫ui" not in str(query_dsl_dict)
 
 
-def test_search_does_not_apply_case_level_alias_without_data_rule():
+def test_search_applies_asset_backed_alias_rule():
     searcher, captured = make_searcher({"owners": []})
 
     def _capture_get_info(**kwargs):
@@ -102,10 +102,10 @@ def test_search_does_not_apply_case_level_alias_without_data_rule():
 
     result = searcher.search("康夫ui 教程", limit=5)
 
-    assert captured["dsl_query"] == "康夫ui 教程"
+    assert captured["dsl_query"] == "ComfyUI 教程"
     assert captured["suggest_info"] == {}
-    assert result["semantic_rewrite_info"]["alias_rewritten"] is False
-    assert result["semantic_rewrite_info"]["applied_query"] == "康夫ui 教程"
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
+    assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教程"
 
 
 def test_search_builds_semantic_suggest_info_for_mixed_script_relation_rewrite():
@@ -137,18 +137,87 @@ def test_search_builds_semantic_suggest_info_for_mixed_script_relation_rewrite()
 
     result = searcher.search("康夫ui 教程", limit=5)
 
-    assert captured["relation_kwargs"]["text"] == "康夫ui 教程"
-    assert captured["dsl_query"] == "康夫ui 教程"
+    assert captured["relation_kwargs"]["text"] == "ComfyUI 教程"
+    assert captured["dsl_query"] == "ComfyUI 教程"
     assert captured["suggest_info"] == {
         "group_replaces_count": [
-            [["康夫ui", "ComfyUI", "教程", "教学"], 920],
+            [["教程", "教学"], 920],
         ]
     }
     assert result["semantic_rewrite_info"]["relation_rewritten"] is True
     assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教学"
 
 
-def test_search_no_longer_masks_spaced_owner_candidates_with_case_alias():
+def test_search_builds_semantic_suggest_info_for_model_code_attribute_query_mod():
+    searcher, captured = make_searcher({"owners": []})
+
+    class _StubRelationsClient:
+        @staticmethod
+        def related_tokens_by_tokens(**kwargs):
+            captured["relation_kwargs"] = kwargs
+            return {
+                "mode": kwargs.get("mode", "semantic"),
+                "options": [
+                    {"text": "h20 gpu", "score": 800.0},
+                    {"text": "h2h显卡", "score": 900.0},
+                ],
+            }
+
+    def _capture_get_info(**kwargs):
+        captured["dsl_query"] = kwargs["query"]
+        captured["suggest_info"] = kwargs["suggest_info"]
+        return (
+            captured.setdefault("query_info", {}),
+            {"rewrited_word_exprs": ["h20 gpu"]},
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    searcher._relations_client = _StubRelationsClient()
+    searcher.get_info_of_query_rewrite_dsl = _capture_get_info
+
+    result = searcher.search("h20 显卡 q=vr", limit=5)
+
+    assert captured["relation_kwargs"]["text"] == "h20 显卡"
+    assert captured["dsl_query"] == "h20 显卡 q=vr"
+    assert captured["suggest_info"] == {
+        "group_replaces_count": [
+            [["显卡", "gpu"], 800],
+        ]
+    }
+    assert result["semantic_rewrite_info"]["relation_rewritten"] is True
+    assert result["semantic_rewrite_info"]["relation_query"] == "h20 显卡"
+    assert result["semantic_rewrite_info"]["applied_query"] == "h20 gpu"
+
+
+def test_model_code_score_cliff_filter_prunes_weak_ambiguous_tail():
+    result = {
+        "hits": [
+            {"title": "B200 GPU 价格曲线", "score": 12.0},
+            {"title": "奔驰 B200", "score": 0.5},
+            {"title": "B200 网关", "score": 0.4},
+            {"title": "B200 外设", "score": 0.3},
+            {"title": "B200 汽车维修", "score": 0.2},
+        ],
+        "return_hits": 5,
+    }
+
+    info = VideoSearcherV2._apply_model_code_score_cliff_filter(
+        result,
+        query="b200 价格",
+        relation_rewritten=False,
+    )
+
+    assert info["applied"] is True
+    assert info["min_keep"] == 3
+    assert result["return_hits"] == 3
+    assert [hit["title"] for hit in result["hits"]] == [
+        "B200 GPU 价格曲线",
+        "奔驰 B200",
+        "B200 网关",
+    ]
+
+
+def test_search_keeps_owner_candidates_when_asset_alias_rewrites_query():
     owner_result = {
         "owners": [
             {
@@ -182,13 +251,13 @@ def test_search_no_longer_masks_spaced_owner_candidates_with_case_alias():
 
     result = searcher.search("康夫 UI 工作流", limit=5)
 
-    assert captured["dsl_query"] == "康夫 UI 工作流"
+    assert captured["dsl_query"] == "ComfyUI 工作流"
     assert captured["extra_filters"] == [
         {"terms": {"owner.mid": [14813517, 3494377187969081]}}
     ]
     assert "owners" in result["intent_info"]
     assert "owner_filter" not in result["intent_info"]
-    assert result["semantic_rewrite_info"]["alias_rewritten"] is False
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
 
 
 def test_search_suppresses_owner_filter_for_title_like_query_with_partial_overlap():
