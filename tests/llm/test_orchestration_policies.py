@@ -682,6 +682,77 @@ def test_normalize_request_rewrites_title_like_search_video_queries_from_raw_use
     assert normalized.arguments == {"queries": ["大毛-小厨 Up主探索中 欢迎收看求三连"]}
 
 
+def test_normalize_request_rewrites_video_tool_even_without_video_final_target():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    request = ToolCallRequest(
+        id="call_tag_query_1",
+        name="search_videos",
+        arguments={"queries": ["Samara Cyn :view>=1w :date<=30d"]},
+    )
+
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="请在B站站内搜索，最近有哪些关于 Samara Cyn 的热门视频？",
+            normalized_query="请在b站站内搜索 最近有哪些关于 samara cyn 的热门视频",
+            final_target="answer",
+        ),
+        {"supports_transcript_lookup": True},
+        prefer_transcript_lookup=False,
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {"queries": ["Samara Cyn"]}
+
+
+def test_owner_recent_followup_falls_back_to_user_query_when_owner_resolution_drifts():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    store = FakeResultStore()
+    store.add(
+        "search_owners",
+        {
+            "text": "贩卖可爱の喵呜",
+            "owners": [
+                {
+                    "name": "不相关作者",
+                    "mid": 1001,
+                    "score": 1.0,
+                }
+            ],
+        },
+        arguments={"text": "贩卖可爱の喵呜"},
+    )
+
+    followups = orchestrator._build_deterministic_followup_requests(
+        store,
+        _intent(
+            raw_query="贩卖可爱の喵呜 最近发了什么值得看的视频？",
+            normalized_query="贩卖可爱の喵呜 最近发了什么值得看的视频",
+            final_target="videos",
+        ),
+        messages=[
+            {
+                "role": "user",
+                "content": "贩卖可爱の喵呜 最近发了什么值得看的视频？",
+            }
+        ],
+    )
+
+    assert followups
+    assert followups[0].name == "search_videos"
+    assert followups[0].arguments == {"queries": [":user=贩卖可爱の喵呜 :date<=30d"]}
+
+
 def test_normalize_request_converts_title_like_owner_probe_to_video_search():
     orchestrator = ChatOrchestrator(
         llm_client=MagicMock(),

@@ -11,7 +11,7 @@ _VIDEO_QUERY_PREFIX_RE = re.compile(
     r"^(?:我可能打错了字，?想找|忽略口播和套话，?帮我找和|帮我找和|帮我找|想找)\s*"
 )
 _VIDEO_QUERY_SUFFIX_RE = re.compile(
-    r"(?:有哪些(?:值得看|适合直接上手看)?的视频|真\s*正?相关(?:的)?视频|相关(?:的)?视频|有关的视频|有哪些视频).*$"
+    r"(?:有哪些(?:比较)?(?:值得看|适合直接上手看)?的视频|真\s*正?相关(?:的)?视频|相关(?:的)?视频|有关的视频|有哪些视频).*$"
 )
 _VIDEO_QUERY_NOISE_RE = re.compile(
     r"(?:忽略口播|套话|帮我找|想找|打错了字|真正相关|相关的视频|有关的视频|有哪些视频|值得看的视频)",
@@ -24,8 +24,15 @@ _VIDEO_QUERY_BRACKET_RE = re.compile(
     r"^\s*[【\[](?P<prefix>[^】\]]{1,48})[】\]]\s*(?P<body>.+?)\s*$"
 )
 _VIDEO_QUERY_QUOTED_TITLE_RE = re.compile(
-    r"(?P<prefix>[\u4e00-\u9fffA-Za-z0-9\s._+#/-]{0,32})[《\"](?P<title>[^》\"]{2,64})[》\"]"
+    r"(?P<prefix>[\u4e00-\u9fffA-Za-z0-9\s._+#/-]{0,32})[《\"“](?P<title>[^》\"”]{2,96})[》\"”](?P<tail>[\u4e00-\u9fffA-Za-z0-9\s._+#/『』-]{0,80})"
 )
+_VIDEO_QUERY_SUBJECT_PATTERNS = [
+    re.compile(r"有没有讲\s*(?P<subject>.+?)\s*的(?:高质量|热门|相关)?视频"),
+    re.compile(r"请(?:在B站站内)?搜索，?最近有哪些关于\s*(?P<subject>.+?)\s*的(?:热门|高质量|相关)?视频"),
+    re.compile(r"请找一些和[《\"“]?(?P<subject>.+?)[》\"”]?\s*最?相关的视频"),
+    re.compile(r"(?P<owner>.+?)\s+关于\s+(?P<topic>.+?)\s+有哪些(?:比较)?值得看的视频"),
+    re.compile(r"(?P<subject>.+?)\s*相关内容里有哪些(?:比较)?值得看的视频"),
+]
 _FOLLOWUP_META_QUERY_RE = re.compile(
     r"^(?:请|帮我|给我|麻烦你?)?(?:总结|概括|梳理|整理|分析)(?:一下|下)?$"
 )
@@ -71,9 +78,44 @@ class VideoQueryNormalizer:
         return deduped
 
     @classmethod
+    def _normalize_subject_match(cls, text: str) -> str:
+        subject = cls.clean_subject_text(text)
+        bracket_match = _VIDEO_QUERY_BRACKET_RE.match(subject)
+        if bracket_match:
+            parts = cls._dedupe_focus_parts(
+                [
+                    bracket_match.group("prefix"),
+                    cls.clean_video_query_body(bracket_match.group("body")),
+                ]
+            )
+            subject = " ".join(parts)
+        return rewrite_known_term_aliases(subject) or subject
+
+    @classmethod
     def extract_title_like_video_query(cls, text: str) -> str:
-        normalized = " ".join(str(text or "").split()).strip()
+        original = " ".join(str(text or "").split()).strip()
+        normalized = original
         normalized = _VIDEO_QUERY_PREFIX_RE.sub("", normalized).strip()
+        prefix_removed = normalized != original
+
+        for pattern in _VIDEO_QUERY_SUBJECT_PATTERNS:
+            subject_match = pattern.search(normalized)
+            if not subject_match:
+                continue
+            if "owner" in subject_match.groupdict():
+                subject = " ".join(
+                    cls._dedupe_focus_parts(
+                        [
+                            subject_match.group("owner"),
+                            subject_match.group("topic"),
+                        ]
+                    )
+                )
+            else:
+                subject = cls._normalize_subject_match(subject_match.group("subject"))
+            if subject:
+                return subject
+
         normalized = _VIDEO_QUERY_SUFFIX_RE.sub("", normalized).strip(
             " ，。！？?；;：:"
         )
@@ -94,15 +136,22 @@ class VideoQueryNormalizer:
 
         quoted_match = _VIDEO_QUERY_QUOTED_TITLE_RE.search(normalized)
         if quoted_match:
+            tail = re.sub(r"[【\[].*$", "", quoted_match.group("tail") or "")
+            tail = re.sub(r"\s*(?:相关|真\s*正相关).*$", "", tail).strip()
             parts = cls._dedupe_focus_parts(
                 [
                     cls.clean_video_query_body(quoted_match.group("prefix")),
                     quoted_match.group("title"),
+                    cls.clean_subject_text(tail),
                 ]
             )
             if parts:
                 title_query = " ".join(parts)
                 return rewrite_known_term_aliases(title_query) or title_query
+        if prefix_removed:
+            fallback_query = cls.clean_video_query_body(normalized)
+            if fallback_query:
+                return rewrite_known_term_aliases(fallback_query) or fallback_query
         return ""
 
     @classmethod

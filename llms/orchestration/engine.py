@@ -134,7 +134,7 @@ class ChatOrchestrator(
         arguments = dict(request.arguments or {})
         title_like_video_query = ""
         explicit_dsl_video_query = ""
-        if intent.final_target == "videos":
+        if intent.final_target == "videos" or name in {"search_videos", "search_owners"}:
             title_like_video_query = (
                 VideoQueryNormalizer.extract_title_like_video_query(intent.raw_query)
             )

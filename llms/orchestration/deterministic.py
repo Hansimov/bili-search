@@ -427,7 +427,19 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
             intent,
         )
         if not owner_candidate:
-            return []
+            owner_subject = self._extract_recent_owner_subject(message_list, intent)
+            if not owner_subject:
+                return []
+            window = self._extract_recent_window(intent.raw_query)
+            return [
+                ToolCallRequest(
+                    id=f"auto_owner_recent_{len(result_store.order) + 1}",
+                    name="search_videos",
+                    arguments={"queries": [f":user={owner_subject} :date<={window}"]},
+                    visibility="user",
+                    source="deterministic_followup",
+                )
+            ]
 
         try:
             owner_mid = str(int(str(owner_candidate.get("mid") or "").strip()))

@@ -175,6 +175,21 @@ curl -sS -X POST "http://127.0.0.1:${APP_PORT}/chat/abort" \
 pytest -q
 ```
 
+自然语言问答 live 质量评测：
+
+```bash
+PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
+  --sample-size 50 \
+  --per-category 5 \
+  --limit 10 \
+  --workers 10 \
+  --chat-workers 5 \
+  --timeout 240 \
+  --quiet
+```
+
+评测标准、问题记录和报告说明见 [LIVE_QA_QUALITY.md](/home/asimov/repos/bili-search/docs/tests/LIVE_QA_QUALITY.md)。
+
 运行时集成测试：
 
 ```bash
