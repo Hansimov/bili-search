@@ -3,12 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import os
 from pathlib import Path
 
 
 _ASSET_PATH = (
     Path(__file__).resolve().parents[1] / "assets" / "search_semantic_policy.json"
 )
+
+
+def _truthy_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +65,18 @@ def get_search_semantic_policy() -> SearchSemanticRewritePolicy:
     keyword_count = payload.get("keyword_count") or {}
     triggers = payload.get("triggers") or {}
     return SearchSemanticRewritePolicy(
-        enabled=bool(payload.get("enabled", True)),
-        alias_rewrite_enabled=bool(payload.get("alias_rewrite_enabled", True)),
-        relation_rewrite_enabled=bool(payload.get("relation_rewrite_enabled", True)),
+        enabled=_truthy_env(
+            "BILI_SEARCH_SEMANTIC_REWRITE_ENABLED",
+            bool(payload.get("enabled", True)),
+        ),
+        alias_rewrite_enabled=_truthy_env(
+            "BILI_SEARCH_ALIAS_REWRITE_ENABLED",
+            bool(payload.get("alias_rewrite_enabled", True)),
+        ),
+        relation_rewrite_enabled=_truthy_env(
+            "BILI_SEARCH_RELATION_REWRITE_ENABLED",
+            bool(payload.get("relation_rewrite_enabled", True)),
+        ),
         relation_mode=str(payload.get("relation_mode") or "semantic"),
         relation_fallback_mode=str(payload.get("relation_fallback_mode") or "auto"),
         relation_size=int(payload.get("relation_size", 6)),

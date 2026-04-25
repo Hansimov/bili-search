@@ -54,6 +54,8 @@ def should_auto_require_exact_segment(text: str) -> bool:
     text = str(text or "").strip()
     if not text or any(char.isspace() for char in text):
         return False
+    if get_auto_require_short_han_exact_mode() == "none":
+        return False
 
     has_ascii_letter = any(char.isascii() and char.isalpha() for char in text)
     has_digit = any(char.isdigit() for char in text)

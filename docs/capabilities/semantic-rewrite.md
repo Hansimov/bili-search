@@ -9,6 +9,8 @@
 - `bili-search-algo/models/semantics` 负责离线生成 compact semantic bundle，并用 group 级 SQLite cursor 记录已处理文档以支持增量更新。
 - bundle 中按文件拆分承载 `rewrite / synonym / near_synonym / doc_cooccurrence`，构建期落在 `bili-search-algo/data/semantics/<version>/merged`，插件重载时复制到 `es_tok/semantics/v1/merged`。
 - `es-tok` 只负责加载 compact bundle 并在查询期消费，不再在 `postIndex`/`postDelete` 中维护语义状态。加载优先级为 JVM 参数、环境变量、插件目录、开发态相邻仓库、内置兜底资源。
+- 配置类资源继续使用 JSON；批量语义数据使用 TSV。`es-tok` 的内置 semantic TSV 只保留空兜底，避免把人工 case rule 混进数据集生成产物。
+- 需要 A/B 或回滚时，可以通过 `BILI_SEARCH_SEMANTIC_REWRITE_ENABLED=false`、`BILI_SEARCH_ALIAS_REWRITE_ENABLED=false`、`BILI_SEARCH_RELATION_REWRITE_ENABLED=false`、`BILI_SEARCH_EXACT_RELAX_RETRY_ENABLED=false` 控制 bili-search 侧行为；通过 `ES_TOK_SEMANTICS_ENABLED=false` 或 `-Des.tok.semantics.enabled=false` 让 es-tok 的 `semantic` 模式回退到 `auto`。
 
 因此，下文中所有关于 `SemanticSnapshotManager`、`SemanticSnapshotIndexListener`、`IndexSemanticExpansionSnapshot` 的描述，都属于上一轮方案的历史记录，不再是当前实现。
 
@@ -60,7 +62,7 @@ es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而
 
 当前语义资产的生成和消费流程是：
 
-1. `bili-search-algo/models/semantics` 从种子规则和真实文档中生成 compact semantic bundle。
+1. `bili-search-algo/models/semantics` 从真实文档统计中生成 compact semantic bundle，不在模型代码中注入人工挑选的 query/product seed rule。
 2. bundle 按关系类型拆分为四个固定文件：
   - `rewrite.tsv`
   - `synonym.tsv`
@@ -74,7 +76,7 @@ es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而
 
 - `rewrite`：可安全改写的确定性表述
 - `synonym`：强同义项
-- `near_synonym`：弱同义或相近表述
+- `near_synonym`：同一词或实体的表面变体，只允许包含关系、数字签名一致，或 ASCII 型号/英文词轻微拼写差异
 - `doc_cooccurrence`：来自真实文档共现的动态语义证据
 
 ## 为什么这样拆分
@@ -99,12 +101,12 @@ es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而
 
 已经完成的关键验证如下：
 
-1. `models.semantics` 的窄测试通过，确认 compact 格式写出和规则合并逻辑稳定。
+1. `models.semantics` 的窄测试通过，确认 compact 格式写出、增量去重和 near_synonym 质量门槛稳定。
 2. `es-tok` 的 `SemanticArtifactStore` 窄测试、`SemanticQueryExpansionSuggester` 相关测试、`compileJava` 和 `assemble` 通过，确认 Java 侧已经切到 compact bundle，且内置兜底 TSV 会进入插件 jar。
 3. `bili-search` 的语义关系调用仍通过 `RelationsClient.related_tokens_by_tokens(mode="semantic")`，响应契约不变，因此 `elastics.videos` 和 `llms` 不需要直接读取离线产物。
-4. `data/semantics/live_large_stats/merged` 已由 1M Mongo live run 生成，并通过 `SEMANTICS_BUNDLE_PATH=... ./load.sh -d -b -c` 复制到开发 ES 插件目录。
-5. 开发 ES 重启后 cluster health 为 green，`_cat/plugins` 显示 `es_tok 1.0.0` 已加载。
-6. live endpoint 验证 `康夫 ui -> comfyui`，说明 TSV 空格掩码 `▂` 和 Java 解码链路生效。
+4. `data/semantics/v1/merged` 已由 1M Mongo live run 生成，并通过 `SEMANTICS_BUNDLE_PATH=... ./load.sh -a` 复制到开发 ES 插件目录。
+5. 开发 ES 重启后，后端和前端 local-dev 链路均已重新验证。
+6. live endpoint 验证 `b200 价格` 从严格 `+b200 +价格` 的 1 条结果恢复为普通 `b200 价格` 的 20 条页面结果，证明低召回 retry 修复了型号词+属性词过窄召回问题。
 
 ## 本轮二次验证
 

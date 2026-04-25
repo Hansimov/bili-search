@@ -86,7 +86,7 @@ def test_get_info_of_query_rewrite_dsl_uses_primary_rewrite_expr_tree():
     assert "康夫ui" not in str(query_dsl_dict)
 
 
-def test_search_applies_alias_rewrite_before_building_query_dsl():
+def test_search_does_not_apply_case_level_alias_without_data_rule():
     searcher, captured = make_searcher({"owners": []})
 
     def _capture_get_info(**kwargs):
@@ -102,13 +102,13 @@ def test_search_applies_alias_rewrite_before_building_query_dsl():
 
     result = searcher.search("康夫ui 教程", limit=5)
 
-    assert captured["dsl_query"] == "ComfyUI 教程"
+    assert captured["dsl_query"] == "康夫ui 教程"
     assert captured["suggest_info"] == {}
-    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
-    assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教程"
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is False
+    assert result["semantic_rewrite_info"]["applied_query"] == "康夫ui 教程"
 
 
-def test_search_builds_semantic_suggest_info_for_alias_query_relation_rewrite():
+def test_search_builds_semantic_suggest_info_for_mixed_script_relation_rewrite():
     searcher, captured = make_searcher({"owners": []})
 
     class _StubRelationsClient:
@@ -137,18 +137,18 @@ def test_search_builds_semantic_suggest_info_for_alias_query_relation_rewrite():
 
     result = searcher.search("康夫ui 教程", limit=5)
 
-    assert captured["relation_kwargs"]["text"] == "ComfyUI 教程"
-    assert captured["dsl_query"] == "ComfyUI 教程"
+    assert captured["relation_kwargs"]["text"] == "康夫ui 教程"
+    assert captured["dsl_query"] == "康夫ui 教程"
     assert captured["suggest_info"] == {
         "group_replaces_count": [
-            [["教程", "教学"], 920],
+            [["康夫ui", "ComfyUI", "教程", "教学"], 920],
         ]
     }
     assert result["semantic_rewrite_info"]["relation_rewritten"] is True
     assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教学"
 
 
-def test_search_avoids_owner_intent_for_alias_rewritten_spaced_query():
+def test_search_no_longer_masks_spaced_owner_candidates_with_case_alias():
     owner_result = {
         "owners": [
             {
@@ -182,10 +182,13 @@ def test_search_avoids_owner_intent_for_alias_rewritten_spaced_query():
 
     result = searcher.search("康夫 UI 工作流", limit=5)
 
-    assert captured["dsl_query"] == "ComfyUI 工作流"
-    assert captured["extra_filters"] == []
-    assert result["intent_info"] == {}
-    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
+    assert captured["dsl_query"] == "康夫 UI 工作流"
+    assert captured["extra_filters"] == [
+        {"terms": {"owner.mid": [14813517, 3494377187969081]}}
+    ]
+    assert "owners" in result["intent_info"]
+    assert "owner_filter" not in result["intent_info"]
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is False
 
 
 def test_search_suppresses_owner_filter_for_title_like_query_with_partial_overlap():
@@ -860,6 +863,45 @@ def test_search_skips_owner_intent_for_model_like_ascii_query():
     result = searcher.search("b200", limit=5)
 
     assert result["intent_info"] == {}
+
+
+def test_search_retries_model_code_attribute_query_on_low_recall():
+    searcher, captured = make_searcher({"owners": []})
+    captured["dsl_queries"] = []
+
+    def _get_info(**kwargs):
+        captured["dsl_queries"].append(kwargs["query"])
+        return (
+            captured.setdefault("query_info", {}),
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    def _parse(*args, **kwargs):
+        if len(captured["dsl_queries"]) == 1:
+            return {
+                "query_info": {},
+                "rewrite_info": {},
+                "hits": [{"title": "only one strict hit"}],
+                "total_hits": 1,
+                "return_hits": 1,
+            }
+        return {
+            "query_info": {},
+            "rewrite_info": {},
+            "hits": [{"title": "relaxed hit"} for _ in range(5)],
+            "total_hits": 5,
+            "return_hits": 5,
+        }
+
+    searcher.get_info_of_query_rewrite_dsl = _get_info
+    searcher.hit_parser.parse = _parse
+
+    result = searcher.search("b200 价格", limit=5)
+
+    assert len(captured["dsl_queries"]) == 2
+    assert result["total_hits"] == 5
+    assert result["retry_info"]["relaxed_auto_exact_segments"] is True
 
 
 def test_search_retries_without_short_han_exact_on_zero_hits():

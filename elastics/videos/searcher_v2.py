@@ -19,6 +19,7 @@ from elastics.structure import set_timeout, set_profile
 from elastics.structure import construct_knn_query, construct_knn_search_body
 from elastics.videos.constants import ELASTIC_VIDEOS_PRO_INDEX
 from elastics.videos.intent.owner_query import OwnerQueryIntentResolver
+from elastics.videos.policies.recall import get_search_recall_policy
 from elastics.videos.query.understanding import VideoQueryUnderstanding
 from elastics.videos.results.reranking import rerank_focused_title_hits
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
@@ -72,6 +73,7 @@ RELAXED_SHORT_HAN_RETRY_BOOST_OVERRIDES = {
     "desc": 0.02,
     "desc.words": 0.02,
 }
+SEARCH_RECALL_POLICY = get_search_recall_policy()
 
 
 class VideoSearcherV2:
@@ -1755,6 +1757,56 @@ class VideoSearcherV2:
             logger.exit_quiet(not verbose)
             return retry_res
 
+        if self._should_retry_without_auto_exact_segments(
+            query,
+            total_hits=return_res.get("total_hits", 0),
+            allow_retry=_allow_short_han_retry,
+        ):
+            logger.warn(
+                "> Retry word search without auto-exact model/attribute segments",
+                verbose=verbose,
+            )
+            with override_auto_require_short_han_exact("none"):
+                retry_res = self.search(
+                    query=query,
+                    match_fields=match_fields,
+                    source_fields=source_fields,
+                    match_type=match_type,
+                    match_bool=match_bool,
+                    match_operator=match_operator,
+                    extra_filters=extra_filters,
+                    suggest_info=suggest_info,
+                    request_type=request_type,
+                    parse_hits=parse_hits,
+                    drop_no_highlights=drop_no_highlights,
+                    add_region_info=add_region_info,
+                    add_highlights_info=add_highlights_info,
+                    is_explain=is_explain,
+                    is_profile=is_profile,
+                    is_highlight=is_highlight,
+                    boost=boost,
+                    boosted_fields=boosted_fields,
+                    combined_fields_list=combined_fields_list,
+                    use_script_score=use_script_score,
+                    rank_method=rank_method,
+                    score_threshold=score_threshold,
+                    use_pinyin=use_pinyin,
+                    detail_level=detail_level,
+                    detail_levels=detail_levels,
+                    limit=limit,
+                    rank_top_k=rank_top_k,
+                    terminate_after=terminate_after,
+                    timeout=timeout,
+                    verbose=verbose,
+                    _allow_short_han_retry=False,
+                    _allow_owner_context_retry=_allow_owner_context_retry,
+                )
+            retry_info = dict(retry_res.get("retry_info") or {})
+            retry_info["relaxed_auto_exact_segments"] = True
+            retry_res["retry_info"] = retry_info
+            logger.exit_quiet(not verbose)
+            return retry_res
+
         if self._should_retry_without_short_han_exact(
             query,
             total_hits=return_res.get("total_hits", 0),
@@ -1832,6 +1884,42 @@ class VideoSearcherV2:
         if len(tokens) < 2:
             return False
         return any(SHORT_HAN_QUERY_TOKEN_RE.fullmatch(token) for token in tokens)
+
+    @classmethod
+    def _has_relaxable_model_code_attribute_terms(cls, query: str) -> bool:
+        if not SEARCH_RECALL_POLICY.model_code_attribute_retry:
+            return False
+        normalized_query = str(query or "").strip()
+        if not normalized_query or not any(char.isspace() for char in normalized_query):
+            return False
+        if any(
+            marker in normalized_query
+            for marker in [":", "=", '"', "'", "[", "]", "(", ")", "|", "&"]
+        ):
+            return False
+        tokens = [token.strip() for token in normalized_query.split() if token.strip()]
+        if not (
+            SEARCH_RECALL_POLICY.min_keyword_count
+            <= len(tokens)
+            <= SEARCH_RECALL_POLICY.max_keyword_count
+        ):
+            return False
+        return any(cls._looks_like_model_code_query(token) for token in tokens)
+
+    @classmethod
+    def _should_retry_without_auto_exact_segments(
+        cls,
+        query: str,
+        total_hits: int | None,
+        allow_retry: bool = True,
+    ) -> bool:
+        if not allow_retry or not SEARCH_RECALL_POLICY.exact_relax_retry_enabled:
+            return False
+        if total_hits is None:
+            return False
+        if total_hits >= SEARCH_RECALL_POLICY.low_recall_total_hits:
+            return False
+        return cls._has_relaxable_model_code_attribute_terms(query)
 
     @classmethod
     def _should_retry_without_short_han_exact(

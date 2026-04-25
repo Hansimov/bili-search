@@ -1,8 +1,8 @@
 from dsl.elastic import DslExprToElasticConverter
-from dsl.fields.word import override_auto_require_short_han_exact
 from dsl.filter import QueryDslDictFilterMerger
 from dsl.rewrite import DslExprRewriter
 from dsl.fields.scope import get_scope_constraint_fields
+from dsl.fields.word import override_auto_require_short_han_exact
 from elastics.videos.constants import CONSTRAINT_FIELDS_DEFAULT
 from elastics.videos.searcher_v2 import VideoSearcherV2
 
@@ -96,6 +96,30 @@ def test_exact_like_mixed_ascii_segment_is_auto_promoted_to_required_exact():
             "must": {
                 "es_tok_query_string": {
                     "query": "+b200",
+                    "fields": ["title.words^3"],
+                    "max_freq": 1000000,
+                }
+            }
+        }
+    }
+
+
+def test_auto_exact_can_be_disabled_for_low_recall_retry():
+    searcher = make_scope_searcher()
+
+    with override_auto_require_short_han_exact("none"):
+        _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+            query="b200 价格",
+            boosted_match_fields=["title.words^3"],
+            boosted_date_fields=[],
+            extra_filters=[],
+        )
+
+    assert query_dsl_dict == {
+        "bool": {
+            "must": {
+                "es_tok_query_string": {
+                    "query": "b200 价格",
                     "fields": ["title.words^3"],
                     "max_freq": 1000000,
                 }

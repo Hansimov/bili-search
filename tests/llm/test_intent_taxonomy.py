@@ -10,6 +10,7 @@ def test_detect_final_target_distinguishes_external_and_owner_queries():
     assert detect_final_target("Gemini 2.5 最近有哪些官方更新？") == "external"
     assert detect_final_target("推荐几个做黑神话悟空内容的UP主") == "owners"
     assert detect_final_target("何同学有哪些关联账号？") == "relations"
+    assert detect_final_target("推荐几个 ComfyUI 入门教程视频") == "videos"
 
 
 def test_detect_task_mode_handles_recent_video_and_followup_lookup():

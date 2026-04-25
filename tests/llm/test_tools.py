@@ -1222,7 +1222,7 @@ def test_execute_expand_query_prefers_semantic_mode():
 
     logger.success("[PASS] execute expand_query prefers semantic")
 
-    def test_execute_expand_query_normalizes_known_aliases_before_relation_lookup(self):
+    def test_execute_expand_query_keeps_text_without_alias_rules(self):
         logger.note("=" * 60)
         logger.note("[TEST] execute expand_query normalizes aliases")
 
@@ -1232,7 +1232,7 @@ def test_execute_expand_query_prefers_semantic_mode():
             "supports_google_search": False,
         }
         mock_client.related_tokens_by_tokens.return_value = {
-            "text": "ComfyUI 工作流",
+            "text": "康夫 UI 工作流",
             "mode": "semantic",
             "options": [
                 {
@@ -1256,10 +1256,10 @@ def test_execute_expand_query_prefers_semantic_mode():
         result_data = json.loads(result_msg["content"])
 
         assert result_data["text"] == "康夫 UI 工作流"
-        assert result_data["normalized_text"] == "ComfyUI 工作流"
+        assert result_data["normalized_text"] == "康夫 UI 工作流"
         assert result_data["options"][0]["text"] == "comfyui教程工作流"
         mock_client.related_tokens_by_tokens.assert_called_once_with(
-            text="ComfyUI 工作流",
+            text="康夫 UI 工作流",
             mode="semantic",
             size=8,
         )

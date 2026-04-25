@@ -1,0 +1,7 @@
+{
+    "exact_relax_retry_enabled": true,
+    "low_recall_total_hits": 3,
+    "min_keyword_count": 2,
+    "max_keyword_count": 5,
+    "model_code_attribute_retry": true
+}

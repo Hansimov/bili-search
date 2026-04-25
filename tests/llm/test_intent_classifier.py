@@ -39,9 +39,9 @@ def test_build_intent_profile_for_mixed_official_and_bili_query():
     assert "route.mixed.brief" in select_prompt_asset_ids(profile)
 
 
-def test_build_intent_profile_marks_alias_like_tutorial_query_for_expansion():
+def test_build_intent_profile_marks_mixed_model_tutorial_query_for_expansion():
     profile = build_intent_profile(
-        [{"role": "user", "content": "康夫UI 有什么入门教程？"}]
+        [{"role": "user", "content": "B200 部署有什么入门教程？"}]
     )
 
     assert profile.final_target == "videos"

@@ -67,7 +67,7 @@ FINAL_TARGET_LABELS: tuple[SemanticLabel, ...] = (
         examples=(
             "推荐几个做黑神话悟空内容的UP主。",
             "和影视飓风风格接近的UP主有哪些？",
-            "谁在做 ComfyUI 教程？",
+            "推荐几个专门做 AI 绘图教程的UP主。",
         ),
         default_score=0.02,
     ),
@@ -89,7 +89,8 @@ FINAL_TARGET_LABELS: tuple[SemanticLabel, ...] = (
             "影视飓风最近有什么新视频？",
             "那他的代表作有哪些？",
             "来点让我开心的视频。",
-            "康夫UI 有什么入门教程？",
+            "某个软件有什么入门教程？",
+            "推荐几个 AI 工具入门教程视频。",
         ),
         default_score=0.05,
     ),
@@ -158,7 +159,7 @@ FACET_TAXONOMIES: dict[str, tuple[SemanticLabel, ...]] = {
             description="更关注信息增量、教程、文档、原理、更新说明。",
             examples=(
                 "Gemini 2.5 最近有哪些官方更新？",
-                "给我找点 ComfyUI 入门教程。",
+                "给我找点 AI 工具入门教程。",
                 "这个 API 怎么用？",
             ),
         ),
@@ -193,8 +194,8 @@ FACET_TAXONOMIES: dict[str, tuple[SemanticLabel, ...]] = {
             name="utility_task",
             description="为了完成具体任务或工作流，需要上手、实践、配置、排错。",
             examples=(
-                "ComfyUI 有什么入门教程？",
-                "康夫UI 有什么入门教程？",
+                "某个工具有什么入门教程？",
+                "AI 工具有什么入门教程？",
                 "给我找点实战配置教程。",
                 "怎么排这个问题？",
             ),
