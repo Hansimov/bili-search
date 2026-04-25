@@ -394,9 +394,7 @@ def create_google_search_client(
     resolved_timeout = float(
         timeout
         if timeout is not None
-        else os.getenv("BILI_GOOGLE_HUB_TIMEOUT")
-        or envs.get("timeout")
-        or 45
+        else os.getenv("BILI_GOOGLE_HUB_TIMEOUT") or envs.get("timeout") or 45
     )
     if not resolved_urls:
         return None
