@@ -23,44 +23,30 @@ import time
 import uuid
 
 from tclogger import logger
-from typing import Generator, Optional
+from typing import Optional
 
 from llms.intent import build_intent_profile
-from llms.intent.focus import build_focus_query
-from llms.intent.focus import compact_focus_key
-from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
 from llms.messages import extract_message_text
+from llms.chat.content import _sanitize_content
+from llms.chat.response_context import ChatResponseContextMixin
+from llms.chat.streaming import ChatStreamingMixin
 from llms.orchestration import ChatOrchestrator
-from llms.orchestration.tool_markup import EXTERNAL_TOOL_NAMES
-from llms.orchestration.tool_markup import EXTERNAL_TOOL_PREFIXES
 from llms.orchestration.tool_markup import parse_tool_argument
 from llms.orchestration.tool_markup import parse_xml_commands
-from llms.orchestration.tool_markup import sanitize_generated_content
 from llms.orchestration.tool_markup import strip_tool_commands
 from llms.models import LLMClient, ChatResponse, create_llm_client
 from llms.planning import OwnerResolutionMixin, ToolPlanningMixin
 from llms.tools.executor import ToolExecutor
 from llms.tools.video_lookup import coerce_search_video_lookup_arguments
-from llms.prompts.copilot import build_system_prompt, build_system_prompt_profile
-from llms.runtime.usage import accumulate_usage, compute_perf_stats, normalize_usage
+from llms.prompts.copilot import build_system_prompt_profile
+from llms.runtime.usage import accumulate_usage
 
 # Maximum tool-calling iterations to prevent infinite loops.
 MAX_TOOL_ITERATIONS = 4
 
 # Thinking mode keeps a little more headroom, but still avoids long loops.
 MAX_TOOL_ITERATIONS_THINKING = 7
-
-_SUPPORTED_TOOL_NAMES: tuple[str, ...] = EXTERNAL_TOOL_NAMES
-_SUPPORTED_TOOL_NAME_PATTERN = "|".join(_SUPPORTED_TOOL_NAMES)
-
-# Patterns to strip echoed tool results that the LLM may copy from the
-# conversation context into its content.  The format comes from
-# _format_results_message: "search_videos(queries=[...]):\n{...json...}"
-_RESULTS_HEADER_RE = re.compile(r"\[搜索结果\][ \t]*\n?")
-_RESULTS_ECHO_RE = re.compile(
-    rf"(?:{_SUPPORTED_TOOL_NAME_PATTERN})\([^\n)]*\):[ \t]*\n?\{{[^\n]*\}}",
-)
 
 # Nudge message injected before forcing content generation
 _FORCE_CONTENT_NUDGE = (
@@ -80,132 +66,13 @@ _DUPLICATE_TOOL_NUDGE = (
 
 _EMPTY_CONTENT_FALLBACK = "抱歉，我拿到了搜索结果，但这次没能整理成答案。请重试。"
 
-# Thinking mode prompt: prepended to system prompt to encourage deeper reasoning
-_THINKING_PROMPT = (
-    "[思考模式] 你现在处于深度思考模式。请认真分析用户的问题，"
-    "进行更深入、更全面的思考和搜索，给出更有深度和见解的回答。"
-    "你可以进行多轮搜索来获取更全面的信息，"
-    "并综合分析后给出详细、有条理的回答。\n\n"
-)
 
-# Inline tool command prefixes used for look-ahead detection during content streaming.
-# When these appear in content, it means the LLM is issuing a tool call rather than
-# producing a final answer, so we must stop streaming content to the client.
-_TOOL_PREFIXES: tuple[str, ...] = EXTERNAL_TOOL_PREFIXES
-
-
-def _find_tool_command_start(text: str) -> int | None:
-    """Return the earliest index of any tool command prefix in *text*, or None."""
-    pos = None
-    for prefix in _TOOL_PREFIXES:
-        idx = text.find(prefix)
-        if idx >= 0 and (pos is None or idx < pos):
-            pos = idx
-    return pos
-
-
-def _has_partial_tool_prefix(text: str) -> bool:
-    """Return True if *text* ends with a partial match for any tool prefix.
-
-    Used as a look-ahead guard: if the last few characters of the accumulated
-    content *could* be the start of a tool tag, we withhold them from the
-    client until more data arrives to confirm or deny the match.
-    """
-    for prefix in _TOOL_PREFIXES:
-        for length in range(1, len(prefix)):
-            if text.endswith(prefix[:length]):
-                return True
-    return False
-
-
-def _shared_prefix_len(left: str, right: str) -> int:
-    """Return the length of the shared prefix between *left* and *right*."""
-    limit = min(len(left), len(right))
-    idx = 0
-    while idx < limit and left[idx] == right[idx]:
-        idx += 1
-    return idx
-
-
-def _leading_duplicate_prefix_len(text: str, *candidates: str) -> int:
-    """Return the longest leading prefix in *text* duplicated by any candidate.
-
-    Used while streaming content alongside reasoning_content: many providers
-    start the content channel by echoing the same analysis text that is already
-    available in reasoning_content or was shown in earlier tool iterations.
-    Hiding that shared prefix lets us keep answer tokens incremental without
-    flashing duplicate analysis text into the answer area.
-    """
-    max_len = 0
-    for candidate in candidates:
-        if not candidate:
-            continue
-        prefix_len = _shared_prefix_len(text, candidate)
-        if prefix_len > max_len:
-            max_len = prefix_len
-    return max_len
-
-
-def _sanitize_content(content: str) -> str:
-    """Strip leaked markup and echoed tool results from content.
-
-    Handles:
-    - DeepSeek DSML tool-call tags
-    - Inline XML tool commands (<search_videos/>, <search_owners/>, ...)
-    - Echoed tool results in _format_results_message format
-    """
-    content = sanitize_generated_content(content, tool_names=_SUPPORTED_TOOL_NAMES)
-    # Remove echoed tool results (e.g. search_videos(queries=[...]):\n{...})
-    content = _RESULTS_HEADER_RE.sub("", content)
-    content = _RESULTS_ECHO_RE.sub("", content)
-    # Collapse runs of 3+ newlines left by stripped blocks
-    content = re.sub(r"\n{3,}", "\n\n", content)
-    content = _dedupe_repeated_output(content)
-    return content.strip()
-
-
-def _dedupe_repeated_output(content: str) -> str:
-    text = (content or "").strip()
-    if not text:
-        return ""
-
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-    if paragraphs:
-        for repeat in (3, 2):
-            if len(paragraphs) >= repeat and len(paragraphs) % repeat == 0:
-                unit = len(paragraphs) // repeat
-                chunks = [
-                    "\n\n".join(paragraphs[index * unit : (index + 1) * unit]).strip()
-                    for index in range(repeat)
-                ]
-                if len(set(chunks)) == 1:
-                    return chunks[0]
-
-        deduped: list[str] = []
-        previous_norm = None
-        for paragraph in paragraphs:
-            paragraph_norm = re.sub(r"\s+", " ", paragraph)
-            if paragraph_norm == previous_norm:
-                continue
-            deduped.append(paragraph)
-            previous_norm = paragraph_norm
-        return "\n\n".join(deduped)
-
-    return text
-
-
-def _anchor_subject_key(text: str) -> str:
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", compact_focus_key(text))
-
-
-def _canonical_response_subject(text: str) -> str:
-    subject = " ".join(str(text or "").split()).strip()
-    if not subject:
-        return ""
-    return rewrite_known_term_aliases(subject) or subject
-
-
-class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
+class ChatHandler(
+    ChatResponseContextMixin,
+    ChatStreamingMixin,
+    OwnerResolutionMixin,
+    ToolPlanningMixin,
+):
     """Main chat handler with tool-calling loop.
 
     Stateless per request - the client manages conversation history by
@@ -343,7 +210,9 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         return recent_user_texts[0] if recent_user_texts else ""
 
     @staticmethod
-    def _get_recent_user_texts(messages: list[dict], limit: int | None = None) -> list[str]:
+    def _get_recent_user_texts(
+        messages: list[dict], limit: int | None = None
+    ) -> list[str]:
         texts = []
         for message in reversed(messages or []):
             if message.get("role") != "user":
@@ -427,240 +296,6 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 return f"{value * unit_scale[source[index]]}d"
         return "30d"
 
-    @classmethod
-    def _ensure_author_timeline_context(
-        cls,
-        messages: list[dict],
-        content: str,
-        *,
-        intent=None,
-    ) -> str:
-        final_content = (content or "").strip()
-        if not final_content:
-            return final_content
-
-        resolved_intent = intent or build_intent_profile(messages)
-        if resolved_intent.final_target != "videos" or resolved_intent.task_mode != "repeat":
-            return final_content
-
-        author_name = select_primary_focus_term(
-            [
-                *(resolved_intent.explicit_entities or []),
-                *(resolved_intent.explicit_topics or []),
-            ]
-        )
-        leading_subject = cls._extract_leading_subject_phrase(
-            cls._get_latest_user_text(messages)
-        )
-        author_name_key = _anchor_subject_key(author_name)
-        leading_subject_key = _anchor_subject_key(leading_subject)
-        if leading_subject_key and (
-            not author_name_key
-            or author_name_key in leading_subject_key
-            or len(leading_subject) < len(author_name)
-        ):
-            author_name = leading_subject
-        author_name = " ".join(str(author_name or "").split()).strip()
-        if not author_name or author_name in final_content:
-            return final_content
-        return f"{author_name}最近视频：\n{final_content}"
-
-    @staticmethod
-    def _extract_subject_from_latest_user_text(
-        latest_user_text: str,
-        candidate_keys: set[str],
-    ) -> str:
-        source = str(latest_user_text or "").strip()
-        if not source or not candidate_keys:
-            return ""
-
-        segments = [
-            (
-                match.group(0),
-                compact_focus_key(match.group(0)),
-                match.start(),
-                match.end(),
-            )
-            for match in re.finditer(
-                r"[A-Za-z]+|\d+(?:[./]\d+)*|[\u4e00-\u9fff]+|[^A-Za-z0-9\u4e00-\u9fff\s]+",
-                source,
-            )
-        ]
-        if not segments:
-            return ""
-
-        best_subject = ""
-        best_score = -1
-        for index, (_, segment_key, start, end) in enumerate(segments):
-            if segment_key not in candidate_keys:
-                continue
-
-            matched_keys = [segment_key]
-            subject_end = end
-            scan_index = index + 1
-            while scan_index < len(segments):
-                _, next_key, _, next_end = segments[scan_index]
-                if not next_key:
-                    scan_index += 1
-                    continue
-                if next_key not in candidate_keys:
-                    break
-                matched_keys.append(next_key)
-                subject_end = next_end
-                scan_index += 1
-
-            subject = source[start:subject_end].strip(
-                " ，。！？?；;：:、()[]{}<>《》\"'`~!@#$%^&*-+=|\\/"
-            )
-            score = sum(len(key) for key in dict.fromkeys(matched_keys))
-            if score > best_score or (
-                score == best_score and len(subject) > len(best_subject)
-            ):
-                best_subject = subject
-                best_score = score
-
-        return best_subject
-
-    @staticmethod
-    def _extract_leading_subject_phrase(latest_user_text: str) -> str:
-        source = str(latest_user_text or "").strip()
-        if not source:
-            return ""
-
-        segments = [
-            (
-                match.group(0),
-                compact_focus_key(match.group(0)),
-                match.start(),
-                match.end(),
-            )
-            for match in re.finditer(
-                r"[A-Za-z]+|\d+(?:[./]\d+)*|[\u4e00-\u9fff]+|[^A-Za-z0-9\u4e00-\u9fff\s]+",
-                source,
-            )
-        ]
-        if not segments:
-            return ""
-
-        subject_start = None
-        subject_end = None
-        saw_content = False
-        for segment_text, segment_key, start, end in segments:
-            is_long_cjk_clause = bool(re.fullmatch(r"[\u4e00-\u9fff]+", segment_text)) and len(segment_text) >= 5
-            normalized_segment = "".join(str(segment_text or "").split())
-            is_short_question_clause = normalized_segment in {
-                "是谁",
-                "是什么",
-                "谁",
-                "什么",
-                "哪个",
-                "哪位",
-                "哪种",
-                "吗",
-                "呢",
-                "嘛",
-                "么",
-            }
-            if not saw_content:
-                if not segment_key:
-                    continue
-                subject_start = start
-                subject_end = end
-                saw_content = True
-                continue
-            if not segment_key:
-                subject_end = end
-                continue
-            if is_long_cjk_clause or is_short_question_clause:
-                break
-            subject_end = end
-
-        if subject_start is None or subject_end is None:
-            return ""
-        return source[subject_start:subject_end].strip(
-            " ，。！？?；;：:、()[]{}<>《》\"'`~!@#$%^&*-+=|\\/"
-        )
-
-    @classmethod
-    def _ensure_primary_subject_context(
-        cls,
-        messages: list[dict],
-        content: str,
-        *,
-        intent=None,
-    ) -> str:
-        final_content = (content or "").strip()
-        if not final_content:
-            return final_content
-
-        resolved_intent = intent or build_intent_profile(messages)
-        if (
-            resolved_intent.final_target not in {"external", "mixed"}
-            and not (
-                resolved_intent.final_target == "videos"
-                and resolved_intent.needs_term_normalization
-            )
-        ):
-            return final_content
-
-        candidate_texts = [
-            *(resolved_intent.explicit_entities or []),
-            *(resolved_intent.explicit_topics or []),
-        ]
-        candidate_keys = {
-            compact_focus_key(candidate)
-            for candidate in candidate_texts
-            if len(compact_focus_key(candidate)) >= 2
-        }
-        subject = cls._extract_subject_from_latest_user_text(
-            cls._get_latest_user_text(messages),
-            candidate_keys,
-        ) or select_primary_focus_term(candidate_texts)
-        leading_subject = cls._extract_leading_subject_phrase(
-            cls._get_latest_user_text(messages)
-        )
-        subject_key = _anchor_subject_key(subject)
-        leading_subject_key = _anchor_subject_key(leading_subject)
-        if leading_subject_key and (
-            not subject_key or subject_key in leading_subject_key
-        ):
-            subject = leading_subject
-        if resolved_intent.needs_term_normalization and subject:
-            subject = rewrite_known_term_aliases(subject) or subject
-            subject = _canonical_response_subject(subject)
-        subject = " ".join(str(subject or "").split()).strip()
-        subject_key = _anchor_subject_key(subject)
-        if not subject_key or len(subject) > 48:
-            return final_content
-        if subject_key in _anchor_subject_key(final_content):
-            return final_content
-        return f"{subject}：\n{final_content}"
-
-    @classmethod
-    def _ensure_response_context(cls, messages: list[dict], content: str) -> str:
-        resolved_intent = build_intent_profile(messages)
-        final_content = cls._ensure_author_timeline_context(
-            messages,
-            content,
-            intent=resolved_intent,
-        )
-        latest_user_text = cls._get_latest_user_text(messages)
-        if latest_user_text:
-            primary_context_intent = build_intent_profile(
-                [{"role": "user", "content": latest_user_text}]
-            )
-        else:
-            primary_context_intent = resolved_intent
-        return cls._ensure_primary_subject_context(
-            messages,
-            final_content,
-            intent=primary_context_intent,
-        )
-
-    @staticmethod
-    def _normalize_entity_focused_query_text(text: str) -> str:
-        return _canonical_response_subject(build_focus_query(text))
-
     @staticmethod
     def _split_search_query_tokens(text: str) -> list[str]:
         tokens: list[str] = []
@@ -695,7 +330,11 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             raw = token.strip("，。！？?；;、（）()[]{}")
             if not raw:
                 continue
-            if raw.startswith(":") or raw.startswith("q=") or (raw[0] in "+-" and len(raw) > 1):
+            if (
+                raw.startswith(":")
+                or raw.startswith("q=")
+                or (raw[0] in "+-" and len(raw) > 1)
+            ):
                 cleaned_tokens.append(raw)
                 continue
             if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
@@ -851,8 +490,7 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
         if "results" in result and isinstance(result.get("results"), list):
             nested_results = result.get("results") or []
             if any(
-                isinstance(item, dict)
-                and ("hits" in item or "total_hits" in item)
+                isinstance(item, dict) and ("hits" in item or "total_hits" in item)
                 for item in nested_results
             ):
                 compact_video_results = []
@@ -945,7 +583,9 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
                 for key, val in sorted(value.items())
             }
         if isinstance(value, list):
-            canonical_items = [ChatHandler._canonicalize_command_value(item) for item in value]
+            canonical_items = [
+                ChatHandler._canonicalize_command_value(item) for item in value
+            ]
             sortable = all(
                 isinstance(item, (str, int, float, bool)) or item is None
                 for item in canonical_items
@@ -1119,248 +759,3 @@ class ChatHandler(OwnerResolutionMixin, ToolPlanningMixin):
             usage_trace=result.usage_trace,
             thinking=thinking,
         )
-
-    def handle_stream(
-        self,
-        messages: list[dict],
-        temperature: float = None,
-        thinking: bool = False,
-        max_iterations: int = None,
-        cancelled: Optional[threading.Event] = None,
-    ) -> Generator[str, None, None]:
-        """Handle a streaming chat completion request.
-
-        Streams reasoning/tool/content events directly from the orchestrator
-        so the frontend can render intermediate thinking and tool execution
-        in real time.
-        """
-        start_time = time.perf_counter()
-        request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-
-        yield self._format_stream_chunk(
-            request_id=request_id,
-            delta={"role": "assistant", "content": ""},
-            thinking=thinking,
-        )
-
-        result, streamed_content = yield from self._relay_orchestration_stream(
-            request_id=request_id,
-            stream=self.orchestrator.run_stream(
-                messages=messages,
-                thinking=thinking,
-                max_iterations=max_iterations,
-                cancelled=cancelled,
-            ),
-        )
-
-        final_content = self._ensure_response_context(
-            messages,
-            _sanitize_content(result.content or ""),
-        )
-        streamed_visible_content = _sanitize_content(streamed_content)
-        if final_content:
-            should_replay_content = (
-                not streamed_visible_content
-                or final_content.strip() != streamed_visible_content.strip()
-            )
-            if streamed_visible_content and should_replay_content:
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta={"retract_content": True},
-                )
-            if should_replay_content:
-                for chunk in self._chunk_text_for_stream(final_content):
-                    yield self._format_stream_chunk(
-                        request_id=request_id,
-                        delta={"content": chunk},
-                    )
-
-        normalized_usage = self._normalize_usage(result.usage)
-        elapsed_seconds = time.perf_counter() - start_time
-        perf_stats = self._compute_perf_stats(normalized_usage, elapsed_seconds)
-        yield self._format_stream_chunk(
-            request_id=request_id,
-            delta={},
-            finish_reason="stop",
-            usage=normalized_usage,
-            perf_stats=perf_stats,
-            usage_trace=result.usage_trace,
-            thinking=thinking,
-        )
-        yield "[DONE]"
-
-    def _relay_orchestration_stream(
-        self,
-        *,
-        request_id: str,
-        stream,
-    ) -> Generator[str, None, tuple[object, str]]:
-        streamed_content = ""
-        try:
-            while True:
-                event = next(stream)
-                delta = event.get("delta") or {}
-                if delta.get("retract_content"):
-                    streamed_content = ""
-                if delta.get("content"):
-                    streamed_content += str(delta.get("content") or "")
-                yield self._format_stream_chunk(
-                    request_id=request_id,
-                    delta=delta,
-                    tool_events=event.get("tool_events"),
-                )
-        except StopIteration as stop:
-            return stop.value, streamed_content
-
-    @staticmethod
-    def _chunk_text_for_stream(text: str, chunk_size: int = 96) -> list[str]:
-        content = str(text or "")
-        if not content:
-            return []
-        chunks = []
-        buffer = ""
-        for paragraph in re.split(r"(\n\n)", content):
-            if not paragraph:
-                continue
-            if len(buffer) + len(paragraph) <= chunk_size:
-                buffer += paragraph
-                continue
-            if buffer:
-                chunks.append(buffer)
-                buffer = ""
-            if len(paragraph) <= chunk_size:
-                buffer = paragraph
-                continue
-            for start in range(0, len(paragraph), chunk_size):
-                chunks.append(paragraph[start : start + chunk_size])
-        if buffer:
-            chunks.append(buffer)
-        return chunks
-
-    def _build_messages(
-        self, user_messages: list[dict], thinking: bool = False
-    ) -> list[dict]:
-        system_content = build_system_prompt(
-            capabilities=self.search_capabilities,
-            messages=user_messages,
-        )
-        if thinking:
-            system_content = _THINKING_PROMPT + system_content
-        return [{"role": "system", "content": system_content}] + list(user_messages)
-
-    @staticmethod
-    def _merge_final_usage(total_usage: dict, last_usage: dict) -> dict:
-        """Merge accumulated and last-call usage for final reporting.
-
-        prompt_tokens (and related cache fields) come from the LAST LLM call,
-        reflecting the actual context size for the final answer.
-        completion_tokens (and related output fields) come from the ACCUMULATED
-        total, reflecting total output across all iterations.
-
-        This gives users an intuitive view: "input" = what the LLM saw,
-        "output" = total generated content.
-        """
-        result = dict(total_usage)
-
-        # Replace prompt-related fields with last call's values
-        prompt_keys = [
-            "prompt_tokens",
-            "prompt_cache_hit_tokens",
-            "prompt_cache_miss_tokens",
-        ]
-        for key in prompt_keys:
-            if key in last_usage:
-                result[key] = last_usage[key]
-            elif key in result:
-                del result[key]
-
-        # Also replace nested prompt_tokens_details if present
-        if "prompt_tokens_details" in last_usage:
-            result["prompt_tokens_details"] = last_usage["prompt_tokens_details"]
-
-        # Recompute total_tokens
-        prompt = result.get("prompt_tokens", 0)
-        completion = result.get("completion_tokens", 0)
-        if prompt or completion:
-            result["total_tokens"] = prompt + completion
-
-        return result
-
-    @staticmethod
-    def _normalize_usage(usage: dict) -> dict:
-        return normalize_usage(usage)
-
-    @staticmethod
-    def _compute_perf_stats(usage: dict, elapsed_seconds: float) -> dict:
-        return compute_perf_stats(usage, elapsed_seconds)
-
-    def _format_completion(
-        self,
-        request_id: str,
-        content: str,
-        usage: dict = None,
-        perf_stats: dict = None,
-        tool_events: list = None,
-        usage_trace: dict = None,
-        thinking: bool = False,
-    ) -> dict:
-        """Format response as OpenAI-compatible chat completion."""
-        result = {
-            "id": request_id,
-            "object": "chat.completion",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": content,
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": usage or {},
-        }
-        if perf_stats:
-            result["perf_stats"] = perf_stats
-        if tool_events:
-            result["tool_events"] = tool_events
-        if usage_trace:
-            result["usage_trace"] = usage_trace
-        if thinking:
-            result["thinking"] = True
-        return result
-
-    def _format_stream_chunk(
-        self,
-        request_id: str,
-        delta: dict,
-        finish_reason: str = None,
-        usage: dict = None,
-        perf_stats: dict = None,
-        tool_events: list = None,
-        usage_trace: dict = None,
-        thinking: bool = None,
-    ) -> str:
-        """Format a single SSE stream chunk as JSON string."""
-        chunk = {
-            "id": request_id,
-            "object": "chat.completion.chunk",
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": delta,
-                    "finish_reason": finish_reason,
-                }
-            ],
-        }
-        if usage:
-            chunk["usage"] = usage
-        if perf_stats:
-            chunk["perf_stats"] = perf_stats
-        if tool_events:
-            chunk["tool_events"] = tool_events
-        if usage_trace:
-            chunk["usage_trace"] = usage_trace
-        if thinking is not None:
-            chunk["thinking"] = thinking
-        return json.dumps(chunk, ensure_ascii=False)

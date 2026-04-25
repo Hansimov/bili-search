@@ -1,371 +1,29 @@
 from __future__ import annotations
 
-import json
 import time
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Generator, Optional
 
-from llms.contracts import (
-    IntentProfile,
-    OrchestrationResult,
-    ToolCallRequest,
-    ToolExecutionRecord,
-)
-from llms.intent import build_intent_profile
-from llms.intent.focus import rewrite_known_term_aliases
-from llms.intent.focus import select_primary_focus_term
-from llms.messages import (
-    extract_bvids,
-    extract_message_text,
-)
-from llms.models import ChatResponse
-from llms.models import DEFAULT_SMALL_MODEL_CONFIG, ModelRegistry
+from llms.contracts import OrchestrationResult, ToolCallRequest
 from llms.orchestration.policies import FINAL_ANSWER_NUDGE
-from llms.orchestration.policies import has_explicit_video_anchor
-from llms.orchestration.policies import has_successful_tool_result
 from llms.orchestration.policies import has_target_coverage
-from llms.orchestration.policies import is_recent_timeline_request
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
 from llms.orchestration.result_store import ResultStore
-from llms.orchestration.result_store import inspect_results
-from llms.orchestration.result_store import summarize_result
-from llms.orchestration.deterministic import DeterministicOrchestrationMixin
-from llms.orchestration.runtime import OrchestrationRuntimeMixin
-from llms.orchestration.streaming import OrchestrationStreamingMixin
 from llms.orchestration.tool_markup import command_signature
-from llms.orchestration.tool_markup import parse_xml_tool_calls
 from llms.orchestration.tool_markup import sanitize_generated_content
-from llms.orchestration.transcripts import TranscriptOrchestrationMixin
-from llms.orchestration.video_queries import VideoQueryNormalizer
-from llms.prompts.assets import get_prompt_assets
-from llms.tools.video_lookup import normalize_search_video_lookup_arguments
-from llms.tools.names import canonical_tool_name
 
 
-def _rewrite_known_aliases_in_video_search_arguments(arguments: dict) -> dict:
-    normalized = dict(arguments or {})
-    raw_queries = normalized.get("queries")
-    if isinstance(raw_queries, str):
-        raw_queries = [raw_queries]
-    elif raw_queries is None and isinstance(normalized.get("query"), str):
-        raw_queries = [normalized.get("query")]
-    elif not isinstance(raw_queries, list):
-        raw_queries = []
-
-    rewritten: list[str] = []
-    changed = False
-    for query in raw_queries:
-        original_query = str(query or "")
-        rewritten_query = rewrite_known_term_aliases(original_query) or original_query
-        if rewritten_query != original_query:
-            changed = True
-        if rewritten_query and rewritten_query not in rewritten:
-            rewritten.append(rewritten_query)
-    if not changed or not rewritten:
-        return normalized
-
-    normalized.pop("query", None)
-    normalized["queries"] = rewritten
-    return normalized
-
-
-class ChatOrchestrator(
-    DeterministicOrchestrationMixin,
-    TranscriptOrchestrationMixin,
-    OrchestrationRuntimeMixin,
-    OrchestrationStreamingMixin,
-):
-    def __init__(
-        self,
-        *,
-        llm_client,
-        tool_executor,
-        small_llm_client=None,
-        model_registry: ModelRegistry | None = None,
-        temperature: float | None = None,
-        verbose: bool = False,
-    ):
-        self.large_llm_client = llm_client
-        self.small_llm_client = small_llm_client or llm_client
-        self.tool_executor = tool_executor
-        self.model_registry = model_registry or ModelRegistry.from_envs(
-            primary_small_config=DEFAULT_SMALL_MODEL_CONFIG
-        )
-        self.temperature = temperature
-        self.verbose = verbose
-
-    @staticmethod
-    def _owner_resolution_seed(intent: IntentProfile) -> str:
-        return select_primary_focus_term(
-            [
-                *(intent.explicit_topics or []),
-                *(intent.explicit_entities or []),
-            ]
-        )
-
-    @staticmethod
-    def _owner_request_text(arguments: dict) -> str:
-        for key in ("text", "topic", "name", "relation", "query"):
-            text = str(arguments.get(key, "") or "").strip()
-            if text:
-                return text
-        queries = arguments.get("queries")
-        if isinstance(queries, str):
-            return queries.strip()
-        if isinstance(queries, (list, tuple)):
-            for item in queries:
-                text = str(item or "").strip()
-                if text:
-                    return text
-        return ""
-
-    def _normalize_request(
-        self,
-        request: ToolCallRequest,
-        intent: IntentProfile,
-        search_capabilities: dict,
-        *,
-        prefer_transcript_lookup: bool = False,
-    ) -> ToolCallRequest:
-        name = canonical_tool_name(request.name)
-        arguments = dict(request.arguments or {})
-        title_like_video_query = ""
-        explicit_dsl_video_query = ""
-        if intent.final_target == "videos":
-            title_like_video_query = (
-                VideoQueryNormalizer.extract_title_like_video_query(intent.raw_query)
-            )
-            explicit_dsl_video_query = VideoQueryNormalizer.extract_explicit_dsl_query(
-                intent.raw_query
-            )
-        if name == "run_small_llm_task" and request.visibility == "internal":
-            arguments = self._normalize_small_task_arguments(arguments)
-        if request.visibility != "user":
-            if arguments == request.arguments and name == request.name:
-                return request
-            return ToolCallRequest(
-                id=request.id,
-                name=name,
-                arguments=arguments,
-                visibility=request.visibility,
-                source=request.source,
-            )
-        if name == "search_videos" and prefer_transcript_lookup:
-            video_id = self._extract_transcript_video_id(arguments, intent)
-            if video_id:
-                transcript_args = {"video_id": video_id}
-                page_index = arguments.get("page_index")
-                if page_index not in (None, ""):
-                    transcript_args["page_index"] = page_index
-                return ToolCallRequest(
-                    id=request.id,
-                    name="get_video_transcript",
-                    arguments=transcript_args,
-                    visibility=request.visibility,
-                    source=request.source,
-                )
-        if name == "search_videos":
-            arguments = normalize_search_video_lookup_arguments(arguments)
-            if title_like_video_query or explicit_dsl_video_query:
-                arguments = (
-                    VideoQueryNormalizer.normalize_title_like_video_search_arguments(
-                        arguments,
-                        intent.raw_query,
-                    )
-                )
-            arguments = _rewrite_known_aliases_in_video_search_arguments(arguments)
-        if name == "search_owners":
-            if title_like_video_query:
-                return ToolCallRequest(
-                    id=request.id,
-                    name="search_videos",
-                    arguments={"queries": [title_like_video_query]},
-                    visibility=request.visibility,
-                    source=request.source,
-                )
-            owner_text = self._owner_request_text(arguments)
-            if not owner_text:
-                owner_seed = self._owner_resolution_seed(intent)
-                if owner_seed:
-                    arguments["text"] = owner_seed
-                    owner_text = owner_seed
-            elif not str(arguments.get("text", "") or "").strip():
-                arguments["text"] = owner_text
-        elif name == "search_videos" and intent.needs_term_normalization:
-            raw_queries = arguments.get("queries")
-            if isinstance(raw_queries, str):
-                raw_queries = [raw_queries]
-            elif not isinstance(raw_queries, list):
-                single_query = str(arguments.get("query", "") or "").strip()
-                raw_queries = [single_query] if single_query else []
-
-            rewritten_queries: list[str] = []
-            query_changed = False
-            for query in raw_queries:
-                original_query = str(query or "")
-                rewritten_query = (
-                    rewrite_known_term_aliases(original_query) or original_query
-                )
-                if rewritten_query != original_query:
-                    query_changed = True
-                if rewritten_query and rewritten_query not in rewritten_queries:
-                    rewritten_queries.append(rewritten_query)
-
-            if query_changed and rewritten_queries:
-                arguments.pop("query", None)
-                arguments["queries"] = rewritten_queries
-        if name == "search_owners" and not str(arguments.get("text", "") or "").strip():
-            owner_seed = self._owner_resolution_seed(intent)
-            if owner_seed:
-                arguments["text"] = owner_seed
-        if arguments == request.arguments and name == request.name:
-            return request
-        return ToolCallRequest(
-            id=request.id,
-            name=name,
-            arguments=arguments,
-            visibility=request.visibility,
-            source=request.source,
-        )
-
-    def _build_direct_explicit_dsl_video_search_request(
-        self,
-        messages: list[dict],
-        intent: IntentProfile,
-        *,
-        prefer_transcript_lookup: bool = False,
-    ) -> ToolCallRequest | None:
-        if prefer_transcript_lookup or intent.final_target != "videos":
-            return None
-        if has_explicit_video_anchor(intent) or is_recent_timeline_request(intent):
-            return None
-
-        latest_user_text = self._latest_user_text(messages)
-        explicit_query = VideoQueryNormalizer.extract_explicit_dsl_query(
-            latest_user_text
-        ) or VideoQueryNormalizer.extract_explicit_dsl_query(intent.raw_query)
-        if not explicit_query:
-            return None
-
-        return ToolCallRequest(
-            id="auto_explicit_dsl_video_search_1",
-            name="search_videos",
-            arguments={"queries": [explicit_query]},
-            visibility="user",
-            source="deterministic_direct",
-        )
-
-    def _collect_requests(
-        self,
-        response: ChatResponse,
-        iteration: int,
-    ) -> list[ToolCallRequest]:
-        # bili-search intentionally uses inline XML only so tool planning can
-        # stream to the UI. Provider function calling is not part of the active
-        # orchestration contract.
-        return parse_xml_tool_calls(response.content or "", iteration)
-
-    def _result_summary(self, result_id: str, tool_name: str, result: dict) -> dict:
-        return summarize_result(result_id, tool_name, result)
-
-    def _inspect_result(self, result_store: ResultStore, args: dict) -> dict:
-        return inspect_results(result_store, args)
-
-    def _execute_internal_call(
-        self,
-        result_store: ResultStore,
-        request: ToolCallRequest,
-        intent: IntentProfile,
-    ) -> dict:
-        if request.name == "read_prompt_assets":
-            assets = get_prompt_assets(
-                ids=list(request.arguments.get("asset_ids") or []),
-                tool_names=list(request.arguments.get("tool_names") or []),
-                levels=list(request.arguments.get("levels") or []),
-            )
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset.asset_id,
-                        "title": asset.title,
-                        "section": asset.section,
-                        "level": asset.level,
-                        "content": asset.content,
-                    }
-                    for asset in assets
-                ],
-                "total_assets": len(assets),
-            }
-        if request.name == "inspect_tool_result":
-            return self._inspect_result(result_store, request.arguments)
-        if request.name == "run_small_llm_task":
-            return self._run_small_task(result_store, request.arguments, intent)
-        return {"error": f"Unknown internal tool: {request.name}"}
-
-    def _execute_request(
-        self,
-        result_store: ResultStore,
-        request: ToolCallRequest,
-        intent: IntentProfile,
-        *,
-        result: dict | None = None,
-    ) -> ToolExecutionRecord:
-        resolved_result = result
-        if resolved_result is None:
-            if request.visibility == "internal":
-                resolved_result = self._execute_internal_call(
-                    result_store,
-                    request,
-                    intent,
-                )
-            else:
-                resolved_result = self.tool_executor.execute_request(request)
-        result_id = f"R{len(result_store.order) + 1}"
-        summary = self._result_summary(result_id, request.name, resolved_result)
-        record = ToolExecutionRecord(
-            result_id=result_id,
-            request=request,
-            result=resolved_result,
-            summary=summary,
-            visibility=request.visibility,
-        )
-        result_store.add(record)
-        return record
-
-    def _execute_requests(
-        self,
-        result_store: ResultStore,
-        requests: list[ToolCallRequest],
-        intent: IntentProfile,
-    ) -> list[ToolExecutionRecord]:
-        if not requests:
-            return []
-
-        def run_one(request: ToolCallRequest) -> ToolExecutionRecord:
-            return self._execute_request(result_store, request, intent)
-
-        max_workers = min(max(len(requests), 1), 4)
-        if max_workers == 1:
-            return [run_one(request) for request in requests]
-
-        records: list[ToolExecutionRecord] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(run_one, request) for request in requests]
-            for future in futures:
-                records.append(future.result())
-        return records
-
-    def run(
+class OrchestrationStreamingMixin:
+    def run_stream(
         self,
         *,
         messages: list[dict],
         thinking: bool = False,
         max_iterations: int | None = None,
         cancelled: Optional[object] = None,
-    ) -> OrchestrationResult:
+    ) -> Generator[dict[str, Any], None, OrchestrationResult]:
         start_time = time.perf_counter()
         (
             search_capabilities,
@@ -397,6 +55,7 @@ class ChatOrchestrator(
         resolved_iterations = max_iterations or planner_spec.max_iterations
         final_content = ""
         final_reasoning = ""
+        content_streamed = False
 
         direct_request = self._build_direct_explicit_dsl_video_search_request(
             messages,
@@ -404,14 +63,21 @@ class ChatOrchestrator(
             prefer_transcript_lookup=prefer_transcript_lookup,
         )
         if direct_request is not None:
-            records = self._execute_requests(
-                self.result_store, [direct_request], intent
+            records = yield from self._execute_requests_with_stream_events(
+                self.result_store,
+                [direct_request],
+                intent,
+                iteration=1,
+                cancelled=cancelled,
             )
-            tool_events.append(self._build_tool_events(1, records))
+            completed_event = self._build_tool_events(1, records)
+            tool_events.append(completed_event)
             final_content = (
                 self._build_deterministic_final_answer(intent, messages)
                 or "已完成搜索，但这次没有整理出可展示的视频结果。"
             )
+            content_streamed = True
+            yield {"delta": {"content": final_content}}
             elapsed_seconds = time.perf_counter() - start_time
             return OrchestrationResult(
                 content=final_content,
@@ -443,7 +109,7 @@ class ChatOrchestrator(
                 },
                 prompt_profile=prompt_profile,
                 thinking=thinking,
-                content_streamed=False,
+                content_streamed=content_streamed,
             )
 
         for iteration in range(1, resolved_iterations + 1):
@@ -456,15 +122,18 @@ class ChatOrchestrator(
                 decision=planner_decision,
                 intent=intent,
             )
-            response = planner_client.chat(
+            yield {
+                "delta": self._reasoning_reset_delta("planner", iteration),
+            }
+            response = yield from self._stream_chat_response(
+                client=planner_client,
                 messages=conversation,
-                temperature=self.temperature,
-                enable_thinking=True if thinking else None,
+                thinking=thinking,
+                cancelled=cancelled,
             )
             self._accumulate_usage(total_usage, response.usage)
 
             requests = self._collect_requests(response, iteration)
-
             requests = [
                 self._normalize_request(
                     request,
@@ -532,10 +201,12 @@ class ChatOrchestrator(
                     deduped_recovery_requests.append(request)
 
                 if deduped_recovery_requests:
-                    recovery_records = self._execute_requests(
+                    recovery_records = yield from self._execute_requests_with_stream_events(
                         self.result_store,
                         deduped_recovery_requests,
                         intent,
+                        iteration=iteration,
+                        cancelled=cancelled,
                     )
                     recovery_followup_requests = (
                         self._build_deterministic_followup_requests(
@@ -544,15 +215,6 @@ class ChatOrchestrator(
                             messages=messages,
                         )
                     )
-                    recovery_followup_requests = [
-                        self._normalize_request(
-                            request,
-                            intent,
-                            search_capabilities,
-                            prefer_transcript_lookup=prefer_transcript_lookup,
-                        )
-                        for request in recovery_followup_requests
-                    ]
                     deduped_recovery_followups: list[ToolCallRequest] = []
                     for request in recovery_followup_requests:
                         signature = command_signature(request)
@@ -561,21 +223,28 @@ class ChatOrchestrator(
                         executed_signatures.add(signature)
                         deduped_recovery_followups.append(request)
                     if deduped_recovery_followups:
-                        recovery_records.extend(
-                            self._execute_requests(
-                                self.result_store,
-                                deduped_recovery_followups,
-                                intent,
-                            )
+                        followup_records = yield from self._execute_requests_with_stream_events(
+                            self.result_store,
+                            deduped_recovery_followups,
+                            intent,
+                            iteration=iteration,
+                            cancelled=cancelled,
                         )
+                        recovery_records.extend(followup_records)
                     tool_events.append(
                         self._build_tool_events(iteration, recovery_records)
                     )
 
-                final_content = (
-                    self._build_deterministic_final_answer(intent, messages) or ""
+                deterministic_lookup_answer = self._build_deterministic_final_answer(
+                    intent,
+                    messages,
                 )
-                if final_content:
+                if deterministic_lookup_answer and has_target_coverage(
+                    self.result_store, intent
+                ):
+                    final_content = deterministic_lookup_answer
+                    content_streamed = True
+                    yield {"delta": {"content": deterministic_lookup_answer}}
                     break
                 if deduped_recovery_requests:
                     break
@@ -641,11 +310,18 @@ class ChatOrchestrator(
                     continue
                 final_content = sanitize_generated_content(response.content or "")
                 final_reasoning = response.reasoning_content or ""
+                content_streamed = bool(final_content)
                 if final_content:
                     break
                 continue
 
-            records = self._execute_requests(self.result_store, requests, intent)
+            records = yield from self._execute_requests_with_stream_events(
+                self.result_store,
+                requests,
+                intent,
+                iteration=iteration,
+                cancelled=cancelled,
+            )
             followup_requests = self._build_deterministic_followup_requests(
                 self.result_store,
                 intent,
@@ -668,14 +344,16 @@ class ChatOrchestrator(
                 executed_signatures.add(signature)
                 deduped_followup_requests.append(request)
             if deduped_followup_requests:
-                records.extend(
-                    self._execute_requests(
-                        self.result_store,
-                        deduped_followup_requests,
-                        intent,
-                    )
+                followup_records = yield from self._execute_requests_with_stream_events(
+                    self.result_store,
+                    deduped_followup_requests,
+                    intent,
+                    iteration=iteration,
+                    cancelled=cancelled,
                 )
-            tool_events.append(self._build_tool_events(iteration, records))
+                records.extend(followup_records)
+            completed_event = self._build_tool_events(iteration, records)
+            tool_events.append(completed_event)
 
             stripped_content = sanitize_generated_content(response.content or "")
             if stripped_content:
@@ -718,6 +396,8 @@ class ChatOrchestrator(
                 self.result_store, intent
             ):
                 final_content = deterministic_lookup_answer
+                content_streamed = True
+                yield {"delta": {"content": deterministic_lookup_answer}}
                 break
 
             if has_target_coverage(self.result_store, intent):
@@ -757,10 +437,17 @@ class ChatOrchestrator(
                 decision=response_decision,
                 intent=intent,
             )
-            response = response_client.chat(
+            yield {
+                "delta": self._reasoning_reset_delta(
+                    "response",
+                    len(usage_trace) + 1,
+                ),
+            }
+            response = yield from self._stream_chat_response(
+                client=response_client,
                 messages=conversation,
-                temperature=self.temperature,
-                enable_thinking=True if thinking else None,
+                thinking=thinking,
+                cancelled=cancelled,
             )
             self._accumulate_usage(total_usage, response.usage)
             usage_trace.append(
@@ -811,6 +498,7 @@ class ChatOrchestrator(
             else:
                 final_content = sanitize_generated_content(response.content or "")
                 final_reasoning = response.reasoning_content or ""
+                content_streamed = bool(final_content)
 
         elapsed_seconds = time.perf_counter() - start_time
         normalized_usage = self._normalize_usage(total_usage)
@@ -881,5 +569,5 @@ class ChatOrchestrator(
             },
             prompt_profile=prompt_profile,
             thinking=thinking,
-            content_streamed=False,
+            content_streamed=content_streamed,
         )
