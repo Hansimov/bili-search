@@ -383,6 +383,49 @@ def test_tool_events_include_visibility_summary_and_result_ids():
     )
 
 
+def test_google_tool_request_is_blocked_when_capability_unavailable():
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.chat.side_effect = [
+        make_function_call_response(
+            ToolCall(
+                id="call_google_1",
+                name="search_google",
+                arguments={"query": "Gemini site:bilibili.com/video"},
+            )
+        ),
+        make_content_response("只能基于站内工具回答。"),
+    ]
+
+    mock_search = MagicMock()
+    mock_search.capabilities.return_value = {
+        "service_name": "runtime-search",
+        "service_type": "remote",
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": False,
+        "relation_endpoints": ["related_tokens_by_tokens"],
+        "available_endpoints": ["/explore", "/search_owners"],
+        "docs": ["search_syntax"],
+    }
+
+    with patch.dict("os.environ", {"BILI_GOOGLE_HUB_DISABLED": "1"}, clear=False):
+        handler = ChatHandler(llm_client=mock_llm, search_client=mock_search)
+        result = handler.handle(
+            messages=[{"role": "user", "content": "查站内 Gemini 视频"}]
+        )
+
+    assert assistant_content(result).endswith("只能基于站内工具回答。")
+    assert result.get("tool_events", []) == []
+    second_call_messages = mock_llm.chat.call_args_list[1].kwargs["messages"]
+    assert any(
+        message.get("role") == "user"
+        and "当前环境没有 search_google 工具" in message.get("content", "")
+        for message in second_call_messages
+    )
+
+
 def test_thinking_mode_prefixes_prompt_and_sets_flag():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = make_content_response(

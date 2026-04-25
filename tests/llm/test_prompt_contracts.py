@@ -67,6 +67,30 @@ def test_build_system_prompt_mentions_internal_prompt_loading_and_result_isolati
     assert "当前语料缺少高置信结果" in prompt
 
 
+def test_build_system_prompt_omits_google_assets_when_unavailable():
+    from llms.prompts.copilot import build_system_prompt
+
+    prompt = build_system_prompt(
+        {
+            "default_query_mode": "wv",
+            "rerank_query_mode": "vwr",
+            "supports_multi_query": True,
+            "supports_owner_search": True,
+            "supports_google_search": False,
+            "relation_endpoints": ["related_tokens_by_tokens"],
+        },
+        intent=IntentProfile(
+            raw_query="官方更新和 B 站解读",
+            normalized_query="官方更新和 B 站解读",
+            final_target="mixed",
+        ),
+    )
+
+    assert "<search_google" not in prompt
+    assert "[TOOL_SEARCH_GOOGLE]" not in prompt
+    assert "[ROUTE_MIXED]" not in prompt
+
+
 def test_build_system_prompt_profile_tracks_new_sections():
     from llms.prompts.copilot import build_system_prompt_profile
 

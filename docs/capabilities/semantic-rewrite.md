@@ -1,10 +1,22 @@
 # 语义改写与意图识别架构说明
 
+## 2026-04-25 架构更新
+
+当前主线已经停止使用 `es-tok` 内部的索引期 semantic snapshot。
+
+现在的职责边界是：
+
+- `bili-search-algo/models/semantics` 负责离线生成 compact semantic bundle，并用 group 级 SQLite cursor 记录已处理文档以支持增量更新。
+- bundle 中按文件拆分承载 `rewrite / synonym / near_synonym / doc_cooccurrence`，构建期落在 `bili-search-algo/data/semantics/<version>/merged`，插件重载时复制到 `es_tok/semantics/v1/merged`。
+- `es-tok` 只负责加载 compact bundle 并在查询期消费，不再在 `postIndex`/`postDelete` 中维护语义状态。加载优先级为 JVM 参数、环境变量、插件目录、开发态相邻仓库、内置兜底资源。
+
+因此，下文中所有关于 `SemanticSnapshotManager`、`SemanticSnapshotIndexListener`、`IndexSemanticExpansionSnapshot` 的描述，都属于上一轮方案的历史记录，不再是当前实现。
+
 ## 范围
 
-本文说明本轮重构后 bili-search 与 es-tok 共享的语义改写、意图识别与语义状态架构。
+本文说明本轮重构后 bili-search 与 es-tok 共享的语义改写、意图识别与语义资产架构。
 
-核心目标不是继续在代码里堆局部常量和特判，而是把确定性知识迁移到可版本化的资产文件，把动态语义证据迁移到索引期增量维护的语义快照中。
+核心目标不是继续在代码里堆局部常量和特判，而是把确定性知识迁移到可版本化的资产文件，把真实样本文档归纳出的语义证据迁移到离线生成的 bundle 中。
 
 ## 哪些规则已经移出代码
 
@@ -32,39 +44,38 @@ es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而
 - `SemanticExpansionRule`
 - `SemanticQueryExpansionSuggester`
 
-默认的资源文件规则仍由 `QueryExpansionTuning` 提供，但它现在和未来的快照型、混合型语义提供者共享同一套存储契约。
+默认实现由 `SemanticArtifactStore` 提供，直接加载 `src/main/resources/tuning/semantic/*.tsv` 下的 compact bundle，并与查询期建议器共享同一套存储契约。
 
-### 2. 索引期增量 semantic snapshot
+### 2. 历史方案说明
 
-es-tok 目前已经接入第一版索引期增量语义快照链路：
+以下类和概念只保留为历史记录，便于对照旧日志、旧报告与旧代码：
 
 - `SemanticSnapshotManager`
 - `SemanticSnapshotIndexListener`
 - `IndexSemanticExpansionSnapshot`
 
-当前行为如下：
+它们代表的是上一轮“索引期增量 snapshot”方案，当前主线已经不再依赖这条链路。
 
-1. 成功的 `postIndex` 事件会读取本次写入文档的 `_source`。
-2. 第一阶段只使用 `title`、`tags`、`rtags` 三类字段构造语义档案。
-3. 每个文档都会生成一个基于归一化 `title + tags + rtags` 的轻量指纹。
-4. 若同一文档再次写入且指纹未变，则跳过快照更新。
-5. 若文档内容变更，会先移除旧贡献，再写入新贡献。
-6. 成功的删除事件会把该文档对快照的贡献移除。
-7. 查询期的 `semantic` 模式会把静态规则扩展和运行中快照产生的 `doc_cooccurrence` 扩展合并返回。
+### 3. 当前离线生成流程
 
-### 3. 第一版噪声控制策略
+当前语义资产的生成和消费流程是：
 
-第一版 snapshot 有意把标题中抽出的词更多视为“语义锚点”，而不是无条件的主扩展目标。
+1. `bili-search-algo/models/semantics` 从种子规则和真实文档中生成 compact semantic bundle。
+2. bundle 按关系类型拆分为四个固定文件：
+  - `rewrite.tsv`
+  - `synonym.tsv`
+  - `near_synonym.tsv`
+  - `doc_cooccurrence.tsv`
+3. 每个文件都使用紧凑的单行格式：一行对应一个 source term，后续列按 `target weight target weight ...` 展开，不再使用嵌套 JSON。
+4. `es-tok` 启动时由 `SemanticArtifactStore` 优先加载插件目录下的 merged bundle，找不到时回退到 `src/main/resources/tuning/semantic/*.tsv`。
+5. 查询期仍由 `SemanticQueryExpansionSuggester` 消费统一的 `SemanticExpansionStore` 接口，但底层数据源已经变成离线 bundle，而不是运行中 snapshot。
 
-这样可以保留有价值的关系，例如：
+当前 bundle 中同时承载四类关系：
 
-- `ComfyUI -> 教程`
-- `教程 -> 讲解`
-
-同时尽量避免低价值扩展，例如：
-
-- `教程 -> ComfyUI 教程`
-- `教程 -> ComfyUI`
+- `rewrite`：可安全改写的确定性表述
+- `synonym`：强同义项
+- `near_synonym`：弱同义或相近表述
+- `doc_cooccurrence`：来自真实文档共现的动态语义证据
 
 ## 为什么这样拆分
 
@@ -79,27 +90,70 @@ es-tok 目前已经接入第一版索引期增量语义快照链路：
 现在边界被明确拆开了：
 
 - 确定性规则属于资产文件
-- 动态语义证据属于 semantic snapshot store
+- 真实文档归纳出的语义证据属于离线 semantic bundle
 - 检索和编排代码只消费策略对象和存储对象，不再内嵌规则表
 
 ## 本轮验证结论
 
-围绕索引期 semantic snapshot，本轮已经完成一次真实写入验证，结论如下：
+当前这轮验证不再围绕索引期 snapshot，而是围绕“离线 bundle -> es-tok compact artifact store -> bili-search relation client contract”这条链路。
 
-1. 直接用 `workers.elastic_videos.commander` 做目标时间窗的大批量回灌时，ES bulk 阶段容易超时，不适合作为窄窗口语义链路的首选验证入口。
-2. 更稳定的做法是使用小量真实文档回放：先从 Mongo 中取目标时间窗文档，再少量写入 `bili_videos_dev6`，然后立刻对同一时间窗做 semantic probe。
-3. 该验证方式已经确认 `postIndex -> semantic snapshot -> semantic query` 这条链路可以真实生效。
-4. 在目标窗口 `2026-04-22 12:00:00` 到 `2026-04-22 18:00:00` 的小样本真实回放后，已经观测到新的 `doc_cooccurrence` 扩展，例如：
-  - `鬼畜 -> 搞笑`
-  - `汽车 -> 汽车知识`
-5. semantic relation 探测需要给足超时预算。5 秒会产生假阴性，30 秒可以稳定观察到结果，因此 live probe 不应使用过短超时。
+已经完成的关键验证如下：
+
+1. `models.semantics` 的窄测试通过，确认 compact 格式写出和规则合并逻辑稳定。
+2. `es-tok` 的 `SemanticArtifactStore` 窄测试、`SemanticQueryExpansionSuggester` 相关测试、`compileJava` 和 `assemble` 通过，确认 Java 侧已经切到 compact bundle，且内置兜底 TSV 会进入插件 jar。
+3. `bili-search` 的语义关系调用仍通过 `RelationsClient.related_tokens_by_tokens(mode="semantic")`，响应契约不变，因此 `elastics.videos` 和 `llms` 不需要直接读取离线产物。
+4. `data/semantics/live_large_stats/merged` 已由 1M Mongo live run 生成，并通过 `SEMANTICS_BUNDLE_PATH=... ./load.sh -d -b -c` 复制到开发 ES 插件目录。
+5. 开发 ES 重启后 cluster health 为 green，`_cat/plugins` 显示 `es_tok 1.0.0` 已加载。
+6. live endpoint 验证 `康夫 ui -> comfyui`，说明 TSV 空格掩码 `▂` 和 Java 解码链路生效。
+
+## 本轮二次验证
+
+围绕当前 offline bundle 主线，本轮已经完成小、中、大三档 Mongo live build + merge，并继续保留真实 probe 资产：
+
+1. 小规模 `live_small_stats`：10k docs，active processing 10266.94 docs/s，merge 后 10863 allowed terms、7959 `doc_cooccurrence` rows。
+2. 中规模 `live_medium_stats`：200k docs，端到端 10743.04 docs/s，active processing 19011.41 docs/s，merge 后 53081 allowed terms、42568 `doc_cooccurrence` rows。
+3. 大规模 `live_large_stats`：1M docs，端到端 18352.53 docs/s，active processing 21551.72 docs/s，merge 后 92453 allowed terms、76632 `doc_cooccurrence` rows，未出现 OOM 或 exit 137。
+4. reload 后的 live semantic probe：`debugs/live_case_reports/semantic_probe_live_large_bundle_20260425_after_composable_fix.json`，统计为 `28 docs -> 67 probe terms -> 57 non-empty cases`，返回中可见 `doc_cooccurrence / rewrite / prefix / correction` 等关系类型，同时短 token 的 `doc_cooccurrence` 局部拼接噪声已收敛。
+
+历史调试中还保留了三类真实验证资产，可继续作为下一轮 live probe 输入：
+
+1. 新一轮 `10 x 10` 真实样本集：
+  - 输出文件：`debugs/live_case_reports/live_case_corpus_round2_20260424.json`
+  - 规模：100 个 case，10 类，每类 10 个，均来自当前 dev index 的真实热门文档。
+2. 当前主线下的真实文档 bundle 输入：
+  - 输出文件：`debugs/live_case_reports/semantic_docs_merged_real.jsonl`
+  - 汇总文件：`debugs/live_case_reports/semantic_docs_merged_real.summary.json`
+  - 当前版本由两部分合并而成：
+    - 历史 live case corpus 中抽出的种子文档
+    - recent-window live probe 中实际回放过的真实文档
+3. reload 后的上一轮 live semantic probe 历史输出：
+  - 输出文件：`debugs/live_case_reports/semantic_probe_merged_real_post_reload.json`
+  - 当前统计：`28 docs -> 47 probe terms -> 44 non-empty cases`
+
+这些资产对下一轮验证有三个用途：
+
+1. 用真实文档继续扩大 `doc_cooccurrence` 覆盖面。
+2. 在插件 reload 后复用 probe 输入确认 live ES 返回的 relation type 是否包含 compact bundle 中的关系。
+3. 把 residual noise 从“链路是否生效”转移到“哪些高频主题词仍需要继续收敛”这一层面。
+
+## 当前残留问题
+
+虽然当前主链已经打通，但 live probe 仍暴露出两类残留问题：
+
+1. 一批更常见、也更难直接一刀切的高频主题词仍然容易成为 expansion，例如 `生活`、`日常`、`娱乐`、`综艺`、`音乐`。
+2. 部分短 ASCII 或标题片段触发的局部替换容易把 `doc_cooccurrence` 噪声拼回长标题；当前 es-tok 已收口为只允许 `rewrite / synonym / near_synonym` 参与局部替换，`doc_cooccurrence` 保留为整词扩展证据。
+3. 当前 recent-window Mongo 导出路径在更大窗口上仍然偏慢，因此“更多领域、更多数量”的真实 corpus 构建还需要继续优化导出方式。
+4. 下一轮应优先把这些泛化标签沉到策略文件里，区分：
+  - 禁止进入 expansion 的 broad tags
+  - 只允许作为 anchor 的高频主题
+  - 需要基于 doc frequency 或 field role 下调权重的弱语义词
 
 ## 下一步
 
 当前实现已经可运行，但仍然只是第一阶段，不是最终形态。后续重点包括：
 
-1. 让 semantic snapshot 支持跨节点重启持久化，而不只依赖重启后的新写流量重新积累。
-2. 在 shard 启动时重建已有文档的 snapshot 状态，而不是只依赖新增写入。
-3. 扩展文档语义抽取范围，不再局限于 `title/tags/rtags`，尤其要提升长中文标题、多段主题和弱结构文本的建模能力。
-4. 把 snapshot 产生的语义证据进一步反馈给作者意图识别和 query planning，而不只是 token 扩展。
-5. 继续评估作者意图中剩余的启发式规则，哪些可以从策略资产进一步演进为语料驱动或学习型先验。
+1. 优化 recent-window 真实文档导出路径，避免更大时间窗下 Mongo 聚合过慢。
+2. 扩展文档语义抽取范围，不再局限于 `title/tags/rtags`，尤其要提升长中文标题、多段主题和弱结构文本的建模能力。
+3. 把 live probe 中反复出现的高频泛化词继续收敛到策略资产，而不是让它们在代码里零散特判。
+4. 继续评估作者意图中剩余的启发式规则，哪些可以从策略资产进一步演进为语料驱动或学习型先验。
+5. 把当前 bundle 生成结果和 live probe 统计进一步反馈给 query planning，而不只是 token 扩展。

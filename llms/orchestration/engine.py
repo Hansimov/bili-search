@@ -1648,6 +1648,42 @@ class ChatOrchestrator:
             "请直接明确告诉用户当前无法读取转写文本，并说明需要先配置 transcript 服务。",
         )
 
+    @staticmethod
+    def _filter_google_unavailable_requests(
+        requests: list[ToolCallRequest],
+        search_capabilities: dict,
+    ) -> tuple[list[ToolCallRequest], bool]:
+        if search_capabilities.get("supports_google_search", False):
+            return requests, False
+        filtered_requests = []
+        blocked_google_request = False
+        for request in requests:
+            if (
+                request.visibility == "user"
+                and canonical_tool_name(request.name) == "search_google"
+            ):
+                blocked_google_request = True
+                continue
+            filtered_requests.append(request)
+        return filtered_requests, blocked_google_request
+
+    @staticmethod
+    def _select_google_unavailable_nudge(
+        *,
+        blocked_google_request: bool,
+        prompted_nudges: set[str],
+    ) -> tuple[str, str] | None:
+        if not blocked_google_request:
+            return None
+        if "google_search_unavailable" in prompted_nudges:
+            return None
+        return (
+            "google_search_unavailable",
+            "当前环境没有 search_google 工具。请不要再调用 search_google；"
+            "本轮只使用 search_videos、search_owners、expand_query 等站内工具，"
+            "或基于已有站内结果直接回答。",
+        )
+
     def _extra_prompt_assets(
         self,
         messages: list[dict],
@@ -2249,6 +2285,11 @@ class ChatOrchestrator:
                     filtered_requests.append(request)
                 requests = filtered_requests
 
+            requests, blocked_google_request = self._filter_google_unavailable_requests(
+                requests,
+                search_capabilities,
+            )
+
             usage_trace.append(
                 self._usage_trace_entry(
                     phase="planner",
@@ -2359,6 +2400,16 @@ class ChatOrchestrator:
                 continue
 
             if not requests:
+                google_unavailable_nudge = self._select_google_unavailable_nudge(
+                    blocked_google_request=blocked_google_request,
+                    prompted_nudges=prompted_nudges,
+                )
+                if google_unavailable_nudge:
+                    prompted_nudges.add(google_unavailable_nudge[0])
+                    conversation.append(
+                        {"role": "user", "content": google_unavailable_nudge[1]}
+                    )
+                    continue
                 blocked_request_nudge = select_blocked_request_nudge(
                     intent,
                     blocked_external_video_request,
@@ -2420,6 +2471,16 @@ class ChatOrchestrator:
                 prompted_nudges.add(blocked_request_nudge[0])
                 conversation.append(
                     {"role": "user", "content": blocked_request_nudge[1]}
+                )
+
+            google_unavailable_nudge = self._select_google_unavailable_nudge(
+                blocked_google_request=blocked_google_request,
+                prompted_nudges=prompted_nudges,
+            )
+            if google_unavailable_nudge:
+                prompted_nudges.add(google_unavailable_nudge[0])
+                conversation.append(
+                    {"role": "user", "content": google_unavailable_nudge[1]}
                 )
 
             deterministic_lookup_answer = self._build_deterministic_final_answer(
@@ -2688,6 +2749,11 @@ class ChatOrchestrator:
                     filtered_requests.append(request)
                 requests = filtered_requests
 
+            requests, blocked_google_request = self._filter_google_unavailable_requests(
+                requests,
+                search_capabilities,
+            )
+
             usage_trace.append(
                 self._usage_trace_entry(
                     phase="planner",
@@ -2811,6 +2877,16 @@ class ChatOrchestrator:
                 continue
 
             if not requests:
+                google_unavailable_nudge = self._select_google_unavailable_nudge(
+                    blocked_google_request=blocked_google_request,
+                    prompted_nudges=prompted_nudges,
+                )
+                if google_unavailable_nudge:
+                    prompted_nudges.add(google_unavailable_nudge[0])
+                    conversation.append(
+                        {"role": "user", "content": google_unavailable_nudge[1]}
+                    )
+                    continue
                 blocked_request_nudge = select_blocked_request_nudge(
                     intent,
                     blocked_external_video_request,
@@ -2881,6 +2957,16 @@ class ChatOrchestrator:
                 prompted_nudges.add(blocked_request_nudge[0])
                 conversation.append(
                     {"role": "user", "content": blocked_request_nudge[1]}
+                )
+
+            google_unavailable_nudge = self._select_google_unavailable_nudge(
+                blocked_google_request=blocked_google_request,
+                prompted_nudges=prompted_nudges,
+            )
+            if google_unavailable_nudge:
+                prompted_nudges.add(google_unavailable_nudge[0])
+                conversation.append(
+                    {"role": "user", "content": google_unavailable_nudge[1]}
                 )
 
             deterministic_lookup_answer = self._build_deterministic_final_answer(

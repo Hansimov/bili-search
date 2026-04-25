@@ -623,12 +623,19 @@ def _split_google_hub_urls(raw_value: str | None) -> list[str]:
     return candidates
 
 
+def _truthy_env(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_google_search_client(
     *,
     base_url: str | None = None,
     timeout: float | None = None,
     verbose: bool = False,
 ):
+    if _truthy_env("BILI_GOOGLE_HUB_DISABLED"):
+        return None
+
     configured_base_url = str(base_url or "").strip()
     if not configured_base_url:
         configured_base_url = str(os.getenv("BILI_GOOGLE_HUB_BASE_URL") or "").strip()
@@ -910,6 +917,10 @@ class ToolExecutor:
             logger.note(f"> Google search available: {self._google_available}")
         return self._google_available
 
+    def _mark_google_unavailable(self) -> None:
+        self._google_available = False
+        self._google_available_ts = time.monotonic()
+
     def get_search_capabilities(self, refresh: bool = False) -> dict:
         capability_getter = getattr(self.search_client, "capabilities", None)
         if callable(capability_getter):
@@ -1181,6 +1192,7 @@ class ToolExecutor:
         lang = args.get("lang")
         result = self.google_client.search(query=query, num=num, lang=lang)
         if result.get("error"):
+            self._mark_google_unavailable()
             return {
                 "query": query,
                 "error": result["error"],

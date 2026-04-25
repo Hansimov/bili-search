@@ -27,17 +27,35 @@ def load_case_index(path: Path | None) -> dict[str, dict]:
     }
 
 
-def summarize_case(case: dict, case_index: dict[str, dict]) -> dict:
+def load_coverage(path: Path | None) -> set[str] | None:
+    if not path or not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    found = payload.get("found") if isinstance(payload, dict) else None
+    if not isinstance(found, list):
+        return None
+    return {str(item) for item in found}
+
+
+def summarize_case(
+    case: dict,
+    case_index: dict[str, dict],
+    coverage_found: set[str] | None,
+) -> dict:
     case_id = case.get("id") or ""
     source_case = case_index.get(case_id) or {}
     expected = expected_bvid(case.get("id") or "")
     search = case.get("search") or {}
     related = case.get("related") or {}
+    explore = case.get("explore") or {}
     intent_info = search.get("intent_info") or {}
     has_search_probe = "search" in case or bool(case.get("search_error"))
     has_related_probe = "related" in case or bool(case.get("related_error"))
+    has_explore_probe = "explore" in case or bool(case.get("explore_error"))
     top_hits = list(search.get("top_hits") or [])
     top_bvids = [str(hit.get("bvid") or "").strip() for hit in top_hits]
+    explore_hits = list(explore.get("top_hits") or [])
+    explore_bvids = [str(hit.get("bvid") or "").strip() for hit in explore_hits]
     seed = source_case.get("seed") or {}
     seed_owner = str(((seed.get("owner") or {}).get("name") or "")).strip()
     top_hit_owners = [str(hit.get("owner") or "").strip() for hit in top_hits]
@@ -52,6 +70,11 @@ def summarize_case(case: dict, case_index: dict[str, dict]) -> dict:
     has_chat_case = bool(source_case.get("chat_messages"))
     top1_match = bool(expected and top_bvids[:1] == [expected])
     top3_match = bool(expected and expected in top_bvids[:3])
+    explore_top1_match = bool(expected and explore_bvids[:1] == [expected])
+    explore_top3_match = bool(expected and expected in explore_bvids[:3])
+    expected_present = None
+    if coverage_found is not None and expected:
+        expected_present = expected in coverage_found
 
     success: bool | None = None
     if has_search_probe and category in {
@@ -80,17 +103,23 @@ def summarize_case(case: dict, case_index: dict[str, dict]) -> dict:
         "category": category,
         "seed_owner": seed_owner,
         "expected_bvid": expected,
+        "expected_present": expected_present,
         "has_search_probe": has_search_probe,
         "has_related_probe": has_related_probe,
+        "has_explore_probe": has_explore_probe,
         "top1_match": top1_match,
         "top3_match": top3_match,
+        "explore_top1_match": explore_top1_match,
+        "explore_top3_match": explore_top3_match,
         "success": success,
         "search_empty": len(top_hits) == 0 if has_search_probe else None,
         "related_empty": (
             len(list(related.get("options") or [])) == 0 if has_related_probe else None
         ),
+        "explore_empty": len(explore_hits) == 0 if has_explore_probe else None,
         "search_error": bool(case.get("search_error")),
         "related_error": bool(case.get("related_error")),
+        "explore_error": bool(case.get("explore_error")),
         "chat_error": bool(case.get("chat_error")),
         "has_chat_probe": has_chat_probe,
         "has_chat_case": has_chat_case,
@@ -99,6 +128,7 @@ def summarize_case(case: dict, case_index: dict[str, dict]) -> dict:
         "has_owner_candidates": has_owner_candidates,
         "search_query": case.get("search_query") or "",
         "top_hits": top_hits,
+        "explore_hits": explore_hits,
     }
 
 
@@ -106,18 +136,44 @@ def print_overall(summary_cases: list[dict]) -> None:
     total = len(summary_cases)
     search_cases = [case for case in summary_cases if case["has_search_probe"]]
     related_cases = [case for case in summary_cases if case["has_related_probe"]]
+    explore_cases = [case for case in summary_cases if case["has_explore_probe"]]
     success_cases = [case for case in summary_cases if case["success"] is not None]
+    present_cases = [case for case in search_cases if case["expected_present"] is True]
     print(f"total={total}")
     print(f"search_cases={len(search_cases)}")
     print(f"related_cases={len(related_cases)}")
+    print(f"explore_cases={len(explore_cases)}")
     print(f"success={sum(1 for case in success_cases if case['success'])}")
+    if any(case["expected_present"] is not None for case in summary_cases):
+        print(f"expected_present={len(present_cases)}")
     print(f"top1={sum(1 for case in search_cases if case['top1_match'])}")
     print(f"top3={sum(1 for case in search_cases if case['top3_match'])}")
+    if present_cases:
+        print(f"top1_present={sum(1 for case in present_cases if case['top1_match'])}")
+        print(f"top3_present={sum(1 for case in present_cases if case['top3_match'])}")
+    print(
+        f"explore_top1={sum(1 for case in explore_cases if case['explore_top1_match'])}"
+    )
+    print(
+        f"explore_top3={sum(1 for case in explore_cases if case['explore_top3_match'])}"
+    )
+    present_explore_cases = [
+        case for case in explore_cases if case["expected_present"] is True
+    ]
+    if present_explore_cases:
+        print(
+            f"explore_top1_present={sum(1 for case in present_explore_cases if case['explore_top1_match'])}"
+        )
+        print(
+            f"explore_top3_present={sum(1 for case in present_explore_cases if case['explore_top3_match'])}"
+        )
     print(f"search_empty={sum(1 for case in search_cases if case['search_empty'])}")
     print(f"related_empty={sum(1 for case in related_cases if case['related_empty'])}")
+    print(f"explore_empty={sum(1 for case in explore_cases if case['explore_empty'])}")
     print(f"owner_filter={sum(1 for case in search_cases if case['has_owner_filter'])}")
     print(f"search_error={sum(1 for case in summary_cases if case['search_error'])}")
     print(f"related_error={sum(1 for case in summary_cases if case['related_error'])}")
+    print(f"explore_error={sum(1 for case in summary_cases if case['explore_error'])}")
     print(f"chat_error={sum(1 for case in summary_cases if case['chat_error'])}")
 
 
@@ -130,17 +186,21 @@ def print_by_category(summary_cases: list[dict]) -> None:
         cases = grouped[category]
         search_cases = [case for case in cases if case["has_search_probe"]]
         related_cases = [case for case in cases if case["has_related_probe"]]
+        explore_cases = [case for case in cases if case["has_explore_probe"]]
         success_cases = [case for case in cases if case["success"] is not None]
         print(
-            "{} total={} success={} top1={} top3={} owner_filter={} search_empty={} related_empty={} chat_error={}".format(
+            "{} total={} success={} top1={} top3={} explore_top1={} explore_top3={} owner_filter={} search_empty={} related_empty={} explore_empty={} chat_error={}".format(
                 category,
                 len(cases),
                 sum(1 for case in success_cases if case["success"]),
                 sum(1 for case in search_cases if case["top1_match"]),
                 sum(1 for case in search_cases if case["top3_match"]),
+                sum(1 for case in explore_cases if case["explore_top1_match"]),
+                sum(1 for case in explore_cases if case["explore_top3_match"]),
                 sum(1 for case in search_cases if case["has_owner_filter"]),
                 sum(1 for case in search_cases if case["search_empty"]),
                 sum(1 for case in related_cases if case["related_empty"]),
+                sum(1 for case in explore_cases if case["explore_empty"]),
                 sum(1 for case in cases if case["chat_error"]),
             )
         )
@@ -167,6 +227,7 @@ def print_failures(summary_cases: list[dict], limit: int) -> None:
             f"FAIL {case['id']} category={case['category']} "
             f"success={case['success']} "
             f"top1={case['top1_match']} top3={case['top3_match']} "
+            f"expected_present={case['expected_present']} "
             f"owner_filter={case['has_owner_filter']} search_empty={case['search_empty']} related_empty={case['related_empty']} "
             f"query={case['search_query']}"
         )
@@ -215,12 +276,14 @@ def main() -> None:
     )
     parser.add_argument("report", type=Path)
     parser.add_argument("--cases-path", type=Path)
+    parser.add_argument("--coverage-json", type=Path)
     parser.add_argument("--fail-limit", type=int, default=30)
     args = parser.parse_args()
 
     cases = json.loads(args.report.read_text(encoding="utf-8"))
     case_index = load_case_index(args.cases_path)
-    summary_cases = [summarize_case(case, case_index) for case in cases]
+    coverage_found = load_coverage(args.coverage_json)
+    summary_cases = [summarize_case(case, case_index, coverage_found) for case in cases]
     print_overall(summary_cases)
     print_by_category(summary_cases)
     print_failures(summary_cases, args.fail_limit)

@@ -8,6 +8,7 @@ Run:
 
 import json
 import requests
+import time
 from unittest.mock import MagicMock, patch
 from tclogger import logger
 
@@ -907,6 +908,32 @@ def test_execute_search_google_formats_bilibili_site_results():
     logger.success("[PASS] execute search_google formats bilibili site results")
 
 
+def test_execute_search_google_error_temporarily_disables_capability():
+    mock_client = MagicMock()
+    mock_google = MagicMock()
+    mock_google.base_url = "http://mock-google:18100"
+    mock_google.search.return_value = {
+        "success": False,
+        "error": "read timed out",
+        "results": [],
+    }
+
+    executor = ToolExecutor(search_client=mock_client, google_client=mock_google)
+    executor._google_available = True
+    executor._google_available_ts = time.monotonic()
+
+    tc = ToolCall(
+        id="call_test_google_timeout",
+        name="search_google",
+        arguments=json.dumps({"query": "AI site:bilibili.com/video", "num": 3}),
+    )
+    result_msg = executor.execute(tc)
+
+    result_data = json.loads(result_msg["content"])
+    assert result_data["error"] == "read timed out"
+    assert executor.get_search_capabilities()["supports_google_search"] is False
+
+
 def test_google_search_client_retries_502_then_succeeds():
     logger.note("=" * 60)
     logger.note("[TEST] google search client retries transient 502")
@@ -976,6 +1003,15 @@ def test_create_google_search_client_reads_secrets_when_env_missing():
     assert client is not None
     assert client.base_url == "http://127.0.0.1:18100"
     assert client.timeout == 17.0
+
+
+def test_create_google_search_client_can_be_disabled_by_env():
+    from llms.tools.executor import create_google_search_client
+
+    with patch.dict("os.environ", {"BILI_GOOGLE_HUB_DISABLED": "1"}, clear=False):
+        client = create_google_search_client(base_url="http://127.0.0.1:18100")
+
+    assert client is None
 
 
 def test_execute_empty_query():

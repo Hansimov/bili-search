@@ -121,6 +121,7 @@ def build_recent_docs_query(
         "_source": [
             "bvid",
             "title",
+            "tid",
             "tags",
             "rtags",
             "owner.name",
@@ -272,6 +273,9 @@ def probe_terms(
                     "source_doc": {
                         "bvid": doc.get("bvid"),
                         "title": doc.get("title"),
+                        "tid": doc.get("tid"),
+                        "tags": doc.get("tags"),
+                        "rtags": doc.get("rtags"),
                         "owner": (doc.get("owner") or {}).get("name"),
                         "view": ((doc.get("stat") or {}).get("view")),
                         "pubdate": doc.get("pubdate"),

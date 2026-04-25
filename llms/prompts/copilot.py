@@ -8,6 +8,28 @@ from llms.contracts import IntentProfile, PromptSelection
 from llms.tools.defs import build_tool_prompt_overview
 
 
+_GOOGLE_DEPENDENT_ASSET_IDS = {
+    "route.external.brief",
+    "route.mixed.brief",
+    "tool.search_google.brief",
+    "tool.search_google.detailed",
+    "tool.search_google.examples",
+}
+
+
+def _filter_asset_ids_for_capabilities(
+    asset_ids: list[str],
+    capabilities: dict | None,
+) -> list[str]:
+    if capabilities is None or capabilities.get("supports_google_search", False):
+        return asset_ids
+    return [
+        asset_id
+        for asset_id in asset_ids
+        if asset_id not in _GOOGLE_DEPENDENT_ASSET_IDS
+    ]
+
+
 def _capabilities_block(capabilities: dict | None = None) -> str:
     return build_tool_prompt_overview(
         capabilities,
@@ -36,6 +58,7 @@ def build_prompt_selection(
     for asset_id in extra_asset_ids or []:
         if asset_id not in asset_ids:
             asset_ids.append(asset_id)
+    asset_ids = _filter_asset_ids_for_capabilities(asset_ids, capabilities)
 
     assets = get_prompt_assets(ids=asset_ids)
     capabilities_block = _capabilities_block(capabilities)

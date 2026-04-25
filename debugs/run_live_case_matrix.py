@@ -93,6 +93,40 @@ def summarize_related(result: dict[str, Any], limit: int) -> dict[str, Any]:
     }
 
 
+def summarize_explore(result: dict[str, Any], limit: int) -> dict[str, Any]:
+    steps = result.get("data") or []
+    first_output = (steps[0].get("output") or {}) if steps else {}
+    group_output = {}
+    for step in steps:
+        if step.get("name") == "group_hits_by_owner":
+            group_output = step.get("output") or {}
+            break
+    return {
+        "intent_info": result.get("intent_info") or {},
+        "retry_info": result.get("retry_info") or {},
+        "qmod": first_output.get("qmod"),
+        "filter_only": first_output.get("filter_only", False),
+        "total_hits": first_output.get("total_hits", 0),
+        "top_hits": [
+            {
+                "title": hit.get("title"),
+                "owner": (hit.get("owner") or {}).get("name"),
+                "bvid": hit.get("bvid"),
+            }
+            for hit in (first_output.get("hits") or [])[:limit]
+        ],
+        "authors": [
+            {
+                "name": author.get("name"),
+                "mid": author.get("mid"),
+                "count": author.get("count"),
+            }
+            for author in (group_output.get("authors") or [])[:limit]
+        ],
+        "perf": result.get("perf") or first_output.get("perf") or {},
+    }
+
+
 def summarize_chat(result: dict[str, Any]) -> dict[str, Any]:
     message = (result.get("choices") or [{}])[0].get("message") or {}
     return {
@@ -132,6 +166,14 @@ def resolve_output_path(path: Path | None) -> Path:
     return DEFAULT_REPORTS_DIR / f"live-case-matrix-{timestamp}.json"
 
 
+def write_results(path: Path, results: list[dict[str, Any] | None]) -> None:
+    completed = [result for result in results if result is not None]
+    path.write_text(
+        json.dumps(completed, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def run_case(
     case: dict[str, Any],
     *,
@@ -142,6 +184,7 @@ def run_case(
     thinking: bool,
     skip_search: bool,
     skip_related: bool,
+    skip_explore: bool,
     skip_chat: bool,
     chat_retries: int,
     chat_semaphore: threading.Semaphore | None,
@@ -211,14 +254,48 @@ def run_case(
             case_result["related_error"] = str(exc)
             log_lines.append(f"related_error: {case_result['related_error']}")
 
-    if not skip_chat and case.get("chat_messages"):
+    if not skip_explore and case_result["search_query"]:
         started = time.perf_counter()
+        try:
+            explore_payload: dict[str, Any] = {
+                "query": case_result["search_query"],
+                "verbose": False,
+            }
+            if case.get("qmod") is not None:
+                explore_payload["qmod"] = case.get("qmod")
+            explore_result = post_json(
+                base_url,
+                "/explore",
+                explore_payload,
+                timeout=timeout,
+            )
+            case_result["explore"] = summarize_explore(explore_result, limit)
+            case_result["explore_elapsed_s"] = round(
+                time.perf_counter() - started,
+                2,
+            )
+            log_lines.append("explore:")
+            log_lines.append(
+                json.dumps(case_result["explore"], ensure_ascii=False, indent=2)
+            )
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            case_result["explore_error"] = f"HTTP {exc.code}: {body}"
+            log_lines.append(f"explore_error: {case_result['explore_error']}")
+        except Exception as exc:
+            case_result["explore_error"] = str(exc)
+            log_lines.append(f"explore_error: {case_result['explore_error']}")
+
+    if not skip_chat and case.get("chat_messages"):
+        started: float | None = None
         attempts = 0
         semaphore = chat_semaphore or threading.Semaphore(1)
         while True:
             attempts += 1
             try:
                 with semaphore:
+                    if started is None:
+                        started = time.perf_counter()
                     chat_result = post_json(
                         base_url,
                         "/chat/completions",
@@ -232,7 +309,7 @@ def run_case(
                     )
                 case_result["chat"] = summarize_chat(chat_result)
                 case_result["chat_elapsed_s"] = round(
-                    time.perf_counter() - started,
+                    time.perf_counter() - (started or time.perf_counter()),
                     2,
                 )
                 if attempts > 1:
@@ -316,6 +393,11 @@ def main() -> int:
         help="Skip the /related_tokens_by_tokens probe",
     )
     parser.add_argument(
+        "--skip-explore",
+        action="store_true",
+        help="Skip the /explore probe",
+    )
+    parser.add_argument(
         "--skip-chat",
         action="store_true",
         help="Skip the /chat/completions probe",
@@ -343,6 +425,16 @@ def main() -> int:
         default=1,
         help="Retry count for transient chat 5xx/timeout failures",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Only print progress lines, not full per-case JSON logs",
+    )
+    parser.add_argument(
+        "--no-incremental-write",
+        action="store_true",
+        help="Only write the JSON report once all cases finish",
+    )
     args = parser.parse_args()
 
     cases = select_cases(load_cases(args.cases_path), args.case)
@@ -367,6 +459,7 @@ def main() -> int:
                 thinking=args.thinking,
                 skip_search=args.skip_search,
                 skip_related=args.skip_related,
+                skip_explore=args.skip_explore,
                 skip_chat=args.skip_chat,
                 chat_retries=max(0, args.chat_retries),
                 chat_semaphore=chat_semaphore,
@@ -381,12 +474,12 @@ def main() -> int:
             case_result, case_log = future.result()
             matrix_results[index] = case_result
             print(f"[{completed_count}/{len(cases)}] completed {case_result['id']}")
-            print(case_log)
+            if not args.quiet:
+                print(case_log)
+            if not args.no_incremental_write:
+                write_results(output_path, matrix_results)
 
-    output_path.write_text(
-        json.dumps(matrix_results, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_results(output_path, matrix_results)
     print(f"\nSaved JSON report to: {output_path}")
 
     return 0
