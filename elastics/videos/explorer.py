@@ -7,6 +7,7 @@ from converters.highlight.char_match import get_char_highlighter
 from elastics.structure import build_auto_constraint_filter
 from elastics.videos.explore import (
     ExplorePipelineConfig,
+    StepBuilder,
     UnifiedExploreFinalizeConfig,
     finalize_unified_explore_result,
     run_explore_pipeline,
@@ -416,6 +417,12 @@ class VideoExplorer(VideoSearcherV2):
                     score_field="rerank_score",
                     verbose=verbose,
                 )
+                attribute_evidence_info = self._apply_attribute_evidence_gate(
+                    hits=reranked_hits,
+                    query_tokens=keywords_body,
+                    reranker=reranker,
+                    score_field="rerank_score",
+                )
                 rerank_ms = round((time.perf_counter() - start) * 1000, 2)
                 if len(full_hits) > rerank_max_hits:
                     reranked_hits.extend(full_hits[rerank_max_hits:])
@@ -426,6 +433,8 @@ class VideoExplorer(VideoSearcherV2):
                     "rerank_ms": rerank_ms,
                     "perf": rerank_perf,
                 }
+                if attribute_evidence_info:
+                    rerank_info["attribute_evidence"] = attribute_evidence_info
 
         # Apply ranking (trims to rank_top_k)
         full_doc_res["hits"] = full_hits

@@ -128,6 +128,30 @@ def test_auto_exact_can_be_disabled_for_low_recall_retry():
     }
 
 
+def test_auto_exact_can_keep_only_model_code_for_low_recall_retry():
+    searcher = make_scope_searcher()
+
+    with override_auto_require_short_han_exact("model_code"):
+        _, _, query_dsl_dict = searcher.get_info_of_query_rewrite_dsl(
+            query="b200 价格",
+            boosted_match_fields=["title.words^3"],
+            boosted_date_fields=[],
+            extra_filters=[],
+        )
+
+    assert query_dsl_dict == {
+        "bool": {
+            "must": {
+                "es_tok_query_string": {
+                    "query": "+b200 价格",
+                    "fields": ["title.words^3"],
+                    "max_freq": 1000000,
+                }
+            }
+        }
+    }
+
+
 def test_short_cjk_segment_is_auto_promoted_to_required_exact():
     searcher = make_scope_searcher()
 

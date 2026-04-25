@@ -63,6 +63,8 @@ class OwnerQueryIntentResolver:
         ]
         if len(segments) < 2:
             return normalized_query
+        if any(self._looks_like_model_code_query(segment) for segment in segments):
+            return normalized_query
 
         anchor = segments[0]
         if not is_short_han_segment(anchor):

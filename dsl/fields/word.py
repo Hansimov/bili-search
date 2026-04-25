@@ -29,7 +29,7 @@ def override_auto_require_short_han_exact(mode: str | bool):
     if isinstance(mode, bool):
         normalized_mode = "all" if mode else "none"
     normalized_mode = str(normalized_mode or "all").strip().lower()
-    if normalized_mode not in {"all", "first", "none"}:
+    if normalized_mode not in {"all", "first", "model_code", "none"}:
         normalized_mode = "all"
     token = AUTO_REQUIRE_SHORT_HAN_EXACT.set(normalized_mode)
     try:
@@ -54,7 +54,8 @@ def should_auto_require_exact_segment(text: str) -> bool:
     text = str(text or "").strip()
     if not text or any(char.isspace() for char in text):
         return False
-    if get_auto_require_short_han_exact_mode() == "none":
+    exact_mode = get_auto_require_short_han_exact_mode()
+    if exact_mode == "none":
         return False
 
     has_ascii_letter = any(char.isascii() and char.isalpha() for char in text)
@@ -62,7 +63,7 @@ def should_auto_require_exact_segment(text: str) -> bool:
     if has_ascii_letter and has_digit:
         return True
 
-    if get_auto_require_short_han_exact_mode() == "all" and is_short_han_segment(text):
+    if exact_mode == "all" and is_short_han_segment(text):
         return True
 
     return False

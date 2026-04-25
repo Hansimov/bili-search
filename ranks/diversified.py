@@ -392,11 +392,19 @@ class DiversifiedRanker:
         # Title-keyword overlap penalty: if NO query keywords appear in the
         # title, the BM25 score comes from desc/tags/other fields — the doc's
         # actual content is likely NOT about the query.
-        if title_lower and query_lower and not title_has_query_keywords:
+        semantic_attribute_matched = bool(hit.get("attribute_evidence_terms"))
+        if (
+            title_lower
+            and query_lower
+            and not title_has_query_keywords
+            and not semantic_attribute_matched
+        ):
             rel_norm *= RANK_NO_TITLE_KEYWORD_PENALTY
 
-        # Apply title-match bonus: docs with query in title get a boost
-        if hit.get("_title_matched"):
+        # Apply title/semantic-attribute bonus: direct title hits are strong,
+        # and model-code queries may carry the decisive attribute evidence in
+        # tags (for example GPU/英伟达 for "显卡").
+        if hit.get("_title_matched") or semantic_attribute_matched:
             rel_norm = min(rel_norm + TITLE_MATCH_BONUS, 1.0)
 
         hit["relevance_score"] = round(rel_norm, 4)

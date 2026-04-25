@@ -868,11 +868,13 @@ def test_search_skips_owner_intent_for_model_like_ascii_query():
 def test_search_retries_model_code_attribute_query_on_low_recall():
     searcher, captured = make_searcher({"owners": []})
     captured["dsl_queries"] = []
+    captured["auto_exact_modes"] = []
 
     def _get_info(**kwargs):
         captured["dsl_queries"].append(kwargs["query"])
+        captured["auto_exact_modes"].append(get_auto_require_short_han_exact_mode())
         return (
-            captured.setdefault("query_info", {}),
+            {"words_expr": kwargs["query"]},
             captured.setdefault("rewrite_info", {}),
             captured.setdefault("query_dsl_dict", {"match_all": {}}),
         )
@@ -900,8 +902,102 @@ def test_search_retries_model_code_attribute_query_on_low_recall():
     result = searcher.search("b200 价格", limit=5)
 
     assert len(captured["dsl_queries"]) == 2
+    assert captured["auto_exact_modes"] == ["all", "model_code"]
     assert result["total_hits"] == 5
     assert result["retry_info"]["relaxed_auto_exact_segments"] is True
+    assert result["retry_info"]["kept_model_code_exact"] is True
+
+
+def test_search_retries_model_code_attribute_query_with_qmod_marker():
+    searcher, captured = make_searcher({"owners": []})
+    captured["auto_exact_modes"] = []
+
+    def _get_info(**kwargs):
+        captured["auto_exact_modes"].append(get_auto_require_short_han_exact_mode())
+        return (
+            {"words_expr": "h20 显卡"},
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    def _parse(*args, **kwargs):
+        if len(captured["auto_exact_modes"]) == 1:
+            return {"hits": [], "total_hits": 0, "return_hits": 0}
+        return {
+            "hits": [{"title": "model-code relaxed hit"}],
+            "total_hits": 1,
+            "return_hits": 1,
+        }
+
+    searcher.get_info_of_query_rewrite_dsl = _get_info
+    searcher.hit_parser.parse = _parse
+
+    result = searcher.search("h20 显卡 q=vr", limit=5)
+
+    assert captured["auto_exact_modes"] == ["all", "model_code"]
+    assert result["return_hits"] == 1
+    assert result["retry_info"]["kept_model_code_exact"] is True
+
+
+def test_search_embedding_denoise_overfetches_model_code_retry():
+    searcher, captured = make_searcher({"owners": []})
+    captured["auto_exact_modes"] = []
+    captured["limits"] = []
+
+    def _get_info(**kwargs):
+        captured["auto_exact_modes"].append(get_auto_require_short_han_exact_mode())
+        return (
+            {"words_expr": "h20 显卡"},
+            captured.setdefault("rewrite_info", {}),
+            captured.setdefault("query_dsl_dict", {"match_all": {}}),
+        )
+
+    def _construct_search_body(**kwargs):
+        captured["limits"].append(kwargs["limit"])
+        return {"query": kwargs["query_dsl_dict"]}
+
+    def _parse(*args, **kwargs):
+        if len(captured["auto_exact_modes"]) == 1:
+            return {"hits": [], "total_hits": 0, "return_hits": 0}
+        hits = [{"title": f"candidate {idx}"} for idx in range(12)]
+        return {"hits": hits, "total_hits": 12, "return_hits": len(hits)}
+
+    class _FakeReranker:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def rerank(**kwargs):
+            captured["rerank_kwargs"] = kwargs
+            hits = list(reversed(kwargs["hits"]))
+            return hits, {
+                "reranked_count": len(hits),
+                "valid_passages": len(hits),
+                "total_ms": 1,
+            }
+
+    searcher.get_info_of_query_rewrite_dsl = _get_info
+    searcher.construct_search_body = _construct_search_body
+    searcher.hit_parser.parse = _parse
+    searcher._get_embedding_denoise_reranker = lambda: _FakeReranker()
+
+    result = searcher.search("h20 显卡 q=vr", limit=5)
+
+    assert captured["auto_exact_modes"] == ["all", "model_code"]
+    assert captured["limits"] == [5, 160]
+    assert captured["rerank_kwargs"]["query"] == "h20 显卡"
+    assert captured["rerank_kwargs"]["max_rerank"] == 160
+    assert [hit["title"] for hit in result["hits"]] == [
+        "candidate 11",
+        "candidate 10",
+        "candidate 9",
+        "candidate 8",
+        "candidate 7",
+    ]
+    assert result["return_hits"] == 5
+    assert result["embedding_denoise_info"]["applied"] is True
+    assert result["retry_info"]["embedding_denoise_applied"] is True
 
 
 def test_search_retries_without_short_han_exact_on_zero_hits():
@@ -986,6 +1082,24 @@ def test_resolve_vector_auto_constraint_query_keeps_topic_query_without_compact_
     searcher, _ = make_searcher(owner_result)
 
     assert searcher._resolve_vector_auto_constraint_query("鬼畜 教程") == "鬼畜 教程"
+
+
+def test_resolve_vector_auto_constraint_query_keeps_model_code_topic_query():
+    owner_result = {
+        "owners": [
+            {
+                "mid": 664452009,
+                "name": "显卡维修圆",
+                "score": 334.5,
+                "sample_view": 6308,
+                "sources": ["name", "topic"],
+            }
+        ]
+    }
+    searcher, _ = make_searcher(owner_result)
+
+    assert searcher._resolve_vector_auto_constraint_query("显卡 h20") == "显卡 h20"
+    assert searcher._resolve_spaced_owner_intent_info("显卡 h20") == {}
 
 
 def test_resolve_spaced_owner_intent_info_uses_owner_anchor_query():

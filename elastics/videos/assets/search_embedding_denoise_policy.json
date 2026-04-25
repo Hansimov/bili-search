@@ -1,0 +1,17 @@
+{
+    "enabled": true,
+    "model_code_attribute_retry_only": true,
+    "min_hits": 8,
+    "candidate_limit": 160,
+    "max_rerank_hits": 160,
+    "keyword_boost": 1.5,
+    "title_keyword_boost": 2.0,
+    "score_field": "embedding_denoise_score",
+    "attribute_evidence_gate_enabled": true,
+    "attribute_term_min_score": 0.69,
+    "attribute_cjk_term_min_score": 0.72,
+    "max_attribute_candidate_terms": 512,
+    "max_attribute_evidence_terms": 6,
+    "missing_attribute_penalty": 0.25,
+    "attribute_evidence_boost": 3.0
+}
