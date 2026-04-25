@@ -683,9 +683,14 @@ def test_normalize_request_rewrites_title_like_search_video_queries_from_raw_use
 
 
 def test_normalize_request_rewrites_video_tool_even_without_video_final_target():
+    small_llm = MagicMock()
+    small_llm._enable_query_refinement_for_tests = True
+    small_llm.chat.return_value = ChatResponse(
+        content='{"queries":["Samara Cyn"],"reason":"remove model-added filters"}'
+    )
     orchestrator = ChatOrchestrator(
         llm_client=MagicMock(),
-        small_llm_client=MagicMock(),
+        small_llm_client=small_llm,
         tool_executor=MagicMock(),
         model_registry=ModelRegistry.from_envs(),
     )
@@ -708,6 +713,43 @@ def test_normalize_request_rewrites_video_tool_even_without_video_final_target()
 
     assert normalized.name == "search_videos"
     assert normalized.arguments == {"queries": ["Samara Cyn"]}
+    small_llm.chat.assert_called_once()
+
+
+def test_query_refinement_can_redirect_owner_probe_to_video_search():
+    small_llm = MagicMock()
+    small_llm._enable_query_refinement_for_tests = True
+    small_llm.chat.return_value = ChatResponse(
+        content=(
+            '{"tool":"search_videos","queries":["贩卖可爱の喵呜 你微微一笑 蝴蝶为你倾倒"],'
+            '"reason":"user asks for videos, not owner discovery"}'
+        )
+    )
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=small_llm,
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+    request = ToolCallRequest(
+        id="call_owner_wrong_1",
+        name="search_owners",
+        arguments={"text": "贩卖可爱の喵呜", "size": 5},
+    )
+
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="贩卖可爱の喵呜 关于 你微微一笑，蝴蝶为你倾倒 有哪些值得看的视频？",
+            normalized_query="贩卖可爱の喵呜 关于 你微微一笑 蝴蝶为你倾倒 有哪些值得看的视频",
+            final_target="videos",
+        ),
+        {"supports_transcript_lookup": True},
+        prefer_transcript_lookup=False,
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {"queries": ["贩卖可爱の喵呜 你微微一笑 蝴蝶为你倾倒"]}
 
 
 def test_owner_recent_followup_falls_back_to_user_query_when_owner_resolution_drifts():

@@ -1,3 +1,12 @@
+"""Syntactic video-query guardrails for orchestration.
+
+Do not grow this module into a catalog of natural-language phrases, examples,
+aliases, or typo rules. Semantic cleanup belongs to the pre-search LLM query
+refinement workflow in ``llms.orchestration.query_refinement``. Regex here must
+stay limited to stable syntax-level detection, such as explicit DSL markers,
+simple wrappers, and fallback cleanup for when the refiner is unavailable.
+"""
+
 from __future__ import annotations
 
 import re
@@ -26,13 +35,6 @@ _VIDEO_QUERY_BRACKET_RE = re.compile(
 _VIDEO_QUERY_QUOTED_TITLE_RE = re.compile(
     r"(?P<prefix>[\u4e00-\u9fffA-Za-z0-9\s._+#/-]{0,32})[《\"“](?P<title>[^》\"”]{2,96})[》\"”](?P<tail>[\u4e00-\u9fffA-Za-z0-9\s._+#/『』-]{0,80})"
 )
-_VIDEO_QUERY_SUBJECT_PATTERNS = [
-    re.compile(r"有没有讲\s*(?P<subject>.+?)\s*的(?:高质量|热门|相关)?视频"),
-    re.compile(r"请(?:在B站站内)?搜索，?最近有哪些关于\s*(?P<subject>.+?)\s*的(?:热门|高质量|相关)?视频"),
-    re.compile(r"请找一些和[《\"“]?(?P<subject>.+?)[》\"”]?\s*最?相关的视频"),
-    re.compile(r"(?P<owner>.+?)\s+关于\s+(?P<topic>.+?)\s+有哪些(?:比较)?值得看的视频"),
-    re.compile(r"(?P<subject>.+?)\s*相关内容里有哪些(?:比较)?值得看的视频"),
-]
 _FOLLOWUP_META_QUERY_RE = re.compile(
     r"^(?:请|帮我|给我|麻烦你?)?(?:总结|概括|梳理|整理|分析)(?:一下|下)?$"
 )
@@ -97,24 +99,6 @@ class VideoQueryNormalizer:
         normalized = original
         normalized = _VIDEO_QUERY_PREFIX_RE.sub("", normalized).strip()
         prefix_removed = normalized != original
-
-        for pattern in _VIDEO_QUERY_SUBJECT_PATTERNS:
-            subject_match = pattern.search(normalized)
-            if not subject_match:
-                continue
-            if "owner" in subject_match.groupdict():
-                subject = " ".join(
-                    cls._dedupe_focus_parts(
-                        [
-                            subject_match.group("owner"),
-                            subject_match.group("topic"),
-                        ]
-                    )
-                )
-            else:
-                subject = cls._normalize_subject_match(subject_match.group("subject"))
-            if subject:
-                return subject
 
         normalized = _VIDEO_QUERY_SUFFIX_RE.sub("", normalized).strip(
             " ，。！？?；;：:"

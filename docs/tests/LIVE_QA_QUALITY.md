@@ -51,6 +51,17 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 
 评测脚本会同时探测 `/search`、`/related_tokens_by_tokens`、`/explore` 和 `/chat/completions`，并记录 endpoint 摘要、chat 工具调用、六项评分、问题列表和 Markdown 报告。
 
+## Query refinement 约束
+
+自然语言问答里的 query 优化应走 pre-search 工作流：
+
+1. 大模型或策略层可以提出工具调用，但不保证 query 足够干净。
+2. 用户态 `search_videos/search_owners` 真正进入搜索管线前，先经过 `llms.orchestration.query_refinement.LLMQueryRefiner`。
+3. refiner 使用小模型输出严格 JSON，把口语、错别字、模型误加的过滤条件、错误工具选择，改写成紧凑的检索语句。
+4. `video_queries` 和 `policies` 只保留稳定语法级护栏，不继续堆具体词语、例子和自然语言正则。
+
+这条约束的目的不是完全取消确定性逻辑，而是把“语义理解”放回 LLM 工作流，把确定性代码限制在协议、DSL、显式 BV/MID、结果覆盖这类稳定边界上。
+
 如果修改了后端代码，按受管入口重启：
 
 ```bash
@@ -78,6 +89,8 @@ cd /home/asimov/repos/blbl-dash
 
 - `debugs/live_case_reports/live-qa-quality-targeted-final.json`：覆盖 `owner_topic_BV15zoWBPEiz` 和 `single_typo_BV1CEdQB4ESr`，2/2 通过。
 - `debugs/live_case_reports/live-qa-quality-owner-recent-final.json`：覆盖 `owner_recent_BV15zoWBPEiz`，1/1 通过。
+- `debugs/live_case_reports/live-qa-quality-llm-refine-targeted-2.json`：验证 LLM query refinement 后，`owner_topic`、错别字、英文实体 case 3/3 通过。
+- `debugs/live_case_reports/live-qa-quality-llm-refine-10x1.json`：10 类各 1 个 smoke，8/10 无问题，剩余弱项集中在宽泛标签和短片段消歧。
 
 ## 已修复问题
 

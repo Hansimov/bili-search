@@ -29,6 +29,7 @@ from llms.orchestration.policies import is_recent_timeline_request
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
+from llms.orchestration.query_refinement import LLMQueryRefiner
 from llms.orchestration.result_store import ResultStore
 from llms.orchestration.result_store import inspect_results
 from llms.orchestration.result_store import summarize_result
@@ -96,6 +97,7 @@ class ChatOrchestrator(
         )
         self.temperature = temperature
         self.verbose = verbose
+        self.query_refiner = LLMQueryRefiner(self.small_llm_client)
 
     @staticmethod
     def _owner_resolution_seed(intent: IntentProfile) -> str:
@@ -221,6 +223,20 @@ class ChatOrchestrator(
             owner_seed = self._owner_resolution_seed(intent)
             if owner_seed:
                 arguments["text"] = owner_seed
+        if request.visibility == "user" and name in {"search_videos", "search_owners"}:
+            refined = self.query_refiner.refine(
+                ToolCallRequest(
+                    id=request.id,
+                    name=name,
+                    arguments=arguments,
+                    visibility=request.visibility,
+                    source=request.source,
+                ),
+                intent,
+            )
+            if refined.name:
+                name = refined.name
+            arguments = refined.arguments
         if arguments == request.arguments and name == request.name:
             return request
         return ToolCallRequest(
