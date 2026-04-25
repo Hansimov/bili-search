@@ -4,10 +4,11 @@ Policy activation must depend on structured intent and execution results. Do not
 smuggle new route decisions into this module with ad hoc text matching.
 
 Search-query wording, typo correction, aliasing, and conversational cleanup must
-be handled before search execution by the LLM query-refinement workflow. This
-module may only hold coarse routing/coverage policy predicates whose inputs are
-intent labels and tool results, plus stable syntax checks such as explicit BV
-anchors.
+be handled by the large-model planning workflow before XML commands are emitted,
+or by stable execution gates that reason over tool structure and results. Do not
+add lexical examples or regex phrase catalogs here to "fix" query wording. This
+module may only hold coarse routing/coverage predicates whose inputs are intent
+labels and tool results, plus stable syntax checks such as explicit BV anchors.
 """
 
 from __future__ import annotations

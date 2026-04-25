@@ -1,10 +1,13 @@
 """Syntactic video-query guardrails for orchestration.
 
 Do not grow this module into a catalog of natural-language phrases, examples,
-aliases, or typo rules. Semantic cleanup belongs to the pre-search LLM query
-refinement workflow in ``llms.orchestration.query_refinement``. Regex here must
-stay limited to stable syntax-level detection, such as explicit DSL markers,
-simple wrappers, and fallback cleanup for when the refiner is unavailable.
+aliases, or typo rules. Semantic cleanup belongs in the large-model planning
+workflow before XML tool commands are emitted: the planner must think through
+the user's intent and produce compact search DSL, not raw conversational text.
+Execution code may add workflow gates for stable protocol mistakes such as
+"resolve owner first, then use the returned mid", but regex here must stay
+limited to syntax-level detection: explicit DSL markers, simple wrappers, and
+safe fallback cleanup.
 """
 
 from __future__ import annotations

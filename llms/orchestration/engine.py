@@ -29,7 +29,6 @@ from llms.orchestration.policies import is_recent_timeline_request
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
-from llms.orchestration.query_refinement import LLMQueryRefiner
 from llms.orchestration.result_store import ResultStore
 from llms.orchestration.result_store import inspect_results
 from llms.orchestration.result_store import summarize_result
@@ -97,7 +96,6 @@ class ChatOrchestrator(
         )
         self.temperature = temperature
         self.verbose = verbose
-        self.query_refiner = LLMQueryRefiner(self.small_llm_client)
 
     @staticmethod
     def _owner_resolution_seed(intent: IntentProfile) -> str:
@@ -223,20 +221,6 @@ class ChatOrchestrator(
             owner_seed = self._owner_resolution_seed(intent)
             if owner_seed:
                 arguments["text"] = owner_seed
-        if request.visibility == "user" and name in {"search_videos", "search_owners"}:
-            refined = self.query_refiner.refine(
-                ToolCallRequest(
-                    id=request.id,
-                    name=name,
-                    arguments=arguments,
-                    visibility=request.visibility,
-                    source=request.source,
-                ),
-                intent,
-            )
-            if refined.name:
-                name = refined.name
-            arguments = refined.arguments
         if arguments == request.arguments and name == request.name:
             return request
         return ToolCallRequest(
@@ -246,6 +230,115 @@ class ChatOrchestrator(
             visibility=request.visibility,
             source=request.source,
         )
+
+    @staticmethod
+    def _is_scoped_or_lookup_video_request(request: ToolCallRequest) -> bool:
+        arguments = request.arguments or {}
+        mode = str(arguments.get("mode") or "").strip().lower()
+        if mode == "lookup":
+            return True
+        if any(
+            arguments.get(key)
+            for key in ("bv", "bvid", "bvids", "mid", "mids", "uid", "uids")
+        ):
+            return True
+
+        raw_queries = arguments.get("queries")
+        if isinstance(raw_queries, str):
+            queries = [raw_queries]
+        elif isinstance(raw_queries, (list, tuple)):
+            queries = [str(query or "") for query in raw_queries]
+        else:
+            query = str(arguments.get("query", "") or "").strip()
+            queries = [query] if query else []
+
+        scoped_markers = (":uid=", ":user=", ":mid=")
+        return any(
+            any(marker in str(query or "") for marker in scoped_markers)
+            for query in queries
+        )
+
+    @classmethod
+    def _is_exact_scoped_video_request(cls, request: ToolCallRequest) -> bool:
+        arguments = request.arguments or {}
+        mode = str(arguments.get("mode") or "").strip().lower()
+        if mode == "lookup":
+            return True
+        if any(
+            arguments.get(key)
+            for key in ("bv", "bvid", "bvids", "mid", "mids", "uid", "uids")
+        ):
+            return True
+
+        raw_queries = arguments.get("queries")
+        if isinstance(raw_queries, str):
+            queries = [raw_queries]
+        elif isinstance(raw_queries, (list, tuple)):
+            queries = [str(query or "") for query in raw_queries]
+        else:
+            query = str(arguments.get("query", "") or "").strip()
+            queries = [query] if query else []
+        return any(":uid=" in str(query or "") for query in queries)
+
+    def _filter_owner_timeline_pre_resolution_requests(
+        self,
+        requests: list[ToolCallRequest],
+        intent: IntentProfile,
+        messages: list[dict],
+    ) -> list[ToolCallRequest]:
+        if intent.final_target != "videos" or not is_recent_timeline_request(intent):
+            return requests
+        has_owner_resolution = any(
+            request.visibility == "user"
+            and canonical_tool_name(request.name) == "search_owners"
+            for request in requests
+        )
+        has_exact_video_lookup = any(
+            request.visibility == "user"
+            and canonical_tool_name(request.name) == "search_videos"
+            and self._is_exact_scoped_video_request(request)
+            for request in requests
+        )
+        if not has_owner_resolution and not has_exact_video_lookup:
+            needs_owner_resolution = any(
+                request.visibility == "user"
+                and canonical_tool_name(request.name)
+                in {"expand_query", "search_videos"}
+                for request in requests
+            )
+            owner_subject = self._extract_recent_owner_subject(messages, intent)
+            if needs_owner_resolution and owner_subject:
+                internal_requests = [
+                    request for request in requests if request.visibility == "internal"
+                ]
+                return [
+                    *internal_requests,
+                    ToolCallRequest(
+                        id="auto_owner_recent_pre_resolution_1",
+                        name="search_owners",
+                        arguments={"text": owner_subject, "size": 5},
+                        visibility="user",
+                        source="workflow_gate",
+                    ),
+                ]
+        if not has_owner_resolution:
+            return requests
+
+        filtered: list[ToolCallRequest] = []
+        for request in requests:
+            if (
+                request.visibility == "user"
+                and canonical_tool_name(request.name) == "expand_query"
+            ):
+                continue
+            if (
+                request.visibility == "user"
+                and canonical_tool_name(request.name) == "search_videos"
+                and not self._is_scoped_or_lookup_video_request(request)
+            ):
+                continue
+            filtered.append(request)
+        return filtered
 
     def _build_direct_explicit_dsl_video_search_request(
         self,
@@ -490,6 +583,11 @@ class ChatOrchestrator(
                 )
                 for request in requests
             ]
+            requests = self._filter_owner_timeline_pre_resolution_requests(
+                requests,
+                intent,
+                messages,
+            )
 
             deduped_requests = []
             for request in requests:

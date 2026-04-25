@@ -143,6 +143,11 @@ class OrchestrationStreamingMixin:
                 )
                 for request in requests
             ]
+            requests = self._filter_owner_timeline_pre_resolution_requests(
+                requests,
+                intent,
+                messages,
+            )
 
             deduped_requests = []
             for request in requests:

@@ -267,6 +267,241 @@ def test_run_auto_follows_owner_search_with_recent_mid_lookup():
     assert calls[0]["type"] == "search_owners"
 
 
+def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content=(
+                "<expand_query text='红色警戒08' mode='semantic' size='5'/>"
+                "<search_owners text='红色警戒08' size='5'/>"
+                "<search_videos queries='[\"红色警戒08 近期投稿视频\"]'/>"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 14,
+                "total_tokens": 34,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "红色警戒08",
+            "mode": "aggregate",
+            "total_owners": 2,
+            "owners": [
+                {
+                    "mid": 1629347259,
+                    "name": "红警HBK08",
+                    "score": 3.1,
+                    "sources": [
+                        "name",
+                        "topic",
+                        "related_tokens",
+                        "google_space",
+                    ],
+                    "sample_title": "红警新版本越狱一块地3！",
+                    "sample_bvid": "BV1FpQpBtEoc",
+                    "sample_view": 313139,
+                },
+                {
+                    "mid": 884798,
+                    "name": "蓝天上的流云",
+                    "score": 2.1,
+                    "sources": ["topic", "related_tokens"],
+                    "sample_title": "【红色警戒】当巨炮拥有了谭雅的攻速",
+                    "sample_bvid": "BV1aCd7BGE74",
+                    "sample_view": 71309,
+                },
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mid",
+            "total_hits": 1,
+            "mid": "1629347259",
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1f1d5BVEWB",
+                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "红色警戒08是谁？最近发了哪些视频？",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "红警HBK08" in result.content
+    assert "BV1f1d5BVEWB" in result.content
+    assert llm.chat.call_count == 1
+    assert tool_executor.execute_request.call_count == 2
+
+    first_request = tool_executor.execute_request.call_args_list[0].args[0]
+    second_request = tool_executor.execute_request.call_args_list[1].args[0]
+    assert first_request.name == "search_owners"
+    assert first_request.arguments == {"text": "红色警戒08", "size": 5}
+    assert second_request.name == "search_videos"
+    assert second_request.arguments == {
+        "mode": "lookup",
+        "mid": "1629347259",
+        "date_window": "30d",
+        "limit": 10,
+    }
+
+    executed_queries = [
+        str(request.args[0].arguments)
+        for request in tool_executor.execute_request.call_args_list
+    ]
+    executed_tools = [
+        request.args[0].name for request in tool_executor.execute_request.call_args_list
+    ]
+    assert "expand_query" not in executed_tools
+    assert not any("红色警戒08 近期投稿视频" in query for query in executed_queries)
+    assert not any("红色警戒08是谁" in query for query in executed_queries)
+
+
+def test_run_replaces_recent_user_scoped_video_search_with_owner_resolution_first():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content=(
+                "<expand_query text='红色警戒08' mode='semantic' size='8'/>"
+                "<search_videos queries='[\":user=红色警戒08 :date<=30d\"]'/>"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 12,
+                "total_tokens": 32,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "红色警戒08",
+            "mode": "aggregate",
+            "total_owners": 2,
+            "owners": [
+                {
+                    "mid": 1629347259,
+                    "name": "红警HBK08",
+                    "score": 3.1,
+                    "sources": [
+                        "name",
+                        "topic",
+                        "related_tokens",
+                        "google_space",
+                    ],
+                    "sample_title": "红警新版本越狱一块地3！",
+                    "sample_view": 313139,
+                },
+                {
+                    "mid": 884798,
+                    "name": "蓝天上的流云",
+                    "score": 2.1,
+                    "sources": ["topic", "related_tokens"],
+                    "sample_title": "【红色警戒】当巨炮拥有了谭雅的攻速",
+                    "sample_view": 71309,
+                },
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mid",
+            "total_hits": 1,
+            "mid": "1629347259",
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV1xyo7BvEej",
+                    "title": "红警每人一个神车！以光速移动，神偷小车子！",
+                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "红色警戒08是谁？最近发了哪些视频？",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "红警HBK08" in result.content
+    assert "BV1xyo7BvEej" in result.content
+    assert llm.chat.call_count == 1
+    assert tool_executor.execute_request.call_count == 2
+
+    first_request = tool_executor.execute_request.call_args_list[0].args[0]
+    second_request = tool_executor.execute_request.call_args_list[1].args[0]
+    assert first_request.name == "search_owners"
+    assert first_request.arguments == {"text": "红色警戒08", "size": 5}
+    assert second_request.name == "search_videos"
+    assert second_request.arguments["mid"] == "1629347259"
+
+    executed_tools = [
+        request.args[0].name for request in tool_executor.execute_request.call_args_list
+    ]
+    executed_args = [
+        str(request.args[0].arguments)
+        for request in tool_executor.execute_request.call_args_list
+    ]
+    assert "expand_query" not in executed_tools
+    assert not any(":user=红色警戒08" in args for args in executed_args)
+
+
 def test_recent_timeline_answer_prefers_later_mid_lookup_over_earlier_zero_hit_user_query():
     orchestrator = ChatOrchestrator(
         llm_client=MagicMock(),

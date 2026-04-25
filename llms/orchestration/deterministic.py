@@ -182,6 +182,28 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
         intent: IntentProfile,
     ) -> str:
         latest_user_text = cls._latest_user_text(messages)
+
+        normalized_source = "".join(str(latest_user_text or "").split())
+        leading_subject = cls._extract_leading_subject_phrase(latest_user_text)
+        if (
+            leading_subject
+            and len(leading_subject) <= 32
+            and not RECENT_OWNER_SUBJECT_STOP_RE.search(leading_subject)
+        ):
+            return rewrite_known_term_aliases(leading_subject) or leading_subject
+
+        for pattern in RECENT_OWNER_QUERY_PATTERNS:
+            match = pattern.match(normalized_source)
+            if not match:
+                continue
+            subject = VideoQueryNormalizer.clean_subject_text(match.group("subject"))
+            if (
+                subject
+                and len(subject) <= 32
+                and not RECENT_OWNER_SUBJECT_STOP_RE.search(subject)
+            ):
+                return rewrite_known_term_aliases(subject) or subject
+
         candidate_texts = [
             *(intent.explicit_entities or []),
             *(intent.explicit_topics or []),
@@ -194,24 +216,40 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                 and not RECENT_OWNER_SUBJECT_STOP_RE.search(cleaned)
             ):
                 return rewrite_known_term_aliases(cleaned) or cleaned
-
-        normalized_source = "".join(str(latest_user_text or "").split())
-        for pattern in RECENT_OWNER_QUERY_PATTERNS:
-            match = pattern.match(normalized_source)
-            if not match:
-                continue
-            subject = VideoQueryNormalizer.clean_subject_text(match.group("subject"))
-            if subject and len(subject) <= 32:
-                return rewrite_known_term_aliases(subject) or subject
-
-        leading_subject = cls._extract_leading_subject_phrase(latest_user_text)
-        if (
-            leading_subject
-            and len(leading_subject) <= 32
-            and not RECENT_OWNER_SUBJECT_STOP_RE.search(leading_subject)
-        ):
-            return rewrite_known_term_aliases(leading_subject) or leading_subject
         return ""
+
+    @staticmethod
+    def _owner_service_score(owner: dict | None) -> float:
+        if not owner:
+            return 0.0
+        try:
+            return float(owner.get("score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _select_probable_aggregate_owner_candidate(
+        cls,
+        owners: list[dict],
+    ) -> dict | None:
+        if not owners:
+            return None
+
+        top_owner = owners[0]
+        if not top_owner.get("mid"):
+            return None
+
+        sources = set(top_owner.get("sources") or [])
+        if "google_space" not in sources:
+            return None
+        if not sources.intersection({"name", "topic", "relation"}):
+            return None
+
+        top_score = cls._owner_service_score(top_owner)
+        next_score = cls._owner_service_score(owners[1] if len(owners) > 1 else None)
+        if top_score >= 2.0 and top_score - next_score >= 0.5:
+            return top_owner
+        return None
 
     @classmethod
     def _select_recent_owner_candidate(
@@ -264,6 +302,13 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                         best_owner = top_owner
                         best_rank = top_score
                     continue
+            aggregate_owner = cls._select_probable_aggregate_owner_candidate(owners)
+            if aggregate_owner:
+                aggregate_score = cls._owner_service_score(aggregate_owner)
+                if aggregate_score > best_rank:
+                    best_owner = aggregate_owner
+                    best_rank = aggregate_score
+                continue
             for index, owner in enumerate(owners):
                 if not OwnerResolutionMixin._is_confident_owner_candidate(
                     seed_text,
