@@ -152,6 +152,14 @@ class OrchestrationStreamingMixin:
                 requests,
                 intent,
             )
+            requests = self._augment_short_identity_video_evidence_requests(
+                requests,
+                intent,
+            )
+            requests = self._augment_followup_video_evidence_requests(
+                requests,
+                intent,
+            )
 
             deduped_requests = []
             for request in requests:

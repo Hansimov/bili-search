@@ -237,12 +237,30 @@ def needs_short_ambiguous_dual_exploration(intent: IntentProfile) -> bool:
         return False
     if intent.is_followup or has_explicit_video_anchor(intent):
         return False
+    if is_recent_timeline_request(intent):
+        return False
     if intent.needs_owner_resolution or is_recent_timeline_request(intent):
         return False
     focus_key = compact_focus_key(intent.raw_query)
     if len(focus_key) < 2 or len(focus_key) > 24:
         return False
     if intent.ambiguity < 0.7:
+        return False
+    return len(intent.explicit_entities or []) <= 1 and len(intent.explicit_topics or []) <= 2
+
+
+def needs_short_identity_video_evidence(intent: IntentProfile) -> bool:
+    """Short identity lookups may need video-subject evidence, not only accounts."""
+    if intent.final_target not in {"owners", "relations", "videos"}:
+        return False
+    if intent.is_followup or has_explicit_video_anchor(intent):
+        return False
+    if is_recent_timeline_request(intent):
+        return False
+    if intent.task_mode not in {"lookup_entity", "known_item"}:
+        return False
+    focus_key = compact_focus_key(intent.raw_query)
+    if len(focus_key) < 2 or len(focus_key) > 24:
         return False
     return len(intent.explicit_entities or []) <= 1 and len(intent.explicit_topics or []) <= 2
 

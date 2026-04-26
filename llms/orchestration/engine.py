@@ -14,6 +14,7 @@ from llms.contracts import (
     ToolExecutionRecord,
 )
 from llms.intent import build_intent_profile
+from llms.intent.focus import compact_focus_key
 from llms.intent.focus import rewrite_known_term_aliases
 from llms.intent.focus import select_primary_focus_term
 from llms.messages import (
@@ -28,6 +29,7 @@ from llms.orchestration.policies import has_successful_tool_result
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import is_recent_timeline_request
 from llms.orchestration.policies import needs_short_ambiguous_dual_exploration
+from llms.orchestration.policies import needs_short_identity_video_evidence
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
@@ -100,13 +102,36 @@ class ChatOrchestrator(
         self.verbose = verbose
 
     @staticmethod
+    def _trim_after_last_alnum_anchor(text: str) -> str:
+        stripped = VideoQueryNormalizer.clean_subject_text(text)
+        if not stripped:
+            return ""
+        last_anchor = -1
+        for index, char in enumerate(stripped):
+            if char.isascii() and char.isalnum():
+                last_anchor = index
+        if last_anchor < 0 or last_anchor >= len(stripped) - 1:
+            return stripped
+        suffix = stripped[last_anchor + 1 :]
+        if suffix[:1].isspace():
+            return stripped
+        if len(compact_focus_key(suffix)) <= 8:
+            return VideoQueryNormalizer.clean_subject_text(stripped[: last_anchor + 1])
+        return stripped
+
+    @staticmethod
     def _owner_resolution_seed(intent: IntentProfile) -> str:
-        return select_primary_focus_term(
-            [
-                *(intent.explicit_topics or []),
-                *(intent.explicit_entities or []),
-            ]
-        )
+        candidates: list[str] = []
+        for candidate in [
+            *(intent.explicit_entities or []),
+            *(intent.explicit_topics or []),
+        ]:
+            cleaned = ChatOrchestrator._trim_after_last_alnum_anchor(candidate)
+            if any(mark in cleaned for mark in "？?。！，,；;：:"):
+                cleaned = ChatOrchestrator._trim_after_last_alnum_anchor(cleaned)
+            if cleaned and cleaned not in candidates:
+                candidates.append(cleaned)
+        return select_primary_focus_term(candidates)
 
     @staticmethod
     def _owner_request_text(arguments: dict) -> str:
@@ -155,6 +180,112 @@ class ChatOrchestrator(
                 source="workflow_gate",
             ),
         ]
+
+    def _augment_short_identity_video_evidence_requests(
+        self,
+        requests: list[ToolCallRequest],
+        intent: IntentProfile,
+    ) -> list[ToolCallRequest]:
+        if not needs_short_identity_video_evidence(intent):
+            return requests
+        user_tool_names = {
+            canonical_tool_name(request.name)
+            for request in requests
+            if request.visibility == "user"
+        }
+        if "search_owners" not in user_tool_names or "search_videos" in user_tool_names:
+            return requests
+        has_planned_owner_search = any(
+            request.visibility == "user"
+            and canonical_tool_name(request.name) == "search_owners"
+            and request.source != "workflow_gate"
+            for request in requests
+        )
+        if not has_planned_owner_search:
+            return requests
+        video_seed = self._owner_resolution_seed(
+            intent
+        ) or VideoQueryNormalizer.clean_subject_text(intent.raw_query)
+        if not video_seed:
+            return requests
+        return [
+            *requests,
+            ToolCallRequest(
+                id="auto_short_identity_video_evidence_1",
+                name="search_videos",
+                arguments={"queries": [video_seed], "limit": 8},
+                visibility="user",
+                source="workflow_gate",
+            ),
+        ]
+
+    def _augment_followup_video_evidence_requests(
+        self,
+        requests: list[ToolCallRequest],
+        intent: IntentProfile,
+    ) -> list[ToolCallRequest]:
+        if (
+            intent.final_target != "videos"
+            or not intent.is_followup
+            or intent.task_mode != "exploration"
+            or is_recent_timeline_request(intent)
+        ):
+            return requests
+        user_tool_names = {
+            canonical_tool_name(request.name)
+            for request in requests
+            if request.visibility == "user"
+        }
+        if "search_owners" not in user_tool_names or "search_videos" in user_tool_names:
+            return requests
+        video_seed = self._owner_resolution_seed(
+            intent
+        ) or VideoQueryNormalizer.clean_subject_text(intent.raw_query)
+        if not video_seed:
+            return requests
+        return [
+            *requests,
+            ToolCallRequest(
+                id="auto_followup_video_evidence_1",
+                name="search_videos",
+                arguments={"queries": [video_seed], "limit": 8},
+                visibility="user",
+                source="workflow_gate",
+            ),
+        ]
+
+    @staticmethod
+    def _query_text_matches_seed(query_text: str, seed_text: str) -> bool:
+        query_key = compact_focus_key(query_text)
+        seed_key = compact_focus_key(seed_text)
+        if not query_key or not seed_key:
+            return False
+        return seed_key in query_key or query_key in seed_key
+
+    def _clean_user_tool_text(self, text: str, intent: IntentProfile) -> str:
+        cleaned = VideoQueryNormalizer.clean_subject_text(text)
+        seed = self._owner_resolution_seed(intent)
+        if not seed:
+            return cleaned
+        cleaned_key = compact_focus_key(cleaned)
+        seed_key = compact_focus_key(seed)
+        if not cleaned_key:
+            return seed
+        if self._query_text_matches_seed(cleaned, seed):
+            return cleaned
+        if len(cleaned_key) > 24 or len(seed_key) >= 2:
+            return seed
+        return cleaned
+
+    def _clean_video_query_text(self, text: str, intent: IntentProfile) -> str:
+        cleaned = VideoQueryNormalizer.clean_subject_text(text)
+        seed = self._owner_resolution_seed(intent)
+        if not seed:
+            return cleaned
+        cleaned_key = compact_focus_key(cleaned)
+        if len(cleaned_key) <= 24 or self._query_text_matches_seed(cleaned, seed):
+            return cleaned
+        return seed
 
     def _normalize_request(
         self,
@@ -210,8 +341,52 @@ class ChatOrchestrator(
                         intent.raw_query,
                     )
                 )
+            if not any(
+                arguments.get(key)
+                for key in ("bv", "bvid", "bvids", "mid", "mids", "uid", "uids")
+            ):
+                raw_queries = arguments.get("queries")
+                if isinstance(raw_queries, str):
+                    queries = [raw_queries]
+                elif isinstance(raw_queries, list):
+                    queries = [str(query or "") for query in raw_queries]
+                else:
+                    query = str(arguments.get("query", "") or "").strip()
+                    queries = [query] if query else []
+                cleaned_queries = []
+                changed = False
+                for query in queries:
+                    cleaned_query = self._clean_video_query_text(query, intent)
+                    if cleaned_query != query:
+                        changed = True
+                    if cleaned_query and cleaned_query not in cleaned_queries:
+                        cleaned_queries.append(cleaned_query)
+                if changed and cleaned_queries:
+                    arguments.pop("query", None)
+                    arguments["queries"] = cleaned_queries
             arguments = _rewrite_known_aliases_in_video_search_arguments(arguments)
         if name == "search_owners":
+            if (
+                intent.final_target == "videos"
+                and intent.is_followup
+                and (
+                    not intent.needs_owner_resolution
+                    or intent.task_mode == "exploration"
+                )
+                and not is_recent_timeline_request(intent)
+            ):
+                video_seed = self._clean_user_tool_text(
+                    self._owner_request_text(arguments) or intent.raw_query,
+                    intent,
+                )
+                if video_seed:
+                    return ToolCallRequest(
+                        id=request.id,
+                        name="search_videos",
+                        arguments={"queries": [video_seed]},
+                        visibility=request.visibility,
+                        source=request.source,
+                    )
             if title_like_video_query and intent.final_target not in {
                 "owners",
                 "relations",
@@ -231,6 +406,8 @@ class ChatOrchestrator(
                     owner_text = owner_seed
             elif not str(arguments.get("text", "") or "").strip():
                 arguments["text"] = owner_text
+            else:
+                arguments["text"] = self._clean_user_tool_text(owner_text, intent)
         elif name == "search_videos" and intent.needs_term_normalization:
             raw_queries = arguments.get("queries")
             if isinstance(raw_queries, str):
@@ -677,6 +854,14 @@ class ChatOrchestrator(
                 messages,
             )
             requests = self._augment_short_ambiguous_exploration_requests(
+                requests,
+                intent,
+            )
+            requests = self._augment_short_identity_video_evidence_requests(
+                requests,
+                intent,
+            )
+            requests = self._augment_followup_video_evidence_requests(
                 requests,
                 intent,
             )

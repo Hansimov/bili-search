@@ -86,7 +86,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Owner Route",
         "ROUTE_OWNERS",
         "brief",
-        "目标是作者时，优先 search_owners。它会聚合名字、主题、关系等站内线索；必要时再补空间页侦察。若用户给出明确作者名或纠正了作者名，直接调用 search_owners，不要先 expand_query，也不要只输出准备搜索的文字。若已经拿到一轮可信作者候选，就直接回答，不要为了凑流程继续工具连跳。",
+        "目标是作者时，优先 search_owners。它会聚合名字、主题、关系等站内线索；必要时再补空间页侦察。若用户给出明确作者名或纠正了作者名，直接调用 search_owners，不要先 expand_query，也不要只输出准备搜索的文字。人名、昵称或称呼不一定是账号名：topic/relation/related_tokens 来源常表示“这些 UP 主上传或提到过该对象”，不是该对象本人账号；要结合 sample_title/sample_bvid 判断，必要时补 search_videos 查看视频侧证据。若已经拿到一轮可信作者候选，就直接回答，不要为了凑流程继续工具连跳。",
         tags=("route", "owners"),
     ),
     _asset(
@@ -205,7 +205,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "search_owners detailed",
         "TOOL_SEARCH_OWNERS",
         "detailed",
-        "它会自动并行聚合作者名匹配、主题发现、关系发现和相关作者线索，并在本地候选不足时补 `site:space.bilibili.com` 的空间页侦察。对于作者最近作品这类问题，作者词不稳时先用它确认作者，再 search_videos；如果用户已经给了明确 BV，应该先 search_videos lookup 该 BV，再基于 owner.mid 继续。",
+        "它会自动并行聚合作者名匹配、主题发现、关系发现和相关作者线索，并在本地候选不足时补 `site:space.bilibili.com` 的空间页侦察。text 必须是精简后的名字、昵称、主题词或关系对象，不要夹带“是谁/请你搜/他自己没有账号/最近有什么”等任务套话。对于作者最近作品这类问题，作者词不稳时先用它确认作者，再 search_videos；如果用户已经给了明确 BV，应该先 search_videos lookup 该 BV，再基于 owner.mid 继续。若用户说明对象没有账号、只是被很多 UP 主切片或提及，应转为 search_videos 搜对象本身，不要继续把整句当作者名搜索。",
         tags=("tool",),
         tool_name="search_owners",
     ),

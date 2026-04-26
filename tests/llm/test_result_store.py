@@ -111,6 +111,30 @@ def test_summarize_mid_lookup_marks_owner_mid_as_match_basis():
     assert summary["owner_groups"][1]["owner_mid"] == 3546906370247281
 
 
+def test_summarize_owner_results_keeps_sample_work_evidence():
+    result = {
+        "text": "玩宝宝",
+        "source_counts": {"name": 1, "topic": 1, "related_tokens": 1},
+        "owners": [
+            {
+                "mid": 3546906370247281,
+                "name": "懒惰的yoke",
+                "score": 2.1,
+                "sources": ["topic", "related_tokens"],
+                "sample_title": "玩机器接过水后被问到女仆有没有工资玩宝宝直言肯定有啊",
+                "sample_bvid": "BV19nQ5BdE2h",
+                "sample_view": 255973,
+            }
+        ],
+    }
+
+    summary = summarize_result("R1", "search_owners", result)
+
+    assert summary["owners"][0]["sample_bvid"] == "BV19nQ5BdE2h"
+    assert "sample=玩机器接过水后" in summary["summary_text"]
+    assert "not proof that the queried person owns the account" in summary["summary_text"]
+
+
 def test_summarize_transcript_keeps_page_part_title():
     result = {
         "bvid": "BV1jmdvBYEPr",

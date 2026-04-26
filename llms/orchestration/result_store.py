@@ -40,6 +40,13 @@ def compact_video_hit(hit: dict) -> dict:
     }
 
 
+def _compact_sample_title(title: Any, limit: int = 48) -> str:
+    text = " ".join(str(title or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def compact_video_owner_groups(
     hits: list[dict],
     *,
@@ -85,6 +92,15 @@ def compact_owner(owner: dict) -> dict:
     }
     if owner.get("sources"):
         payload["sources"] = list(owner.get("sources") or [])
+    if owner.get("sample_title"):
+        payload["sample_title"] = owner.get("sample_title", "")
+    if owner.get("sample_bvid"):
+        payload["sample_bvid"] = owner.get("sample_bvid", "")
+        payload["sample_url"] = make_video_url(str(owner.get("sample_bvid") or ""))
+    if owner.get("sample_view") is not None:
+        payload["sample_view"] = owner.get("sample_view")
+    if owner.get("sample_pic"):
+        payload["sample_pic"] = owner.get("sample_pic", "")
     return payload
 
 
@@ -304,6 +320,16 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
                     if owner.get("sources")
                     else ""
                 )
+                + (
+                    f", sample={_compact_sample_title(owner.get('sample_title'))}"
+                    + (
+                        f"({owner.get('sample_bvid')})"
+                        if owner.get("sample_bvid")
+                        else ""
+                    )
+                    if owner.get("sample_title") or owner.get("sample_bvid")
+                    else ""
+                )
             )
             for owner in owner_rows
             if owner.get("name")
@@ -311,6 +337,12 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         summary_text = f"text={seed_summary}"
         if source_summary:
             summary_text += f", sources={source_summary}"
+        if source_counts:
+            summary_text += (
+                ", source_semantics=name means account-name match; "
+                "topic/relation/related_tokens mean uploader/work evidence, "
+                "not proof that the queried person owns the account"
+            )
         if owner_summary:
             summary_text += f", owners={owner_summary}"
         return {

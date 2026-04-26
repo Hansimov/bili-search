@@ -69,7 +69,7 @@ FINAL_TARGET_LABELS: tuple[SemanticLabel, ...] = (
             "和影视飓风风格接近的UP主有哪些？",
             "推荐几个专门做 AI 绘图教程的UP主。",
             "“这里是小天啊” 是一个 UP主名字，帮我查一下。",
-            "搜索作者 红警08。",
+            "按 UP 主名称查找某个账号。",
         ),
         default_score=0.02,
     ),
@@ -89,6 +89,7 @@ FINAL_TARGET_LABELS: tuple[SemanticLabel, ...] = (
         examples=(
             "找几条黑神话悟空剧情解析视频，优先高播放。",
             "影视飓风最近有什么新视频？",
+            "某个作者最近发了什么视频？",
             "那他的代表作有哪些？",
             "来点让我开心的视频。",
             "某个软件有什么入门教程？",
@@ -118,7 +119,7 @@ TASK_MODE_LABELS: tuple[SemanticLabel, ...] = (
             "老番茄最近一个月发了什么？",
             "这位作者近期更新如何？",
             "这个视频的作者还发了哪些视频？",
-            "红警08是谁，最近发了哪些视频？",
+            "某个作者是谁，最近发了哪些视频？",
         ),
         allowed_targets=("videos",),
         default_score=0.02,
@@ -596,6 +597,8 @@ def detect_task_mode(text: str, final_target: str, history_text: str = "") -> st
         final_target,
         history_text=history_text,
     )
+    if matches and matches[0].name == "lookup_entity" and matches[0].score >= 0.05:
+        return matches[0].name
     if not matches or matches[0].score < 0.1:
         return (
             "lookup_entity"

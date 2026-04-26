@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+from llms.contracts import ToolCallRequest
 from llms.models import ChatResponse, ModelRegistry
 from llms.orchestration.engine import ChatOrchestrator
 from test_orchestration_policies import FakeResultStore, _intent
@@ -56,7 +57,7 @@ def test_run_blocks_search_detour_when_transcript_is_unavailable():
             }
         ],
         thinking=False,
-        max_iterations=2,
+        max_iterations=3,
     )
 
     assert "无法读取该视频的音频转写文本" in result.content
@@ -125,7 +126,7 @@ def test_run_recovers_owner_search_when_planner_only_describes_plan():
             }
         ],
         thinking=False,
-        max_iterations=2,
+        max_iterations=3,
     )
 
     assert "这里是小天啊" in result.content
@@ -234,6 +235,248 @@ def test_run_probes_owners_for_short_ambiguous_video_exploration():
     assert result.tool_events[0]["tools"] == ["expand_query", "search_owners"]
 
 
+def test_run_probes_videos_for_short_ambiguous_identity_lookup():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="<search_owners text='玩宝宝' size='5'/>",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            },
+        ),
+        ChatResponse(
+            content="没有确认到名为玩宝宝的账号，但找到了相关切片视频。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 30,
+                "completion_tokens": 12,
+                "total_tokens": 42,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "玩宝宝",
+            "mode": "aggregate",
+            "total_owners": 1,
+            "owners": [
+                {
+                    "mid": 3546906370247281,
+                    "name": "懒惰的yoke",
+                    "score": 2.1,
+                    "sources": ["topic", "related_tokens"],
+                    "sample_title": "玩机器切片里提到玩宝宝",
+                    "sample_bvid": "BV19nQ5BdE2h",
+                }
+            ],
+        },
+        {
+            "query": "玩宝宝",
+            "total_hits": 1,
+            "hits": [
+                {
+                    "bvid": "BV19nQ5BdE2h",
+                    "title": "玩机器切片里提到玩宝宝",
+                    "owner": {"mid": 3546906370247281, "name": "懒惰的yoke"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[{"role": "user", "content": "玩宝宝是谁"}],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    executed = [
+        request.args[0] for request in tool_executor.execute_request.call_args_list
+    ]
+    assert [request.name for request in executed] == ["search_owners", "search_videos"]
+    assert executed[1].arguments == {"queries": ["玩宝宝"], "limit": 8}
+    assert "相关切片视频" in result.content
+
+
+def test_normalize_video_target_rewrites_colloquial_owner_search_to_clean_video_query():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    request = ToolCallRequest(
+        id="call_bad_owner_1",
+        name="search_owners",
+        arguments={
+            "text": "主播，有很多UP主切片。但是他自己本身没有账号。所以请你直接搜"
+        },
+        visibility="user",
+    )
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="他是个主播，有很多UP主切片。但是他自己本身没有账号。所以请你直接搜视频。",
+            normalized_query="他是个主播 有很多up主切片 但是他自己本身没有账号 所以请你直接搜视频",
+            final_target="videos",
+            explicit_topics=["玩宝宝"],
+            explicit_entities=["玩宝宝"],
+            is_followup=True,
+        ),
+        {"supports_transcript_lookup": False},
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {"queries": ["玩宝宝"]}
+
+
+def test_normalize_followup_video_target_overrides_owner_resolution_when_exploring_videos():
+    orchestrator = ChatOrchestrator(
+        llm_client=MagicMock(),
+        small_llm_client=MagicMock(),
+        tool_executor=MagicMock(),
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    request = ToolCallRequest(
+        id="call_bad_owner_2",
+        name="search_owners",
+        arguments={"text": "主播，有很多UP主切片。但是他自己本身没有账号。"},
+        visibility="user",
+    )
+    normalized = orchestrator._normalize_request(
+        request,
+        _intent(
+            raw_query="他是个主播，有很多UP主切片。但是他自己本身没有账号。所以请你直接搜视频。",
+            normalized_query="他是个主播 有很多up主切片 但是他自己本身没有账号 所以请你直接搜视频",
+            final_target="videos",
+            task_mode="exploration",
+            explicit_topics=["玩宝宝"],
+            explicit_entities=["玩宝宝"],
+            needs_owner_resolution=True,
+            is_followup=True,
+        ),
+        {"supports_transcript_lookup": False},
+    )
+
+    assert normalized.name == "search_videos"
+    assert normalized.arguments == {"queries": ["玩宝宝"]}
+
+
+def test_run_adds_clean_video_probe_when_followup_video_planner_only_searches_owners():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="<search_owners text='玩宝宝' size='5'/>",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            },
+        ),
+        ChatResponse(
+            content="找到了玩宝宝相关切片视频。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 25,
+                "completion_tokens": 10,
+                "total_tokens": 35,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "玩宝宝",
+            "mode": "aggregate",
+            "total_owners": 1,
+            "owners": [
+                {
+                    "mid": 3546906370247281,
+                    "name": "懒惰的yoke",
+                    "score": 2.1,
+                    "sources": ["topic", "related_tokens"],
+                    "sample_title": "玩机器切片里提到玩宝宝",
+                    "sample_bvid": "BV19nQ5BdE2h",
+                }
+            ],
+        },
+        {
+            "query": "玩宝宝",
+            "total_hits": 1,
+            "hits": [
+                {
+                    "bvid": "BV19nQ5BdE2h",
+                    "title": "玩机器切片里提到玩宝宝",
+                    "owner": {"mid": 3546906370247281, "name": "懒惰的yoke"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {"role": "user", "content": "玩宝宝是谁"},
+            {
+                "role": "assistant",
+                "content": "玩宝宝更像是主播/人物称呼，不一定有本人账号。",
+            },
+            {
+                "role": "user",
+                "content": "他是个主播，有很多UP主切片。但是他自己本身没有账号。所以请你直接搜视频。",
+            },
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    executed = [
+        request.args[0] for request in tool_executor.execute_request.call_args_list
+    ]
+    assert [request.name for request in executed] == ["search_owners", "search_videos"]
+    assert executed[1].arguments == {"queries": ["玩宝宝"], "limit": 8}
+    assert "切片视频" in result.content
+
+
 def test_run_auto_follows_explicit_bv_lookup_with_recent_mid_lookup():
     llm = MagicMock()
     llm.chat.side_effect = [
@@ -335,7 +578,7 @@ def test_run_auto_follows_explicit_bv_lookup_with_recent_mid_lookup():
     assert calls[1]["args"]["mid"] == "39627524"
 
 
-def test_run_does_not_auto_follow_owner_search_with_recent_mid_lookup():
+def test_run_recovers_video_lookup_when_recent_owner_planner_stops_at_plan():
     llm = MagicMock()
     llm.chat.side_effect = [
         ChatResponse(
@@ -348,7 +591,19 @@ def test_run_does_not_auto_follow_owner_search_with_recent_mid_lookup():
             },
         ),
         ChatResponse(
-            content="查到作者候选：红警HBK08。需要视频时应由后续规划再按 mid 查询。",
+            content=(
+                "<search_videos mode='lookup' mid='1629347259' "
+                "date_window='30d' limit='10'/>"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 35,
+                "completion_tokens": 12,
+                "total_tokens": 47,
+            },
+        ),
+        ChatResponse(
+            content="红警HBK08 最近的视频需要基于搜索结果回答。",
             finish_reason="stop",
             usage={
                 "prompt_tokens": 35,
@@ -427,12 +682,15 @@ def test_run_does_not_auto_follow_owner_search_with_recent_mid_lookup():
 
     assert "红警HBK08" in result.content
     assert "BV1f1d5BVEWB" not in result.content
-    assert llm.chat.call_count == 2
-    assert tool_executor.execute_request.call_count == 1
+    assert llm.chat.call_count == 3
+    assert tool_executor.execute_request.call_count == 2
 
     first_request = tool_executor.execute_request.call_args_list[0].args[0]
+    second_request = tool_executor.execute_request.call_args_list[1].args[0]
     assert first_request.name == "search_owners"
     assert first_request.arguments == {"text": "红警08", "mode": "name"}
+    assert second_request.name == "search_videos"
+    assert second_request.arguments["mid"] == "1629347259"
 
     assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
 
@@ -548,7 +806,7 @@ def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
             }
         ],
         thinking=False,
-        max_iterations=2,
+        max_iterations=3,
     )
 
     assert "红警HBK08" in result.content
@@ -679,7 +937,7 @@ def test_run_defers_uid_video_query_during_same_round_owner_resolution():
             }
         ],
         thinking=False,
-        max_iterations=2,
+        max_iterations=3,
     )
 
     assert "红警月亮3" in result.content

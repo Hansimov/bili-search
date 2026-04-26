@@ -86,6 +86,13 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 - `response-6.log` 暴露的短输入 `yoke` 首轮只探索视频，没有同步检查作者；后续“最近视频”又被 deterministic 作者时间线答案截断，只展示一个作者。修复方向：短且高歧义探索输入自动补 `search_owners`；作者近期作品不再走 deterministic final answer，而由 response 模型整理多作者结果。
 - 本轮定向复测：`yoke` 会先同时触发 `expand_query` 和 `search_owners`，再补 `search_videos`，最终区分候选作者和相关视频/主题；“勤奋和懒惰的yoke，他最近发了哪些视频”只需 `search_videos mode=lookup mids` 即可按两个作者分组回答，不再因为标题不含作者名误判为不相关。mid/mids lookup 的工具摘要会显式标注 `match_basis=owner_mid` 并携带 owner 分组和 BV，避免响应模型补错链接。
 - 前端 local-dev 验证：快速问答输入 `yoke` 正常展示作者候选和相关视频/主题分组；直接查找输入 `红警月亮3` 正常返回作者聚合、命中数和视频列表。
+- `response-7.log` / `response-8.log` 暴露的短身份问题：用户输入的人名、昵称或称呼不一定是账号名，也可能是大量 UP 主视频中的人物/主题。修复方向：`search_owners` 摘要保留 `sample_title`、`sample_bvid`、`sample_view` 等作品证据，并明确 `topic/relation/related_tokens` 只是上传者/作品证据，不等价于“这个人拥有该账号”；短身份问答在作者候选之外补视频侧证据。
+- 同一轮修复了工具参数污染：当模型把“请你直接搜视频”“最近发了什么”等口语化任务说明塞进 `search_owners.text` 或 `search_videos.queries` 时，执行门禁会按结构化 intent 和已知 focus 纠正为紧凑主体；近期作者视频仍按“先解析作者，再用 mid lookup”的工作流执行。
+- follow-up 视频目标增加工作流兜底：如果用户已经澄清目标对象不是本人账号、只想看其他 UP 主切片，而模型仍只发出 `search_owners`，运行时会补一个干净的 `search_videos queries=[<focus>]`，避免答案只停在作者候选或规划文本。
+- 前端渲染修复：内部工具 `inspect_tool_result` / prompt asset 读取不再生成空白工具面板；紧凑视图会按 owner `mid/url/name` 去重连续重复作者卡片，避免同一作者在同一段回答里被反复渲染。
+- 意图 taxonomy 去掉了会把具体账号样式过拟合为 `owners` 的示例，改用泛化描述；“某个作者最近发了什么视频”会稳定走 `videos/repeat`，而“玩宝宝是谁”保留为短身份探索，避免一边误触最近时间线，一边又丢失视频证据。
+- local-dev 复测：`玩宝宝是谁` 同时触发 `search_owners text=玩宝宝` 和 `search_videos queries=[玩宝宝]`；“他本人没有账号，请直接搜视频”follow-up 仍会补视频搜索，最终回答给出其他 UP 主上传的切片链接；`红警08最近发了什么视频` 先 `search_owners text=红警08`，再 `search_videos mode=lookup mid=1629347259 date_window=30d`。
+- 前端验证：`http://127.0.0.1:21002` 的“直接查找”输入 `玩宝宝` 正常返回视频列表和作者分组；“快速问答”输入 `玩宝宝是谁` 的思考过程同时渲染“搜索作者”和“搜索视频”工具面板，未再出现内部工具造成的空白 panel。
 
 如果修改了后端代码，按受管入口重启：
 
