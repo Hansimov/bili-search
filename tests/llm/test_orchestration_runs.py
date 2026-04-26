@@ -63,6 +63,79 @@ def test_run_blocks_search_detour_when_transcript_is_unavailable():
     tool_executor.execute_request.assert_not_called()
 
 
+def test_run_recovers_owner_search_when_planner_only_describes_plan():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content="我来搜索这个 UP 主。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 8,
+                "total_tokens": 28,
+            },
+        ),
+        ChatResponse(
+            content="查到的作者候选是 这里是小天啊，UID 3371622。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 28,
+                "completion_tokens": 12,
+                "total_tokens": 40,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.return_value = {
+        "text": "这里是小天啊",
+        "mode": "aggregate",
+        "requested_mode": "name",
+        "total_owners": 1,
+        "owners": [
+            {
+                "mid": 3371622,
+                "name": "这里是小天啊",
+                "score": 150.0,
+            }
+        ],
+    }
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": '"这里是小天啊" 是一个 UP主名字',
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "这里是小天啊" in result.content
+    tool_executor.execute_request.assert_called_once()
+    request = tool_executor.execute_request.call_args.args[0]
+    assert request.name == "search_owners"
+    assert request.arguments == {"text": "这里是小天啊", "mode": "name"}
+    assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
+
+
 def test_run_auto_follows_explicit_bv_lookup_with_recent_mid_lookup():
     llm = MagicMock()
     llm.chat.side_effect = [
@@ -996,6 +1069,117 @@ def _drain_orchestration_stream(stream):
             chunks.append(next(stream))
         except StopIteration as stop:
             return chunks, stop.value
+
+
+def test_run_stream_recovers_owner_search_when_planner_only_describes_plan():
+    llm = MagicMock()
+    llm.chat_stream.side_effect = [
+        iter(
+            [
+                {
+                    "id": "chunk-1",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "我来搜索这个 UP 主。"},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chunk-2",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            ]
+        ),
+        iter(
+            [
+                {
+                    "id": "chunk-3",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": "查到的作者候选是 这里是小天啊，UID 3371622。"
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chunk-4",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            ]
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.return_value = {
+        "text": "这里是小天啊",
+        "mode": "aggregate",
+        "requested_mode": "name",
+        "total_owners": 1,
+        "owners": [
+            {
+                "mid": 3371622,
+                "name": "这里是小天啊",
+                "score": 150.0,
+            }
+        ],
+    }
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    chunks, result = _drain_orchestration_stream(
+        orchestrator.run_stream(
+            messages=[
+                {
+                    "role": "user",
+                    "content": '"这里是小天啊" 是一个 UP主名字',
+                }
+            ],
+            thinking=False,
+            max_iterations=2,
+        )
+    )
+
+    assert "这里是小天啊" in result.content
+    tool_executor.execute_request.assert_called_once()
+    request = tool_executor.execute_request.call_args.args[0]
+    assert request.name == "search_owners"
+    assert request.arguments == {"text": "这里是小天啊", "mode": "name"}
+    assert any(chunk.get("tool_events") for chunk in chunks)
 
 
 def test_run_stream_recovers_owner_candidate_after_planner_stream_error_without_video_followup():

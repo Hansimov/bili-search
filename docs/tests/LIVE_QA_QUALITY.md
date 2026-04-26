@@ -61,6 +61,8 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 4. 执行层只做稳定协议门禁：如果同一轮已经在解析作者，就延后 `expand_query` 和未定向的 `search_videos` 宽搜，避免错误 query 进入 ES。
 5. `video_queries` 和 `policies` 只保留稳定语法级护栏，不继续堆具体词语、例子和自然语言正则。
 6. `bili-search` 当前禁用 search semantic rewrite；`expand_query` 默认使用 `auto`，即使模型传入 `semantic` 也按 `auto` 执行。
+7. 当模型只输出“我来搜索/下一步查询”等计划文本、但目标尚无工具结果覆盖时，运行时必须继续推动真实工具调用，不能把规划文字当最终回答。
+8. 作者搜索默认优先站内来源；外部空间页侦察只在本地候选不足或显式要求时补充，避免外部搜索延迟拖慢常规路径。
 
 这条约束的目的不是完全取消确定性逻辑，而是把“语义理解”放回大模型规划，把确定性代码限制在协议、DSL、显式 BV/MID、结果覆盖和工具执行顺序这类稳定边界上。
 
@@ -77,6 +79,8 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 - 作者过滤之外没有内容匹配文本的视频请求统一走结构化 lookup：`mid`/`uid`、`:uid=... :date<=...` 和数字型 `mid` 参数都会被归一化为 Mongo 优先的 `lookup_videos`。
 - transcript 远端 404/网络错误会返回结构化工具错误，不再击穿 `/chat/completions` 导致 500。
 - 定向 live 复测“月亮3最近3期视频内容”：工具链分为 `search_owners`、候选检查/分析、`search_videos mode=lookup mid=674510452 limit=3`，视频结果 `source_counts` 显示 Mongo 命中；前端“快速问答”和“直接查找”均完成。
+- `response-5.log` 暴露的作者查找场景中，模型多轮只输出准备搜索文本、没有 XML 工具调用，并在后续“继续”中复述或幻觉作者结果。修复方向：提示词明确禁止无工具结果时停在计划；运行时在目标未覆盖且无工具调用时触发确定性恢复调用；引号中的作者名优先作为 focus。
+- 同一日志显示 `search_owners` 感知变慢的主要风险来自默认并入外部空间页搜索。修复方向：站内 name/topic/relation/related_tokens 先并发完成并融合，只有本地无候选或显式 `include_google` 时再补 Google 空间页。
 
 如果修改了后端代码，按受管入口重启：
 

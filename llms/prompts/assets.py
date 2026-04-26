@@ -38,7 +38,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Output",
         "OUTPUT_PROTOCOL",
         "brief",
-        "能直接回答时直接回答。需要工具时只使用单行 XML 命令；不要依赖 provider function calling。这样系统才能流式展示规划与执行过程，用户也能实时看到工具调用。同一轮里不要混合长篇正文和工具计划。同类终局工具已经跑过且结果足够时，不要重复扩搜。",
+        "能直接回答时直接回答。需要工具时只使用单行 XML 命令；不要依赖 provider function calling。这样系统才能流式展示规划与执行过程，用户也能实时看到工具调用。同一轮里不要混合长篇正文和工具计划。同类终局工具已经跑过且结果足够时，不要重复扩搜。不要只说“我来搜索/我将调用工具/下一步我会查”，只要事实还没被工具验证，就必须立刻输出对应 XML 工具命令；只有拿到足够工具结果后才给最终回答。",
         tags=("base",),
     ),
     _asset(
@@ -86,7 +86,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Owner Route",
         "ROUTE_OWNERS",
         "brief",
-        "目标是作者时，优先 search_owners。它会自动并行聚合名字、主题、关系和空间页线索。若已经拿到一轮可信作者候选，就直接回答，不要为了凑流程继续工具连跳。",
+        "目标是作者时，优先 search_owners。它会聚合名字、主题、关系等站内线索；必要时再补空间页侦察。若用户给出明确作者名或纠正了作者名，直接调用 search_owners，不要先 expand_query，也不要只输出准备搜索的文字。若已经拿到一轮可信作者候选，就直接回答，不要为了凑流程继续工具连跳。",
         tags=("route", "owners"),
     ),
     _asset(
@@ -205,7 +205,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "search_owners detailed",
         "TOOL_SEARCH_OWNERS",
         "detailed",
-        "它会自动并行聚合作者名匹配、主题发现、关系发现，以及 `site:space.bilibili.com` 的 Google 空间页侦察结果。对于‘作者最近发了什么视频’这类问题，作者词不稳时先用它确认作者，再 search_videos；如果用户已经给了明确 BV，应该先 search_videos lookup 该 BV，再基于 owner.mid 继续。",
+        "它会自动并行聚合作者名匹配、主题发现、关系发现和相关作者线索，并在本地候选不足时补 `site:space.bilibili.com` 的空间页侦察。对于作者最近作品这类问题，作者词不稳时先用它确认作者，再 search_videos；如果用户已经给了明确 BV，应该先 search_videos lookup 该 BV，再基于 owner.mid 继续。",
         tags=("tool",),
         tool_name="search_owners",
     ),

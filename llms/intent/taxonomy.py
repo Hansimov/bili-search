@@ -68,6 +68,8 @@ FINAL_TARGET_LABELS: tuple[SemanticLabel, ...] = (
             "推荐几个做黑神话悟空内容的UP主。",
             "和影视飓风风格接近的UP主有哪些？",
             "推荐几个专门做 AI 绘图教程的UP主。",
+            "“这里是小天啊” 是一个 UP主名字，帮我查一下。",
+            "搜索作者 红警08。",
         ),
         default_score=0.02,
     ),

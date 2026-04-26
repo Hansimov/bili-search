@@ -342,6 +342,20 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
         *,
         prefer_transcript_lookup: bool = False,
     ) -> list[ToolCallRequest]:
+        if intent.final_target in {"owners", "relations"}:
+            owner_subject = self._intent_owner_seed(intent)
+            if not owner_subject:
+                return []
+            return [
+                ToolCallRequest(
+                    id="auto_recover_owner_lookup_1",
+                    name="search_owners",
+                    arguments={"text": owner_subject, "mode": "name"},
+                    visibility="user",
+                    source="deterministic_recovery",
+                )
+            ]
+
         if intent.final_target != "videos" or prefer_transcript_lookup:
             return []
 

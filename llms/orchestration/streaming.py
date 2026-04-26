@@ -313,6 +313,67 @@ class OrchestrationStreamingMixin:
                         {"role": "user", "content": blocked_request_nudge[1]}
                     )
                     continue
+                if not has_target_coverage(self.result_store, intent):
+                    recovery_requests = []
+                    if not transcript_requested_but_unavailable:
+                        recovery_requests = [
+                            self._normalize_request(
+                                request,
+                                intent,
+                                search_capabilities,
+                                prefer_transcript_lookup=prefer_transcript_lookup,
+                            )
+                            for request in self._build_deterministic_recovery_requests(
+                                messages,
+                                intent,
+                                prefer_transcript_lookup=prefer_transcript_lookup,
+                            )
+                        ]
+                    deduped_recovery_requests: list[ToolCallRequest] = []
+                    for request in recovery_requests:
+                        signature = command_signature(request)
+                        if signature in executed_signatures:
+                            continue
+                        executed_signatures.add(signature)
+                        deduped_recovery_requests.append(request)
+
+                    if deduped_recovery_requests:
+                        records = yield from self._execute_requests_with_stream_events(
+                            self.result_store,
+                            deduped_recovery_requests,
+                            intent,
+                            iteration=iteration,
+                            cancelled=cancelled,
+                        )
+                        tool_events.append(self._build_tool_events(iteration, records))
+                        stripped_content = sanitize_generated_content(
+                            response.content or ""
+                        )
+                        if stripped_content:
+                            conversation.append(
+                                {"role": "assistant", "content": stripped_content}
+                            )
+                        conversation.append(
+                            {
+                                "role": "user",
+                                "content": self.result_store.render_observation(
+                                    [record.result_id for record in records]
+                                ),
+                            }
+                        )
+                        deterministic_lookup_answer = (
+                            self._build_deterministic_final_answer(intent, messages)
+                        )
+                        if deterministic_lookup_answer and has_target_coverage(
+                            self.result_store, intent
+                        ):
+                            final_content = deterministic_lookup_answer
+                            content_streamed = True
+                            yield {"delta": {"content": deterministic_lookup_answer}}
+                            break
+                        if has_target_coverage(self.result_store, intent):
+                            break
+                        continue
                 final_content = sanitize_generated_content(response.content or "")
                 final_reasoning = response.reasoning_content or ""
                 content_streamed = bool(final_content)

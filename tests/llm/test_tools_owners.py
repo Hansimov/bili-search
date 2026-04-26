@@ -284,7 +284,9 @@ def test_execute_search_owners_aggregates_related_tokens_and_google_space_result
     tc = ToolCall(
         id="call_test_owners_aggregate",
         name="search_owners",
-        arguments=json.dumps({"text": "黑神话悟空", "mode": "auto"}),
+        arguments=json.dumps(
+            {"text": "黑神话悟空", "mode": "auto", "include_google": True}
+        ),
     )
     with patch.object(executor, "_is_google_available", return_value=True):
         result_msg = executor.execute(tc)
@@ -306,6 +308,43 @@ def test_execute_search_owners_aggregates_related_tokens_and_google_space_result
     )
 
     logger.success("[PASS] execute search_owners aggregates related tokens and google")
+
+
+def test_execute_search_owners_skips_google_when_local_candidates_exist():
+    """Text owner search should not wait on external space search when local sources work."""
+    logger.note("=" * 60)
+    logger.note("[TEST] execute search_owners skips google after local hits")
+
+    mock_client = MagicMock()
+    mock_client.search_owners.side_effect = lambda *, text, mode, size: {
+        "text": text,
+        "mode": mode,
+        "owners": [{"mid": 1, "name": "作者1", "score": 100}]
+        if mode == "name"
+        else [],
+    }
+    mock_google = MagicMock()
+
+    executor = ToolExecutor(
+        search_client=mock_client,
+        google_client=mock_google,
+        max_results=10,
+    )
+
+    tc = ToolCall(
+        id="call_test_owners_skip_google",
+        name="search_owners",
+        arguments=json.dumps({"text": "作者1", "mode": "name"}),
+    )
+    with patch.object(executor, "_is_google_available", return_value=True):
+        result_msg = executor.execute(tc)
+    result_data = json.loads(result_msg["content"])
+
+    assert result_data["total_owners"] == 1
+    assert "google_space" not in result_data["source_counts"]
+    mock_google.search.assert_not_called()
+
+    logger.success("[PASS] execute search_owners skips google after local hits")
 
 
 def test_execute_search_owners_survives_partial_source_failures():

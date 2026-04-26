@@ -284,79 +284,31 @@ class OwnerSearchToolMixin:
                     size=size,
                 )
             )
-        if self._is_google_available():
-            source_specs["google_space"] = lambda: self.google_client.search(
-                query=google_query,
-                num=max(5, min(size, 10)),
-                lang="zh-CN",
-            )
 
         source_groups: list[dict] = []
         merged_sources: list[tuple[str, list[dict]]] = []
         google_results: list[dict] = []
         errors: list[str] = []
 
-        max_workers = min(max(len(source_specs), 1), 5)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                source: executor.submit(fetcher)
-                for source, fetcher in source_specs.items()
-            }
-            for source, future in futures.items():
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    result = {"error": str(exc)}
-                if not isinstance(result, dict):
-                    result = {}
-                if source == "google_space":
-                    if result.get("error"):
-                        errors.append(str(result["error"]))
-                        source_groups.append(
-                            self._owner_source_group(
-                                source=source,
-                                owners=[],
-                                max_hits=max_owner_hits,
-                                text=text,
-                                error=str(result["error"]),
-                                query=google_query,
-                                google_results=[],
-                            )
-                        )
-                        continue
-                    google_results = format_google_results(
-                        result.get("results", []),
-                        max_hits=max(5, size),
-                    )
-                    google_owners = []
-                    for item in google_results:
-                        if item.get("site_kind") != "space" or not item.get("mid"):
-                            continue
-                        google_owners.append(
-                            {
-                                "mid": item.get("mid"),
-                                "name": _extract_google_space_candidate_name(
-                                    item.get("title", "")
-                                )
-                                or f"B站用户{item.get('mid')}",
-                                "score": result.get("result_count", 0),
-                                "sample_title": item.get("title", ""),
-                                "sources": [source],
-                            }
-                        )
-                    source_groups.append(
-                        self._owner_source_group(
-                            source=source,
-                            owners=google_owners,
-                            max_hits=max_owner_hits,
-                            text=text,
-                            query=google_query,
-                            google_results=google_results,
-                        )
-                    )
-                    merged_sources.append((source, google_owners))
-                    continue
+        def execute_source_specs(specs: dict[str, object]) -> None:
+            max_workers = min(max(len(specs), 1), 5)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    source: executor.submit(fetcher)
+                    for source, fetcher in specs.items()
+                }
+                for source, future in futures.items():
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {"error": str(exc)}
+                    process_source_result(source, result)
 
+        def process_source_result(source: str, result: object) -> None:
+            nonlocal google_results
+            if not isinstance(result, dict):
+                result = {}
+            if source == "google_space":
                 if result.get("error"):
                     errors.append(str(result["error"]))
                     source_groups.append(
@@ -366,22 +318,89 @@ class OwnerSearchToolMixin:
                             max_hits=max_owner_hits,
                             text=text,
                             error=str(result["error"]),
+                            query=google_query,
+                            google_results=[],
                         )
                     )
-                    continue
-
-                owners = list(result.get("owners") or [])
+                    return
+                google_results = format_google_results(
+                    result.get("results", []),
+                    max_hits=max(5, size),
+                )
+                google_owners = []
+                for item in google_results:
+                    if item.get("site_kind") != "space" or not item.get("mid"):
+                        continue
+                    google_owners.append(
+                        {
+                            "mid": item.get("mid"),
+                            "name": _extract_google_space_candidate_name(
+                                item.get("title", "")
+                            )
+                            or f"B站用户{item.get('mid')}",
+                            "score": result.get("result_count", 0),
+                            "sample_title": item.get("title", ""),
+                            "sources": [source],
+                        }
+                    )
                 source_groups.append(
                     self._owner_source_group(
                         source=source,
-                        owners=owners,
+                        owners=google_owners,
                         max_hits=max_owner_hits,
                         text=text,
+                        query=google_query,
+                        google_results=google_results,
                     )
                 )
-                merged_sources.append((source, owners))
+                merged_sources.append((source, google_owners))
+                return
+
+            if result.get("error"):
+                errors.append(str(result["error"]))
+                source_groups.append(
+                    self._owner_source_group(
+                        source=source,
+                        owners=[],
+                        max_hits=max_owner_hits,
+                        text=text,
+                        error=str(result["error"]),
+                    )
+                )
+                return
+
+            owners = list(result.get("owners") or [])
+            source_groups.append(
+                self._owner_source_group(
+                    source=source,
+                    owners=owners,
+                    max_hits=max_owner_hits,
+                    text=text,
+                )
+            )
+            merged_sources.append((source, owners))
+
+        execute_source_specs(source_specs)
 
         owners = self._merge_owner_source_groups(merged_sources)
+        include_google = bool(resolved_args.get("include_google"))
+        google_requested = requested_mode in {"google", "google_space", "full"}
+        should_try_google = (
+            self._is_google_available()
+            and (include_google or google_requested or not owners)
+        )
+        if should_try_google:
+            execute_source_specs(
+                {
+                    "google_space": lambda: self.google_client.search(
+                        query=google_query,
+                        num=max(5, min(size, 10)),
+                        lang="zh-CN",
+                    )
+                }
+            )
+            owners = self._merge_owner_source_groups(merged_sources)
+
         payload = {
             "text": text,
             "mode": "aggregate",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
+import re
 
 from llms.intent.semantic_assets import get_term_alias_rules
 from llms.intent.taxonomy import FACET_TAXONOMIES
@@ -17,6 +18,7 @@ from llms.intent.taxonomy import rank_task_mode_matches
 
 
 _EDGE_PUNCTUATION = " ，。！？?；;：:、()[]{}<>《》\"'`~!@#$%^&*-+=|\\/"
+_QUOTED_FOCUS_RE = re.compile(r"[\"“《](?P<text>[^\"”》]{2,64})[\"”》]")
 _REFERENCE_FACETS: tuple[str, ...] = (
     "expected_payoff",
     "constraints",
@@ -322,6 +324,23 @@ def _fallback_focus_spans(
     return fallback[:limit]
 
 
+def _extract_quoted_focus_spans(source: str, limit: int) -> list[str]:
+    spans: list[str] = []
+    seen_keys: set[str] = set()
+    for match in _QUOTED_FOCUS_RE.finditer(source):
+        candidate = " ".join(str(match.group("text") or "").split()).strip(
+            _EDGE_PUNCTUATION
+        )
+        candidate_key = compact_focus_key(candidate)
+        if len(candidate_key) < 2 or candidate_key in seen_keys:
+            continue
+        seen_keys.add(candidate_key)
+        spans.append(candidate)
+        if len(spans) >= limit:
+            break
+    return spans
+
+
 def extract_focus_spans(
     text: str,
     *,
@@ -333,6 +352,10 @@ def extract_focus_spans(
     source = str(text or "").strip()
     if not source:
         return []
+
+    quoted_spans = _extract_quoted_focus_spans(source, limit)
+    if quoted_spans:
+        return quoted_spans
 
     resolved_final_target_matches = final_target_matches or rank_final_target_matches(
         source,
