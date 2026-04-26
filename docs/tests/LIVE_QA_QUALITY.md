@@ -63,6 +63,8 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 6. `bili-search` 当前禁用 search semantic rewrite；`expand_query` 默认使用 `auto`，即使模型传入 `semantic` 也按 `auto` 执行。
 7. 当模型只输出“我来搜索/下一步查询”等计划文本、但目标尚无工具结果覆盖时，运行时必须继续推动真实工具调用，不能把规划文字当最终回答。
 8. 作者搜索默认优先站内来源；外部空间页侦察只在本地候选不足或显式要求时补充，避免外部搜索延迟拖慢常规路径。
+9. 对极短且高歧义的探索输入，不能只按视频或只按作者单一路径解释；工作流应同时检查视频/主题候选和作者候选，再在回答中区分多种可能意图。
+10. 作者近期作品、多人作者时间线等回答不得由 deterministic 直接格式化收口；deterministic 只负责显式语法、恢复和执行门禁，最终答案必须交回 response 模型基于工具结果综合。
 
 这条约束的目的不是完全取消确定性逻辑，而是把“语义理解”放回大模型规划，把确定性代码限制在协议、DSL、显式 BV/MID、结果覆盖和工具执行顺序这类稳定边界上。
 
@@ -81,6 +83,9 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 - 定向 live 复测“月亮3最近3期视频内容”：工具链分为 `search_owners`、候选检查/分析、`search_videos mode=lookup mid=674510452 limit=3`，视频结果 `source_counts` 显示 Mongo 命中；前端“快速问答”和“直接查找”均完成。
 - `response-5.log` 暴露的作者查找场景中，模型多轮只输出准备搜索文本、没有 XML 工具调用，并在后续“继续”中复述或幻觉作者结果。修复方向：提示词明确禁止无工具结果时停在计划；运行时在目标未覆盖且无工具调用时触发确定性恢复调用；引号中的作者名优先作为 focus。
 - 同一日志显示 `search_owners` 感知变慢的主要风险来自默认并入外部空间页搜索。修复方向：站内 name/topic/relation/related_tokens 先并发完成并融合，只有本地无候选或显式 `include_google` 时再补 Google 空间页。
+- `response-6.log` 暴露的短输入 `yoke` 首轮只探索视频，没有同步检查作者；后续“最近视频”又被 deterministic 作者时间线答案截断，只展示一个作者。修复方向：短且高歧义探索输入自动补 `search_owners`；作者近期作品不再走 deterministic final answer，而由 response 模型整理多作者结果。
+- 本轮定向复测：`yoke` 会先同时触发 `expand_query` 和 `search_owners`，再补 `search_videos`，最终区分候选作者和相关视频/主题；“勤奋和懒惰的yoke，他最近发了哪些视频”只需 `search_videos mode=lookup mids` 即可按两个作者分组回答，不再因为标题不含作者名误判为不相关。mid/mids lookup 的工具摘要会显式标注 `match_basis=owner_mid` 并携带 owner 分组和 BV，避免响应模型补错链接。
+- 前端 local-dev 验证：快速问答输入 `yoke` 正常展示作者候选和相关视频/主题分组；直接查找输入 `红警月亮3` 正常返回作者聚合、命中数和视频列表。
 
 如果修改了后端代码，按受管入口重启：
 

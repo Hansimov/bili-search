@@ -529,6 +529,13 @@ def test_alias_like_video_query_rewrites_to_known_canonical_term():
                 arguments={"text": "康夫UI", "mode": "correction"},
             )
         ),
+        make_function_call_response(
+            ToolCall(
+                id="call_alias_search_1",
+                name="search_videos",
+                arguments={"queries": ["ComfyUI 入门教程"]},
+            )
+        ),
         make_content_response("ComfyUI 入门可看 https://www.bilibili.com/video/BV1abc"),
     ]
 
@@ -547,7 +554,7 @@ def test_alias_like_video_query_rewrites_to_known_canonical_term():
     }
     mock_search.related_tokens_by_tokens.return_value = {
         "text": "康夫UI",
-        "options": [],
+        "options": [{"text": "ComfyUI", "score": 1.0}],
     }
     mock_search.explore.return_value = {
         "query": "ComfyUI 教程 :date>=2024",

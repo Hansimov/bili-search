@@ -40,6 +40,41 @@ def compact_video_hit(hit: dict) -> dict:
     }
 
 
+def compact_video_owner_groups(
+    hits: list[dict],
+    *,
+    per_owner_limit: int = 3,
+) -> list[dict]:
+    groups: list[dict] = []
+    index_by_mid: dict[str, int] = {}
+    for hit in hits:
+        owner = hit.get("owner") or {}
+        if isinstance(owner, dict):
+            owner_name = str(owner.get("name") or "").strip()
+            owner_mid = owner.get("mid")
+        else:
+            owner_name = str(owner or "").strip()
+            owner_mid = None
+        group_key = str(owner_mid or owner_name)
+        if not group_key:
+            group_key = "unknown"
+        group_index = index_by_mid.get(group_key)
+        if group_index is None:
+            index_by_mid[group_key] = len(groups)
+            group_index = len(groups)
+            groups.append(
+                {
+                    "owner": owner_name,
+                    "owner_mid": owner_mid,
+                    "hits": [],
+                }
+            )
+        group_hits = groups[group_index]["hits"]
+        if len(group_hits) < per_owner_limit:
+            group_hits.append(compact_video_hit(hit))
+    return groups
+
+
 def compact_owner(owner: dict) -> dict:
     mid = owner.get("mid")
     payload = {
@@ -128,8 +163,32 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             hits = result.get("hits") or []
             top_hits = [compact_video_hit(hit) for hit in hits[:5]]
             lookup_seed = result.get("bvids") or result.get("mids") or ""
+            lookup_by = str(result.get("lookup_by", "") or "")
+            match_basis = ""
+            owner_groups = []
+            if lookup_by in {"mid", "mids"}:
+                match_basis = "owner_mid"
+                owner_groups = compact_video_owner_groups(hits[:12])
+            match_basis_text = (
+                "match_basis=owner_mid; "
+                if match_basis == "owner_mid"
+                else ""
+            )
+            owner_group_text = ""
+            if owner_groups:
+                owner_group_text = ", owner_groups=" + "; ".join(
+                    (
+                        f"{group.get('owner') or group.get('owner_mid')}: "
+                        + ", ".join(
+                            f"{hit['title']}({hit['bvid']})"
+                            for hit in group.get("hits", [])
+                            if hit.get("title") and hit.get("bvid")
+                        )
+                    )
+                    for group in owner_groups
+                )
             summary_text = (
-                f"lookup_by={result.get('lookup_by', '')}, seed={lookup_seed}, "
+                f"lookup_by={lookup_by}, {match_basis_text}seed={lookup_seed}, "
                 f"total_hits={result.get('total_hits', len(hits))}, top_hits="
                 + ", ".join(
                     (
@@ -140,16 +199,21 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
                     for hit in top_hits
                     if hit.get("title")
                 )
+                + owner_group_text
             )
-            return {
+            payload = {
                 "result_id": result_id,
                 "tool": canonical_name,
-                "lookup_by": result.get("lookup_by", ""),
+                "lookup_by": lookup_by,
                 "seed": lookup_seed,
                 "total_hits": result.get("total_hits", len(hits)),
                 "top_hits": top_hits,
                 "summary_text": summary_text,
             }
+            if match_basis:
+                payload["match_basis"] = match_basis
+                payload["owner_groups"] = owner_groups
+            return payload
         if result.get("results"):
             query_summaries = []
             for item in result.get("results", [])[:3]:

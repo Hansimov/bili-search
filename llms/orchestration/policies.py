@@ -18,6 +18,7 @@ import re
 from typing import Any, Callable
 
 from llms.contracts import IntentProfile
+from llms.intent.focus import compact_focus_key
 from llms.tools.names import canonical_tool_name
 
 
@@ -230,6 +231,22 @@ def has_internal_answer_ready_result(result_store) -> bool:
     return has_successful_tool_result(result_store, "run_small_llm_task")
 
 
+def needs_short_ambiguous_dual_exploration(intent: IntentProfile) -> bool:
+    """Short abstract video searches should inspect creator and video hypotheses."""
+    if intent.final_target != "videos" or intent.task_mode != "exploration":
+        return False
+    if intent.is_followup or has_explicit_video_anchor(intent):
+        return False
+    if intent.needs_owner_resolution or is_recent_timeline_request(intent):
+        return False
+    focus_key = compact_focus_key(intent.raw_query)
+    if len(focus_key) < 2 or len(focus_key) > 24:
+        return False
+    if intent.ambiguity < 0.7:
+        return False
+    return len(intent.explicit_entities or []) <= 1 and len(intent.explicit_topics or []) <= 2
+
+
 def count_zero_hit_search_videos(result_store) -> int:
     count = 0
     for result_id in result_store.order:
@@ -389,6 +406,19 @@ PRE_EXECUTION_NUDGE_RULES = (
 
 
 POST_EXECUTION_NUDGE_RULES = (
+    ResultNudgeRule(
+        name="short_ambiguous_search_needs_video_after_owner_probe",
+        predicate=lambda store, intent, latest_user_message: (
+            needs_short_ambiguous_dual_exploration(intent)
+            and has_owner_coverage(store)
+            and not has_video_coverage(store)
+        ),
+        message=(
+            "这个短查询仍然缺少视频侧证据。你已经拿到作者候选；"
+            "下一步请同时参考作者候选和 token/原始词，直接执行 search_videos，"
+            "然后在最终回答中区分“可能是作者”和“可能是视频/主题”。"
+        ),
+    ),
     ResultNudgeRule(
         name="explicit_video_lookup_recent_followup",
         predicate=lambda store, intent, latest_user_message: (

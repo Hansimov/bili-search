@@ -13,14 +13,16 @@ class ExplicitDeterministicAnswerMixin:
         intent: IntentProfile,
         messages: list[dict],
     ) -> str | None:
-        return (
-            self._build_explicit_dsl_video_search_answer(intent)
-            or self._build_explicit_video_lookup_answer(intent)
-            or self._build_owner_recent_timeline_answer(
-                intent,
-                messages,
-            )
-        )
+        # Recent timeline and author-work answers must be composed by the
+        # response model from tool observations. Deterministic final answers are
+        # limited to explicit syntax lookups where there is no subject
+        # disambiguation or multi-author synthesis to perform.
+        explicit_dsl_answer = self._build_explicit_dsl_video_search_answer(intent)
+        if explicit_dsl_answer:
+            return explicit_dsl_answer
+        if is_recent_timeline_request(intent):
+            return None
+        return self._build_explicit_video_lookup_answer(intent)
 
     def _build_explicit_dsl_video_search_answer(
         self,

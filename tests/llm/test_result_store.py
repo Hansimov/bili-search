@@ -77,6 +77,40 @@ def test_summarize_video_results_keeps_tags_as_evidence():
     )
 
 
+def test_summarize_mid_lookup_marks_owner_mid_as_match_basis():
+    result = {
+        "mode": "lookup",
+        "lookup_by": "mids",
+        "mids": ["267298820", "3546906370247281"],
+        "total_hits": 2,
+        "hits": [
+            {
+                "title": "玩机器深夜闲聊解答世间万物第五期",
+                "bvid": "BV1FroRBAEmG",
+                "owner": {"mid": 267298820, "name": "勤奋的yoke"},
+                "tags": "杂谈,直播切片",
+                "stat": {"view": 2571},
+            },
+            {
+                "title": "玩机器直言自己会理光头的",
+                "bvid": "BV1zpo9BxEPP",
+                "owner": {"mid": 3546906370247281, "name": "懒惰的yoke"},
+                "tags": "解说,直播切片",
+                "stat": {"view": 3957},
+            },
+        ],
+    }
+
+    summary = summarize_result("R1", "search_videos", result)
+
+    assert summary["match_basis"] == "owner_mid"
+    assert "match_basis=owner_mid" in summary["summary_text"]
+    assert "owner_groups=勤奋的yoke" in summary["summary_text"]
+    assert "玩机器直言自己会理光头的(BV1zpo9BxEPP)" in summary["summary_text"]
+    assert summary["owner_groups"][0]["owner"] == "勤奋的yoke"
+    assert summary["owner_groups"][1]["owner_mid"] == 3546906370247281
+
+
 def test_summarize_transcript_keeps_page_part_title():
     result = {
         "bvid": "BV1jmdvBYEPr",

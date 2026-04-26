@@ -27,6 +27,7 @@ from llms.orchestration.policies import has_explicit_video_anchor
 from llms.orchestration.policies import has_successful_tool_result
 from llms.orchestration.policies import has_target_coverage
 from llms.orchestration.policies import is_recent_timeline_request
+from llms.orchestration.policies import needs_short_ambiguous_dual_exploration
 from llms.orchestration.policies import select_blocked_request_nudge
 from llms.orchestration.policies import select_post_execution_nudge
 from llms.orchestration.policies import select_pre_execution_nudge
@@ -122,6 +123,38 @@ class ChatOrchestrator(
                 if text:
                     return text
         return ""
+
+    def _augment_short_ambiguous_exploration_requests(
+        self,
+        requests: list[ToolCallRequest],
+        intent: IntentProfile,
+    ) -> list[ToolCallRequest]:
+        if not needs_short_ambiguous_dual_exploration(intent):
+            return requests
+        user_tool_names = {
+            canonical_tool_name(request.name)
+            for request in requests
+            if request.visibility == "user"
+        }
+        if "search_owners" in user_tool_names:
+            return requests
+        if not user_tool_names.intersection({"expand_query", "search_videos"}):
+            return requests
+        owner_seed = self._owner_resolution_seed(
+            intent
+        ) or VideoQueryNormalizer.clean_subject_text(intent.raw_query)
+        if not owner_seed:
+            return requests
+        return [
+            *requests,
+            ToolCallRequest(
+                id="auto_short_ambiguous_owner_probe_1",
+                name="search_owners",
+                arguments={"text": owner_seed, "size": 8},
+                visibility="user",
+                source="workflow_gate",
+            ),
+        ]
 
     def _normalize_request(
         self,
@@ -642,6 +675,10 @@ class ChatOrchestrator(
                 requests,
                 intent,
                 messages,
+            )
+            requests = self._augment_short_ambiguous_exploration_requests(
+                requests,
+                intent,
             )
 
             deduped_requests = []

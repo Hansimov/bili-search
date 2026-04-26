@@ -148,6 +148,10 @@ class OrchestrationStreamingMixin:
                 intent,
                 messages,
             )
+            requests = self._augment_short_ambiguous_exploration_requests(
+                requests,
+                intent,
+            )
 
             deduped_requests = []
             for request in requests:

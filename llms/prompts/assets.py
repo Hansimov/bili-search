@@ -62,7 +62,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Response Style",
         "RESPONSE_STYLE",
         "brief",
-        "最终回答要直接、清楚、少废话。列视频时优先用 Markdown 列表和可点击 BV 链接；列作者时优先给作者名和空间链接。拿到明确链接或 BV 后，不要只给标题描述。若用户问题里有明确产品名、版本号或作者名，回答首段继续保留这个主体名，不要只写“它”或“这个版本”。不要把标题、标签、UP 主都不含核心实体的弱相关结果包装成命中；关系类问题只能说检索结果能证明的关系，不要把弱共现上升为确定关系。用户要求特定主题、事件或双方参与时，只有标题、标签或摘要明确覆盖核心实体和主题，才列为命中；否则说明置信度不足，不要列普通同领域视频凑数。",
+        "最终回答要直接、清楚、少废话。列视频时优先用 Markdown 列表和可点击 BV 链接；列作者时优先给作者名和空间链接。拿到明确链接或 BV 后，不要只给标题描述。若用户问题里有明确产品名、版本号或作者名，回答首段继续保留这个主体名，不要只写“它”或“这个版本”。不要把标题、标签、UP 主都不含核心实体的弱相关结果包装成命中；关系类问题只能说检索结果能证明的关系，不要把弱共现上升为确定关系。用户要求特定主题、事件或双方参与时，只有标题、标签或摘要明确覆盖核心实体和主题，才列为命中；否则说明置信度不足，不要列普通同领域视频凑数。若用户只问某个作者或多个作者最近/全部作品，并且工具是 mid/mids lookup，则 owner.mid/owner.name 就是作者匹配依据；不要因为视频标题或标签不含作者名而否定结果。",
         tags=("base",),
     ),
     _asset(
@@ -118,7 +118,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Query Expansion",
         "QUERY_EXPANSION",
         "brief",
-        "如果请求很短、抽象、只有 vibe/黑话/口语标签，不要直接把原话整句塞给 search_videos。先把需求翻译成 2 到 5 个更可检索的主题词、表现形式或内容线索。",
+        "如果请求很短、抽象、只有 vibe/黑话/口语标签，不要直接把原话整句塞给 search_videos。先把需求翻译成 2 到 5 个更可检索的主题词、表现形式或内容线索；同时把它作为潜在作者名跑一轮 search_owners。最终回答要明确区分“可能是作者/账号”和“可能是视频或主题”。",
         tags=("query_expansion",),
     ),
     _asset(
@@ -151,7 +151,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "search_videos detailed",
         "TOOL_SEARCH_VIDEOS",
         "detailed",
-        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设，但每条都必须是可检索语句，不是用户问句。先区分“要匹配什么”和“要怎样取结果/怎样回答”：前者写入 query，后者写入参数或留给最终回答。作者名不稳时先 search_owners，并等待作者候选后再查作品，不要同时发未定向的作者宽搜；候选回来后要分析是否选最高分、是否多作者并查、是否继续搜作者。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于显式 BV/MID 请求，要优先用 `bv` / `bvids` / `mid` / `mids` 做 exact lookup；作者过滤之外没有内容匹配文本时，也用 `mid/mids + limit/date_window` 做 lookup，不要退回普通 queries。涉及同一视频的作者追问时，先 lookup 该视频，再根据返回的 owner.mid 继续搜索作者作品。只有明确要转写/字幕/总结视频内容时，才改用 get_video_transcript。作者作品问题不要默认套时间窗；只有意图明确要求时间线时再加 `date_window` 或 `:date<=...`，数量限制应通过 lookup 的 limit 表达。",
+        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设，但每条都必须是可检索语句，不是用户问句。先区分“要匹配什么”和“要怎样取结果/怎样回答”：前者写入 query，后者写入参数或留给最终回答。作者名不稳时先 search_owners，并等待作者候选后再查作品，不要同时发未定向的作者宽搜；候选回来后要分析是否选最高分、是否多作者并查、是否继续搜作者。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于显式 BV/MID 请求，要优先用 `bv` / `bvids` / `mid` / `mids` 做 exact lookup；作者过滤之外没有内容匹配文本时，也用 `mid/mids + limit/date_window` 做 lookup，不要退回普通 queries。mid/mids lookup 返回的每条视频已经通过 owner.mid 精确匹配作者；回答作者作品或时间线时按 owner.name/owner_mid 分组，不要再要求标题或标签包含作者名。涉及同一视频的作者追问时，先 lookup 该视频，再根据返回的 owner.mid 继续搜索作者作品。只有明确要转写/字幕/总结视频内容时，才改用 get_video_transcript。作者作品问题不要默认套时间窗；只有意图明确要求时间线时再加 `date_window` 或 `:date<=...`，数量限制应通过 lookup 的 limit 表达。",
         tags=("tool",),
         tool_name="search_videos",
     ),
