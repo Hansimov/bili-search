@@ -389,6 +389,122 @@ def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
     assert not any("红色警戒08是谁" in query for query in executed_queries)
 
 
+def test_run_defers_uid_video_query_during_same_round_owner_resolution():
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        ChatResponse(
+            content=(
+                "<search_owners text='月亮3' size='5'/>"
+                "<search_videos queries='[\":uid=674510452 最近3期视频内容\", \"月亮3最近3期视频内容\"]'/>"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 12,
+                "total_tokens": 32,
+            },
+        ),
+        ChatResponse(
+            content="红警月亮3 最近的视频包括 BV12Ed9BNEqJ。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 18,
+                "completion_tokens": 12,
+                "total_tokens": 30,
+            },
+        ),
+    ]
+    tool_executor = MagicMock()
+    tool_executor.get_search_capabilities.return_value = {
+        "default_query_mode": "wv",
+        "rerank_query_mode": "vwr",
+        "supports_multi_query": True,
+        "supports_owner_search": True,
+        "supports_google_search": True,
+        "supports_transcript_lookup": False,
+        "relation_endpoints": [],
+        "docs": ["search_syntax"],
+    }
+    tool_executor.execute_request.side_effect = [
+        {
+            "text": "月亮3",
+            "mode": "aggregate",
+            "total_owners": 1,
+            "owners": [
+                {
+                    "mid": 674510452,
+                    "name": "红警月亮3",
+                    "score": 4.0,
+                    "sources": [
+                        "name",
+                        "topic",
+                        "relation",
+                        "related_tokens",
+                        "google_space",
+                    ],
+                    "sample_title": "红警占领潘多拉魔盒！",
+                    "sample_bvid": "BV1TwdeBLEYL",
+                    "sample_view": 60367,
+                }
+            ],
+        },
+        {
+            "mode": "lookup",
+            "lookup_by": "mid",
+            "total_hits": 1,
+            "mid": "674510452",
+            "date_window": "30d",
+            "hits": [
+                {
+                    "bvid": "BV12Ed9BNEqJ",
+                    "title": "红警谁是幸运儿！开局在风水宝地资源多，发展起来直接横扫一圈！",
+                    "owner": {"mid": 674510452, "name": "红警月亮3"},
+                }
+            ],
+        },
+    ]
+
+    orchestrator = ChatOrchestrator(
+        llm_client=llm,
+        small_llm_client=llm,
+        tool_executor=tool_executor,
+        model_registry=ModelRegistry.from_envs(),
+    )
+
+    result = orchestrator.run(
+        messages=[
+            {
+                "role": "user",
+                "content": "月亮3最近3期视频内容",
+            }
+        ],
+        thinking=False,
+        max_iterations=2,
+    )
+
+    assert "红警月亮3" in result.content
+    assert "BV12Ed9BNEqJ" in result.content
+    assert llm.chat.call_count == 2
+    assert tool_executor.execute_request.call_count == 2
+
+    first_request = tool_executor.execute_request.call_args_list[0].args[0]
+    second_request = tool_executor.execute_request.call_args_list[1].args[0]
+    assert first_request.name == "search_owners"
+    assert first_request.arguments == {"text": "月亮3", "size": 5}
+    assert second_request.name == "search_videos"
+    assert second_request.arguments == {
+        "mode": "lookup",
+        "mid": "674510452",
+        "limit": 10,
+    }
+
+    executed_queries = [
+        str(request.args[0].arguments)
+        for request in tool_executor.execute_request.call_args_list
+    ]
+    assert not any("最近3期视频内容" in query for query in executed_queries)
+
+
 def test_run_replaces_recent_user_scoped_video_search_with_owner_resolution_first():
     llm = MagicMock()
     llm.chat.side_effect = [

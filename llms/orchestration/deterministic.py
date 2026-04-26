@@ -376,6 +376,73 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
             )
         ]
 
+    def _build_owner_result_video_lookup_followup_requests(
+        self,
+        result_store: ResultStore,
+        intent: IntentProfile,
+        messages: list[dict] | None = None,
+    ) -> list[ToolCallRequest]:
+        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
+            return []
+        if is_recent_timeline_request(intent):
+            return []
+        if has_successful_tool_result(result_store, "search_videos"):
+            return []
+
+        message_list = list(messages or [])
+        _subject, owner_candidate = self._select_recent_owner_candidate(
+            result_store,
+            message_list,
+            intent,
+        )
+        if not owner_candidate:
+            return []
+
+        try:
+            owner_mid = str(int(str(owner_candidate.get("mid") or "").strip()))
+        except (TypeError, ValueError):
+            return []
+
+        owner_name = str(owner_candidate.get("name") or "").strip()
+        owner_keys = {
+            self._intent_owner_seed(intent),
+            owner_name,
+        }
+        normalized_owner_keys = {
+            "".join(VideoQueryNormalizer.clean_subject_text(value).split()).lower()
+            for value in owner_keys
+            if value
+        }
+        topic_keys = [
+            "".join(VideoQueryNormalizer.clean_subject_text(value).split()).lower()
+            for value in intent.explicit_topics or []
+            if VideoQueryNormalizer.clean_subject_text(value)
+        ]
+        distinct_topic_keys = list(dict.fromkeys(topic_keys))
+        if len(distinct_topic_keys) > 1 and any(
+            key
+            and all(
+                key not in owner_key and owner_key not in key
+                for owner_key in normalized_owner_keys
+            )
+            for key in distinct_topic_keys
+        ):
+            return []
+
+        return [
+            ToolCallRequest(
+                id=f"auto_owner_video_lookup_{len(result_store.order) + 1}",
+                name="search_videos",
+                arguments={
+                    "mode": "lookup",
+                    "mid": owner_mid,
+                    "limit": 10,
+                },
+                visibility="user",
+                source="deterministic_followup",
+            )
+        ]
+
     def _extract_recent_timeline_hits(self) -> tuple[list[dict], str | None, bool]:
         fallback_candidate: tuple[list[dict], str | None, bool] | None = None
         for result_id in reversed(self.result_store.order):
@@ -681,12 +748,20 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
             )
         )
         followup_requests.extend(
-            self._build_video_gap_followup_requests(
+            self._build_owner_result_video_lookup_followup_requests(
                 result_store,
                 intent,
                 messages=messages,
             )
         )
+        if not followup_requests:
+            followup_requests.extend(
+                self._build_video_gap_followup_requests(
+                    result_store,
+                    intent,
+                    messages=messages,
+                )
+            )
 
         deduped_requests: list[ToolCallRequest] = []
         seen_signatures: set[str] = set()

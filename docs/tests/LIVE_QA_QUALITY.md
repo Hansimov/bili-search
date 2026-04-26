@@ -69,7 +69,7 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 - 已清理 `deterministic.py`、`policies.py`、`runtime.py` 中针对具体自然语言词语的特殊分支。
 - 已将 `video_queries.py` 收敛为语法级处理，只保留显式 DSL、括号标题、引号标题、标点和空白清理。
 - 已关闭 `bili-search` search semantic rewrite；禁用时搜索准备流程不进入 semantic rewrite 分支，只保留 `semantic_rewrite_info.disabled=true` 作为观测字段。
-- 已关闭 `es-tok` semantic bundle 的默认加载；未显式开启时 `mode=semantic` 回退到 `auto`。
+- 已从 `es-tok` 清理 semantic store、suggester、内置 TSV 资产和 bundle 复制逻辑；`mode=semantic` 仅作为兼容输入映射到 `auto`。
 - 已废弃上一轮通过固定词表修复对战、近期、采访等场景的做法；这些场景应由大模型规划先产出高质量 query，再进入搜索管线。
 - 真实 local-dev 验证：`/search` 返回 `semantic_rewrite_info.disabled=true`；`/related_tokens_by_tokens` 传入 `mode=semantic` 时返回 `mode=auto`；前端“直接查找”和“快速问答”均可正常完成。
 - 快速问答的作者近期视频答案优先使用结构化 `search_owners` 请求文本作为展示主体，避免 intent 中混入问句片段后污染回答。

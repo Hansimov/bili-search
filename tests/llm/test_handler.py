@@ -245,6 +245,41 @@ def test_plan_tool_commands_drops_same_round_unresolved_user_scoped_video_search
     } in planned
 
 
+def test_plan_tool_commands_defers_uid_video_search_during_owner_resolution():
+    planned = ChatHandler._plan_tool_commands(
+        commands=[
+            {
+                "type": "search_owners",
+                "args": {"text": "月亮3", "mode": "name"},
+            },
+            {
+                "type": "search_videos",
+                "args": {
+                    "queries": [
+                        ":uid=674510452 最近3期视频内容",
+                        "月亮3最近3期视频内容",
+                    ]
+                },
+            },
+        ],
+        messages=[
+            {
+                "role": "user",
+                "content": "月亮3最近3期视频内容",
+            }
+        ],
+        last_tool_results=None,
+        owner_result_scope=None,
+    )
+
+    assert planned == [
+        {
+            "type": "search_owners",
+            "args": {"text": "月亮3", "mode": "name"},
+        }
+    ]
+
+
 def test_tool_events_include_visibility_summary_and_result_ids():
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.side_effect = [

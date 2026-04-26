@@ -69,19 +69,6 @@ class ToolFollowupPlanningMixin:
             return True
         if has_date_filter(cls._extract_recent_assistant_commands(messages)):
             return True
-        latest_user_text = "".join(cls._get_latest_user_text(messages).split())
-        if any(
-            token in latest_user_text
-            for token in (
-                "最近",
-                "近期",
-                "近况",
-                "最近还发",
-                "最近还有哪些视频",
-                "最近发了哪些视频",
-            )
-        ):
-            return True
         intent = build_intent_profile(messages)
         return intent.task_mode == "repeat" or "recent_only" in intent.top_labels(
             "constraints",

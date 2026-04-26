@@ -157,6 +157,7 @@ DEFAULT_TOOL_PLANNING_PLUGINS: tuple[ToolPlanningPlugin, ...] = (
             and context.intent.final_target == "videos"
             and context.intent.needs_keyword_expansion
             and not context.intent.needs_term_normalization
+            and "search_owners" not in signals.command_types
             and not signals.has_search_google_command
             and not signals.has_google_results
         ),

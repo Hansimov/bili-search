@@ -2,13 +2,13 @@
 
 ## 2026-04-26 当前状态
 
-`bili-search-algo/models/semantics` 和 `es-tok` 的 compact semantic bundle 目前默认禁用。代码、资源格式和接口可以保留，方便后续重新评估或 A/B，但默认 local-dev 和生产链路不应消费该 bundle。
+`bili-search-algo/models/semantics` 和 `es-tok` 的 compact semantic bundle 已从当前 local-dev 链路下线。`es-tok` 只保留 `mode=semantic` 作为兼容输入，并直接映射到 `auto`；不再打包、加载或消费 semantic TSV 资产。
 
 当前约束：
 
 - `bili-search` 不进入 search semantic rewrite 分支；搜索响应只保留 `semantic_rewrite_info.disabled=true` 作为观测字段。
-- `es-tok` 未显式设置 `ES_TOK_SEMANTICS_ENABLED=true` 或 `-Des.tok.semantics.enabled=true` 时不加载 semantic bundle。
-- 即使请求传入 `mode=semantic`，`es-tok` 也应回退到 `auto`。
+- `es-tok` 不再提供 semantic bundle loader、semantic suggester 或内置 `src/main/resources/tuning/semantic/*.tsv` 资产。
+- 即使请求传入 `mode=semantic`，`es-tok` 也必须回退到 `auto`，响应中的 `mode` 也应为 `auto`。
 - 不在 orchestration 代码中追加自然语言词表、例子或正则来替代 semantic 功能；query 质量由大模型规划阶段负责，执行层只做稳定协议门禁。
 
 ## 2026-04-25 历史架构更新
@@ -49,15 +49,15 @@
 
 ## es-tok 的语义存储层
 
-### 1. 查询期抽象层
+### 1. 当前状态
 
-es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而是统一走抽象存储接口：
+`es-tok` 的 semantic 存储层已经移除。当前插件包中不应存在以下内容：
 
+- `SemanticArtifactStore`
 - `SemanticExpansionStore`
-- `SemanticExpansionRule`
 - `SemanticQueryExpansionSuggester`
-
-默认实现由 `SemanticArtifactStore` 提供，直接加载 `src/main/resources/tuning/semantic/*.tsv` 下的 compact bundle，并与查询期建议器共享同一套存储契约。
+- `src/main/resources/tuning/semantic/*.tsv`
+- `ES_TOK_SEMANTICS_*` 或 `es.tok.semantics.*` 运行期开关
 
 ### 2. 历史方案说明
 
@@ -69,26 +69,9 @@ es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而
 
 它们代表的是上一轮“索引期增量 snapshot”方案，当前主线已经不再依赖这条链路。
 
-### 3. 当前离线生成流程
+### 3. 历史离线生成流程
 
-当前语义资产的生成和消费流程是：
-
-1. `bili-search-algo/models/semantics` 从真实文档统计中生成 compact semantic bundle，不在模型代码中注入人工挑选的 query/product seed rule。
-2. bundle 按关系类型拆分为四个固定文件：
-  - `rewrite.tsv`
-  - `synonym.tsv`
-  - `near_synonym.tsv`
-  - `doc_cooccurrence.tsv`
-3. 每个文件都使用紧凑的单行格式：一行对应一个 source term，后续列按 `target weight target weight ...` 展开，不再使用嵌套 JSON。
-4. `es-tok` 启动时由 `SemanticArtifactStore` 优先加载插件目录下的 merged bundle，找不到时回退到 `src/main/resources/tuning/semantic/*.tsv`。
-5. 查询期仍由 `SemanticQueryExpansionSuggester` 消费统一的 `SemanticExpansionStore` 接口，但底层数据源已经变成离线 bundle，而不是运行中 snapshot。
-
-当前 bundle 中同时承载四类关系：
-
-- `rewrite`：可安全改写的确定性表述
-- `synonym`：强同义项
-- `near_synonym`：同一词或实体的表面变体，只允许包含关系、数字签名一致，或 ASCII 型号/英文词轻微拼写差异
-- `doc_cooccurrence`：来自真实文档共现的动态语义证据
+`bili-search-algo/models/semantics` 曾用于从真实文档统计中生成 compact semantic bundle，按 `rewrite / synonym / near_synonym / doc_cooccurrence` 拆分 TSV。该流程当前只作为历史记录保留，不进入 `bili-search` 或 `es-tok` 运行链路。
 
 ## 为什么这样拆分
 
@@ -108,16 +91,15 @@ es-tok 的 semantic 扩展不再直接依赖单一的静态调优加载器，而
 
 ## 本轮验证结论
 
-当前这轮验证不再围绕索引期 snapshot，而是围绕“离线 bundle -> es-tok compact artifact store -> bili-search relation client contract”这条链路。
+当前这轮验证围绕“semantic 完全退出运行链路”展开。
 
 已经完成的关键验证如下：
 
-1. `models.semantics` 的窄测试通过，确认 compact 格式写出、增量去重和 near_synonym 质量门槛稳定。
-2. `es-tok` 的 `SemanticArtifactStore` 窄测试、`SemanticQueryExpansionSuggester` 相关测试、`compileJava` 和 `assemble` 通过，确认 Java 侧已经切到 compact bundle，且内置兜底 TSV 会进入插件 jar。
-3. `bili-search` 的语义关系调用仍通过 `RelationsClient.related_tokens_by_tokens(mode="semantic")`，响应契约不变，因此 `elastics.videos` 和 `llms` 不需要直接读取离线产物。
-4. `data/semantics/v1/merged` 已由 1M Mongo live run 生成，并通过 `SEMANTICS_BUNDLE_PATH=... ./load.sh -a` 复制到开发 ES 插件目录。
-5. 开发 ES 重启后，后端和前端 local-dev 链路均已重新验证。
-6. live endpoint 验证 `b200 价格` 从严格 `+b200 +价格` 的 1 条结果恢复为普通 `b200 价格` 的 20 条页面结果，证明低召回 retry 修复了型号词+属性词过窄召回问题。
+1. `es-tok` 已删除 semantic store、suggester、相关测试和内置 TSV 资产。
+2. `./gradlew :test` 通过，确认删除后没有编译残留。
+3. `./load.sh -a` 已重新加载插件；实际插件目录和 jar 中均搜不到 `Semantic / semantic / semantics` 条目。
+4. live endpoint 验证 `mode=semantic` 返回 `mode=auto`。
+5. `bili-search` search semantic rewrite 仍返回 `semantic_rewrite_info.disabled=true`。
 
 ## 本轮二次验证
 

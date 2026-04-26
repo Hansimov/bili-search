@@ -282,6 +282,16 @@ class ChatOrchestrator(
         return any(":uid=" in str(query or "") for query in queries)
 
     @staticmethod
+    def _is_explicit_video_anchor_lookup_request(request: ToolCallRequest) -> bool:
+        arguments = request.arguments or {}
+        if any(arguments.get(key) for key in ("bv", "bvid", "bvids")):
+            return True
+
+        if str(arguments.get("mode") or "").strip().lower() != "lookup":
+            return False
+        return any(arguments.get(key) for key in ("bv", "bvid", "bvids"))
+
+    @staticmethod
     def _owner_seed_from_video_requests(requests: list[ToolCallRequest]) -> str:
         for request in requests:
             if (
@@ -317,7 +327,7 @@ class ChatOrchestrator(
         intent: IntentProfile,
         messages: list[dict],
     ) -> list[ToolCallRequest]:
-        if intent.final_target != "videos" or not is_recent_timeline_request(intent):
+        if intent.final_target != "videos":
             return requests
         has_owner_resolution = any(
             request.visibility == "user"
@@ -330,7 +340,16 @@ class ChatOrchestrator(
             and self._is_exact_scoped_video_request(request)
             for request in requests
         )
-        if not has_owner_resolution and not has_exact_video_lookup:
+        requires_owner_first = (
+            is_recent_timeline_request(intent)
+            or intent.needs_owner_resolution
+            or has_owner_resolution
+        )
+        if (
+            requires_owner_first
+            and not has_owner_resolution
+            and not has_exact_video_lookup
+        ):
             needs_owner_resolution = any(
                 request.visibility == "user"
                 and canonical_tool_name(request.name)
@@ -367,7 +386,7 @@ class ChatOrchestrator(
             if (
                 request.visibility == "user"
                 and canonical_tool_name(request.name) == "search_videos"
-                and not self._is_scoped_or_lookup_video_request(request)
+                and not self._is_explicit_video_anchor_lookup_request(request)
             ):
                 continue
             filtered.append(request)

@@ -78,7 +78,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Video Route",
         "ROUTE_VIDEOS",
         "brief",
-        "目标是视频时，终局工具优先 search_videos。search_videos 的 query 必须是紧凑检索 DSL：保留实体、主题和必要过滤，不要携带问句套话。不要擅自添加 :view、:date、:t 等硬过滤，除非用户明确要求热度、时间或时长；特定主题、事件、作品或多人参与需求优先保证核心实体完整匹配。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query，再 search_videos；expand_query 默认使用 auto，只有明确拼写纠错时才指定 correction。拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid；作者身份和作者作品混合问题不要在同一轮做未定向宽搜。不要把疑似错写直接当作者名去 search_owners。若结果只满足作者约束、但标题、标签或摘要不体现用户要的核心主题，不要把这些结果当作已命中；应明确说明当前语料缺少高置信结果。",
+        "目标是视频时，终局工具优先 search_videos。search_videos 的 query 必须是紧凑检索 DSL：保留实体、主题和必要过滤，不要携带问句套话。把用户需求先拆成 content terms 和 execution constraints：实体、作品、主题、事件、参与者才进入检索文本；时间范围、排序、数量、列表规模、是否要摘要/内容说明属于执行或回答约束，应使用 lookup 参数、limit/date_window、后续读取或最终回答处理，不要拼进 query 正文。不要擅自添加 :view、:date、:t 等硬过滤，除非用户明确要求热度、时间或时长；特定主题、事件、作品或多人参与需求优先保证核心实体完整匹配。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query，再 search_videos；expand_query 默认使用 auto，只有明确拼写纠错时才指定 correction。拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid；作者身份和作者作品混合问题不要在同一轮做视频搜索，必须等作者候选确认后再用返回的 mid/uid 查询作品。不要把疑似错写直接当作者名去 search_owners。若结果只满足作者约束、但标题、标签或摘要不体现用户要的核心主题，不要把这些结果当作已命中；应明确说明当前语料缺少高置信结果。",
         tags=("route", "videos"),
     ),
     _asset(
@@ -134,7 +134,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "DSL Quickref",
         "DSL_QUICKREF",
         "brief",
-        "search_videos query 只保留关键实体和检索条件。不要把自然语言问题原样作为 query；能用 mid/uid 时优先精确约束，避免先宽搜再解释。常用过滤器：:view>=1w :date<=7d :t>5m :user=名字 :uid=数字。q=wv 是默认混合，q=vr 是向量+重排，q=vwr 是混合+重排；用户原话里已有 q=vr/q=vwr 时必须原样保留，不能把 vr 理解成虚拟现实。",
+        "search_videos query 只保留关键实体和检索条件。不要把自然语言问题原样作为 query；能用 mid/uid 时优先精确约束，避免先宽搜再解释。数量、时间线、排序、输出格式、是否需要总结内容是约束，不是要匹配的文本；如果已解析到作者 mid，应优先用 lookup 的 mid/mids、limit、date_window 表达这些约束。常用过滤器：:view>=1w :date<=7d :t>5m :user=名字 :uid=数字。q=wv 是默认混合，q=vr 是向量+重排，q=vwr 是混合+重排；用户原话里已有 q=vr/q=vwr 时必须原样保留，不能把 vr 理解成虚拟现实。",
         tags=("dsl",),
     ),
     _asset(
@@ -151,7 +151,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "search_videos detailed",
         "TOOL_SEARCH_VIDEOS",
         "detailed",
-        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设，但每条都必须是可检索语句，不是用户问句。能稳定用 :user / :uid 时再定向；作者名不稳时先 search_owners，并等待作者候选后再查作品，不要同时发未定向的作者宽搜。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于显式 BV/MID 请求，要优先用 `bv` / `bvids` / `mid` / `mids` 做 exact lookup；涉及同一视频的作者追问时，先 lookup 该视频，再根据返回的 owner.mid 继续搜索作者作品。只有明确要转写/字幕/总结视频内容时，才改用 get_video_transcript。作者作品问题不要默认套时间窗；只有意图明确要求时间线时再加 `date_window` 或 `:date<=...`，数量限制应通过 lookup 的 limit 表达。",
+        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设，但每条都必须是可检索语句，不是用户问句。先区分“要匹配什么”和“要怎样取结果/怎样回答”：前者写入 query，后者写入参数或留给最终回答。能稳定用 :user / :uid 时再定向；作者名不稳时先 search_owners，并等待作者候选后再查作品，不要同时发未定向的作者宽搜。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于显式 BV/MID 请求，要优先用 `bv` / `bvids` / `mid` / `mids` 做 exact lookup；涉及同一视频的作者追问时，先 lookup 该视频，再根据返回的 owner.mid 继续搜索作者作品。只有明确要转写/字幕/总结视频内容时，才改用 get_video_transcript。作者作品问题不要默认套时间窗；只有意图明确要求时间线时再加 `date_window` 或 `:date<=...`，数量限制应通过 lookup 的 limit 表达。",
         tags=("tool",),
         tool_name="search_videos",
     ),

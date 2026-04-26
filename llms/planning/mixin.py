@@ -726,6 +726,29 @@ class ToolPlanningMixin(ToolFollowupPlanningMixin):
         ]
         return passthrough_commands + owner_resolution_commands
 
+    @staticmethod
+    def _is_explicit_video_anchor_command(command: dict) -> bool:
+        args = command.get("args") or {}
+        return any(args.get(key) for key in ("bv", "bvid", "bvids"))
+
+    @classmethod
+    def _defer_video_search_during_owner_resolution(
+        cls,
+        commands: list[dict],
+    ) -> list[dict]:
+        has_owner_resolution = any(
+            _tool_type(command) == "search_owners" for command in commands or []
+        )
+        if not has_owner_resolution:
+            return commands
+
+        return [
+            command
+            for command in commands or []
+            if _tool_type(command) != "search_videos"
+            or cls._is_explicit_video_anchor_command(command)
+        ]
+
     @classmethod
     def _plan_tool_commands(
         cls,
@@ -736,6 +759,7 @@ class ToolPlanningMixin(ToolFollowupPlanningMixin):
     ) -> list[dict]:
         intent = build_intent_profile(messages)
         planned = cls._normalize_search_video_commands(commands)
+        planned = cls._defer_video_search_during_owner_resolution(planned)
         planned = cls._rewrite_search_video_commands_with_owner_results(
             planned,
             owner_result_scope,
@@ -751,5 +775,6 @@ class ToolPlanningMixin(ToolFollowupPlanningMixin):
             ),
             DEFAULT_TOOL_PLANNING_PLUGINS,
         )
+        planned = cls._defer_video_search_during_owner_resolution(planned)
         planned = cls._normalize_search_video_commands(planned)
         return cls._merge_owner_resolution_commands(planned, owner_result_scope)
