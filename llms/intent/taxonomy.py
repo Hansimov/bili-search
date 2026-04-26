@@ -115,6 +115,8 @@ TASK_MODE_LABELS: tuple[SemanticLabel, ...] = (
             "影视飓风最近有什么新视频？",
             "老番茄最近一个月发了什么？",
             "这位作者近期更新如何？",
+            "这个视频的作者还发了哪些视频？",
+            "红警08是谁，最近发了哪些视频？",
         ),
         allowed_targets=("videos",),
         default_score=0.02,
@@ -348,6 +350,7 @@ FACET_TAXONOMIES: dict[str, tuple[SemanticLabel, ...]] = {
                 "最近一个月发布的视频。",
                 "最近有哪些官方更新？",
                 "这几天有没有新视频？",
+                "还发了哪些视频？",
             ),
         ),
         SemanticLabel(

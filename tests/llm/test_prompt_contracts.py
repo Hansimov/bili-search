@@ -61,8 +61,8 @@ def test_build_system_prompt_mentions_internal_prompt_loading_and_result_isolati
     assert "默认只加载与当前任务最相关的 brief guidance" in prompt
     assert "不要重复扩搜" in prompt
     assert "若摘要里已有 BV、mid 或链接，就直接回答" in prompt
-    assert "共享路由样例" in prompt
-    assert "expand_query 默认直接用 semantic" in prompt
+    assert "共享路由原则" in prompt
+    assert "expand_query 默认使用 auto" in prompt
     assert "correction / associate" not in prompt
     assert "当前语料缺少高置信结果" in prompt
 
@@ -197,7 +197,7 @@ def test_tool_definitions_describe_new_routing_boundaries():
     )
     assert "作者问题优先用它" in by_name["search_owners"]["function"]["description"]
     assert (
-        "抽象 query 的语义展开工具"
+        "抽象 query 的候选展开工具"
         in by_name["expand_query"]["function"]["description"]
     )
 

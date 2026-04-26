@@ -401,11 +401,16 @@ class VideoSearcherV2(
                     "applied_query",
                     effective_query,
                 )
-            semantic_rewrite_info["applied_query"] = (
-                list(rewrite_info.get("rewrited_word_exprs") or [effective_query])[0]
-                if rewrite_info.get("rewrited_word_exprs")
-                else semantic_rewrite_info.get("applied_query", effective_query)
-            )
+            if semantic_rewrite_info.get("applied"):
+                semantic_rewrite_info["applied_query"] = (
+                    list(rewrite_info.get("rewrited_word_exprs") or [effective_query])[0]
+                    if rewrite_info.get("rewrited_word_exprs")
+                    else semantic_rewrite_info.get("applied_query", effective_query)
+                )
+            else:
+                semantic_rewrite_info["applied_query"] = semantic_rewrite_info.get(
+                    "applied_query", effective_query
+                )
             return_res["semantic_rewrite_info"] = semantic_rewrite_info
         if title_rerank_info:
             return_res["title_rerank_info"] = title_rerank_info

@@ -224,11 +224,6 @@ class ChatResponseContextMixin:
     @classmethod
     def _ensure_response_context(cls, messages: list[dict], content: str) -> str:
         resolved_intent = build_intent_profile(messages)
-        final_content = cls._ensure_author_timeline_context(
-            messages,
-            content,
-            intent=resolved_intent,
-        )
         latest_user_text = cls._get_latest_user_text(messages)
         if latest_user_text:
             primary_context_intent = build_intent_profile(
@@ -236,6 +231,11 @@ class ChatResponseContextMixin:
             )
         else:
             primary_context_intent = resolved_intent
+        final_content = cls._ensure_author_timeline_context(
+            messages,
+            content,
+            intent=primary_context_intent,
+        )
         return cls._ensure_primary_subject_context(
             messages,
             final_content,

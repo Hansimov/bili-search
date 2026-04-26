@@ -272,7 +272,7 @@ def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
     llm.chat.side_effect = [
         ChatResponse(
             content=(
-                "<expand_query text='红色警戒08' mode='semantic' size='5'/>"
+                "<expand_query text='红色警戒08' mode='auto' size='5'/>"
                 "<search_owners text='红色警戒08' size='5'/>"
                 "<search_videos queries='[\"红色警戒08 近期投稿视频\"]'/>"
             ),
@@ -394,7 +394,7 @@ def test_run_replaces_recent_user_scoped_video_search_with_owner_resolution_firs
     llm.chat.side_effect = [
         ChatResponse(
             content=(
-                "<expand_query text='红色警戒08' mode='semantic' size='8'/>"
+                "<expand_query text='红色警戒08' mode='auto' size='8'/>"
                 "<search_videos queries='[\":user=红色警戒08 :date<=30d\"]'/>"
             ),
             finish_reason="stop",

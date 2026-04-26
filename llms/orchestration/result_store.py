@@ -28,6 +28,7 @@ def compact_video_hit(hit: dict) -> dict:
     owner_name = owner.get("name", "") if isinstance(owner, dict) else str(owner or "")
     owner_mid = owner.get("mid") if isinstance(owner, dict) else None
     bvid = str(hit.get("bvid", "") or "")
+    tags = str(hit.get("tags") or "").strip()
     return {
         "title": hit.get("title", ""),
         "bvid": bvid,
@@ -35,6 +36,7 @@ def compact_video_hit(hit: dict) -> dict:
         "owner": owner_name,
         "owner_mid": owner_mid,
         "view": ((hit.get("stat") or {}).get("view")),
+        "tags": tags,
     }
 
 
@@ -70,11 +72,13 @@ def compact_token_option(option: dict) -> dict:
 def compact_transcript_result(result: dict) -> dict:
     transcript = result.get("transcript") or {}
     selection = result.get("selection") or {}
+    page = result.get("page") or {}
     text = str(transcript.get("text") or "")
     return {
         "video_id": result.get("bvid") or result.get("requested_video_id") or "",
         "title": result.get("title", ""),
         "page_index": result.get("page_index", 1),
+        "part": page.get("part", "") if isinstance(page, dict) else "",
         "selected_text_length": selection.get("selected_text_length", len(text)),
         "full_text_length": selection.get(
             "full_text_length", transcript.get("text_length", len(text))
@@ -128,7 +132,11 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
                 f"lookup_by={result.get('lookup_by', '')}, seed={lookup_seed}, "
                 f"total_hits={result.get('total_hits', len(hits))}, top_hits="
                 + ", ".join(
-                    f"{hit['title']}({hit['bvid']})"
+                    (
+                        f"{hit['title']}({hit['bvid']}"
+                        + (f", tags={hit['tags']}" if hit.get("tags") else "")
+                        + ")"
+                    )
                     for hit in top_hits
                     if hit.get("title")
                 )
@@ -166,7 +174,11 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
                     + f" -> {item['total_hits']} hits, top="
                 )
                 + ", ".join(
-                    f"{hit['title']}({hit['bvid']})"
+                    (
+                        f"{hit['title']}({hit['bvid']}"
+                        + (f", tags={hit['tags']}" if hit.get("tags") else "")
+                        + ")"
+                    )
                     for hit in item["top_hits"]
                     if hit.get("title")
                 )
@@ -190,7 +202,13 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             )
             + f", total_hits={result.get('total_hits', len(hits))}, top_hits="
             + ", ".join(
-                f"{hit['title']}({hit['bvid']})" for hit in top_hits if hit.get("title")
+                (
+                    f"{hit['title']}({hit['bvid']}"
+                    + (f", tags={hit['tags']}" if hit.get("tags") else "")
+                    + ")"
+                )
+                for hit in top_hits
+                if hit.get("title")
             )
         )
         return {
@@ -258,7 +276,12 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         preview = transcript_info["text"][:120].replace("\n", " ")
         summary_text = (
             f"video_id={transcript_info['video_id']}, title={transcript_info['title']}, "
-            f"chars={transcript_info['selected_text_length']}/{transcript_info['full_text_length']}, "
+            + (
+                f"part={transcript_info['part']}, "
+                if transcript_info.get("part")
+                else ""
+            )
+            + f"chars={transcript_info['selected_text_length']}/{transcript_info['full_text_length']}, "
             f"segments={transcript_info['segment_count']}, preview={preview}"
         )
         return {
@@ -267,6 +290,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
             "video_id": transcript_info["video_id"],
             "title": transcript_info["title"],
             "page_index": transcript_info["page_index"],
+            "part": transcript_info["part"],
             "selected_text_length": transcript_info["selected_text_length"],
             "full_text_length": transcript_info["full_text_length"],
             "segment_count": transcript_info["segment_count"],

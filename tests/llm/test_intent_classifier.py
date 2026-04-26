@@ -49,7 +49,7 @@ def test_build_intent_profile_marks_mixed_model_tutorial_query_for_expansion():
     assert profile.needs_term_normalization is True
     assert profile.needs_owner_resolution is False
     asset_ids = select_prompt_asset_ids(profile)
-    assert "semantic.expansion.brief" in asset_ids
+    assert "query.expansion.brief" in asset_ids
     assert "tool.expand_query.brief" in asset_ids
     assert "tool.expand_query.detailed" in asset_ids
     assert "tool.expand_query.examples" in asset_ids

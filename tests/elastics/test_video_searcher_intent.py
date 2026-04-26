@@ -26,7 +26,7 @@ def test_get_info_of_query_rewrite_dsl_uses_primary_rewrite_expr_tree():
     assert "康夫ui" not in str(query_dsl_dict)
 
 
-def test_search_applies_asset_backed_alias_rule():
+def test_search_does_not_apply_search_semantic_rewrite_when_disabled():
     searcher, captured = make_searcher({"owners": []})
 
     def _capture_get_info(**kwargs):
@@ -42,13 +42,14 @@ def test_search_applies_asset_backed_alias_rule():
 
     result = searcher.search("康夫ui 教程", limit=5)
 
-    assert captured["dsl_query"] == "ComfyUI 教程"
+    assert captured["dsl_query"] == "康夫ui 教程"
     assert captured["suggest_info"] == {}
-    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
-    assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教程"
+    assert result["semantic_rewrite_info"]["disabled"] is True
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is False
+    assert result["semantic_rewrite_info"]["applied_query"] == "康夫ui 教程"
 
 
-def test_search_builds_semantic_suggest_info_for_mixed_script_relation_rewrite():
+def test_search_skips_semantic_relation_rewrite_when_disabled_for_mixed_script():
     searcher, captured = make_searcher({"owners": []})
 
     class _StubRelationsClient:
@@ -56,7 +57,7 @@ def test_search_builds_semantic_suggest_info_for_mixed_script_relation_rewrite()
         def related_tokens_by_tokens(**kwargs):
             captured["relation_kwargs"] = kwargs
             return {
-                "mode": kwargs.get("mode", "semantic"),
+                "mode": kwargs.get("mode", "auto"),
                 "options": [
                     {"text": "ComfyUI 教学", "score": 920.0},
                     {"text": "__bad__|候选", "score": 910.0},
@@ -77,18 +78,15 @@ def test_search_builds_semantic_suggest_info_for_mixed_script_relation_rewrite()
 
     result = searcher.search("康夫ui 教程", limit=5)
 
-    assert captured["relation_kwargs"]["text"] == "ComfyUI 教程"
-    assert captured["dsl_query"] == "ComfyUI 教程"
-    assert captured["suggest_info"] == {
-        "group_replaces_count": [
-            [["教程", "教学"], 920],
-        ]
-    }
-    assert result["semantic_rewrite_info"]["relation_rewritten"] is True
-    assert result["semantic_rewrite_info"]["applied_query"] == "ComfyUI 教学"
+    assert "relation_kwargs" not in captured
+    assert captured["dsl_query"] == "康夫ui 教程"
+    assert captured["suggest_info"] == {}
+    assert result["semantic_rewrite_info"]["disabled"] is True
+    assert result["semantic_rewrite_info"]["relation_rewritten"] is False
+    assert result["semantic_rewrite_info"]["applied_query"] == "康夫ui 教程"
 
 
-def test_search_builds_semantic_suggest_info_for_model_code_attribute_query_mod():
+def test_search_skips_semantic_relation_rewrite_when_disabled_for_model_code():
     searcher, captured = make_searcher({"owners": []})
 
     class _StubRelationsClient:
@@ -96,7 +94,7 @@ def test_search_builds_semantic_suggest_info_for_model_code_attribute_query_mod(
         def related_tokens_by_tokens(**kwargs):
             captured["relation_kwargs"] = kwargs
             return {
-                "mode": kwargs.get("mode", "semantic"),
+                "mode": kwargs.get("mode", "auto"),
                 "options": [
                     {"text": "h20 gpu", "score": 800.0},
                     {"text": "h2h显卡", "score": 900.0},
@@ -117,16 +115,12 @@ def test_search_builds_semantic_suggest_info_for_model_code_attribute_query_mod(
 
     result = searcher.search("h20 显卡 q=vr", limit=5)
 
-    assert captured["relation_kwargs"]["text"] == "h20 显卡"
+    assert "relation_kwargs" not in captured
     assert captured["dsl_query"] == "h20 显卡 q=vr"
-    assert captured["suggest_info"] == {
-        "group_replaces_count": [
-            [["显卡", "gpu"], 800],
-        ]
-    }
-    assert result["semantic_rewrite_info"]["relation_rewritten"] is True
-    assert result["semantic_rewrite_info"]["relation_query"] == "h20 显卡"
-    assert result["semantic_rewrite_info"]["applied_query"] == "h20 gpu"
+    assert captured["suggest_info"] == {}
+    assert result["semantic_rewrite_info"]["disabled"] is True
+    assert result["semantic_rewrite_info"]["relation_rewritten"] is False
+    assert result["semantic_rewrite_info"]["applied_query"] == "h20 显卡 q=vr"
 
 
 def test_model_code_score_cliff_filter_prunes_weak_ambiguous_tail():
@@ -191,13 +185,14 @@ def test_search_keeps_owner_candidates_when_asset_alias_rewrites_query():
 
     result = searcher.search("康夫 UI 工作流", limit=5)
 
-    assert captured["dsl_query"] == "ComfyUI 工作流"
+    assert captured["dsl_query"] == "康夫 UI 工作流"
     assert captured["extra_filters"] == [
         {"terms": {"owner.mid": [14813517, 3494377187969081]}}
     ]
     assert "owners" in result["intent_info"]
     assert "owner_filter" not in result["intent_info"]
-    assert result["semantic_rewrite_info"]["alias_rewritten"] is True
+    assert result["semantic_rewrite_info"]["disabled"] is True
+    assert result["semantic_rewrite_info"]["alias_rewritten"] is False
 
 
 def test_search_suppresses_owner_filter_for_title_like_query_with_partial_overlap():

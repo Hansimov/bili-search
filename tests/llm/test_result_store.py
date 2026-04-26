@@ -48,3 +48,52 @@ def test_render_observation_indents_multiline_small_task_output():
     observation = store.render_observation(["R2"])
 
     assert "- R2 run_small_llm_task: 主题句\n  - 要点1\n  - 要点2" in observation
+
+
+def test_summarize_video_results_keeps_tags_as_evidence():
+    result = {
+        "results": [
+            {
+                "query": "红警HBK08 月亮3 决赛对局",
+                "total_hits": 1,
+                "hits": [
+                    {
+                        "title": "2026年4月16日晚 红警HBK08直播回放",
+                        "bvid": "BV1jmdvBYEPr",
+                        "owner": {"mid": 284671271, "name": "SleepTight睡个好觉"},
+                        "tags": "红色警戒2,红色警戒,HBK08,红警08,红警月亮3",
+                        "stat": {"view": 2730},
+                    }
+                ],
+            }
+        ]
+    }
+
+    summary = summarize_result("R1", "search_videos", result)
+
+    assert "tags=红色警戒2,红色警戒,HBK08,红警08,红警月亮3" in summary["summary_text"]
+    assert summary["queries"][0]["top_hits"][0]["tags"] == (
+        "红色警戒2,红色警戒,HBK08,红警08,红警月亮3"
+    )
+
+
+def test_summarize_transcript_keeps_page_part_title():
+    result = {
+        "bvid": "BV1jmdvBYEPr",
+        "title": "2026年4月16日晚 红警HBK08直播回放",
+        "page_index": 1,
+        "page": {
+            "page": 1,
+            "part": "第一部分：08 红警阿V vs 月亮3 国米  2V2 抢7",
+        },
+        "selection": {"selected_text_length": 8000, "full_text_length": 22157},
+        "transcript": {
+            "text": "我们打个抢七吧。",
+            "segment_count": 52,
+        },
+    }
+
+    summary = summarize_result("R1", "get_video_transcript", result)
+
+    assert summary["part"] == "第一部分：08 红警阿V vs 月亮3 国米  2V2 抢7"
+    assert "part=第一部分：08 红警阿V vs 月亮3 国米  2V2 抢7" in summary["summary_text"]

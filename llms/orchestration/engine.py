@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from concurrent.futures import ThreadPoolExecutor
@@ -280,6 +281,36 @@ class ChatOrchestrator(
             queries = [query] if query else []
         return any(":uid=" in str(query or "") for query in queries)
 
+    @staticmethod
+    def _owner_seed_from_video_requests(requests: list[ToolCallRequest]) -> str:
+        for request in requests:
+            if (
+                request.visibility != "user"
+                or canonical_tool_name(request.name) != "search_videos"
+            ):
+                continue
+            arguments = request.arguments or {}
+            raw_queries = arguments.get("queries")
+            if isinstance(raw_queries, str):
+                queries = [raw_queries]
+            elif isinstance(raw_queries, (list, tuple)):
+                queries = [str(query or "") for query in raw_queries]
+            else:
+                query = str(arguments.get("query", "") or "").strip()
+                queries = [query] if query else []
+            for query in queries:
+                match = re.search(r":user=(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))", query)
+                if not match:
+                    continue
+                owner_seed = next(
+                    (group for group in match.groups() if group),
+                    "",
+                )
+                owner_seed = VideoQueryNormalizer.clean_subject_text(owner_seed)
+                if owner_seed:
+                    return owner_seed
+        return ""
+
     def _filter_owner_timeline_pre_resolution_requests(
         self,
         requests: list[ToolCallRequest],
@@ -306,7 +337,9 @@ class ChatOrchestrator(
                 in {"expand_query", "search_videos"}
                 for request in requests
             )
-            owner_subject = self._extract_recent_owner_subject(messages, intent)
+            owner_subject = self._owner_seed_from_video_requests(
+                requests
+            ) or self._owner_resolution_seed(intent)
             if needs_owner_resolution and owner_subject:
                 internal_requests = [
                     request for request in requests if request.visibility == "internal"

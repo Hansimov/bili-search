@@ -60,8 +60,19 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 3. 作者身份和近期投稿混合问题必须按工作流拆开：先 `search_owners` 或显式 lookup 解析作者，再用返回的 `mid` / `:uid` 查近期视频。
 4. 执行层只做稳定协议门禁：如果同一轮已经在解析作者，就延后 `expand_query` 和未定向的 `search_videos` 宽搜，避免错误 query 进入 ES。
 5. `video_queries` 和 `policies` 只保留稳定语法级护栏，不继续堆具体词语、例子和自然语言正则。
+6. `bili-search` 当前禁用 search semantic rewrite；`expand_query` 默认使用 `auto`，即使模型传入 `semantic` 也按 `auto` 执行。
 
 这条约束的目的不是完全取消确定性逻辑，而是把“语义理解”放回大模型规划，把确定性代码限制在协议、DSL、显式 BV/MID、结果覆盖和工具执行顺序这类稳定边界上。
+
+2026-04-26 更新：
+
+- 已清理 `deterministic.py`、`policies.py`、`runtime.py` 中针对具体自然语言词语的特殊分支。
+- 已将 `video_queries.py` 收敛为语法级处理，只保留显式 DSL、括号标题、引号标题、标点和空白清理。
+- 已关闭 `bili-search` search semantic rewrite；禁用时搜索准备流程不进入 semantic rewrite 分支，只保留 `semantic_rewrite_info.disabled=true` 作为观测字段。
+- 已关闭 `es-tok` semantic bundle 的默认加载；未显式开启时 `mode=semantic` 回退到 `auto`。
+- 已废弃上一轮通过固定词表修复对战、近期、采访等场景的做法；这些场景应由大模型规划先产出高质量 query，再进入搜索管线。
+- 真实 local-dev 验证：`/search` 返回 `semantic_rewrite_info.disabled=true`；`/related_tokens_by_tokens` 传入 `mode=semantic` 时返回 `mode=auto`；前端“直接查找”和“快速问答”均可正常完成。
+- 快速问答的作者近期视频答案优先使用结构化 `search_owners` 请求文本作为展示主体，避免 intent 中混入问句片段后污染回答。
 
 如果修改了后端代码，按受管入口重启：
 
@@ -89,12 +100,18 @@ cd /home/asimov/repos/blbl-dash
 补充定向复测：
 
 - `debugs/live_case_reports/live-owner-recent-red-alert-08-after-fix.json`：验证“红色警戒08是谁？最近发了哪些视频？”修复后只执行 `search_owners` 和基于 `mid=1629347259` 的 `search_videos lookup`，未再执行 `expand_query` 或未解析作者的 `:user=红色警戒08` 宽搜；服务端 elapsed 约 5.26 秒。
+- `debugs/live_case_reports/live-response2-round2-after-fix.json`：复测“给出他们对战的视频”，不再把街头霸王或普通红警视频包装成明确对战命中；回答只保留标签含 `红警月亮3/HBK08` 的直播回放作为低到中置信入口，并明确提示缺少标题级直接命中。
+- `debugs/live_case_reports/live-response2-round3-after-fix.json`：复测“红警月亮3 和 红警HBK08 有一场决赛”，首轮 0 命中后使用干净 fallback `月亮3 红警HBK08 决赛对局`，站内命中 `BV1jmdvBYEPr`，不再生成含“给出他们/他和08什么关系”的污染查询。
+- `debugs/live_case_reports/live-response2-round4-after-fix.json`：复测 `BV1jmdvBYEPr` 内容总结，工具摘要保留分 P 标题 `第一部分：08 红警阿V vs 月亮3 国米 2V2 抢7`，最终回答不再误称无法确认月亮3相关内容。
+- `debugs/live_case_reports/live-response2-round5-after-fix.json`：复测“月亮3最近3期视频内容”，执行层把被历史污染的 `search_owners text=这期` 纠正为 `月亮3`，用 `mid=674510452` 精确 lookup，`limit=3` 且不强加 30 天窗口。
 - `debugs/live_case_reports/live-qa-quality-targeted-final.json`：覆盖 `owner_topic_BV15zoWBPEiz` 和 `single_typo_BV1CEdQB4ESr`，2/2 通过。
 - `debugs/live_case_reports/live-qa-quality-owner-recent-final.json`：覆盖 `owner_recent_BV15zoWBPEiz`，1/1 通过。
 - `debugs/live_case_reports/live-qa-quality-llm-refine-targeted-2.json`：历史报告，曾用于验证 pre-search LLM refinement；该方案后续因隐藏延迟和错误改写被移除。
 - `debugs/live_case_reports/live-qa-quality-llm-refine-10x1.json`：10 类各 1 个 smoke，8/10 无问题，剩余弱项集中在宽泛标签和短片段消歧。
 
-## 已修复问题
+## 历史修复记录
+
+以下记录保留用于追踪问题来源。2026-04-26 之后，其中依赖自然语言词表、例子或正则的实现已被移除；相同问题应通过大模型规划 query 和结构化执行门禁处理。
 
 1. `有没有讲 X 的高质量视频` 被 LLM 退化成只搜“讲”。
    - 根因：工具参数规范化未覆盖这类自然语言 QA 句式。

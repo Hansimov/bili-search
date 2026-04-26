@@ -62,7 +62,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Response Style",
         "RESPONSE_STYLE",
         "brief",
-        "最终回答要直接、清楚、少废话。列视频时优先用 Markdown 列表和可点击 BV 链接；列作者时优先给作者名和空间链接。拿到明确链接或 BV 后，不要只给标题描述。若用户问题里有明确产品名、版本号或作者名，回答首段继续保留这个主体名，不要只写“它”或“这个版本”。",
+        "最终回答要直接、清楚、少废话。列视频时优先用 Markdown 列表和可点击 BV 链接；列作者时优先给作者名和空间链接。拿到明确链接或 BV 后，不要只给标题描述。若用户问题里有明确产品名、版本号或作者名，回答首段继续保留这个主体名，不要只写“它”或“这个版本”。不要把标题、标签、UP 主都不含核心实体的弱相关结果包装成命中；关系类问题只能说检索结果能证明的关系，不要把弱共现上升为确定关系。用户要求特定主题、事件或双方参与时，只有标题、标签或摘要明确覆盖核心实体和主题，才列为命中；否则说明置信度不足，不要列普通同领域视频凑数。",
         tags=("base",),
     ),
     _asset(
@@ -70,7 +70,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Routing Examples",
         "ROUTING_EXAMPLES",
         "brief",
-        "共享路由样例：找某类 UP 主时优先 search_owners，它会自动聚合名字、主题、关系和空间页线索，不要先 search_videos；问“某个作者是谁、最近发了什么”时，第一轮只解析作者，不要 expand_query，也不要同时把“最近投稿视频”这类口语整句塞进 search_videos，拿到 mid 后再用 lookup 或 :uid 定向查近期视频；只问官网更新时优先 search_google 且拿到一轮官方结果后直接收口；同时要官网更新和 B 站解读时各跑一轮 search_google 与 search_videos 后直接回答；别名、错写或中英混写缩写先 expand_query，再用规范词执行 search_videos；expand_query 默认直接用 semantic，只有明确拼写纠错时才指定 correction。作者关系追问代表作时，先确认作者，再用 :user / :uid 定向 search_videos。",
+        "共享路由原则：找作者或关联作者时优先 search_owners，它会自动聚合名字、主题、关系和空间页线索；作者身份和作者作品混合请求要分两步，先解析作者，拿到 mid 后再用 lookup 或 :uid 定向查视频；只问站外事实时优先 search_google 且拿到一轮权威结果后收口；同时需要站外事实和站内视频时，各跑一轮对应终局工具后回答；别名、错写或中英混写缩写可先 expand_query，用 auto 获取候选，只有明确拼写纠错时才指定 correction。作者关系追问代表作时，先确认作者，再用 :user / :uid 定向 search_videos。",
         tags=("base", "routing"),
     ),
     _asset(
@@ -78,7 +78,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "Video Route",
         "ROUTE_VIDEOS",
         "brief",
-        "目标是视频时，终局工具优先 search_videos。search_videos 的 query 必须是紧凑检索 DSL：保留实体、主题和必要过滤，不要包含“是谁”“最近发了哪些视频”“投稿视频”等问句套话。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query，再 search_videos；expand_query 默认直接用 semantic，只有明确拼写纠错时才指定 correction，旧环境不支持 semantic 时会自动回退到 auto。拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid；作者身份和近期投稿混合问题不要在同一轮做未定向宽搜。不要把疑似错写直接当作者名去 search_owners。若结果只满足作者约束、但标题/标签不体现用户要的核心主题词或其语义展开词（如采访 / 专访 / 访谈），不要把这些结果当作已命中；应明确说明当前语料缺少高置信结果。",
+        "目标是视频时，终局工具优先 search_videos。search_videos 的 query 必须是紧凑检索 DSL：保留实体、主题和必要过滤，不要携带问句套话。不要擅自添加 :view、:date、:t 等硬过滤，除非用户明确要求热度、时间或时长；特定主题、事件、作品或多人参与需求优先保证核心实体完整匹配。若 query 抽象、缺稳定实体、带别名错写或中英混写缩写，先 expand_query，再 search_videos；expand_query 默认使用 auto，只有明确拼写纠错时才指定 correction。拿到规范词后应立即落成清洗后的 search_videos，不要重复 expand_query，也不要先绕到 search_google，除非站内 search_videos 已经没有有效结果。若作者名不稳，先 search_owners 再落到 :user 或 :uid；作者身份和作者作品混合问题不要在同一轮做未定向宽搜。不要把疑似错写直接当作者名去 search_owners。若结果只满足作者约束、但标题、标签或摘要不体现用户要的核心主题，不要把这些结果当作已命中；应明确说明当前语料缺少高置信结果。",
         tags=("route", "videos"),
     ),
     _asset(
@@ -114,12 +114,12 @@ PROMPT_ASSETS: list[PromptAsset] = [
         tags=("route", "mixed"),
     ),
     _asset(
-        "semantic.expansion.brief",
-        "Semantic Expansion",
-        "SEMANTIC_EXPANSION",
+        "query.expansion.brief",
+        "Query Expansion",
+        "QUERY_EXPANSION",
         "brief",
         "如果请求很短、抽象、只有 vibe/黑话/口语标签，不要直接把原话整句塞给 search_videos。先把需求翻译成 2 到 5 个更可检索的主题词、表现形式或内容线索。",
-        tags=("semantic",),
+        tags=("query_expansion",),
     ),
     _asset(
         "facet.mapping.brief",
@@ -127,7 +127,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "FACET_MAPPING",
         "brief",
         "Need 和 Payoff 不等于可检索字段。对情绪、审美、场景类 query，要先把用户意图映射成 Promise/Evidence 信号，再构造 query 或筛选结果。",
-        tags=("semantic", "facet"),
+        tags=("query_expansion", "facet"),
     ),
     _asset(
         "dsl.quickref.brief",
@@ -151,7 +151,7 @@ PROMPT_ASSETS: list[PromptAsset] = [
         "search_videos detailed",
         "TOOL_SEARCH_VIDEOS",
         "detailed",
-        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设，但每条都必须是可检索语句，不是用户问句。能稳定用 :user / :uid 时再定向；作者名不稳时先 search_owners，并等待作者候选后再查投稿，不要同时发未定向的作者近期宽搜。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于显式 BV/MID 请求，要优先用 `bv` / `bvids` / `mid` / `mids` 做 exact lookup；例如“BV... 这期视频的作者是谁，他最近还发了什么”第一步应先 lookup 该 BV，再根据返回的 owner.mid 继续搜索作者作品。只有明确要转写/字幕/总结视频内容时，才改用 get_video_transcript。对于“代表作”“经典视频”这类作者作品问题，不要默认套最近时间窗，只有明确问“最近”时再加 `date_window` 或 `:date<=...`。",
+        "构造 search_videos 时，优先并行多条 queries 覆盖不同搜索假设，但每条都必须是可检索语句，不是用户问句。能稳定用 :user / :uid 时再定向；作者名不稳时先 search_owners，并等待作者候选后再查作品，不要同时发未定向的作者宽搜。抽象需求先 expand_query 或 search_google 侦察，再回到 search_videos 终局。对于显式 BV/MID 请求，要优先用 `bv` / `bvids` / `mid` / `mids` 做 exact lookup；涉及同一视频的作者追问时，先 lookup 该视频，再根据返回的 owner.mid 继续搜索作者作品。只有明确要转写/字幕/总结视频内容时，才改用 get_video_transcript。作者作品问题不要默认套时间窗；只有意图明确要求时间线时再加 `date_window` 或 `:date<=...`，数量限制应通过 lookup 的 limit 表达。",
         tags=("tool",),
         tool_name="search_videos",
     ),

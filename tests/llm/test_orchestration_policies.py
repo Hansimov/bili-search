@@ -87,8 +87,8 @@ def test_orchestrator_normalize_request_preserves_explicit_q_vr_dsl():
     normalized = orchestrator._normalize_request(
         request,
         _intent(
-            raw_query="帮我找 h20 显卡 q=vr 的相关视频，列出最相关的几个",
-            normalized_query="帮我找 h20 显卡 q=vr 的相关视频 列出最相关的几个",
+                raw_query="h20 显卡 q=vr",
+                normalized_query="h20 显卡 q=vr",
             final_target="videos",
         ),
         {"default_query_mode": "wv", "rerank_query_mode": "vwr"},
@@ -125,7 +125,7 @@ def test_orchestrator_run_shortcuts_explicit_q_vr_search_without_planner():
         messages=[
             {
                 "role": "user",
-                "content": "帮我找 h20 显卡 q=vr 的相关视频，列出最相关的几个",
+                    "content": "h20 显卡 q=vr",
             }
         ],
     )
@@ -180,6 +180,7 @@ def test_has_target_coverage_requires_recent_followup_after_explicit_bv_lookup()
                 raw_query="BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
                 normalized_query="bv1e9cfz5ekj 这期视频的作者是谁 他最近还发了哪些视频",
                 final_target="videos",
+                task_mode="repeat",
                 needs_owner_resolution=True,
                 explicit_entities=["BV1e9cfz5EKj"],
                 explicit_topics=["BV1e9cfz5EKj", "视频的作者"],
@@ -232,6 +233,7 @@ def test_has_target_coverage_accepts_recent_followup_after_mid_lookup():
                 raw_query="BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
                 normalized_query="bv1e9cfz5ekj 这期视频的作者是谁 他最近还发了哪些视频",
                 final_target="videos",
+                task_mode="repeat",
                 needs_owner_resolution=True,
                 explicit_entities=["BV1e9cfz5EKj"],
                 explicit_topics=["BV1e9cfz5EKj", "视频的作者"],
@@ -248,10 +250,6 @@ def test_extract_recent_window_ignores_circled_index_in_title_query():
         )
         == "30d"
     )
-
-
-def test_extract_recent_window_supports_unicode_digit_day_window():
-    assert ChatOrchestrator._extract_recent_window("最近④天赵俊杰视频") == "4d"
 
 
 def test_select_pre_execution_nudge_blocks_repeating_mixed_searches():
@@ -309,7 +307,7 @@ def test_select_pre_execution_nudge_prefers_term_normalization_before_video_sear
 
     assert rule is not None
     assert rule[0] == "prefer_term_normalization_before_video_search"
-    assert "默认直接用 semantic" in rule[1]
+    assert "用 auto 获取候选" in rule[1]
     assert "associate" not in rule[1]
 
 
@@ -418,73 +416,6 @@ def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
     assert rule[0] == "video_zero_hit_google_fallback"
 
 
-def test_select_post_execution_nudge_flags_weak_interview_video_evidence():
-    store = FakeResultStore()
-    store.add(
-        "expand_query",
-        {
-            "text": "袁启 采访",
-            "options": [
-                {"text": "袁启 专访", "score": 0.95},
-                {"text": "袁启 访谈", "score": 0.9},
-            ],
-        },
-    )
-    store.add(
-        "search_videos",
-        {
-            "results": [
-                {
-                    "query": "袁启 专访",
-                    "total_hits": 2,
-                    "hits": [
-                        {"title": "雪王看袁启聪《看了就知道，老头乐到底有多么危险》"},
-                        {"title": "用《喜鹊谋杀案》的方式介绍袁启聪（子）"},
-                    ],
-                }
-            ]
-        },
-    )
-
-    rule = select_post_execution_nudge(
-        store,
-        _intent(final_target="videos"),
-        "袁启 采访",
-        set(),
-    )
-
-    assert rule is not None
-    assert rule[0] == "weak_interview_video_evidence"
-    assert "不要把这些结果包装成采访命中" in rule[1]
-
-
-def test_select_post_execution_nudge_skips_when_interview_anchor_exists_in_hits():
-    store = FakeResultStore()
-    store.add(
-        "search_videos",
-        {
-            "results": [
-                {
-                    "query": "袁启 专访",
-                    "total_hits": 1,
-                    "hits": [
-                        {"title": "袁启聪专访：聊聊汽车媒体行业"},
-                    ],
-                }
-            ]
-        },
-    )
-
-    rule = select_post_execution_nudge(
-        store,
-        _intent(final_target="videos"),
-        "袁启 采访",
-        set(),
-    )
-
-    assert rule is None
-
-
 def test_select_post_execution_nudge_requests_recent_followup_after_explicit_bv_lookup():
     store = FakeResultStore()
     store.add(
@@ -510,6 +441,7 @@ def test_select_post_execution_nudge_requests_recent_followup_after_explicit_bv_
             raw_query="BV1e9cfz5EKj 这期视频的作者是谁。他最近还发了哪些视频。",
             normalized_query="bv1e9cfz5ekj 这期视频的作者是谁 他最近还发了哪些视频",
             final_target="videos",
+            task_mode="repeat",
             needs_owner_resolution=True,
             explicit_entities=["BV1e9cfz5EKj"],
             explicit_topics=["BV1e9cfz5EKj", "视频的作者"],
@@ -650,39 +582,7 @@ def test_normalize_request_rewrites_explicit_bv_query_to_lookup():
     }
 
 
-def test_normalize_request_rewrites_title_like_search_video_queries_from_raw_user_text():
-    orchestrator = ChatOrchestrator(
-        llm_client=MagicMock(),
-        small_llm_client=MagicMock(),
-        tool_executor=MagicMock(),
-        model_registry=ModelRegistry.from_envs(),
-    )
-    request = ToolCallRequest(
-        id="call_title_query_1",
-        name="search_videos",
-        arguments={
-            "queries": [
-                "可能打错了字，想找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关 找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关的视频"
-            ]
-        },
-    )
-
-    normalized = orchestrator._normalize_request(
-        request,
-        _intent(
-            raw_query="我可能打错了字，想找 【大毛-小厨】Up主探索中，欢迎收看求三连！ 相关的视频。",
-            normalized_query="我可能打错了字 想找 大毛-小厨 up主探索中 欢迎收看求三连 相关的视频",
-            final_target="videos",
-        ),
-        {"supports_transcript_lookup": True},
-        prefer_transcript_lookup=False,
-    )
-
-    assert normalized.name == "search_videos"
-    assert normalized.arguments == {"queries": ["大毛-小厨 Up主探索中 欢迎收看求三连"]}
-
-
-def test_owner_recent_followup_falls_back_to_user_query_when_owner_resolution_drifts():
+def test_owner_recent_followup_does_not_synthesize_unresolved_user_query():
     orchestrator = ChatOrchestrator(
         llm_client=MagicMock(),
         small_llm_client=MagicMock(),
@@ -711,6 +611,7 @@ def test_owner_recent_followup_falls_back_to_user_query_when_owner_resolution_dr
             raw_query="贩卖可爱の喵呜 最近发了什么值得看的视频？",
             normalized_query="贩卖可爱の喵呜 最近发了什么值得看的视频",
             final_target="videos",
+            task_mode="repeat",
         ),
         messages=[
             {
@@ -720,34 +621,4 @@ def test_owner_recent_followup_falls_back_to_user_query_when_owner_resolution_dr
         ],
     )
 
-    assert followups
-    assert followups[0].name == "search_videos"
-    assert followups[0].arguments == {"queries": [":user=贩卖可爱の喵呜 :date<=30d"]}
-
-
-def test_normalize_request_converts_title_like_owner_probe_to_video_search():
-    orchestrator = ChatOrchestrator(
-        llm_client=MagicMock(),
-        small_llm_client=MagicMock(),
-        tool_executor=MagicMock(),
-        model_registry=ModelRegistry.from_envs(),
-    )
-    request = ToolCallRequest(
-        id="call_title_owner_1",
-        name="search_owners",
-        arguments={"text": "一只小雪莉ovo", "size": 5},
-    )
-
-    normalized = orchestrator._normalize_request(
-        request,
-        _intent(
-            raw_query="忽略口播和套话，帮我找和 【一只小雪莉ovo】寄明月~ 真正相关的视频。",
-            normalized_query="忽略口播和套话 帮我找和 一只小雪莉ovo 寄明月 真正相关的视频",
-            final_target="videos",
-        ),
-        {"supports_transcript_lookup": True},
-        prefer_transcript_lookup=False,
-    )
-
-    assert normalized.name == "search_videos"
-    assert normalized.arguments == {"queries": ["一只小雪莉ovo 寄明月"]}
+    assert followups == []

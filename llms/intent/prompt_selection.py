@@ -42,7 +42,7 @@ _TARGET_ASSET_IDS = {
 
 _SIGNAL_ASSET_IDS = {
     "needs_keyword_expansion": (
-        "semantic.expansion.brief",
+        "query.expansion.brief",
         "tool.expand_query.brief",
     ),
     "needs_term_normalization": (

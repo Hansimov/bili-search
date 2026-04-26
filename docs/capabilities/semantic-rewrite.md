@@ -1,10 +1,21 @@
 # 语义改写与意图识别架构说明
 
-## 2026-04-25 架构更新
+## 2026-04-26 当前状态
 
-当前主线已经停止使用 `es-tok` 内部的索引期 semantic snapshot。
+`bili-search-algo/models/semantics` 和 `es-tok` 的 compact semantic bundle 目前默认禁用。代码、资源格式和接口可以保留，方便后续重新评估或 A/B，但默认 local-dev 和生产链路不应消费该 bundle。
 
-现在的职责边界是：
+当前约束：
+
+- `bili-search` 不进入 search semantic rewrite 分支；搜索响应只保留 `semantic_rewrite_info.disabled=true` 作为观测字段。
+- `es-tok` 未显式设置 `ES_TOK_SEMANTICS_ENABLED=true` 或 `-Des.tok.semantics.enabled=true` 时不加载 semantic bundle。
+- 即使请求传入 `mode=semantic`，`es-tok` 也应回退到 `auto`。
+- 不在 orchestration 代码中追加自然语言词表、例子或正则来替代 semantic 功能；query 质量由大模型规划阶段负责，执行层只做稳定协议门禁。
+
+## 2026-04-25 历史架构更新
+
+当时主线已经停止使用 `es-tok` 内部的索引期 semantic snapshot。
+
+当时的职责边界是：
 
 - `bili-search-algo/models/semantics` 负责离线生成 compact semantic bundle，并用 group 级 SQLite cursor 记录已处理文档以支持增量更新。
 - bundle 中按文件拆分承载 `rewrite / synonym / near_synonym / doc_cooccurrence`，构建期落在 `bili-search-algo/data/semantics/<version>/merged`，插件重载时复制到 `es_tok/semantics/v1/merged`。
@@ -12,7 +23,7 @@
 - 配置类资源继续使用 JSON；批量语义数据使用 TSV。`es-tok` 的内置 semantic TSV 只保留空兜底，避免把人工 case rule 混进数据集生成产物。
 - 需要 A/B 或回滚时，可以通过 `BILI_SEARCH_SEMANTIC_REWRITE_ENABLED=false`、`BILI_SEARCH_ALIAS_REWRITE_ENABLED=false`、`BILI_SEARCH_RELATION_REWRITE_ENABLED=false`、`BILI_SEARCH_EXACT_RELAX_RETRY_ENABLED=false` 控制 bili-search 侧行为；通过 `ES_TOK_SEMANTICS_ENABLED=false` 或 `-Des.tok.semantics.enabled=false` 让 es-tok 的 `semantic` 模式回退到 `auto`。
 
-因此，下文中所有关于 `SemanticSnapshotManager`、`SemanticSnapshotIndexListener`、`IndexSemanticExpansionSnapshot` 的描述，都属于上一轮方案的历史记录，不再是当前实现。
+因此，下文中所有关于 `SemanticSnapshotManager`、`SemanticSnapshotIndexListener`、`IndexSemanticExpansionSnapshot` 的描述，都属于上一轮方案的历史记录，不再是当前实现。2026-04-26 之后，compact semantic bundle 本身也进入默认禁用状态。
 
 ## 范围
 

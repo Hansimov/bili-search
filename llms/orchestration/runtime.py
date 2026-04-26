@@ -235,6 +235,12 @@ class OrchestrationRuntimeMixin:
         if stage == "planner" and intent.needs_term_normalization:
             large_factors.append("needs_term_normalization")
         if (
+            intent.final_target == "videos"
+            and intent.is_followup
+            and intent.needs_owner_resolution
+        ):
+            large_factors.append("video_followup_context")
+        if (
             stage == "planner"
             and intent.final_target == "relations"
             and intent.ambiguity >= 0.38

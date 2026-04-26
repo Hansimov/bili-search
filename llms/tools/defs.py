@@ -15,7 +15,7 @@ _PROMPT_TOOL_EXAMPLES = {
     "get_video_transcript": "<get_video_transcript video_id='BV1YXZPB1Erc' head_chars='6000' include_segments='true'/>",
     "search_google": "<search_google query='Gemini 2.5 更新 site:bilibili.com/video' num='5'/>",
     "search_owners": "<search_owners text='黑神话悟空' size='8'/>",
-    "expand_query": "<expand_query text='袁启 专访' mode='semantic' size='8'/>",
+    "expand_query": "<expand_query text='袁启 专访' mode='auto' size='8'/>",
     "read_spec": "<read_spec name='search_syntax'/>",
     "read_prompt_assets": "<read_prompt_assets tool_names='[\"search_videos\"]' levels='[\"examples\"]'/>",
     "inspect_tool_result": "<inspect_tool_result result_ids='[\"R1\"]' focus='只看最相关 BV' max_items='5'/>",
@@ -315,7 +315,7 @@ def build_expand_query_tool(capabilities: dict | None = None) -> dict:
         "function": {
             "name": "expand_query",
             "description": (
-                "抽象 query 的语义展开工具。基于给定文本寻找相关 token 补全、主题词、语义联想或纠错候选。"
+                "抽象 query 的候选展开工具。基于给定文本寻找相关 token 补全、主题词联想或纠错候选。"
                 "适用于别名、错写、简称，也适用于口语黑话、抽象标签、隐含主题的展开。"
                 "对于很短、抽象、缺稳定实体的请求，通常应先调用它做语义展开，而不是直接发起 literal 视频搜索。"
                 "它不是最终结果来源；拿到候选后通常还应继续调用 search_videos 或 search_owners。"
@@ -327,14 +327,13 @@ def build_expand_query_tool(capabilities: dict | None = None) -> dict:
                     "mode": {
                         "type": "string",
                         "enum": [
-                            "semantic",
                             "auto",
                             "prefix",
                             "associate",
                             "next_token",
                             "correction",
                         ],
-                        "description": "展开模式，默认 semantic；旧环境不支持时会自动回退到 auto",
+                        "description": "展开模式，默认 auto；semantic 模式当前禁用，传入后会按 auto 处理",
                     },
                     "size": {
                         "type": "integer",

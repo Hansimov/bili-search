@@ -23,7 +23,7 @@ def test_build_tool_definitions_uses_capabilities():
     assert tools[2]["function"]["name"] == "search_owners"
     assert tools[3]["function"]["name"] == "expand_query"
     assert (
-        "semantic" in tools[3]["function"]["parameters"]["properties"]["mode"]["enum"]
+        "semantic" not in tools[3]["function"]["parameters"]["properties"]["mode"]["enum"]
     )
     assert tools[4]["function"]["name"] == "read_spec"
 

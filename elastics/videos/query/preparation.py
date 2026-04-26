@@ -6,13 +6,25 @@ from typing import Any
 
 from elastics.videos.constants import SEARCH_REQUEST_TYPE, SEARCH_REQUEST_TYPE_DEFAULT
 from elastics.videos.policies.focus import get_search_focus_policy
-from elastics.videos.policies.semantic import get_search_semantic_policy
 from llms.intent.focus import compact_focus_key, rewrite_known_term_aliases
 
 
 SEARCH_FOCUS_POLICY = get_search_focus_policy()
-SEARCH_SEMANTIC_POLICY = get_search_semantic_policy()
+SEARCH_SEMANTIC_POLICY = None
+SEARCH_SEMANTIC_REWRITE_ENABLED = False
 MODEL_CODE_RE = re.compile(r"^(?=.*[a-z])(?=.*\d)[a-z0-9][a-z0-9._+-]{1,31}$", re.I)
+
+
+def _disabled_search_semantic_rewrite_info(query: str) -> dict:
+    query_text = str(query or "")
+    return {
+        "input_query": query_text,
+        "applied": False,
+        "alias_rewritten": False,
+        "relation_rewritten": False,
+        "disabled": True,
+        "applied_query": query_text,
+    }
 
 
 @dataclass(slots=True)
@@ -132,10 +144,15 @@ class SearchQueryPreparer:
             "applied": False,
             "alias_rewritten": False,
             "relation_rewritten": False,
+            "disabled": True,
         }
+        if not SEARCH_SEMANTIC_REWRITE_ENABLED:
+            semantic_rewrite_info["applied_query"] = str(query or "")
+            return str(query or ""), {}, semantic_rewrite_info
         if (
             request_type != SEARCH_REQUEST_TYPE_DEFAULT
             or suggest_info
+            or SEARCH_SEMANTIC_POLICY is None
             or not SEARCH_SEMANTIC_POLICY.enabled
         ):
             semantic_rewrite_info["applied_query"] = str(query or "")
@@ -344,19 +361,24 @@ class SearchQueryPreparer:
             effective_query, query_focus_info = self._resolve_search_focus_query(
                 effective_query
             )
-            allow_relation_rewrite = not bool(query_focus_info.get("applied"))
-            (
-                effective_query,
-                semantic_suggest_info,
-                semantic_rewrite_info,
-            ) = self._resolve_search_semantic_rewrite(
-                query=effective_query,
-                suggest_info=suggest_info,
-                request_type=request_type,
-                allow_relation_rewrite=allow_relation_rewrite,
-            )
-            if semantic_suggest_info and not effective_suggest_info:
-                effective_suggest_info = semantic_suggest_info
+            if SEARCH_SEMANTIC_REWRITE_ENABLED:
+                allow_relation_rewrite = not bool(query_focus_info.get("applied"))
+                (
+                    effective_query,
+                    semantic_suggest_info,
+                    semantic_rewrite_info,
+                ) = self._resolve_search_semantic_rewrite(
+                    query=effective_query,
+                    suggest_info=suggest_info,
+                    request_type=request_type,
+                    allow_relation_rewrite=allow_relation_rewrite,
+                )
+                if semantic_suggest_info and not effective_suggest_info:
+                    effective_suggest_info = semantic_suggest_info
+            else:
+                semantic_rewrite_info = _disabled_search_semantic_rewrite_info(
+                    effective_query
+                )
         return SearchPreparation(
             effective_query=effective_query,
             suggest_info=effective_suggest_info,

@@ -23,21 +23,6 @@ from llms.tools.names import canonical_tool_name
 
 FINAL_ANSWER_NUDGE = "请直接基于现有结果回答，不要继续规划，也不要再次调用工具。"
 _EXPLICIT_BVID_RE = re.compile(r"\bBV[0-9A-Za-z]{10}\b", re.IGNORECASE)
-_RECENT_TIMELINE_TOKENS = (
-    "最近",
-    "近期",
-    "近况",
-    "最近还发",
-    "最近还有哪些视频",
-    "最近发了哪些视频",
-    "还发了哪些视频",
-    "还发了什么视频",
-)
-_INTERVIEW_THEME_TOKENS = (
-    "采访",
-    "专访",
-    "访谈",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +53,9 @@ class BlockedRequestNudgeRule:
 
 
 def is_recent_timeline_request(intent: IntentProfile) -> bool:
-    query_text = re.sub(r"\s+", "", str(intent.raw_query or ""))
     return (
         intent.task_mode == "repeat"
         or "recent_only" in intent.top_labels("constraints", limit=8)
-        or any(token in query_text for token in _RECENT_TIMELINE_TOKENS)
     )
 
 
@@ -92,16 +75,7 @@ def _iter_successful_tool_records(result_store, tool_name: str):
 
 
 def has_explicit_video_anchor(intent: IntentProfile) -> bool:
-    candidates = [
-        str(token or "")
-        for token in [
-            *(intent.explicit_entities or []),
-            *(intent.explicit_topics or []),
-            intent.raw_query,
-        ]
-        if str(token or "").strip()
-    ]
-    return any(_EXPLICIT_BVID_RE.search(candidate) for candidate in candidates)
+    return bool(_EXPLICIT_BVID_RE.search(str(intent.raw_query or "")))
 
 
 def has_explicit_bvid_lookup_result(result_store) -> bool:
@@ -133,7 +107,6 @@ def has_recent_owner_timeline_result(result_store) -> bool:
                 or args.get("mids")
                 or args.get("uid")
             )
-            and (args.get("date_window") or result.get("date_window"))
         ):
             return True
 
@@ -253,54 +226,6 @@ def has_video_coverage(result_store) -> bool:
     ) or has_google_video_result(result_store)
 
 
-def _iter_search_video_items(result_store):
-    for record in _iter_successful_tool_records(result_store, "search_videos"):
-        result = record.result or {}
-        nested_results = result.get("results") or []
-        if nested_results:
-            for item in nested_results:
-                if not isinstance(item, dict) or item.get("error"):
-                    continue
-                yield item
-            continue
-        yield result
-
-
-def _has_interview_intent(result_store, latest_user_message: str) -> bool:
-    if any(
-        token in str(latest_user_message or "") for token in _INTERVIEW_THEME_TOKENS
-    ):
-        return True
-    for record in _iter_successful_tool_records(result_store, "expand_query"):
-        result = record.result or {}
-        for option in result.get("options") or []:
-            text = str(option.get("text") or "")
-            if any(token in text for token in _INTERVIEW_THEME_TOKENS):
-                return True
-    return False
-
-
-def _search_video_results_lack_interview_anchor(result_store) -> bool:
-    saw_hits = False
-    for item in _iter_search_video_items(result_store):
-        for hit in item.get("hits") or []:
-            saw_hits = True
-            searchable_text = "\n".join(
-                [
-                    str(hit.get("title") or ""),
-                    str(hit.get("desc") or ""),
-                    (
-                        " ".join(hit.get("tags") or [])
-                        if isinstance(hit.get("tags"), list)
-                        else str(hit.get("tags") or "")
-                    ),
-                ]
-            )
-            if any(token in searchable_text for token in _INTERVIEW_THEME_TOKENS):
-                return False
-    return saw_hits
-
-
 def has_internal_answer_ready_result(result_store) -> bool:
     return has_successful_tool_result(result_store, "run_small_llm_task")
 
@@ -394,7 +319,7 @@ PRE_EXECUTION_NUDGE_RULES = (
         ),
         message=(
             "当前请求更像别名、错写或中英混写缩写。请先调用 expand_query，"
-            "默认直接用 semantic 做归一化；只有明确拼写纠错时才指定 correction。"
+            "用 auto 获取候选；只有明确拼写纠错时才指定 correction。"
             "拿到规范词后再执行 search_videos；"
             "不要直接把原始错写整句塞进 search_videos。"
         ),
@@ -434,7 +359,7 @@ PRE_EXECUTION_NUDGE_RULES = (
         message=(
             "你已经拿到作者候选。下一步直接执行 search_videos，并尽量带 :user 或 :uid "
             "把结果定向到该作者；不要重复 search_owners，也不要先绕到 search_google。"
-            "如果用户问的是代表作或经典视频，不要默认加最近时间窗；只有明确问“最近”时再加 :date。"
+            "不要把时间窗作为默认过滤；只有意图标签明确需要时间线时再加 :date。"
         ),
     ),
     ToolLoopNudgeRule(
@@ -469,27 +394,13 @@ PRE_EXECUTION_NUDGE_RULES = (
 
 POST_EXECUTION_NUDGE_RULES = (
     ResultNudgeRule(
-        name="weak_interview_video_evidence",
-        predicate=lambda store, intent, latest_user_message: (
-            intent.final_target == "videos"
-            and has_video_coverage(store)
-            and _has_interview_intent(store, latest_user_message)
-            and _search_video_results_lack_interview_anchor(store)
-        ),
-        message=(
-            "当前 search_videos 返回的标题里没有出现采访 / 专访 / 访谈等主题锚点。"
-            "不要把这些结果包装成采访命中；应明确说明当前语料里缺少高置信采访结果，"
-            "现有结果最多只能当旁证或相关人物线索。"
-        ),
-    ),
-    ResultNudgeRule(
         name="explicit_video_lookup_recent_followup",
         predicate=lambda store, intent, latest_user_message: (
             needs_explicit_video_lookup_followup(store, intent)
         ),
         message=(
-            "你已经通过显式 BV lookup 拿到了这期视频和作者线索。下一步直接继续调用 search_videos，"
-            "使用 mode='lookup' 和作者 mid/uid 查询最近视频，并把当前 BV 放进 exclude_bvids；"
+            "你已经通过显式 BV lookup 拿到了视频和作者线索。下一步直接继续调用 search_videos，"
+            "使用 mode='lookup' 和作者 mid/uid 查询作者时间线，并把当前 BV 放进 exclude_bvids；"
             "不要现在就结束回答，也不要退回泛化搜索。"
         ),
     ),

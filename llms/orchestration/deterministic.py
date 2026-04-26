@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 
 from typing import Any
 
 from llms.contracts import IntentProfile, ToolCallRequest
-from llms.intent.focus import rewrite_known_term_aliases
 from llms.messages import (
     extract_bvids,
     extract_message_text,
@@ -27,20 +25,6 @@ from llms.planning.owner_resolution import OwnerResolutionMixin
 from llms.tools.names import canonical_tool_name
 
 
-RECENT_OWNER_QUERY_PATTERNS = (
-    re.compile(
-        r"^(?P<subject>.+?)(?:最近|近期|近况)(?:还)?(?:发了|发布了|上传了|更新了)?(?:哪些|什么)?(?:视频|作品).*$"
-    ),
-    re.compile(
-        r"^(?P<subject>.+?)(?:还)?(?:发了|发布了|上传了|更新了)(?:哪些|什么)?(?:视频|作品).*$"
-    ),
-)
-RECENT_OWNER_SUBJECT_STOP_RE = re.compile(
-    r"(最近|近期|近况|视频|作品|作者|发了|发布了|上传了|更新了|还发了|什么|哪些|谁|是谁)",
-    re.IGNORECASE,
-)
-
-
 class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
     @staticmethod
     def _latest_user_text(messages: list[dict]) -> str:
@@ -55,50 +39,6 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
 
     @staticmethod
     def _extract_recent_window(text: str) -> str:
-        source = "".join(str(text or "").split())
-        if not source:
-            return "30d"
-
-        unit_scale = {"天": 1, "日": 1, "周": 7, "月": 30}
-        chinese_digits = {
-            "一": 1,
-            "二": 2,
-            "两": 2,
-            "三": 3,
-            "四": 4,
-            "五": 5,
-            "六": 6,
-            "七": 7,
-            "八": 8,
-            "九": 9,
-        }
-        index = 0
-        while index < len(source):
-            value = None
-            if source[index].isdigit():
-                start = index
-                digits: list[str] = []
-                while index < len(source) and source[index].isdigit():
-                    try:
-                        digits.append(str(unicodedata.digit(source[index])))
-                    except (TypeError, ValueError):
-                        break
-                    index += 1
-                if not digits:
-                    index = start + 1
-                    continue
-                value = int("".join(digits))
-            elif source[index] in chinese_digits:
-                value = chinese_digits[source[index]]
-                index += 1
-            else:
-                index += 1
-                continue
-
-            if index < len(source) and source[index] == "个":
-                index += 1
-            if index < len(source) and source[index] in unit_scale:
-                return f"{value * unit_scale[source[index]]}d"
         return "30d"
 
     @staticmethod
@@ -118,104 +58,15 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
         return f"{amount} {unit_label}"
 
     @classmethod
-    def _extract_leading_subject_phrase(cls, latest_user_text: str) -> str:
-        source = str(latest_user_text or "").strip()
-        if not source:
-            return ""
-
-        segments = [
-            (match.group(0), match.start(), match.end())
-            for match in re.finditer(
-                r"[A-Za-z]+|\d+(?:[./]\d+)*|[\u4e00-\u9fff]+|[^A-Za-z0-9\u4e00-\u9fff\s]+",
-                source,
-            )
-        ]
-        if not segments:
-            return ""
-
-        subject_start = None
-        subject_end = None
-        saw_content = False
-        for segment_text, start, end in segments:
-            is_long_cjk_clause = (
-                bool(re.fullmatch(r"[\u4e00-\u9fff]+", segment_text))
-                and len(segment_text) >= 5
-            )
-            normalized_segment = "".join(str(segment_text or "").split())
-            is_short_question_clause = normalized_segment in {
-                "是谁",
-                "是什么",
-                "谁",
-                "什么",
-                "哪个",
-                "哪位",
-                "哪种",
-                "吗",
-                "呢",
-                "嘛",
-                "么",
-            }
-            if not saw_content:
-                if not normalized_segment:
-                    continue
-                subject_start = start
-                subject_end = end
-                saw_content = True
-                continue
-            if not normalized_segment:
-                subject_end = end
-                continue
-            if is_long_cjk_clause or is_short_question_clause:
-                break
-            subject_end = end
-
-        if subject_start is None or subject_end is None:
-            return ""
-        return VideoQueryNormalizer.clean_subject_text(
-            source[subject_start:subject_end]
-        )
-
-    @classmethod
-    def _extract_recent_owner_subject(
-        cls,
-        messages: list[dict],
-        intent: IntentProfile,
-    ) -> str:
-        latest_user_text = cls._latest_user_text(messages)
-
-        normalized_source = "".join(str(latest_user_text or "").split())
-        leading_subject = cls._extract_leading_subject_phrase(latest_user_text)
-        if (
-            leading_subject
-            and len(leading_subject) <= 32
-            and not RECENT_OWNER_SUBJECT_STOP_RE.search(leading_subject)
-        ):
-            return rewrite_known_term_aliases(leading_subject) or leading_subject
-
-        for pattern in RECENT_OWNER_QUERY_PATTERNS:
-            match = pattern.match(normalized_source)
-            if not match:
-                continue
-            subject = VideoQueryNormalizer.clean_subject_text(match.group("subject"))
-            if (
-                subject
-                and len(subject) <= 32
-                and not RECENT_OWNER_SUBJECT_STOP_RE.search(subject)
-            ):
-                return rewrite_known_term_aliases(subject) or subject
-
-        candidate_texts = [
+    def _intent_owner_seed(cls, intent: IntentProfile) -> str:
+        candidate_texts: list[str] = [
             *(intent.explicit_entities or []),
             *(intent.explicit_topics or []),
         ]
         for candidate in candidate_texts:
             cleaned = VideoQueryNormalizer.clean_subject_text(candidate)
-            if (
-                cleaned
-                and len(cleaned) <= 32
-                and not RECENT_OWNER_SUBJECT_STOP_RE.search(cleaned)
-            ):
-                return rewrite_known_term_aliases(cleaned) or cleaned
+            if cleaned and len(cleaned) <= 32:
+                return cleaned
         return ""
 
     @staticmethod
@@ -258,8 +109,9 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
         messages: list[dict],
         intent: IntentProfile,
     ) -> tuple[str, dict | None]:
-        subject = cls._extract_recent_owner_subject(messages, intent)
+        subject = cls._intent_owner_seed(intent)
         best_owner: dict | None = None
+        best_subject = subject
         best_rank = float("-inf")
 
         for result_id in result_store.order:
@@ -274,17 +126,27 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
             source_text = cls._owner_request_text(result) or cls._owner_request_text(
                 record.request.arguments or {}
             )
-            seed_text = subject or source_text
-            if not seed_text:
+            seed_texts = []
+            for seed_text in (subject, source_text):
+                seed_text = VideoQueryNormalizer.clean_subject_text(seed_text)
+                if seed_text and seed_text not in seed_texts:
+                    seed_texts.append(seed_text)
+            if not seed_texts:
                 continue
-            matching_owners = [
-                owner
-                for owner in owners
-                if OwnerResolutionMixin._owner_name_matches_source(
-                    seed_text,
-                    str(owner.get("name") or "").strip(),
-                )
-            ]
+            matching_seed = seed_texts[0]
+            matching_owners: list[dict] = []
+            for seed_text in seed_texts:
+                matching_owners = [
+                    owner
+                    for owner in owners
+                    if OwnerResolutionMixin._owner_name_matches_source(
+                        seed_text,
+                        str(owner.get("name") or "").strip(),
+                    )
+                ]
+                if matching_owners:
+                    matching_seed = seed_text
+                    break
             if matching_owners:
                 top_owner = matching_owners[0]
                 try:
@@ -300,6 +162,10 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                 ):
                     if top_score > best_rank:
                         best_owner = top_owner
+                        best_subject = (
+                            VideoQueryNormalizer.clean_subject_text(source_text)
+                            or matching_seed
+                        )
                         best_rank = top_score
                     continue
             aggregate_owner = cls._select_probable_aggregate_owner_candidate(owners)
@@ -307,14 +173,23 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                 aggregate_score = cls._owner_service_score(aggregate_owner)
                 if aggregate_score > best_rank:
                     best_owner = aggregate_owner
+                    best_subject = (
+                        VideoQueryNormalizer.clean_subject_text(source_text)
+                        or best_subject
+                    )
                     best_rank = aggregate_score
                 continue
             for index, owner in enumerate(owners):
-                if not OwnerResolutionMixin._is_confident_owner_candidate(
-                    seed_text,
-                    owner,
-                    owners=owners,
-                ):
+                confident_seed = ""
+                for seed_text in seed_texts:
+                    if OwnerResolutionMixin._is_confident_owner_candidate(
+                        seed_text,
+                        owner,
+                        owners=owners,
+                    ):
+                        confident_seed = seed_text
+                        break
+                if not confident_seed:
                     continue
                 try:
                     service_score = float(owner.get("score") or 0.0)
@@ -323,10 +198,14 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                 candidate_rank = service_score - index * 0.001
                 if candidate_rank > best_rank:
                     best_owner = owner
+                    best_subject = (
+                        VideoQueryNormalizer.clean_subject_text(source_text)
+                        or confident_seed
+                    )
                     best_rank = candidate_rank
                 break
 
-        return subject, best_owner
+        return best_subject, best_owner
 
     @classmethod
     def _trim_owner_from_focus_query(
@@ -416,6 +295,8 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
             return []
         if has_successful_tool_result(result_store, "search_videos"):
             return []
+        if has_successful_tool_result(result_store, "run_small_llm_task"):
+            return []
 
         latest_user_text = self._latest_user_text(list(messages or []))
         focus_query = VideoQueryNormalizer.build_video_followup_focus_query(
@@ -472,19 +353,7 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
             intent,
         )
         if not owner_candidate:
-            owner_subject = self._extract_recent_owner_subject(message_list, intent)
-            if not owner_subject:
-                return []
-            window = self._extract_recent_window(intent.raw_query)
-            return [
-                ToolCallRequest(
-                    id=f"auto_owner_recent_{len(result_store.order) + 1}",
-                    name="search_videos",
-                    arguments={"queries": [f":user={owner_subject} :date<={window}"]},
-                    visibility="user",
-                    source="deterministic_followup",
-                )
-            ]
+            return []
 
         try:
             owner_mid = str(int(str(owner_candidate.get("mid") or "").strip()))
@@ -690,7 +559,7 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                 )
             ]
 
-        owner_subject = self._extract_recent_owner_subject(messages, intent)
+        owner_subject = self._intent_owner_seed(intent)
         if not owner_subject:
             return []
         return [

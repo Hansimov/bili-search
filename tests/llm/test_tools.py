@@ -753,14 +753,6 @@ if __name__ == "__main__":
             test_tool_executor_merges_google_capability,
         ),
         ("execute_read_spec", test_execute_read_spec),
-        (
-            "execute_expand_query_prefers_semantic_mode",
-            test_execute_expand_query_prefers_semantic_mode,
-        ),
-        (
-            "execute_expand_query_falls_back_to_auto_when_semantic_unsupported",
-            test_execute_expand_query_falls_back_to_auto_when_semantic_unsupported,
-        ),
         ("execute_unknown_tool", test_execute_unknown_tool),
         ("execute_empty_query", test_execute_empty_query),
         ("execute_search_error", test_execute_search_error),
