@@ -386,6 +386,19 @@ def test_select_pre_execution_nudge_prefers_scoped_video_search_after_owner_reso
     assert rule is not None
     assert rule[0] == "prefer_owner_scoped_video_search_after_resolution"
 
+    rule = select_pre_execution_nudge(
+        store,
+        _intent(
+            final_target="videos",
+            needs_owner_resolution=True,
+        ),
+        [],
+        set(),
+    )
+
+    assert rule is not None
+    assert rule[0] == "prefer_owner_scoped_video_search_after_resolution"
+
 
 def test_select_post_execution_nudge_sends_zero_hit_video_fallback():
     store = FakeResultStore()

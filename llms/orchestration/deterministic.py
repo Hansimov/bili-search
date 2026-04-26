@@ -13,7 +13,6 @@ from llms.messages import (
 )
 from llms.orchestration.policies import (
     has_explicit_video_anchor,
-    has_successful_tool_result,
     is_recent_timeline_request,
     needs_explicit_video_lookup_followup,
 )
@@ -206,242 +205,6 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                 break
 
         return best_subject, best_owner
-
-    @classmethod
-    def _trim_owner_from_focus_query(
-        cls,
-        focus_query: str,
-        owner_texts: list[str],
-    ) -> str:
-        trimmed = " ".join(str(focus_query or "").split()).strip()
-        if not trimmed:
-            return ""
-
-        for owner_text in owner_texts:
-            normalized_owner = " ".join(str(owner_text or "").split()).strip()
-            if not normalized_owner:
-                continue
-            if trimmed.startswith(normalized_owner):
-                candidate = trimmed[len(normalized_owner) :].strip(" ，。！？?；;：:")
-                if candidate:
-                    trimmed = candidate
-        return trimmed
-
-    @classmethod
-    def _select_video_followup_owner_candidate(
-        cls,
-        result_store: ResultStore,
-        intent: IntentProfile,
-    ) -> tuple[str, dict | None]:
-        topic_hints = [
-            hint
-            for hint in (intent.explicit_topics or [])
-            if len(VideoQueryNormalizer.clean_subject_text(hint)) >= 2
-        ]
-        best_source = ""
-        best_owner: dict | None = None
-        best_rank = float("-inf")
-
-        for result_id in result_store.order:
-            record = result_store.get(result_id)
-            if (
-                record is None
-                or canonical_tool_name(record.request.name) != "search_owners"
-            ):
-                continue
-
-            result = record.result or {}
-            owners = result.get("owners") or []
-            source_text = cls._owner_request_text(result) or cls._owner_request_text(
-                record.request.arguments or {}
-            )
-            source_text = VideoQueryNormalizer.clean_subject_text(source_text)
-            if not source_text:
-                continue
-
-            candidate = OwnerResolutionMixin._select_best_owner_candidate(
-                source_text,
-                owners,
-                hint_tokens=topic_hints,
-            )
-            if not OwnerResolutionMixin._is_confident_owner_candidate(
-                source_text,
-                candidate,
-                hint_tokens=topic_hints,
-                owners=owners,
-            ):
-                continue
-
-            try:
-                service_score = float((candidate or {}).get("score") or 0.0)
-            except (TypeError, ValueError):
-                service_score = 0.0
-            if service_score > best_rank:
-                best_rank = service_score
-                best_source = source_text
-                best_owner = candidate
-
-        return best_source, best_owner
-
-    def _build_video_gap_followup_requests(
-        self,
-        result_store: ResultStore,
-        intent: IntentProfile,
-        messages: list[dict] | None = None,
-    ) -> list[ToolCallRequest]:
-        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
-            return []
-        if is_recent_timeline_request(intent):
-            return []
-        if has_successful_tool_result(result_store, "search_videos"):
-            return []
-        if has_successful_tool_result(result_store, "run_small_llm_task"):
-            return []
-
-        latest_user_text = self._latest_user_text(list(messages or []))
-        focus_query = VideoQueryNormalizer.build_video_followup_focus_query(
-            latest_user_text,
-            explicit_entities=intent.explicit_entities,
-            explicit_topics=intent.explicit_topics,
-        )
-        if not focus_query:
-            return []
-
-        owner_source, owner_candidate = self._select_video_followup_owner_candidate(
-            result_store,
-            intent,
-        )
-        queries: list[str] = []
-        if owner_candidate and owner_candidate.get("mid"):
-            owner_texts = [owner_source, str(owner_candidate.get("name") or "")]
-            scoped_topic = self._trim_owner_from_focus_query(focus_query, owner_texts)
-            scoped_query = f":uid={int(owner_candidate['mid'])}"
-            if scoped_topic:
-                scoped_query = f"{scoped_query} {scoped_topic}".strip()
-            queries.append(scoped_query)
-
-        if focus_query and focus_query not in queries:
-            queries.append(focus_query)
-        if not queries:
-            return []
-
-        return [
-            ToolCallRequest(
-                id=f"auto_video_gap_{len(result_store.order) + 1}",
-                name="search_videos",
-                arguments={"queries": queries[:2]},
-                visibility="user",
-                source="deterministic_followup",
-            )
-        ]
-
-    def _build_owner_recent_timeline_followup_requests(
-        self,
-        result_store: ResultStore,
-        intent: IntentProfile,
-        messages: list[dict] | None = None,
-    ) -> list[ToolCallRequest]:
-        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
-            return []
-        if not is_recent_timeline_request(intent):
-            return []
-
-        message_list = list(messages or [])
-        _subject, owner_candidate = self._select_recent_owner_candidate(
-            result_store,
-            message_list,
-            intent,
-        )
-        if not owner_candidate:
-            return []
-
-        try:
-            owner_mid = str(int(str(owner_candidate.get("mid") or "").strip()))
-        except (TypeError, ValueError):
-            return []
-
-        arguments = {
-            "mode": "lookup",
-            "mid": owner_mid,
-            "date_window": self._extract_recent_window(intent.raw_query),
-            "limit": 10,
-        }
-        return [
-            ToolCallRequest(
-                id=f"auto_owner_recent_{len(result_store.order) + 1}",
-                name="search_videos",
-                arguments=arguments,
-                visibility="user",
-                source="deterministic_followup",
-            )
-        ]
-
-    def _build_owner_result_video_lookup_followup_requests(
-        self,
-        result_store: ResultStore,
-        intent: IntentProfile,
-        messages: list[dict] | None = None,
-    ) -> list[ToolCallRequest]:
-        if intent.final_target != "videos" or has_explicit_video_anchor(intent):
-            return []
-        if is_recent_timeline_request(intent):
-            return []
-        if has_successful_tool_result(result_store, "search_videos"):
-            return []
-
-        message_list = list(messages or [])
-        _subject, owner_candidate = self._select_recent_owner_candidate(
-            result_store,
-            message_list,
-            intent,
-        )
-        if not owner_candidate:
-            return []
-
-        try:
-            owner_mid = str(int(str(owner_candidate.get("mid") or "").strip()))
-        except (TypeError, ValueError):
-            return []
-
-        owner_name = str(owner_candidate.get("name") or "").strip()
-        owner_keys = {
-            self._intent_owner_seed(intent),
-            owner_name,
-        }
-        normalized_owner_keys = {
-            "".join(VideoQueryNormalizer.clean_subject_text(value).split()).lower()
-            for value in owner_keys
-            if value
-        }
-        topic_keys = [
-            "".join(VideoQueryNormalizer.clean_subject_text(value).split()).lower()
-            for value in intent.explicit_topics or []
-            if VideoQueryNormalizer.clean_subject_text(value)
-        ]
-        distinct_topic_keys = list(dict.fromkeys(topic_keys))
-        if len(distinct_topic_keys) > 1 and any(
-            key
-            and all(
-                key not in owner_key and owner_key not in key
-                for owner_key in normalized_owner_keys
-            )
-            for key in distinct_topic_keys
-        ):
-            return []
-
-        return [
-            ToolCallRequest(
-                id=f"auto_owner_video_lookup_{len(result_store.order) + 1}",
-                name="search_videos",
-                arguments={
-                    "mode": "lookup",
-                    "mid": owner_mid,
-                    "limit": 10,
-                },
-                visibility="user",
-                source="deterministic_followup",
-            )
-        ]
 
     def _extract_recent_timeline_hits(self) -> tuple[list[dict], str | None, bool]:
         fallback_candidate: tuple[list[dict], str | None, bool] | None = None
@@ -645,6 +408,10 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
         intent: IntentProfile,
         messages: list[dict] | None = None,
     ) -> list[ToolCallRequest]:
+        # Do not auto-promote search_owners results into video searches here.
+        # Author candidates must be shown back to the planner so the large LLM can
+        # decide whether the top owner is correct, whether multiple owners matter,
+        # or whether another owner search is needed.
         followup_requests: list[ToolCallRequest] = []
 
         if needs_explicit_video_lookup_followup(result_store, intent):
@@ -739,29 +506,6 @@ class DeterministicOrchestrationMixin(ExplicitDeterministicAnswerMixin):
                             source="deterministic_followup",
                         )
                     )
-
-        followup_requests.extend(
-            self._build_owner_recent_timeline_followup_requests(
-                result_store,
-                intent,
-                messages=messages,
-            )
-        )
-        followup_requests.extend(
-            self._build_owner_result_video_lookup_followup_requests(
-                result_store,
-                intent,
-                messages=messages,
-            )
-        )
-        if not followup_requests:
-            followup_requests.extend(
-                self._build_video_gap_followup_requests(
-                    result_store,
-                    intent,
-                    messages=messages,
-                )
-            )
 
         deduped_requests: list[ToolCallRequest] = []
         seen_signatures: set[str] = set()

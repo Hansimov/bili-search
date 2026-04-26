@@ -351,15 +351,11 @@ PRE_EXECUTION_NUDGE_RULES = (
             and has_owner_coverage(store)
             and not has_video_coverage(store)
             and "search_videos" not in user_tool_names
-            and any(
-                tool_name in {"search_owners", "search_google", "expand_query"}
-                for tool_name in user_tool_names
-            )
         ),
         message=(
-            "你已经拿到作者候选。下一步直接执行 search_videos，并尽量带 :user 或 :uid "
-            "把结果定向到该作者；不要重复 search_owners，也不要先绕到 search_google。"
-            "不要把时间窗作为默认过滤；只有意图标签明确需要时间线时再加 :date。"
+            "你已经拿到作者候选，但视频目标还没有完成。下一步必须先分析候选是否可信；"
+            "如果作者已经确认，请直接执行 search_videos，并优先使用返回的 mid/mids 做 lookup。"
+            "不要只输出计划句，也不要重复 search_owners。"
         ),
     ),
     ToolLoopNudgeRule(

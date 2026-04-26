@@ -176,6 +176,18 @@ def test_run_auto_follows_owner_search_with_recent_mid_lookup():
                 "total_tokens": 30,
             },
         ),
+        ChatResponse(
+            content=(
+                "<search_videos mode='lookup' mid='1629347259' "
+                "date_window='30d' limit='10' />"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 35,
+                "completion_tokens": 12,
+                "total_tokens": 47,
+            },
+        ),
     ]
     tool_executor = MagicMock()
     tool_executor.get_search_capabilities.return_value = {
@@ -247,7 +259,7 @@ def test_run_auto_follows_owner_search_with_recent_mid_lookup():
 
     assert "红警HBK08" in result.content
     assert "BV1f1d5BVEWB" in result.content
-    assert llm.chat.call_count == 1
+    assert llm.chat.call_count == 2
     assert tool_executor.execute_request.call_count == 2
 
     first_request = tool_executor.execute_request.call_args_list[0].args[0]
@@ -262,9 +274,8 @@ def test_run_auto_follows_owner_search_with_recent_mid_lookup():
         "limit": 10,
     }
 
-    calls = result.tool_events[0]["calls"]
-    assert len(calls) == 2
-    assert calls[0]["type"] == "search_owners"
+    assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
+    assert result.tool_events[1]["calls"][0]["type"] == "search_videos"
 
 
 def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
@@ -281,6 +292,18 @@ def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
                 "prompt_tokens": 20,
                 "completion_tokens": 14,
                 "total_tokens": 34,
+            },
+        ),
+        ChatResponse(
+            content=(
+                "<search_videos mode='lookup' mid='1629347259' "
+                "date_window='30d' limit='10'/>"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 42,
+                "completion_tokens": 12,
+                "total_tokens": 54,
             },
         ),
     ]
@@ -362,7 +385,7 @@ def test_run_defers_unscoped_video_query_until_owner_resolution_has_mid():
 
     assert "红警HBK08" in result.content
     assert "BV1f1d5BVEWB" in result.content
-    assert llm.chat.call_count == 1
+    assert llm.chat.call_count == 2
     assert tool_executor.execute_request.call_count == 2
 
     first_request = tool_executor.execute_request.call_args_list[0].args[0]
@@ -405,12 +428,21 @@ def test_run_defers_uid_video_query_during_same_round_owner_resolution():
             },
         ),
         ChatResponse(
-            content="红警月亮3 最近的视频包括 BV12Ed9BNEqJ。",
+            content="<search_videos mode='lookup' mid='674510452' limit='10'/>",
             finish_reason="stop",
             usage={
                 "prompt_tokens": 18,
                 "completion_tokens": 12,
                 "total_tokens": 30,
+            },
+        ),
+        ChatResponse(
+            content="红警月亮3 最近的视频包括 BV12Ed9BNEqJ。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 20,
+                "completion_tokens": 12,
+                "total_tokens": 32,
             },
         ),
     ]
@@ -484,7 +516,7 @@ def test_run_defers_uid_video_query_during_same_round_owner_resolution():
 
     assert "红警月亮3" in result.content
     assert "BV12Ed9BNEqJ" in result.content
-    assert llm.chat.call_count == 2
+    assert llm.chat.call_count == 3
     assert tool_executor.execute_request.call_count == 2
 
     first_request = tool_executor.execute_request.call_args_list[0].args[0]
@@ -518,6 +550,18 @@ def test_run_replaces_recent_user_scoped_video_search_with_owner_resolution_firs
                 "prompt_tokens": 20,
                 "completion_tokens": 12,
                 "total_tokens": 32,
+            },
+        ),
+        ChatResponse(
+            content=(
+                "<search_videos mode='lookup' mid='1629347259' "
+                "date_window='30d' limit='10'/>"
+            ),
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 38,
+                "completion_tokens": 12,
+                "total_tokens": 50,
             },
         ),
     ]
@@ -597,7 +641,7 @@ def test_run_replaces_recent_user_scoped_video_search_with_owner_resolution_firs
 
     assert "红警HBK08" in result.content
     assert "BV1xyo7BvEej" in result.content
-    assert llm.chat.call_count == 1
+    assert llm.chat.call_count == 2
     assert tool_executor.execute_request.call_count == 2
 
     first_request = tool_executor.execute_request.call_args_list[0].args[0]
@@ -706,7 +750,7 @@ def test_recent_timeline_answer_prefers_later_mid_lookup_over_earlier_zero_hit_u
     assert "未检索到" not in answer
 
 
-def test_run_recovers_owner_recent_query_after_planner_rate_limit():
+def test_run_recovers_owner_candidate_after_planner_rate_limit_without_video_followup():
     llm = MagicMock()
     llm.chat.side_effect = [
         ChatResponse(
@@ -716,6 +760,15 @@ def test_run_recovers_owner_recent_query_after_planner_rate_limit():
                 "prompt_tokens": 20,
                 "completion_tokens": 4,
                 "total_tokens": 24,
+            },
+        ),
+        ChatResponse(
+            content="我先查到作者候选：红警HBK08。视频列表需要下一轮规划确认作者后再查。",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 30,
+                "completion_tokens": 12,
+                "total_tokens": 42,
             },
         ),
     ]
@@ -743,20 +796,6 @@ def test_run_recovers_owner_recent_query_after_planner_rate_limit():
                 }
             ],
         },
-        {
-            "mode": "lookup",
-            "lookup_by": "mid",
-            "total_hits": 1,
-            "mid": "1629347259",
-            "date_window": "30d",
-            "hits": [
-                {
-                    "bvid": "BV1f1d5BVEWB",
-                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
-                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
-                }
-            ],
-        },
     ]
 
     orchestrator = ChatOrchestrator(
@@ -778,11 +817,10 @@ def test_run_recovers_owner_recent_query_after_planner_rate_limit():
     )
 
     assert "红警HBK08" in result.content
-    assert "BV1f1d5BVEWB" in result.content
+    assert "BV1f1d5BVEWB" not in result.content
     assert llm.chat.call_count == 1
-    assert tool_executor.execute_request.call_count == 2
+    assert tool_executor.execute_request.call_count == 1
     assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
-    assert result.tool_events[0]["calls"][1]["args"]["mid"] == "1629347259"
 
 
 def test_run_recovers_explicit_bv_query_after_planner_rate_limit():
@@ -862,7 +900,7 @@ def test_run_recovers_explicit_bv_query_after_planner_rate_limit():
     assert result.tool_events[0]["calls"][1]["args"]["mid"] == "39627524"
 
 
-def test_build_deterministic_followup_adds_owner_scoped_video_query_for_owner_topic():
+def test_build_deterministic_followup_does_not_auto_search_after_owner_results():
     orchestrator = ChatOrchestrator(
         llm_client=MagicMock(),
         small_llm_client=MagicMock(),
@@ -904,13 +942,10 @@ def test_build_deterministic_followup_adds_owner_scoped_video_query_for_owner_to
         ],
     )
 
-    assert len(requests) == 1
-    assert requests[0].name == "search_videos"
-    assert requests[0].arguments["queries"][0] == ":uid=31572735 高能音乐挑战赛"
-    assert requests[0].arguments["queries"][1] == "月栖乐序 高能音乐挑战赛"
+    assert requests == []
 
 
-def test_build_deterministic_followup_uses_focus_query_when_owner_results_are_not_confident():
+def test_build_deterministic_followup_waits_for_planner_after_ambiguous_owner_results():
     orchestrator = ChatOrchestrator(
         llm_client=MagicMock(),
         small_llm_client=MagicMock(),
@@ -951,9 +986,7 @@ def test_build_deterministic_followup_uses_focus_query_when_owner_results_are_no
         ],
     )
 
-    assert len(requests) == 1
-    assert requests[0].name == "search_videos"
-    assert requests[0].arguments == {"queries": ["大毛-小厨 Up主探索中 欢迎收看求三连"]}
+    assert requests == []
 
 
 def _drain_orchestration_stream(stream):
@@ -965,7 +998,7 @@ def _drain_orchestration_stream(stream):
             return chunks, stop.value
 
 
-def test_run_stream_recovers_owner_recent_query_after_planner_stream_error():
+def test_run_stream_recovers_owner_candidate_after_planner_stream_error_without_video_followup():
     llm = MagicMock()
     llm.chat_stream.side_effect = [
         iter(
@@ -982,7 +1015,35 @@ def test_run_stream_recovers_owner_recent_query_after_planner_stream_error():
                     ],
                 }
             ]
-        )
+        ),
+        iter(
+            [
+                {
+                    "id": "chunk-2",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": "我先查到作者候选：红警HBK08。视频列表需要下一轮规划确认作者后再查。"
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chunk-3",
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            ]
+        ),
     ]
     tool_executor = MagicMock()
     tool_executor.get_search_capabilities.return_value = {
@@ -1008,20 +1069,6 @@ def test_run_stream_recovers_owner_recent_query_after_planner_stream_error():
                 }
             ],
         },
-        {
-            "mode": "lookup",
-            "lookup_by": "mid",
-            "total_hits": 1,
-            "mid": "1629347259",
-            "date_window": "30d",
-            "hits": [
-                {
-                    "bvid": "BV1f1d5BVEWB",
-                    "title": "红警围攻之都团战！苏军挡在前，掩护盟军后方输出！",
-                    "owner": {"mid": 1629347259, "name": "红警HBK08"},
-                }
-            ],
-        },
     ]
 
     orchestrator = ChatOrchestrator(
@@ -1040,10 +1087,9 @@ def test_run_stream_recovers_owner_recent_query_after_planner_stream_error():
     )
 
     assert "红警HBK08" in result.content
-    assert "BV1f1d5BVEWB" in result.content
-    assert tool_executor.execute_request.call_count == 2
+    assert "BV1f1d5BVEWB" not in result.content
+    assert tool_executor.execute_request.call_count == 1
     assert result.tool_events[0]["calls"][0]["type"] == "search_owners"
-    assert result.tool_events[0]["calls"][1]["args"]["mid"] == "1629347259"
     assert any(chunk.get("tool_events") for chunk in chunks)
     assert any(
         chunk.get("delta", {}).get("content")

@@ -73,6 +73,10 @@ PYTHONUNBUFFERED=1 python debugs/run_live_qa_quality.py \
 - 已废弃上一轮通过固定词表修复对战、近期、采访等场景的做法；这些场景应由大模型规划先产出高质量 query，再进入搜索管线。
 - 真实 local-dev 验证：`/search` 返回 `semantic_rewrite_info.disabled=true`；`/related_tokens_by_tokens` 传入 `mode=semantic` 时返回 `mode=auto`；前端“直接查找”和“快速问答”均可正常完成。
 - 快速问答的作者近期视频答案优先使用结构化 `search_owners` 请求文本作为展示主体，避免 intent 中混入问句片段后污染回答。
+- 已移除 `search_owners` 结果到 `search_videos` 的 deterministic 自动 follow-up；作者候选必须回到大模型规划上下文，由模型判断最高分作者是否可信、是否需要多作者查询或追加作者搜索。
+- 作者过滤之外没有内容匹配文本的视频请求统一走结构化 lookup：`mid`/`uid`、`:uid=... :date<=...` 和数字型 `mid` 参数都会被归一化为 Mongo 优先的 `lookup_videos`。
+- transcript 远端 404/网络错误会返回结构化工具错误，不再击穿 `/chat/completions` 导致 500。
+- 定向 live 复测“月亮3最近3期视频内容”：工具链分为 `search_owners`、候选检查/分析、`search_videos mode=lookup mid=674510452 limit=3`，视频结果 `source_counts` 显示 Mongo 命中；前端“快速问答”和“直接查找”均完成。
 
 如果修改了后端代码，按受管入口重启：
 

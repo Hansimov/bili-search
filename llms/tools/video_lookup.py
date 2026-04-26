@@ -10,7 +10,7 @@ _BVID_LOOKUP_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _MID_LOOKUP_QUERY_RE = re.compile(
-    r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date<=([0-9]+[dwmy]))?$",
+    r"^:?(?:uid|mid)\s*=\s*(\d{4,})(?:\s+:date\s*<=\s*([0-9]+[dwmy]))?$",
     re.IGNORECASE,
 )
 
@@ -18,6 +18,9 @@ _MID_LOOKUP_QUERY_RE = re.compile(
 def _normalize_lookup_seed_values(values: object) -> list[str]:
     if isinstance(values, str):
         text = values.strip()
+        return [text] if text else []
+    if isinstance(values, (int, float)) and not isinstance(values, bool):
+        text = str(int(values)).strip()
         return [text] if text else []
     if isinstance(values, (list, tuple, set)):
         return [str(item).strip() for item in values if str(item or "").strip()]

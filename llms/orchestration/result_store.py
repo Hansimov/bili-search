@@ -234,6 +234,7 @@ def summarize_result(result_id: str, tool_name: str, result: dict) -> dict:
         owner_summary = ", ".join(
             (
                 owner["name"]
+                + (f"(mid={owner.get('mid')})" if owner.get("mid") else "")
                 + (
                     f"[{','.join(owner.get('sources') or [])}]"
                     if owner.get("sources")

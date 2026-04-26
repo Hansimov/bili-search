@@ -97,9 +97,27 @@ class BiliStoreTranscriptClient:
         url = f"{self.base_url}{path}"
         if self.verbose:
             logger.note(f"> Transcript POST: {path}")
-        response = requests.post(url, json=payload or {}, timeout=self.timeout)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = requests.post(url, json=payload or {}, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            return {
+                "error": f"Transcript request failed with HTTP {status_code}",
+                "status_code": status_code,
+                "path": path,
+            }
+        except requests.RequestException as exc:
+            return {
+                "error": f"Transcript request failed: {exc}",
+                "path": path,
+            }
+        except ValueError as exc:
+            return {
+                "error": f"Transcript response was not valid JSON: {exc}",
+                "path": path,
+            }
 
     def _get(self, path: str) -> dict:
         if not self.base_url:
@@ -107,9 +125,27 @@ class BiliStoreTranscriptClient:
         url = f"{self.base_url}{path}"
         if self.verbose:
             logger.note(f"> Transcript GET: {path}")
-        response = requests.get(url, timeout=self.timeout)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = requests.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            return {
+                "error": f"Transcript request failed with HTTP {status_code}",
+                "status_code": status_code,
+                "path": path,
+            }
+        except requests.RequestException as exc:
+            return {
+                "error": f"Transcript request failed: {exc}",
+                "path": path,
+            }
+        except ValueError as exc:
+            return {
+                "error": f"Transcript response was not valid JSON: {exc}",
+                "path": path,
+            }
 
     def health(self) -> dict:
         return self._get("/health")
